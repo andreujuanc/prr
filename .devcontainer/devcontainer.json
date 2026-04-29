@@ -1,0 +1,7 @@
+{
+  "name": "prr",
+  "dockerFile": "Dockerfile",
+  "context": "..",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "dev"
+}
