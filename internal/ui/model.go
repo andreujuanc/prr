@@ -14,6 +14,7 @@ import (
 	"prr/internal/git"
 	"prr/internal/state"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -73,6 +74,14 @@ type AIChatDoneMsg struct {
 // aiStreamTickMsg triggers a batched render of accumulated AI tokens.
 type aiStreamTickMsg struct{}
 
+// AIReviewProgressMsg tracks multi-pass review progress.
+type AIReviewProgressMsg struct {
+	Batch int    // current batch (1-indexed)
+	Total int    // total batches
+	Label string // e.g. "internal/ui"
+	Phase string // "batch" or "synthesis"
+}
+
 // CommentsFetchedMsg is sent when PR review comments have been loaded.
 type CommentsFetchedMsg struct {
 	Comments []git.ReviewComment
@@ -85,6 +94,12 @@ type CommentCreatedMsg struct {
 	Err     error
 }
 
+// ChatRenderedMsg is sent when chat history markdown rendering completes.
+type ChatRenderedMsg struct {
+	FilePath string // which file this render is for ("" = overview)
+	Content  string // fully rendered chat content
+}
+
 // ── Model ───────────────────────────────────────────────────────────────
 
 type Model struct {
@@ -92,6 +107,7 @@ type Model struct {
 	diffViewport viewport.Model
 	chatViewport viewport.Model
 	chatInput    textarea.Model
+	spinner      spinner.Model
 
 	focusedPane Pane
 	prNumber    string
@@ -111,11 +127,16 @@ type Model struct {
 	contextLines int // number of context lines for git diff (-U<n>)
 
 	// AI
-	aiClient       ai.Client
-	aiStreaming     bool   // true while AI is generating
-	aiStreamBuffer string // accumulated streamed response
-	aiStreamDirty  bool   // true when buffer has unflushed tokens
-	aiCancelFn     context.CancelFunc
+	aiClient           ai.Client
+	aiStreaming         bool   // true while AI is generating
+	aiStreamBuffer     string // accumulated streamed response
+	aiStreamDirty      bool   // true when buffer has unflushed tokens
+	aiCancelFn         context.CancelFunc
+	aiChatHistoryCache string // pre-rendered markdown of completed messages (for streaming perf)
+	aiReviewBatch      int    // current batch during multi-pass review (0 = not in multi-pass)
+	aiReviewTotal      int    // total batches
+	aiReviewLabel      string // current batch label (e.g. "internal/ui")
+	aiReviewPhase      string // "batch" or "synthesis"
 
 	// Comments
 	comments       map[string][]git.ReviewComment // filePath -> comments
@@ -171,11 +192,17 @@ func NewModel(prNumber string, aiClient ai.Client) Model {
 	commentTa.FocusedStyle.Text = lipgloss.NewStyle().Foreground(textPrimary).Background(surfaceBg)
 	commentTa.Blur()
 
+	s := spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(accentBlue)),
+	)
+
 	return Model{
 		fileTree:     newFileTree(nil),
 		diffViewport: diffVp,
 		chatViewport: chatVp,
 		chatInput:    ta,
+		spinner:      s,
 		focusedPane:  PaneFileList,
 		prNumber:     prNumber,
 		loading:      true,
@@ -190,7 +217,7 @@ func NewModel(prNumber string, aiClient ai.Client) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, fetchPR(m.prNumber))
+	return tea.Batch(textarea.Blink, m.spinner.Tick, fetchPR(m.prNumber))
 }
 
 // ── Async commands ──────────────────────────────────────────────────────
@@ -290,6 +317,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	)
 
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		// Only tick spinner when something is loading/streaming
+		if m.loading || m.aiStreaming {
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -339,13 +374,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.reviewState = msg.State
 		m.rawDiffs = msg.RawDiffs
+		// Provide diffs to AI tool executor for the get_diff tool
+		if tc, ok := m.aiClient.(ai.ToolConfigurer); ok {
+			tc.SetRawDiffs(msg.RawDiffs)
+		}
 		m.populateFileList(m.reviewState)
 		m.selectedFile = ""
 		m.diffViewport.SetContent(
 			styleTextMuted.Render(
 				"Select a file to view its diff"))
-		m.renderChatForFile("")
-		return m, fetchComments(m.prNumber)
+		chatCmd := m.renderChatForFile("")
+		return m, tea.Batch(fetchComments(m.prNumber), chatCmd)
 
 	case CommentsFetchedMsg:
 		if msg.Err != nil {
@@ -377,6 +416,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case ChatRenderedMsg:
+		// Only apply if we're still looking at the same file
+		if msg.FilePath == m.selectedFile {
+			m.chatViewport.SetContent(msg.Content)
+			m.chatViewport.GotoTop()
+		}
+		return m, nil
+
 	case StyledDiffMsg:
 		if msg.Err != nil {
 			m.diffViewport.SetContent(
@@ -399,9 +446,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case AIReviewProgressMsg:
+		m.aiReviewBatch = msg.Batch
+		m.aiReviewTotal = msg.Total
+		m.aiReviewLabel = msg.Label
+		m.aiReviewPhase = msg.Phase
+		return m, nil
+
 	case AIChatDeltaMsg:
 		if m.aiStreaming {
-			m.aiStreamBuffer += msg.Token
+			token := msg.Token
+			if strings.HasPrefix(token, "\x00THOUGHT:") {
+				// Thought text — render with dim/italic style
+				thought := strings.TrimPrefix(token, "\x00THOUGHT:")
+				m.aiStreamBuffer += styleThought.Render(thought)
+			} else if strings.HasPrefix(token, "\x00TOOL:") {
+				// Tool call — render as a subtle indicator
+				tool := strings.TrimPrefix(token, "\x00TOOL:")
+				m.aiStreamBuffer += "\n" + styleToolCall.Render("  ▸ " + tool) + "\n"
+			} else if strings.HasPrefix(token, "\x00DIM:") {
+				// Batch review output — muted to show it's intermediate
+				dimText := strings.TrimPrefix(token, "\x00DIM:")
+				m.aiStreamBuffer += styleBatchOutput.Render(dimText)
+			} else {
+				m.aiStreamBuffer += token
+			}
 			if !m.aiStreamDirty {
 				m.aiStreamDirty = true
 				return m, tea.Tick(33*time.Millisecond, func(time.Time) tea.Msg {
@@ -422,18 +491,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiStreaming = false
 		m.aiCancelFn = nil
 		m.aiStreamDirty = false // prevent stale tick from rendering after completion
+		m.aiReviewBatch = 0
+		m.aiReviewTotal = 0
+		m.aiReviewLabel = ""
+		m.aiReviewPhase = ""
 		if msg.Err != nil {
+			log.Printf("AI chat error: %v", msg.Err)
 			// Append error to chat view
 			m.aiStreamBuffer += "\n\n" + styleAccentRed.Render(
 				fmt.Sprintf("[error: %v]", msg.Err))
 			m.updateChatViewWithStream()
 		} else {
-			// Flush any remaining buffered tokens before saving
-			m.updateChatViewWithStream()
-			// Save the completed response to state
-			m.saveAIResponse(msg.FullResponse)
+			// Save the completed response to state and re-render async with markdown
+			cmd = m.saveAIResponse(msg.FullResponse)
+			// Clear stream buffer so the raw text doesn't linger while markdown renders
+			m.aiStreamBuffer = ""
+			m.aiChatHistoryCache = ""
 		}
-		return m, nil
+		return m, cmd
 
 	case tea.KeyMsg:
 		// While AI is streaming, allow navigation but block chat input
@@ -666,6 +741,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "pgup", "pgdown":
 				m.chatViewport, cmd = m.chatViewport.Update(msg)
 				cmds = append(cmds, cmd)
+			case "ctrl+k":
+				m.clearChat()
 			default:
 				m.chatInput, cmd = m.chatInput.Update(msg)
 				cmds = append(cmds, cmd)
@@ -720,14 +797,15 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	// Start streaming
 	m.aiStreaming = true
 	m.aiStreamBuffer = ""
+	m.aiChatHistoryCache = "" // invalidate so it's rebuilt on first tick
 
 	// Render chat with the new user message and streaming indicator
 	m.updateChatViewWithStream()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	m.aiCancelFn = cancel
 
-	return streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program)
+	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
 }
 
 func (m *Model) appendMessageToState(msg state.Message) {
@@ -776,16 +854,25 @@ func (m *Model) getAIContext() (string, string) {
 
 	if m.selectedFile == "" {
 		// PR overview: use all diffs (truncated)
+		// Sort paths for deterministic output and consistent truncation
+		paths := make([]string, 0, len(m.rawDiffs))
+		for p := range m.rawDiffs {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+
 		var allDiffs strings.Builder
 		allDiffs.WriteString(meta.String())
-		for path, diff := range m.rawDiffs {
-			allDiffs.WriteString(fmt.Sprintf("=== %s ===\n%s\n\n", path, diff))
-			// Truncate at ~50k chars to avoid token limits
-			if allDiffs.Len() > 50000 {
-				allDiffs.WriteString("... (remaining files truncated)")
-				break
-			}
+
+		// File listing with add/remove stats — diffs are fetched via get_diff tool
+		allDiffs.WriteString(fmt.Sprintf("Files changed (%d):\n", len(paths)))
+		for _, p := range paths {
+			diff := m.rawDiffs[p]
+			added, removed := countDiffStats(diff)
+			allDiffs.WriteString(fmt.Sprintf("  %-50s +%-4d -%d\n", p, added, removed))
 		}
+		allDiffs.WriteString("\nUse the get_diff tool to read the actual diffs (paginated by file).\n")
+
 		return ai.ReviewPRPrompt, allDiffs.String()
 	}
 
@@ -794,9 +881,9 @@ func (m *Model) getAIContext() (string, string) {
 	return ai.ChatPrompt, meta.String() + diff
 }
 
-func (m *Model) saveAIResponse(response string) {
+func (m *Model) saveAIResponse(response string) tea.Cmd {
 	if m.reviewState == nil {
-		return
+		return nil
 	}
 
 	assistantMsg := state.Message{Role: "assistant", Content: response}
@@ -808,25 +895,53 @@ func (m *Model) saveAIResponse(response string) {
 	}
 
 	// Re-render chat from state (clean render without streaming artifacts)
-	m.renderChatForFile(m.selectedFile)
+	return m.renderChatForFile(m.selectedFile)
+}
+
+func (m *Model) clearChat() {
+	if m.reviewState == nil || m.aiStreaming {
+		return
+	}
+
+	if m.selectedFile == "" {
+		m.reviewState.GlobalChat = nil
+	} else {
+		if fs, ok := m.reviewState.Files[m.selectedFile]; ok {
+			fs.Chat = nil
+			m.reviewState.Files[m.selectedFile] = fs
+		}
+	}
+
+	if err := state.Save(m.reviewState); err != nil {
+		log.Printf("Warning: failed to save state after clearing chat: %v", err)
+	}
+
+	m.chatViewport.SetContent(styleTextMuted.Render("Chat cleared"))
+	m.chatViewport.GotoTop()
 }
 
 func (m *Model) updateChatViewWithStream() {
-	// Render existing messages + streaming response
 	var b strings.Builder
 
-	// Render existing completed messages from state
-	messages := m.buildAIMessages()
-	// Show all messages except the streaming one (last user message is already in state)
-	for _, msg := range messages {
-		switch msg.Role {
-		case "user":
-			b.WriteString(styleAccentBlueBold.Render("You") + "\n")
-		case "assistant":
-			b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
+	// Use cached rendered prefix of completed messages (built once when streaming starts)
+	// instead of re-rendering markdown on every 33ms tick.
+	if m.aiChatHistoryCache == "" {
+		// Build and cache the rendered history
+		messages := m.buildAIMessages()
+		var hb strings.Builder
+		for _, msg := range messages {
+			switch msg.Role {
+			case "user":
+				hb.WriteString(styleAccentBlueBold.Render("You") + "\n")
+				hb.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
+			case "assistant":
+				hb.WriteString(styleAccentMauveBold.Render("AI") + "\n")
+				hb.WriteString(renderMarkdown(msg.Content, m.chatViewport.Width-2) + "\n\n")
+			}
 		}
-		b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
+		m.aiChatHistoryCache = hb.String()
 	}
+	b.WriteString(m.aiChatHistoryCache)
 
 	// Render streaming AI response
 	if m.aiStreaming || m.aiStreamBuffer != "" {
@@ -834,7 +949,7 @@ func (m *Model) updateChatViewWithStream() {
 		if m.aiStreamBuffer == "" {
 			b.WriteString(styleTextMuted.Render("thinking...") + "\n")
 		} else {
-			b.WriteString(styleTextSecondary.Render(m.aiStreamBuffer))
+			b.WriteString(m.aiStreamBuffer)
 			if m.aiStreaming {
 				b.WriteString(styleAccentBlue.Render("▊"))
 			}
@@ -842,8 +957,13 @@ func (m *Model) updateChatViewWithStream() {
 		}
 	}
 
+	// Only auto-scroll if the user was already at the bottom.
+	// This lets users scroll up to read earlier messages during streaming.
+	wasAtBottom := m.chatViewport.AtBottom()
 	m.chatViewport.SetContent(b.String())
-	m.chatViewport.GotoBottom()
+	if wasAtBottom {
+		m.chatViewport.GotoBottom()
+	}
 }
 
 // renderChatInputLabel renders a styled separator with a prompt indicator
@@ -862,6 +982,36 @@ func (m Model) renderChatInputLabel(width int) string {
 	}
 	// Blurred: subtle separator
 	return styleTextSubtle.Render(strings.Repeat("─", width))
+}
+
+// renderReviewProgress renders the AI CHAT panel title with a progress bar
+// during multi-pass review.
+func (m Model) renderReviewProgress(maxWidth int) string {
+	spin := m.spinner.View()
+
+	var label string
+	if m.aiReviewPhase == "synthesis" {
+		label = "Synthesizing"
+	} else {
+		label = fmt.Sprintf("%d/%d %s", m.aiReviewBatch, m.aiReviewTotal, m.aiReviewLabel)
+	}
+
+	// Build progress bar: ████░░░░
+	barWidth := 10
+	if m.aiReviewTotal > 0 && m.aiReviewPhase != "synthesis" {
+		filled := (m.aiReviewBatch * barWidth) / m.aiReviewTotal
+		if filled > barWidth {
+			filled = barWidth
+		}
+		empty := barWidth - filled
+		bar := styleProgressBar.Render(strings.Repeat("█", filled)) +
+			styleProgressBg.Render(strings.Repeat("░", empty))
+		return spin + " " + bar + " " + styleTextMuted.Render(label)
+	}
+
+	// Synthesis phase — full bar
+	bar := styleProgressBar.Render(strings.Repeat("█", barWidth))
+	return spin + " " + bar + " " + styleTextMuted.Render(label)
 }
 
 // ── Comment helpers ─────────────────────────────────────────────────────
@@ -969,6 +1119,26 @@ func stripANSI(s string) string {
 	return reANSI.ReplaceAllString(s, "")
 }
 
+// countDiffStats counts added and removed lines in a unified diff.
+func countDiffStats(diff string) (added, removed int) {
+	for _, line := range strings.Split(diff, "\n") {
+		if len(line) == 0 {
+			continue
+		}
+		switch line[0] {
+		case '+':
+			if !strings.HasPrefix(line, "+++") {
+				added++
+			}
+		case '-':
+			if !strings.HasPrefix(line, "---") {
+				removed++
+			}
+		}
+	}
+	return
+}
+
 // truncateToWidth truncates a string (potentially containing ANSI codes) to
 // a given visible width, preserving escape sequences and appending a reset.
 func truncateToWidth(s string, maxW int) string {
@@ -1050,47 +1220,80 @@ func (m *Model) moveDiffCursor(dir int) {
 // ── Data helpers ────────────────────────────────────────────────────────
 
 func (m *Model) triggerAIReview() tea.Cmd {
+	if m.aiClient == nil || program == nil || m.pr == nil {
+		return nil
+	}
+
+	// Auto-show the AI panel
+	if !m.showAIPanel {
+		m.showAIPanel = true
+		m.syncLayout()
+	}
+
 	// Determine which file to review
 	path := m.selectedFile
 	if path == "" {
 		// If no file selected yet, use tree cursor
 		path = m.fileTree.selectedPath()
 	}
-	if path == "" || m.aiClient == nil || program == nil || m.pr == nil {
-		return nil
+
+	if path == "" {
+		// Overview mode — multi-pass PR review
+		_, prMeta := m.getAIContext()
+		userContent := "Please review the full set of changes in this PR."
+
+		// Add to state
+		userStateMsg := state.Message{Role: "user", Content: userContent}
+		m.appendMessageToState(userStateMsg)
+
+		// Start streaming
+		m.aiStreaming = true
+		m.aiStreamBuffer = ""
+		m.aiChatHistoryCache = ""
+		m.updateChatViewWithStream()
+
+		// Longer timeout for multi-pass (multiple sequential AI calls)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		m.aiCancelFn = cancel
+
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, program))
 	}
 
-	// Select the file if not already selected
+	// Single file mode
 	if m.selectedFile != path {
 		m.selectedFile = path
 	}
-
-	// Build a one-shot review message
 	diff := m.rawDiffs[path]
 	if diff == "" {
 		return nil
 	}
-
 	systemPrompt := ai.ReviewFilePrompt + "\n\nHere is the code diff for the file `" + path + "`:\n```\n" + diff + "\n```"
-
-	reviewMsg := ai.Message{
-		Role:    "user",
-		Content: "Please review this file's changes.",
-	}
+	userContent := "Please review this file's changes."
 
 	// Add to state
-	userStateMsg := state.Message{Role: "user", Content: "Please review this file's changes."}
+	userStateMsg := state.Message{Role: "user", Content: userContent}
 	m.appendMessageToState(userStateMsg)
+
+	// Build full conversation history so the AI sees prior messages
+	messages := m.buildAIMessages()
+	var aiMessages []ai.Message
+	for _, msg := range messages {
+		aiMessages = append(aiMessages, ai.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
 
 	// Start streaming
 	m.aiStreaming = true
 	m.aiStreamBuffer = ""
+	m.aiChatHistoryCache = "" // invalidate so it's rebuilt on first tick
 	m.updateChatViewWithStream()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	m.aiCancelFn = cancel
 
-	return streamAIChat(m.aiClient, ctx, systemPrompt, []ai.Message{reviewMsg}, program)
+	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
 }
 
 func (m *Model) jumpToUnreviewed(direction int) {
@@ -1185,7 +1388,7 @@ func (m *Model) populateFileList(st *state.State) {
 // previewCurrentFile loads the diff for the currently highlighted file
 // without changing pane focus. Skips dirs and avoids reloading the same file.
 func (m *Model) previewCurrentFile() tea.Cmd {
-	if m.fileTree.selectedIsDir() {
+	if m.pr == nil || m.fileTree.selectedIsDir() {
 		return nil
 	}
 
@@ -1197,8 +1400,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 		m.diffViewport.SetContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
-		m.renderChatForFile("")
-		return nil
+		return m.renderChatForFile("")
 	}
 
 	path := m.fileTree.selectedPath()
@@ -1209,11 +1411,15 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	m.selectedFile = path
 	m.diffViewport.SetContent(
 		styleTextMuted.Render("Loading diff..."))
-	m.renderChatForFile(path)
-	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
+	chatCmd := m.renderChatForFile(path)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
+	return tea.Batch(chatCmd, diffCmd)
 }
 
 func (m *Model) selectCurrentFile() tea.Cmd {
+	if m.pr == nil {
+		return nil
+	}
 	if m.fileTree.selectedIsDir() {
 		m.fileTree.toggle()
 		return nil
@@ -1224,8 +1430,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 		m.diffViewport.SetContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
-		m.renderChatForFile("")
-		return nil
+		return m.renderChatForFile("")
 	}
 
 	path := m.fileTree.selectedPath()
@@ -1236,15 +1441,16 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 	m.selectedFile = path
 	m.diffViewport.SetContent(
 		styleTextMuted.Render("Loading diff..."))
-	m.renderChatForFile(path)
-	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
+	chatCmd := m.renderChatForFile(path)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
+	return tea.Batch(chatCmd, diffCmd)
 }
 
-func (m *Model) renderChatForFile(filePath string) {
+func (m *Model) renderChatForFile(filePath string) tea.Cmd {
 	if m.reviewState == nil {
 		m.chatViewport.SetContent(
 			styleTextMuted.Render("No chat history"))
-		return
+		return nil
 	}
 
 	var messages []state.Message
@@ -1261,24 +1467,36 @@ func (m *Model) renderChatForFile(filePath string) {
 		m.chatViewport.SetContent(
 			styleTextMuted.Render("No chat history for this file"))
 		m.chatViewport.GotoTop()
-		return
+		return nil
 	}
 
-	var b strings.Builder
-	for _, msg := range messages {
-		switch msg.Role {
-		case "user":
-			b.WriteString(styleAccentBlueBold.Render("You") + "\n")
-		case "assistant":
-			b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
-		default:
-			b.WriteString(styleTextMuted.Render(msg.Role) + "\n")
+	// Show placeholder immediately, render markdown async
+	m.chatViewport.SetContent(
+		styleTextMuted.Render("Loading chat..."))
+
+	// Copy what we need for the goroutine
+	width := m.chatViewport.Width - 2
+	msgsCopy := make([]state.Message, len(messages))
+	copy(msgsCopy, messages)
+	fp := filePath
+
+	return func() tea.Msg {
+		var b strings.Builder
+		for _, msg := range msgsCopy {
+			switch msg.Role {
+			case "user":
+				b.WriteString(styleAccentBlueBold.Render("You") + "\n")
+				b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
+			case "assistant":
+				b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
+				b.WriteString(renderMarkdown(msg.Content, width) + "\n\n")
+			default:
+				b.WriteString(styleTextMuted.Render(msg.Role) + "\n")
+				b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
+			}
 		}
-		b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
+		return ChatRenderedMsg{FilePath: fp, Content: b.String()}
 	}
-
-	m.chatViewport.SetContent(b.String())
-	m.chatViewport.GotoTop()
 }
 
 func (m Model) renderOverview() string {
@@ -1597,10 +1815,10 @@ func (m Model) View() string {
 	}
 
 	if m.loading {
-		spinner := styleAccentBlueBold.Render("⠋")
+		spin := m.spinner.View()
 		msg := styleTextSecondary.Render(" " + m.loadingMsg)
 		// Pad to full terminal height to prevent flicker on transition
-		content := "\n  " + spinner + msg
+		content := "\n  " + spin + msg
 		lines := strings.Count(content, "\n") + 1
 		if lines < m.height {
 			content += strings.Repeat("\n", m.height-lines)
@@ -1645,7 +1863,12 @@ func (m Model) View() string {
 		chatBody := m.chatViewport.View() + "\n" + inputLabel + "\n" + m.chatInput.View()
 		chatTitle := "AI CHAT"
 		if m.aiStreaming {
-			chatTitle = "AI CHAT " + styleAccentYellow.Render("●")
+			if m.aiReviewTotal > 0 {
+				// Multi-pass review — show progress bar
+				chatTitle = m.renderReviewProgress(cw)
+			} else {
+				chatTitle = "AI CHAT " + m.spinner.View()
+			}
 		}
 		right := m.renderPane(chatTitle, chatBody, cols[2], ih, m.focusedPane == PaneChat)
 		paneList = append(paneList, " ", right)
@@ -1841,25 +2064,33 @@ func (m Model) viewFooter() string {
 	// Pane-specific bindings
 	switch m.focusedPane {
 	case PaneFileList:
-		hideLabel := "hide reviewed"
+		aiLabel := "AI review file"
+		if m.selectedFile == "" {
+			aiLabel = "AI review PR"
+		}
+		rLabel := "hide reviewed"
 		if m.fileTree.hideReviewed {
-			hideLabel = "show reviewed"
+			rLabel = "show all"
 		}
 		bindings = append(bindings,
 			struct{ key, desc string }{"j/k", "navigate"},
 			struct{ key, desc string }{"Enter", "select"},
 			struct{ key, desc string }{"Space", "review"},
 			struct{ key, desc string }{"h/l", "collapse/expand"},
-			struct{ key, desc string }{"r", hideLabel},
+			struct{ key, desc string }{"r", rLabel},
 			struct{ key, desc string }{"n/p", "next/prev unreviewed"},
-			struct{ key, desc string }{"a", "AI review"},
+			struct{ key, desc string }{"a", aiLabel},
 		)
 	case PaneDiff:
+		aiLabel := "AI review file"
+		if m.selectedFile == "" {
+			aiLabel = "AI review PR"
+		}
 		bindings = append(bindings,
 			struct{ key, desc string }{"j/k", "select line"},
 			struct{ key, desc string }{"+/−", "context"},
 			struct{ key, desc string }{"c", "comment"},
-			struct{ key, desc string }{"a", "AI review"},
+			struct{ key, desc string }{"a", aiLabel},
 		)
 	case PaneChat:
 		bindings = append(bindings,

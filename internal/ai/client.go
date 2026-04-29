@@ -21,4 +21,6 @@ type Client interface {
 type ToolConfigurer interface {
 	// SetHeadRef configures the git ref used for file reading tools.
 	SetHeadRef(ref string)
+	// SetRawDiffs provides the raw unified diffs for the get_diff tool.
+	SetRawDiffs(diffs map[string]string)
 }

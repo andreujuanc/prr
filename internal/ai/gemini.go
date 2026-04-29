@@ -9,7 +9,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // GeminiClient implements Client for the Google Gemini API.
@@ -17,12 +19,29 @@ type GeminiClient struct {
 	APIKey       string
 	Model        string
 	ToolExecutor *ToolExecutor
+	BaseURL      string       // override for testing; empty uses the real Gemini API
+	HTTPClient   *http.Client // optional; defaults to a client with 5-minute timeout
+}
+
+// httpClient returns the configured HTTP client or a sensible default.
+func (g *GeminiClient) httpClient() *http.Client {
+	if g.HTTPClient != nil {
+		return g.HTTPClient
+	}
+	return &http.Client{Timeout: 5 * time.Minute}
 }
 
 // SetHeadRef configures the git ref for file reading tools.
 func (g *GeminiClient) SetHeadRef(ref string) {
 	if g.ToolExecutor != nil {
 		g.ToolExecutor.HeadRef = ref
+	}
+}
+
+// SetRawDiffs provides the raw unified diffs for the get_diff tool.
+func (g *GeminiClient) SetRawDiffs(diffs map[string]string) {
+	if g.ToolExecutor != nil {
+		g.ToolExecutor.RawDiffs = diffs
 	}
 }
 
@@ -40,14 +59,17 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text             string                `json:"text,omitempty"`
-	FunctionCall     *geminiFunctionCall   `json:"functionCall,omitempty"`
-	FunctionResponse *geminiFuncResponse   `json:"functionResponse,omitempty"`
+	Text               string                `json:"text,omitempty"`
+	Thought            *bool                 `json:"thought,omitempty"`
+	ThoughtSignature   string                `json:"thoughtSignature,omitempty"`
+	FunctionCall       *geminiFunctionCall   `json:"functionCall,omitempty"`
+	FunctionResponse   *geminiFuncResponse   `json:"functionResponse,omitempty"`
 }
 
 type geminiFunctionCall struct {
 	Name string                 `json:"name"`
 	Args map[string]interface{} `json:"args"`
+	ID   string                 `json:"id,omitempty"`
 }
 
 type geminiFuncResponse struct {
@@ -80,8 +102,10 @@ type geminiStreamResponse struct {
 	Candidates []struct {
 		Content struct {
 			Parts []struct {
-				Text         string              `json:"text,omitempty"`
-				FunctionCall *geminiFunctionCall  `json:"functionCall,omitempty"`
+				Text             string              `json:"text,omitempty"`
+				Thought          *bool               `json:"thought,omitempty"`
+				ThoughtSignature string              `json:"thoughtSignature,omitempty"`
+				FunctionCall     *geminiFunctionCall  `json:"functionCall,omitempty"`
 			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
@@ -124,7 +148,7 @@ func (g *GeminiClient) ChatStream(ctx context.Context, systemPrompt string, mess
 		}
 
 		// Stream the response
-		textResult, toolCalls, err := g.doStreamRequest(ctx, req, onToken, &full)
+		textResult, toolCalls, modelParts, err := g.doStreamRequest(ctx, req, onToken, &full)
 		if err != nil {
 			return full.String(), err
 		}
@@ -135,19 +159,10 @@ func (g *GeminiClient) ChatStream(ctx context.Context, systemPrompt string, mess
 			break
 		}
 
-		// Append model's tool call turn
-		var callParts []geminiPart
-		for _, tc := range toolCalls {
-			callParts = append(callParts, geminiPart{
-				FunctionCall: &geminiFunctionCall{
-					Name: tc.Name,
-					Args: tc.Args,
-				},
-			})
-		}
+		// Append the full model turn (includes thought signatures + function calls)
 		contents = append(contents, geminiContent{
 			Role:  "model",
-			Parts: callParts,
+			Parts: modelParts,
 		})
 
 		// Execute tools and build response parts
@@ -155,7 +170,7 @@ func (g *GeminiClient) ChatStream(ctx context.Context, systemPrompt string, mess
 		for _, tc := range toolCalls {
 			log.Printf("AI tool call: %s(%v)", tc.Name, tc.Args)
 			if onToken != nil {
-				onToken(fmt.Sprintf("\n🔧 *%s*(%s)\n", tc.Name, formatArgs(tc.Args)))
+				onToken(fmt.Sprintf("\x00TOOL:%s(%s)", tc.Name, formatArgs(tc.Args)))
 			}
 
 			result := g.ToolExecutor.ExecuteTool(tc.Name, tc.Args)
@@ -178,38 +193,63 @@ func (g *GeminiClient) ChatStream(ctx context.Context, systemPrompt string, mess
 	return full.String(), nil
 }
 
-// doStreamRequest makes a single streaming request and returns text output and any tool calls.
-func (g *GeminiClient) doStreamRequest(ctx context.Context, req geminiRequest, onToken func(string), full *strings.Builder) (string, []geminiFunctionCall, error) {
+// doStreamRequest makes a single streaming request and returns text output, any tool calls,
+// and the full set of model parts (needed to echo thought signatures back for thinking models).
+func (g *GeminiClient) doStreamRequest(ctx context.Context, req geminiRequest, onToken func(string), full *strings.Builder) (string, []geminiFunctionCall, []geminiPart, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to marshal request: %w", err)
+		return "", nil, nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse",
-		g.Model,
-	)
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to create request: %w", err)
+	base := g.BaseURL
+	if base == "" {
+		base = "https://generativelanguage.googleapis.com/v1beta"
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-goog-api-key", g.APIKey)
+	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", base, g.Model)
 
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return "", nil, fmt.Errorf("request failed: %w", err)
+	// Retry loop for transient errors (429 rate limit, 503 unavailable)
+	maxRetries := 2
+	var resp *http.Response
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("x-goog-api-key", g.APIKey)
+
+		resp, err = g.httpClient().Do(httpReq)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			break // success
+		}
+
+		errBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attempt < maxRetries {
+			delay := parseRetryDelay(errBody)
+			log.Printf("Gemini API rate limited (HTTP %d), retrying in %v (attempt %d/%d)",
+				resp.StatusCode, delay, attempt+1, maxRetries)
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return "", nil, nil, ctx.Err()
+			}
+		}
+
+		log.Printf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return "", nil, nil, fmt.Errorf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		return "", nil, fmt.Errorf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
-	}
-
 	var textResult strings.Builder
 	var toolCalls []geminiFunctionCall
+	var modelParts []geminiPart
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -233,25 +273,50 @@ func (g *GeminiClient) doStreamRequest(ctx context.Context, req geminiRequest, o
 
 		for _, candidate := range chunk.Candidates {
 			for _, part := range candidate.Content.Parts {
+				// Collect all parts (text, thought, functionCall) for replay
+				p := geminiPart{
+					Thought:          part.Thought,
+					ThoughtSignature: part.ThoughtSignature,
+				}
 				if part.FunctionCall != nil {
 					toolCalls = append(toolCalls, *part.FunctionCall)
+					p.FunctionCall = &geminiFunctionCall{
+						Name: part.FunctionCall.Name,
+						Args: part.FunctionCall.Args,
+						ID:   part.FunctionCall.ID,
+					}
 				}
 				if part.Text != "" {
-					textResult.WriteString(part.Text)
-					full.WriteString(part.Text)
-					if onToken != nil {
-						onToken(part.Text)
+					p.Text = part.Text
+					if part.Thought != nil && *part.Thought {
+						// Stream thought text with a marker prefix so the UI
+						// can style it differently (dim/italic).
+						if onToken != nil {
+							onToken("\x00THOUGHT:" + part.Text)
+						}
+					} else {
+						textResult.WriteString(part.Text)
+						full.WriteString(part.Text)
+						if onToken != nil {
+							onToken(part.Text)
+						}
 					}
+				}
+				// Only keep parts that carry actual data — empty parts
+				// cause "required oneof field 'data'" errors on the next request.
+				if p.Text != "" || p.FunctionCall != nil {
+					modelParts = append(modelParts, p)
 				}
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return textResult.String(), toolCalls, fmt.Errorf("stream read error: %w", err)
+		log.Printf("Gemini stream read error: %v", err)
+		return textResult.String(), toolCalls, modelParts, fmt.Errorf("stream read error: %w", err)
 	}
 
-	return textResult.String(), toolCalls, nil
+	return textResult.String(), toolCalls, modelParts, nil
 }
 
 // formatArgs creates a readable summary of tool call arguments.
@@ -261,4 +326,39 @@ func formatArgs(args map[string]interface{}) string {
 		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// parseRetryDelay extracts the retry delay from a Gemini error response body.
+// Falls back to 5 seconds if parsing fails.
+func parseRetryDelay(body []byte) time.Duration {
+	const fallback = 5 * time.Second
+
+	var errResp struct {
+		Error struct {
+			Details []struct {
+				Type       string `json:"@type"`
+				RetryDelay string `json:"retryDelay"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return fallback
+	}
+	for _, d := range errResp.Error.Details {
+		if d.RetryDelay != "" {
+			// Format is like "41s" or "41.5s"
+			d.RetryDelay = strings.TrimSuffix(d.RetryDelay, "s")
+			if secs, err := strconv.ParseFloat(d.RetryDelay, 64); err == nil {
+				if secs <= 0 {
+					return 100 * time.Millisecond // immediate retry with small buffer
+				}
+				// Cap at 60 seconds to avoid unreasonable waits
+				if secs > 60 {
+					secs = 60
+				}
+				return time.Duration(secs * float64(time.Second))
+			}
+		}
+	}
+	return fallback
 }

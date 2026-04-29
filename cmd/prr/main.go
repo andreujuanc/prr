@@ -441,8 +441,11 @@ func printError(err error) {
 // ── Logger ─────────────────────────────────────────────────────────────
 
 func initLogger() error {
-	gitDir := ".git"
-	logDir := filepath.Join(gitDir, "pr-tui")
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = os.TempDir()
+	}
+	logDir := filepath.Join(cacheDir, "prr")
 
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return err
