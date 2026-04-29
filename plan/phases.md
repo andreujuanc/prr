@@ -27,10 +27,10 @@ A TUI tool built in Go using Bubble Tea to review GitHub Pull Requests file by f
 - [x] Create a utility to calculate SHA-256 hashes of the file diffs for invalidation logic.
 
 ## Phase 3: State Management (`internal/state`)
-- [ ] Define the Go structs for the JSON state (map of `filepath` -> `{status, diff_hash, ai_review}`).
-- [ ] Implement `Load(prNumber string)` to read from `.git/pr-tui/<pr_number>.json`.
-- [ ] Implement `Save(prNumber string, state State)` to save back to the file.
-- [ ] Implement invalidation logic (compare currently generated diff hash vs stored hash). If hash changes, invalidate both `status` and `ai_review`.
+- [x] Define the Go structs for the JSON state (map of `filepath` -> `{status, diff_hash, chat}`).
+- [x] Implement `Load(prNumber string)` to read from `.git/pr-tui/<pr_number>.json`.
+- [x] Implement `Save(prNumber string, state State)` to save back to the file.
+- [x] Implement invalidation logic (compare currently generated diff hash vs stored hash). If hash changes, invalidate both `status` and `chat`.
 
 ## Phase 4: TUI Skeleton (`internal/ui`)
 - [ ] Build the main Bubble Tea Model (`Model` struct).
