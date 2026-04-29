@@ -27,12 +27,13 @@ type treeNode struct {
 
 // fileTree is a navigable file tree component.
 type fileTree struct {
-	root     *treeNode
-	flat     []flatEntry // flattened visible entries for navigation
-	cursor   int
-	width    int
-	height   int
-	offset   int // scroll offset
+	root         *treeNode
+	flat         []flatEntry // flattened visible entries for navigation
+	cursor       int
+	width        int
+	height       int
+	offset       int  // scroll offset
+	hideReviewed bool // when true, reviewed files are hidden
 }
 
 // flatEntry is a single visible row in the tree.
@@ -144,6 +145,14 @@ func (ft *fileTree) flatten() {
 
 func (ft *fileTree) flattenNode(node *treeNode, depth int) {
 	if depth >= 0 {
+		// Skip reviewed files when hideReviewed is on
+		if ft.hideReviewed && !node.isDir && !node.isOverview && node.status == state.StatusReviewed {
+			return
+		}
+		// Skip dirs that have no visible descendants
+		if ft.hideReviewed && node.isDir && !ft.hasVisibleDescendants(node) {
+			return
+		}
 		ft.flat = append(ft.flat, flatEntry{node: node, depth: depth})
 	}
 	if node.isDir && node.expanded {
@@ -153,7 +162,34 @@ func (ft *fileTree) flattenNode(node *treeNode, depth int) {
 	}
 }
 
+// hasVisibleDescendants returns true if a dir node contains at least one
+// non-reviewed file (recursively).
+func (ft *fileTree) hasVisibleDescendants(node *treeNode) bool {
+	for _, child := range node.children {
+		if child.isDir {
+			if ft.hasVisibleDescendants(child) {
+				return true
+			}
+		} else if child.status != state.StatusReviewed {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Navigation ──────────────────────────────────────────────────────────
+
+func (ft *fileTree) toggleHideReviewed() {
+	ft.hideReviewed = !ft.hideReviewed
+	ft.flatten()
+	if ft.cursor >= len(ft.flat) {
+		ft.cursor = len(ft.flat) - 1
+	}
+	if ft.cursor < 0 {
+		ft.cursor = 0
+	}
+	ft.ensureVisible()
+}
 
 func (ft *fileTree) moveUp() {
 	if ft.cursor > 0 {

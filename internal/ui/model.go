@@ -604,6 +604,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.toggleReviewStatus()
 				}
+			case "r":
+				m.fileTree.toggleHideReviewed()
+				m.syncLayout()
 			}
 		}
 	case PaneDiff:
@@ -930,6 +933,43 @@ func stripANSI(s string) string {
 	return reANSI.ReplaceAllString(s, "")
 }
 
+// truncateToWidth truncates a string (potentially containing ANSI codes) to
+// a given visible width, preserving escape sequences and appending a reset.
+func truncateToWidth(s string, maxW int) string {
+	if maxW <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	visW := 0
+	inEsc := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			b.WriteRune(r)
+			continue
+		}
+		if inEsc {
+			b.WriteRune(r)
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		rw := 1
+		if r > 0x7F {
+			// East Asian wide chars, emoji, etc — approximate
+			rw = lipgloss.Width(string(r))
+		}
+		if visW+rw > maxW {
+			break
+		}
+		b.WriteRune(r)
+		visW += rw
+	}
+	b.WriteString("\x1b[0m") // reset to avoid style bleeding
+	return b.String()
+}
+
 // getDiffCursorLine returns the file line number at the current diff cursor position
 // by parsing it directly from the rendered viewport output.
 func (m *Model) getDiffCursorLine() int {
@@ -1219,7 +1259,7 @@ func (m Model) renderOverview() string {
 		w = 40
 	}
 
-	title := lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
+	title := lipgloss.NewStyle().Foreground(accentBlue).Bold(true).Width(w)
 	label := lipgloss.NewStyle().Foreground(textMuted)
 	value := lipgloss.NewStyle().Foreground(textPrimary)
 
@@ -1252,11 +1292,25 @@ func (m Model) renderOverview() string {
 	// PR description
 	if m.pr.Body != "" {
 		sectionTitle := lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
-		bodyStyle := lipgloss.NewStyle().Foreground(textSecondary).Width(w - 2)
+		bodyStyle := lipgloss.NewStyle().Foreground(textSecondary)
 
 		b.WriteString("\n" + separator + "\n")
 		b.WriteString(sectionTitle.Render("Description") + "\n\n")
-		b.WriteString(bodyStyle.Render(m.pr.Body) + "\n")
+		for _, line := range strings.Split(m.pr.Body, "\n") {
+			if len(line) > w-2 {
+				// Hard-wrap long lines
+				for len(line) > 0 {
+					end := w - 2
+					if end > len(line) {
+						end = len(line)
+					}
+					b.WriteString(bodyStyle.Render(line[:end]) + "\n")
+					line = line[end:]
+				}
+			} else {
+				b.WriteString(bodyStyle.Render(line) + "\n")
+			}
+		}
 	}
 
 	// Review comments summary
@@ -1266,10 +1320,7 @@ func (m Model) renderOverview() string {
 	}
 	if totalComments > 0 {
 		sectionTitle := lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
-		commentAuthor := lipgloss.NewStyle().Foreground(accentYellow).Bold(true)
 		commentBody := lipgloss.NewStyle().Foreground(textSecondary).Width(w - 4)
-		commentPath := lipgloss.NewStyle().Foreground(accentBlue)
-		commentLineSt := lipgloss.NewStyle().Foreground(textMuted)
 
 		b.WriteString("\n" + separator + "\n")
 		b.WriteString(sectionTitle.Render(fmt.Sprintf("Review Comments (%d)", totalComments)) + "\n\n")
@@ -1283,9 +1334,9 @@ func (m Model) renderOverview() string {
 
 		for _, path := range paths {
 			for _, c := range m.comments[path] {
-				b.WriteString(commentAuthor.Render(c.Author) + " ")
-				b.WriteString(commentPath.Render(path))
-				b.WriteString(commentLineSt.Render(fmt.Sprintf(":%d", c.Line)) + "\n")
+				header := c.Author + " " + path + fmt.Sprintf(":%d", c.Line)
+				headerStyle := lipgloss.NewStyle().Foreground(accentYellow).Bold(true).Width(w)
+				b.WriteString(headerStyle.Render(header) + "\n")
 				b.WriteString("  " + commentBody.Render(c.Body) + "\n\n")
 			}
 		}
@@ -1590,8 +1641,12 @@ func (m Model) renderPane(title, content string, width, height int, focused bool
 		if i < len(contentLines) {
 			line = contentLines[i]
 		}
-		// Pad to width
 		vis := lipgloss.Width(line)
+		if vis > contentW {
+			// Truncate wide lines to fit
+			line = truncateToWidth(line, contentW)
+			vis = lipgloss.Width(line)
+		}
 		if vis < contentW {
 			line = line + strings.Repeat(" ", contentW-vis)
 		}
@@ -1676,11 +1731,16 @@ func (m Model) viewFooter() string {
 	// Pane-specific bindings
 	switch m.focusedPane {
 	case PaneFileList:
+		hideLabel := "hide reviewed"
+		if m.fileTree.hideReviewed {
+			hideLabel = "show reviewed"
+		}
 		bindings = append(bindings,
 			struct{ key, desc string }{"j/k", "navigate"},
 			struct{ key, desc string }{"Enter", "select"},
 			struct{ key, desc string }{"Space", "review"},
 			struct{ key, desc string }{"h/l", "collapse/expand"},
+			struct{ key, desc string }{"r", hideLabel},
 			struct{ key, desc string }{"n/p", "next/prev unreviewed"},
 			struct{ key, desc string }{"a", "AI review"},
 		)
