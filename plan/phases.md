@@ -21,10 +21,10 @@ A TUI tool built in Go using Bubble Tea to review GitHub Pull Requests file by f
 - [x] Create basic project structure (`cmd/`, `internal/ui/`, `internal/git/`, `internal/state/`, `internal/ai/`).
 
 ## Phase 2: Git & GitHub CLI Wrappers (`internal/git`)
-- [ ] Create Go functions to execute `gh pr view <number> --json ...` to fetch files, base branch, and PR details.
-- [ ] Create Go functions to execute `git diff <base>...<head> -- <file> | delta` and capture the ANSI-styled output.
-- [ ] Create Go functions to fetch raw, unstyled diffs (to pass to the AI).
-- [ ] Create a utility to calculate SHA-256 hashes of the file diffs for invalidation logic.
+- [x] Create Go functions to execute `gh pr view <number> --json ...` to fetch files, base branch, and PR details.
+- [x] Create Go functions to execute `git diff <base>...<head> -- <file> | delta` and capture the ANSI-styled output.
+- [x] Create Go functions to fetch raw, unstyled diffs (to pass to the AI).
+- [x] Create a utility to calculate SHA-256 hashes of the file diffs for invalidation logic.
 
 ## Phase 3: State Management (`internal/state`)
 - [ ] Define the Go structs for the JSON state (map of `filepath` -> `{status, diff_hash, ai_review}`).
