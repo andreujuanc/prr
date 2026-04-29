@@ -140,19 +140,19 @@ func NewModel(prNumber string, aiClient ai.Client) Model {
 
 	ta := textarea.New()
 	ta.Placeholder = "Ask about this code..."
-	ta.Prompt = "› "
+	ta.Prompt = ""
 	ta.CharLimit = 500
 	ta.SetWidth(30)
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
 	ta.FocusedStyle.Base = lipgloss.NewStyle().Background(surfaceBg)
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(surfaceBg)
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(accentBlue).Background(surfaceBg).Bold(true)
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Background(surfaceBg)
 	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(textMuted).Background(surfaceBg)
 	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(textPrimary).Background(surfaceBg)
 	ta.BlurredStyle.Base = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
-	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(textMuted).Background(lipgloss.Color("#252535"))
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
 	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(textSubtle).Background(lipgloss.Color("#252535"))
 	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(textSecondary).Background(lipgloss.Color("#252535"))
 	ta.Blur()
@@ -846,6 +846,24 @@ func (m *Model) updateChatViewWithStream() {
 	m.chatViewport.GotoBottom()
 }
 
+// renderChatInputLabel renders a styled separator with a prompt indicator
+// above the chat input textarea.
+func (m Model) renderChatInputLabel(width int) string {
+	if m.focusedPane == PaneChat {
+		prompt := styleAccentBlueBold.Render(" › ")
+		label := styleTextMuted.Render("Enter to send")
+		pw := ansi.StringWidth(prompt)
+		lw := ansi.StringWidth(label)
+		fill := width - pw - lw
+		if fill < 1 {
+			fill = 1
+		}
+		return prompt + strings.Repeat(" ", fill) + label
+	}
+	// Blurred: subtle separator
+	return styleTextSubtle.Render(strings.Repeat("─", width))
+}
+
 // ── Comment helpers ─────────────────────────────────────────────────────
 
 // reDiffLineNums extracts left and right line numbers from delta's line number column.
@@ -1272,74 +1290,60 @@ func (m Model) renderOverview() string {
 	if w < 10 {
 		w = 40
 	}
-
-	title := lipgloss.NewStyle().Foreground(accentBlue).Bold(true).Width(w)
-	label := lipgloss.NewStyle().Foreground(textMuted)
-	value := lipgloss.NewStyle().Foreground(textPrimary)
+	inner := w - 2 // usable width with some margin
 
 	var b strings.Builder
-	b.WriteString(title.Render(fmt.Sprintf("PR #%d: %s", m.pr.Number, m.pr.Title)) + "\n\n")
-	b.WriteString(label.Render("Base: ") + value.Render(m.pr.BaseRefName) + "\n")
-	b.WriteString(label.Render("Head: ") + value.Render(m.pr.HeadRefName) + "\n")
+
+	// ── Title ───────────────────────────────────────────────
+	prTitle := fmt.Sprintf("PR #%d: %s", m.pr.Number, m.pr.Title)
+	b.WriteString(styleAccentBlueBold.Render(truncateToWidth(prTitle, inner)) + "\n")
+	b.WriteString(styleTextSubtle.Render(strings.Repeat("─", inner)) + "\n\n")
+
+	// ── Metadata ────────────────────────────────────────────
+	writeField := func(lbl, val string) {
+		b.WriteString(styleTextMuted.Render(lbl) + styleTextPrimary.Render(val) + "\n")
+	}
+	writeField("Base  ", m.pr.BaseRefName)
+	writeField("Head  ", m.pr.HeadRefName)
 	sha := m.pr.HeadRefOid
 	if len(sha) > 8 {
 		sha = sha[:8]
 	}
-	b.WriteString(label.Render("SHA:  ") + lipgloss.NewStyle().Foreground(textMuted).Render(sha) + "\n\n")
+	writeField("SHA   ", sha)
+	b.WriteString("\n")
 
-	b.WriteString(label.Render(fmt.Sprintf("Files changed: %d", len(m.pr.Files))) + "\n")
-
+	// ── Stats ───────────────────────────────────────────────
 	totalAdd, totalDel := 0, 0
 	for _, f := range m.pr.Files {
 		totalAdd += f.Additions
 		totalDel += f.Deletions
 	}
+	b.WriteString(styleTextMuted.Render(fmt.Sprintf("Files changed: %d   ", len(m.pr.Files))))
+	b.WriteString(ftAddClr.Render(fmt.Sprintf("+%d", totalAdd)) + " ")
+	b.WriteString(ftDelClr.Render(fmt.Sprintf("-%d", totalDel)) + "\n")
 
-	addClr := lipgloss.NewStyle().Foreground(accentGreen)
-	delClr := lipgloss.NewStyle().Foreground(accentRed)
-	b.WriteString(label.Render("Total: ") +
-		addClr.Render(fmt.Sprintf("+%d", totalAdd)) + " " +
-		delClr.Render(fmt.Sprintf("-%d", totalDel)) + "\n")
-
-	separator := lipgloss.NewStyle().Foreground(textSubtle).Render(strings.Repeat("-", w-2))
-
-	// PR description
+	// ── Description ─────────────────────────────────────────
 	if m.pr.Body != "" {
-		sectionTitle := lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
-		bodyStyle := lipgloss.NewStyle().Foreground(textSecondary)
-
-		b.WriteString("\n" + separator + "\n")
-		b.WriteString(sectionTitle.Render("Description") + "\n\n")
+		b.WriteString("\n" + styleTextSubtle.Render(strings.Repeat("─", inner)) + "\n")
+		b.WriteString(styleAccentMauveBold.Render("Description") + "\n\n")
 		for _, line := range strings.Split(m.pr.Body, "\n") {
-			if len(line) > w-2 {
-				// Hard-wrap long lines
-				for len(line) > 0 {
-					end := w - 2
-					if end > len(line) {
-						end = len(line)
-					}
-					b.WriteString(bodyStyle.Render(line[:end]) + "\n")
-					line = line[end:]
-				}
-			} else {
-				b.WriteString(bodyStyle.Render(line) + "\n")
+			wrapped := wrapText(line, inner)
+			for _, wl := range wrapped {
+				b.WriteString(styleTextSecondary.Render(wl) + "\n")
 			}
 		}
 	}
 
-	// Review comments summary
+	// ── Review comments ─────────────────────────────────────
 	totalComments := 0
 	for _, comments := range m.comments {
 		totalComments += len(comments)
 	}
 	if totalComments > 0 {
-		sectionTitle := lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
-		commentBody := lipgloss.NewStyle().Foreground(textSecondary).Width(w - 4)
+		b.WriteString("\n" + styleTextSubtle.Render(strings.Repeat("─", inner)) + "\n")
+		b.WriteString(styleAccentMauveBold.Render(
+			fmt.Sprintf("Review Comments (%d)", totalComments)) + "\n\n")
 
-		b.WriteString("\n" + separator + "\n")
-		b.WriteString(sectionTitle.Render(fmt.Sprintf("Review Comments (%d)", totalComments)) + "\n\n")
-
-		// Sort paths for deterministic ordering
 		paths := make([]string, 0, len(m.comments))
 		for path := range m.comments {
 			paths = append(paths, path)
@@ -1348,15 +1352,51 @@ func (m Model) renderOverview() string {
 
 		for _, path := range paths {
 			for _, c := range m.comments[path] {
-				header := c.Author + " " + path + fmt.Sprintf(":%d", c.Line)
-				headerStyle := lipgloss.NewStyle().Foreground(accentYellow).Bold(true).Width(w)
-				b.WriteString(headerStyle.Render(header) + "\n")
-				b.WriteString("  " + commentBody.Render(c.Body) + "\n\n")
+				header := fmt.Sprintf("%s  %s:%d", c.Author, path, c.Line)
+				b.WriteString(styleAccentYellowBold.Render(truncateToWidth(header, inner)) + "\n")
+				for _, wl := range wrapText(c.Body, inner-2) {
+					b.WriteString("  " + styleTextSecondary.Render(wl) + "\n")
+				}
+				b.WriteString("\n")
 			}
 		}
 	}
 
 	return b.String()
+}
+
+// wrapText splits a string into lines that fit within maxWidth visible columns.
+// It wraps at word boundaries when possible.
+func wrapText(s string, maxWidth int) []string {
+	if maxWidth < 1 {
+		maxWidth = 1
+	}
+	if s == "" {
+		return []string{""}
+	}
+
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{""}
+	}
+
+	var lines []string
+	cur := words[0]
+	curW := ansi.StringWidth(cur)
+
+	for _, word := range words[1:] {
+		ww := ansi.StringWidth(word)
+		if curW+1+ww <= maxWidth {
+			cur += " " + word
+			curW += 1 + ww
+		} else {
+			lines = append(lines, cur)
+			cur = word
+			curW = ww
+		}
+	}
+	lines = append(lines, cur)
+	return lines
 }
 
 func (m Model) reviewedCount() (int, int) {
@@ -1497,9 +1537,10 @@ func (m Model) columns() [3]int {
 }
 
 func (m Model) contentHeight() int {
-	// Total View() output = header(2) + "\n"(1) + panes(h) + "\n"(1) + footer(2)
-	// Must equal m.height, so h = m.height - 6
-	h := m.height - 6
+	// View() output rows: header(2) + panes(h) + footer(2) = h + 4
+	// The "\n" joiners between them are separators, not extra rows.
+	// For h + 4 = m.height: h = m.height - 4
+	h := m.height - 4
 	if h < 5 {
 		return 5
 	}
@@ -1599,8 +1640,9 @@ func (m Model) View() string {
 	paneList = append(paneList, middle)
 
 	if m.showAIPanel {
-		sep := styleTextSubtle.Render(strings.Repeat("─", cols[2]-2))
-		chatBody := m.chatViewport.View() + "\n" + sep + "\n" + m.chatInput.View()
+		cw := cols[2] - 2 // content width inside borders
+		inputLabel := m.renderChatInputLabel(cw)
+		chatBody := m.chatViewport.View() + "\n" + inputLabel + "\n" + m.chatInput.View()
 		chatTitle := "AI CHAT"
 		if m.aiStreaming {
 			chatTitle = "AI CHAT " + styleAccentYellow.Render("●")
