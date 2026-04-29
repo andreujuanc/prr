@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"time"
 )
 
@@ -61,8 +62,39 @@ func GetStyledDiffWithContext(base, head, file string, contextLines int) (string
 	// Prepare the git command
 	gitCmd := exec.Command("git", "diff", fmt.Sprintf("-U%d", contextLines), diffRange, "--", file)
 	
-	// Prepare the delta command with paging disabled
-	deltaCmd := exec.Command("delta", "--paging=never")
+	// Prepare the delta command styled to match the prr Catppuccin Mocha theme
+	deltaCmd := exec.Command("delta",
+		"--paging=never",
+		"--dark",
+		"--syntax-theme=base16",
+
+		// Added lines: soft green tint on dark surface
+		"--plus-style", "syntax #1a3a2a",
+		"--plus-emph-style", "syntax #2d5a3d",
+
+		// Removed lines: soft red tint on dark surface
+		"--minus-style", "syntax #3a1a2a",
+		"--minus-emph-style", "syntax #5a2d3d",
+
+		// Hunk headers: mauve accent, muted bg
+		"--hunk-header-style", "line-number #CBA6F7",
+		"--hunk-header-decoration-style", "none",
+
+		// Line numbers: muted text, subtle separator
+		"--line-numbers",
+		"--line-numbers-minus-style", "#F38BA8",
+		"--line-numbers-plus-style", "#A6E3A1",
+		"--line-numbers-zero-style", "#585B70",
+		"--line-numbers-left-format", "{nm:>3} │",
+		"--line-numbers-right-format", "{np:>3} │",
+
+		// File headers: blue accent
+		"--file-style", "bold #89B4FA",
+		"--file-decoration-style", "#313244 ul",
+
+		// Zero (context) lines: primary text, no bg
+		"--zero-style", "syntax",
+	)
 	
 	// Setup pipes
 	gitStdout, err := gitCmd.StdoutPipe()
@@ -95,5 +127,19 @@ func GetStyledDiffWithContext(base, head, file string, contextLines int) (string
 		return "", fmt.Errorf("delta execution failed: %v\n%s", err, deltaStderr.String())
 	}
 	
-	return deltaStdout.String(), nil
+	return sanitizeANSI(deltaStdout.String()), nil
+}
+
+// sanitizeANSI strips terminal sequences that interfere with Bubble Tea's renderer:
+// cursor movement, screen mode changes, and window title sequences.
+// Preserves SGR (color/style) sequences which are \x1b[...m
+var reProblematicANSI = regexp.MustCompile(
+	`\x1b\[\d*[ABCDEFGHJKST]` + // cursor movement & clear
+		`|\x1b\[\d*;\d*[Hf]` + // cursor positioning
+		`|\x1b\[\?(?:25|47|1049)[hl]` + // show/hide cursor, alt screen
+		`|\x1b\][^\x07]*\x07`, // OSC sequences (window title etc)
+)
+
+func sanitizeANSI(s string) string {
+	return reProblematicANSI.ReplaceAllString(s, "")
 }

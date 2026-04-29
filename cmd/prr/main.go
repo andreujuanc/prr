@@ -52,12 +52,11 @@ func main() {
 	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s)", prNumber, cfg.Provider, cfg.Model)
 
 	model := ui.NewModel(prNumber, aiClient)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithANSICompressor())
 	ui.SetProgram(p)
 
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
-		os.Exit(1)
 	}
 }
 
@@ -71,11 +70,8 @@ func createAIClient(cfg *config.Config) ai.Client {
 			Model:  cfg.Model,
 		}
 	default:
-		// For now, default to Gemini. Other providers will be added later.
-		return &ai.GeminiClient{
-			APIKey: cfg.APIKey,
-			Model:  cfg.Model,
-		}
+		log.Fatalf("Unsupported AI provider: %q. Supported providers: gemini", cfg.Provider)
+		return nil // unreachable, log.Fatalf exits
 	}
 }
 

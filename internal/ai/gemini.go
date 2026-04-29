@@ -72,8 +72,8 @@ func (g *GeminiClient) ChatStream(ctx context.Context, systemPrompt string, mess
 
 	// Gemini streaming endpoint
 	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s",
-		g.Model, g.APIKey,
+		"https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse",
+		g.Model,
 	)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
@@ -81,6 +81,7 @@ func (g *GeminiClient) ChatStream(ctx context.Context, systemPrompt string, mess
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-goog-api-key", g.APIKey)
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

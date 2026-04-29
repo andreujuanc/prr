@@ -23,8 +23,12 @@ func (s *State) SyncWithDiffs(currentDiffHashes map[string]string) {
 		}
 
 		if fileState.DiffHash != currentHash {
-			// File diff has changed since last review
-			fileState.Status = StatusUnreviewed
+			// File diff has changed since last review — mark as modified if previously reviewed
+			if fileState.Status == StatusReviewed {
+				fileState.Status = StatusModified
+			} else {
+				fileState.Status = StatusUnreviewed
+			}
 			fileState.DiffHash = currentHash
 			// Clear specific chat history for this file since the code has changed
 			fileState.Chat = nil

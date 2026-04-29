@@ -5,13 +5,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 const stateDir = ".git/pr-tui"
 
+var validPRNumber = regexp.MustCompile(`^\d+$`)
+
 // getStateFilePath returns the path to the state file for a given PR number.
 // It creates the parent directory if it doesn't exist.
 func getStateFilePath(prNumber string) (string, error) {
+	if !validPRNumber.MatchString(prNumber) {
+		return "", fmt.Errorf("invalid PR number: %q", prNumber)
+	}
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create state directory: %w", err)
 	}

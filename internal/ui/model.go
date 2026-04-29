@@ -825,7 +825,11 @@ func (m Model) renderOverview() string {
 	b.WriteString(title.Render(fmt.Sprintf("PR #%d: %s", m.pr.Number, m.pr.Title)) + "\n\n")
 	b.WriteString(label.Render("Base: ") + value.Render(m.pr.BaseRefName) + "\n")
 	b.WriteString(label.Render("Head: ") + value.Render(m.pr.HeadRefName) + "\n")
-	b.WriteString(label.Render("SHA:  ") + lipgloss.NewStyle().Foreground(textMuted).Render(m.pr.HeadRefOid[:8]) + "\n\n")
+	sha := m.pr.HeadRefOid
+	if len(sha) > 8 {
+		sha = sha[:8]
+	}
+	b.WriteString(label.Render("SHA:  ") + lipgloss.NewStyle().Foreground(textMuted).Render(sha) + "\n\n")
 
 	b.WriteString(label.Render(fmt.Sprintf("Files changed: %d", len(m.pr.Files))) + "\n\n")
 
