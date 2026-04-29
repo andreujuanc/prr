@@ -6,30 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"prr/internal/ui"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
-
-// A simple placeholder model to satisfy the design requirement
-// of instantiating the Bubble Tea program.
-type model struct{}
-
-func (m model) Init() tea.Cmd {
-	return nil
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
-			return m, tea.Quit
-		}
-	}
-	return m, nil
-}
-
-func (m model) View() string {
-	return "Phase 1: Project Setup Complete. Press 'q' to quit.\n"
-}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -47,7 +27,7 @@ func main() {
 	}
 	log.Printf("Starting PR review TUI for PR #%s", prNumber)
 
-	p := tea.NewProgram(model{}, tea.WithAltScreen())
+	p := tea.NewProgram(ui.NewModel(prNumber), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
 		os.Exit(1)

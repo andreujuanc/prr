@@ -33,13 +33,13 @@ A TUI tool built in Go using Bubble Tea to review GitHub Pull Requests file by f
 - [x] Implement invalidation logic (compare currently generated diff hash vs stored hash). If hash changes, invalidate both `status` and `chat`.
 
 ## Phase 4: TUI Skeleton (`internal/ui`)
-- [ ] Build the main Bubble Tea Model (`Model` struct).
-- [ ] Implement the 3-pane layout with `lipgloss`:
+- [x] Build the main Bubble Tea Model (`Model` struct).
+- [x] Implement the 3-pane layout with `lipgloss`:
   - **Header**: PR info and progress bar.
-  - **Left Pane (25%)**: File list using `bubbles/list`.
-  - **Right-Top Pane (75% width, 65% height)**: Diff viewport using `bubbles/viewport`.
-  - **Right-Bottom Pane (75% width, 35% height)**: AI Review viewport.
-- [ ] Populate the UI with mock data to test styling.
+  - **Left Pane (20%)**: File list using `bubbles/list`.
+  - **Middle Pane (55%)**: Content View (`bubbles/viewport`).
+  - **Right Pane (25%)**: AI Chat Panel (viewport + textarea).
+- [x] Populate the UI with mock data to test styling.
 
 ## Phase 5: AI Integration (`internal/ai`)
 - [ ] Create an LLM client wrapper (e.g., using `sashabaranov/go-openai` for standard compatibility, or a generic HTTP client for Ollama/others).
