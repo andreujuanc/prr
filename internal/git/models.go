@@ -12,6 +12,7 @@ type PRFile struct {
 type PullRequest struct {
 	Number      int      `json:"number"`
 	Title       string   `json:"title"`
+	Body        string   `json:"body"`
 	BaseRefName string   `json:"baseRefName"`
 	HeadRefName string   `json:"headRefName"`
 	HeadRefOid  string   `json:"headRefOid"`

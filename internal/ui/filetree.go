@@ -14,14 +14,15 @@ import (
 
 // treeNode represents a directory or file in the tree.
 type treeNode struct {
-	name      string         // just the segment name (e.g., "model.go")
-	path      string         // full path (e.g., "internal/ui/model.go"), empty for dirs
-	isDir     bool
-	children  []*treeNode
-	additions int
-	deletions int
-	status    state.ReviewStatus
-	expanded  bool
+	name       string         // just the segment name (e.g., "model.go")
+	path       string         // full path (e.g., "internal/ui/model.go"), empty for dirs
+	isDir      bool
+	isOverview bool           // special PR overview item
+	children   []*treeNode
+	additions  int
+	deletions  int
+	status     state.ReviewStatus
+	expanded   bool
 }
 
 // fileTree is a navigable file tree component.
@@ -133,6 +134,11 @@ func collapseTree(node *treeNode) {
 
 func (ft *fileTree) flatten() {
 	ft.flat = ft.flat[:0]
+	// Insert PR Overview as the first item
+	ft.flat = append(ft.flat, flatEntry{
+		node:  &treeNode{name: "PR Overview", isOverview: true},
+		depth: 0,
+	})
 	ft.flattenNode(ft.root, -1) // root is invisible, children start at depth 0
 }
 
@@ -186,7 +192,14 @@ func (ft *fileTree) selectedPath() string {
 
 func (ft *fileTree) selectedIsDir() bool {
 	if ft.cursor >= 0 && ft.cursor < len(ft.flat) {
-		return ft.flat[ft.cursor].node.isDir
+		return ft.flat[ft.cursor].node.isDir && !ft.flat[ft.cursor].node.isOverview
+	}
+	return false
+}
+
+func (ft *fileTree) selectedIsOverview() bool {
+	if ft.cursor >= 0 && ft.cursor < len(ft.flat) {
+		return ft.flat[ft.cursor].node.isOverview
 	}
 	return false
 }
@@ -215,6 +228,7 @@ func (ft *fileTree) View() string {
 	normalStyle := lipgloss.NewStyle().Foreground(textSecondary)
 	dirNameStyle := lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
 	dimDirName := lipgloss.NewStyle().Foreground(textMuted).Bold(true)
+	overviewStyle := lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
 
 	var lines []string
 	end := ft.offset + ft.height
@@ -224,11 +238,18 @@ func (ft *fileTree) View() string {
 
 	for i := ft.offset; i < end; i++ {
 		entry := ft.flat[i]
-		indent := strings.Repeat("  ", entry.depth)
 		isSelected := i == ft.cursor
 
 		var line string
-		if entry.node.isDir {
+		if entry.node.isOverview {
+			icon := lipgloss.NewStyle().Foreground(accentMauve).Render("◆ ")
+			if isSelected {
+				line = icon + selectedStyle.Render(entry.node.name)
+			} else {
+				line = icon + overviewStyle.Render(entry.node.name)
+			}
+		} else if entry.node.isDir {
+			indent := strings.Repeat("  ", entry.depth)
 			icon := "▸ "
 			if entry.node.expanded {
 				icon = "▾ "
@@ -244,6 +265,7 @@ func (ft *fileTree) View() string {
 				}
 			}
 		} else {
+			indent := strings.Repeat("  ", entry.depth)
 			// Status icon
 			var icon string
 			switch entry.node.status {
@@ -283,4 +305,26 @@ func (ft *fileTree) View() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// maxContentWidth returns the widest line needed to display all entries
+// without truncation. Counts: marker(1) + indent + icon(2) + name + gap(2) + stats.
+func (ft *fileTree) maxContentWidth() int {
+	maxW := 0
+	for _, entry := range ft.flat {
+		w := 1 // left marker/space
+		if entry.node.isOverview {
+			w += 2 + len(entry.node.name) // "◆ " + name
+		} else if entry.node.isDir {
+			w += entry.depth*2 + 2 + len(entry.node.name) + 1 // indent + icon + name + "/"
+		} else {
+			// indent + icon(2) + name + "  " + "+N -N"
+			stats := fmt.Sprintf("+%d -%d", entry.node.additions, entry.node.deletions)
+			w += entry.depth*2 + 2 + len(entry.node.name) + 2 + len(stats)
+		}
+		if w > maxW {
+			maxW = w
+		}
+	}
+	return maxW
 }

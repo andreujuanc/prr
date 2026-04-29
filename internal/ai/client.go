@@ -16,3 +16,9 @@ type Client interface {
 	// Returns the full assembled response text, or an error.
 	ChatStream(ctx context.Context, systemPrompt string, messages []Message, onToken func(string)) (string, error)
 }
+
+// ToolConfigurer is optionally implemented by clients that support tools.
+type ToolConfigurer interface {
+	// SetHeadRef configures the git ref used for file reading tools.
+	SetHeadRef(ref string)
+}

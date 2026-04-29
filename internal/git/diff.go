@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -24,7 +25,11 @@ func FetchRefs(base, head string) error {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("git fetch timed out after 60s\n  Check your network connection and git remote")
 		}
-		return fmt.Errorf("git fetch failed: %v\n%s", err, stderr.String())
+		errMsg := stderr.String()
+		if strings.Contains(strings.ToLower(errMsg), "authenticity of host") {
+			return fmt.Errorf("SSH host key not trusted\n  Run: ssh-keyscan github.com >> ~/.ssh/known_hosts\n  Then retry prr")
+		}
+		return fmt.Errorf("git fetch failed: %v\n%s", err, errMsg)
 	}
 	return nil
 }
@@ -66,34 +71,51 @@ func GetStyledDiffWithContext(base, head, file string, contextLines int) (string
 	deltaCmd := exec.Command("delta",
 		"--paging=never",
 		"--dark",
-		"--syntax-theme=base16",
+		"--syntax-theme=Nord",
 
-		// Added lines: soft green tint on dark surface
-		"--plus-style", "syntax #1a3a2a",
-		"--plus-emph-style", "syntax #2d5a3d",
+		// Added lines: subtle green tint
+		"--plus-style", "syntax #1a2e22",
+		"--plus-emph-style", "syntax #264032",
+		"--plus-empty-line-marker-style", "syntax #1a2e22",
 
-		// Removed lines: soft red tint on dark surface
-		"--minus-style", "syntax #3a1a2a",
-		"--minus-emph-style", "syntax #5a2d3d",
+		// Removed lines: warm red tint
+		"--minus-style", "syntax #3b1e26",
+		"--minus-emph-style", "syntax #55293a",
+		"--minus-empty-line-marker-style", "syntax #3b1e26",
 
-		// Hunk headers: mauve accent, muted bg
-		"--hunk-header-style", "line-number #CBA6F7",
-		"--hunk-header-decoration-style", "none",
+		// Hunk headers: mauve text, boxed in surface color
+		"--hunk-header-style", "file line-number #CBA6F7",
+		"--hunk-header-decoration-style", "#45475A box",
+		"--hunk-header-file-style", "#89B4FA bold",
+		"--hunk-header-line-number-style", "#FAB387",
 
-		// Line numbers: muted text, subtle separator
+		// Line numbers
 		"--line-numbers",
 		"--line-numbers-minus-style", "#F38BA8",
 		"--line-numbers-plus-style", "#A6E3A1",
-		"--line-numbers-zero-style", "#585B70",
-		"--line-numbers-left-format", "{nm:>3} │",
-		"--line-numbers-right-format", "{np:>3} │",
+		"--line-numbers-zero-style", "#45475A",
+		"--line-numbers-left-format", "{nm:>3}│",
+		"--line-numbers-right-format", "{np:>3}│ ",
 
-		// File headers: blue accent
+		// File headers: blue accent with overline
 		"--file-style", "bold #89B4FA",
-		"--file-decoration-style", "#313244 ul",
+		"--file-decoration-style", "#585B70 ol",
+		"--file-modified-label", "modified:",
+		"--file-added-label", "added:",
+		"--file-removed-label", "removed:",
 
-		// Zero (context) lines: primary text, no bg
+		// Context lines
 		"--zero-style", "syntax",
+
+		// Commit/meta styles
+		"--commit-style", "#FAB387 bold",
+		"--commit-decoration-style", "none",
+
+		// Whitespace: don't highlight trailing whitespace
+		"--whitespace-error-style", "normal",
+
+		// Inline hints: show which words changed within a line
+		"--inline-hint-style", "syntax",
 	)
 	
 	// Setup pipes
