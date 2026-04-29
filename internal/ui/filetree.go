@@ -7,7 +7,7 @@ import (
 
 	"prr/internal/state"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ── File tree types ─────────────────────────────────────────────────────
@@ -253,18 +253,8 @@ func (ft *fileTree) ensureVisible() {
 
 func (ft *fileTree) View() string {
 	if len(ft.flat) == 0 {
-		return lipgloss.NewStyle().Foreground(textMuted).Render("  No files")
+		return styleTextMuted.Render("  No files")
 	}
-
-	dirIcon := lipgloss.NewStyle().Foreground(accentBlue)
-	dirCollapsed := lipgloss.NewStyle().Foreground(accentBlue)
-	addClr := lipgloss.NewStyle().Foreground(accentGreen)
-	delClr := lipgloss.NewStyle().Foreground(accentRed)
-	selectedStyle := lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
-	normalStyle := lipgloss.NewStyle().Foreground(textSecondary)
-	dirNameStyle := lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
-	dimDirName := lipgloss.NewStyle().Foreground(textMuted).Bold(true)
-	overviewStyle := lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
 
 	var lines []string
 	end := ft.offset + ft.height
@@ -278,11 +268,11 @@ func (ft *fileTree) View() string {
 
 		var line string
 		if entry.node.isOverview {
-			icon := lipgloss.NewStyle().Foreground(accentMauve).Render("◆ ")
+			icon := styleAccentMauveBold.Render("◆ ")
 			if isSelected {
-				line = icon + selectedStyle.Render(entry.node.name)
+				line = icon + styleAccentBlueBold.Render(entry.node.name)
 			} else {
-				line = icon + overviewStyle.Render(entry.node.name)
+				line = icon + styleAccentMauveBold.Render(entry.node.name)
 			}
 		} else if entry.node.isDir {
 			indent := strings.Repeat("  ", entry.depth)
@@ -292,12 +282,12 @@ func (ft *fileTree) View() string {
 			}
 			name := entry.node.name + "/"
 			if isSelected {
-				line = indent + dirIcon.Render(icon) + selectedStyle.Render(name)
+				line = indent + styleAccentBlue.Render(icon) + styleAccentBlueBold.Render(name)
 			} else {
 				if entry.node.expanded {
-					line = indent + dirIcon.Render(icon) + dimDirName.Render(name)
+					line = indent + styleAccentBlue.Render(icon) + ftDimDirName.Render(name)
 				} else {
-					line = indent + dirCollapsed.Render(icon) + dirNameStyle.Render(name)
+					line = indent + styleAccentBlue.Render(icon) + ftDirNameStyle.Render(name)
 				}
 			}
 		} else {
@@ -306,30 +296,34 @@ func (ft *fileTree) View() string {
 			var icon string
 			switch entry.node.status {
 			case state.StatusReviewed:
-				icon = lipgloss.NewStyle().Foreground(accentGreen).Render("✓ ")
+				icon = ftIconReviewedSt.Render("✓ ")
 			case state.StatusModified:
-				icon = lipgloss.NewStyle().Foreground(accentYellow).Render("⟳ ")
+				icon = ftIconModifiedSt.Render("⟳ ")
 			default:
-				icon = lipgloss.NewStyle().Foreground(accentYellow).Render("○ ")
+				icon = ftIconUnreviewSt.Render("○ ")
 			}
 
-			stats := addClr.Render(fmt.Sprintf("+%d", entry.node.additions)) +
-				" " + delClr.Render(fmt.Sprintf("−%d", entry.node.deletions))
+			stats := ftAddClr.Render(fmt.Sprintf("+%d", entry.node.additions)) +
+				" " + ftDelClr.Render(fmt.Sprintf("−%d", entry.node.deletions))
 
 			name := entry.node.name
 			if isSelected {
-				line = indent + icon + selectedStyle.Render(name) + "  " + stats
+				line = indent + icon + styleAccentBlueBold.Render(name) + "  " + stats
 			} else {
-				line = indent + icon + normalStyle.Render(name) + "  " + stats
+				line = indent + icon + styleTextSecondary.Render(name) + "  " + stats
 			}
 		}
 
 		// Highlight selected row with a left border indicator
 		if isSelected {
-			marker := lipgloss.NewStyle().Foreground(accentBlue).Bold(true).Render("▌")
-			line = marker + line
+			line = ftSelectedMarkerSt.Render("▌") + line
 		} else {
 			line = " " + line
+		}
+
+		// Truncate to panel width to prevent wrapping (Golden Rule 2)
+		if ft.width > 0 && ansi.StringWidth(line) > ft.width {
+			line = truncateToWidth(line, ft.width)
 		}
 
 		lines = append(lines, line)

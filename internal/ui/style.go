@@ -63,4 +63,35 @@ var (
 	footerKeyStyle  = lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
 	footerDescStyle = lipgloss.NewStyle().Foreground(textMuted)
 	footerSepStyle  = lipgloss.NewStyle().Foreground(textSubtle)
+
+	// Pre-computed styles for hot render paths (avoid allocations in View)
+	styleTextMuted       = lipgloss.NewStyle().Foreground(textMuted)
+	styleTextSubtle      = lipgloss.NewStyle().Foreground(textSubtle)
+	styleTextPrimary     = lipgloss.NewStyle().Foreground(textPrimary)
+	styleTextSecondary   = lipgloss.NewStyle().Foreground(textSecondary)
+	styleAccentBlue      = lipgloss.NewStyle().Foreground(accentBlue)
+	styleAccentBlueBold  = lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
+	styleAccentGreen     = lipgloss.NewStyle().Foreground(accentGreen)
+	styleAccentMauveBold = lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
+	styleAccentRed       = lipgloss.NewStyle().Foreground(accentRed)
+	styleAccentYellow    = lipgloss.NewStyle().Foreground(accentYellow)
+	styleAccentYellowBold = lipgloss.NewStyle().Foreground(accentYellow).Bold(true)
+
+	// Diff cursor highlight styles
+	styleHighlightCommentable = lipgloss.NewStyle().Background(overlayBg)
+	styleHighlightNormal      = lipgloss.NewStyle().Background(surfaceBg)
+
+	// Border styles for pane rendering (focused/unfocused)
+	borderStyleFocused   = lipgloss.NewStyle().Foreground(borderFocus)
+	borderStyleUnfocused = lipgloss.NewStyle().Foreground(borderClr)
+
+	// File tree pre-computed styles
+	ftDirNameStyle     = lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
+	ftDimDirName       = lipgloss.NewStyle().Foreground(textMuted).Bold(true)
+	ftAddClr           = lipgloss.NewStyle().Foreground(accentGreen)
+	ftDelClr           = lipgloss.NewStyle().Foreground(accentRed)
+	ftIconReviewedSt   = lipgloss.NewStyle().Foreground(accentGreen)
+	ftIconModifiedSt   = lipgloss.NewStyle().Foreground(accentYellow)
+	ftIconUnreviewSt   = lipgloss.NewStyle().Foreground(accentYellow)
+	ftSelectedMarkerSt = lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
 )

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"prr/internal/ai"
 	"prr/internal/git"
@@ -17,6 +18,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ── Pane focus ──────────────────────────────────────────────────────────
@@ -68,6 +70,9 @@ type AIChatDoneMsg struct {
 	Err          error
 }
 
+// aiStreamTickMsg triggers a batched render of accumulated AI tokens.
+type aiStreamTickMsg struct{}
+
 // CommentsFetchedMsg is sent when PR review comments have been loaded.
 type CommentsFetchedMsg struct {
 	Comments []git.ReviewComment
@@ -109,6 +114,7 @@ type Model struct {
 	aiClient       ai.Client
 	aiStreaming     bool   // true while AI is generating
 	aiStreamBuffer string // accumulated streamed response
+	aiStreamDirty  bool   // true when buffer has unflushed tokens
 	aiCancelFn     context.CancelFunc
 
 	// Comments
@@ -289,13 +295,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 		m.syncLayout()
+		return m, nil
 
 	case PRFetchedMsg:
 		if msg.Err != nil {
 			m.loading = false
 			m.loadingMsg = ""
 			m.diffViewport.SetContent(
-				lipgloss.NewStyle().Foreground(accentRed).Render(
+				styleAccentRed.Render(
 					fmt.Sprintf("Error fetching PR: %v", msg.Err)))
 			return m, nil
 		}
@@ -312,7 +319,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = false
 			m.loadingMsg = ""
 			m.diffViewport.SetContent(
-				lipgloss.NewStyle().Foreground(accentRed).Render(
+				styleAccentRed.Render(
 					fmt.Sprintf("Error fetching refs: %v", msg.Err)))
 			m.populateFileList(nil)
 			return m, nil
@@ -325,7 +332,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadingMsg = ""
 		if msg.Err != nil {
 			m.diffViewport.SetContent(
-				lipgloss.NewStyle().Foreground(accentRed).Render(
+				styleAccentRed.Render(
 					fmt.Sprintf("Error syncing state: %v", msg.Err)))
 			m.populateFileList(nil)
 			return m, nil
@@ -335,7 +342,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.populateFileList(m.reviewState)
 		m.selectedFile = ""
 		m.diffViewport.SetContent(
-			lipgloss.NewStyle().Foreground(textMuted).Render(
+			styleTextMuted.Render(
 				"Select a file to view its diff"))
 		m.renderChatForFile("")
 		return m, fetchComments(m.prNumber)
@@ -355,7 +362,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case CommentCreatedMsg:
 		if msg.Err != nil {
 			m.diffViewport.SetContent(
-				lipgloss.NewStyle().Foreground(accentRed).Render(
+				styleAccentRed.Render(
 					fmt.Sprintf("Error posting comment: %v", msg.Err)))
 		} else if msg.Comment != nil {
 			// Add to local state
@@ -373,7 +380,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StyledDiffMsg:
 		if msg.Err != nil {
 			m.diffViewport.SetContent(
-				lipgloss.NewStyle().Foreground(accentRed).Render(
+				styleAccentRed.Render(
 					fmt.Sprintf("Error loading diff: %v", msg.Err)))
 		} else {
 			if msg.FilePath == m.selectedFile {
@@ -395,6 +402,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AIChatDeltaMsg:
 		if m.aiStreaming {
 			m.aiStreamBuffer += msg.Token
+			if !m.aiStreamDirty {
+				m.aiStreamDirty = true
+				return m, tea.Tick(33*time.Millisecond, func(time.Time) tea.Msg {
+					return aiStreamTickMsg{}
+				})
+			}
+		}
+		return m, nil
+
+	case aiStreamTickMsg:
+		if m.aiStreamDirty {
+			m.aiStreamDirty = false
 			m.updateChatViewWithStream()
 		}
 		return m, nil
@@ -402,12 +421,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AIChatDoneMsg:
 		m.aiStreaming = false
 		m.aiCancelFn = nil
+		m.aiStreamDirty = false // prevent stale tick from rendering after completion
 		if msg.Err != nil {
 			// Append error to chat view
-			m.aiStreamBuffer += "\n\n" + lipgloss.NewStyle().Foreground(accentRed).Render(
+			m.aiStreamBuffer += "\n\n" + styleAccentRed.Render(
 				fmt.Sprintf("[error: %v]", msg.Err))
 			m.updateChatViewWithStream()
 		} else {
+			// Flush any remaining buffered tokens before saving
+			m.updateChatViewWithStream()
 			// Save the completed response to state
 			m.saveAIResponse(msg.FullResponse)
 		}
@@ -421,7 +443,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.aiCancelFn()
 				}
 				m.aiStreaming = false
-				m.aiStreamBuffer += "\n" + lipgloss.NewStyle().Foreground(accentYellow).Render("[cancelled]")
+				m.aiStreamBuffer += "\n" + styleAccentYellow.Render("[cancelled]")
 				m.updateChatViewWithStream()
 				return m, nil
 			}
@@ -793,32 +815,28 @@ func (m *Model) updateChatViewWithStream() {
 	// Render existing messages + streaming response
 	var b strings.Builder
 
-	you := lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
-	aiStyle := lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
-	msgStyle := lipgloss.NewStyle().Foreground(textSecondary)
-
 	// Render existing completed messages from state
 	messages := m.buildAIMessages()
 	// Show all messages except the streaming one (last user message is already in state)
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":
-			b.WriteString(you.Render("You") + "\n")
+			b.WriteString(styleAccentBlueBold.Render("You") + "\n")
 		case "assistant":
-			b.WriteString(aiStyle.Render("AI") + "\n")
+			b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
 		}
-		b.WriteString(msgStyle.Render(msg.Content) + "\n\n")
+		b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
 	}
 
 	// Render streaming AI response
 	if m.aiStreaming || m.aiStreamBuffer != "" {
-		b.WriteString(aiStyle.Render("AI") + "\n")
+		b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
 		if m.aiStreamBuffer == "" {
-			b.WriteString(lipgloss.NewStyle().Foreground(textMuted).Render("thinking...") + "\n")
+			b.WriteString(styleTextMuted.Render("thinking...") + "\n")
 		} else {
-			b.WriteString(msgStyle.Render(m.aiStreamBuffer))
+			b.WriteString(styleTextSecondary.Render(m.aiStreamBuffer))
 			if m.aiStreaming {
-				b.WriteString(lipgloss.NewStyle().Foreground(accentBlue).Render("▊"))
+				b.WriteString(styleAccentBlue.Render("▊"))
 			}
 			b.WriteString("\n")
 		}
@@ -958,7 +976,7 @@ func truncateToWidth(s string, maxW int) string {
 		rw := 1
 		if r > 0x7F {
 			// East Asian wide chars, emoji, etc — approximate
-			rw = lipgloss.Width(string(r))
+			rw = ansi.StringWidth(string(r))
 		}
 		if visW+rw > maxW {
 			break
@@ -1003,7 +1021,7 @@ func (m *Model) moveDiffCursor(dir int) {
 	}
 
 	// Clamp: check we're not past the end of content
-	totalVisible := len(strings.Split(m.diffViewport.View(), "\n"))
+	totalVisible := m.diffViewport.VisibleLineCount()
 	if newCursor >= totalVisible {
 		return
 	}
@@ -1172,7 +1190,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 
 	m.selectedFile = path
 	m.diffViewport.SetContent(
-		lipgloss.NewStyle().Foreground(textMuted).Render("Loading diff..."))
+		styleTextMuted.Render("Loading diff..."))
 	m.renderChatForFile(path)
 	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
 }
@@ -1199,7 +1217,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 
 	m.selectedFile = path
 	m.diffViewport.SetContent(
-		lipgloss.NewStyle().Foreground(textMuted).Render("Loading diff..."))
+		styleTextMuted.Render("Loading diff..."))
 	m.renderChatForFile(path)
 	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
 }
@@ -1207,7 +1225,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 func (m *Model) renderChatForFile(filePath string) {
 	if m.reviewState == nil {
 		m.chatViewport.SetContent(
-			lipgloss.NewStyle().Foreground(textMuted).Render("No chat history"))
+			styleTextMuted.Render("No chat history"))
 		return
 	}
 
@@ -1223,26 +1241,22 @@ func (m *Model) renderChatForFile(filePath string) {
 
 	if len(messages) == 0 {
 		m.chatViewport.SetContent(
-			lipgloss.NewStyle().Foreground(textMuted).Render("No chat history for this file"))
+			styleTextMuted.Render("No chat history for this file"))
 		m.chatViewport.GotoTop()
 		return
 	}
-
-	you := lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
-	aiStyle := lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
-	msgStyle := lipgloss.NewStyle().Foreground(textSecondary)
 
 	var b strings.Builder
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":
-			b.WriteString(you.Render("You") + "\n")
+			b.WriteString(styleAccentBlueBold.Render("You") + "\n")
 		case "assistant":
-			b.WriteString(aiStyle.Render("AI") + "\n")
+			b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
 		default:
-			b.WriteString(lipgloss.NewStyle().Foreground(textMuted).Render(msg.Role) + "\n")
+			b.WriteString(styleTextMuted.Render(msg.Role) + "\n")
 		}
-		b.WriteString(msgStyle.Render(msg.Content) + "\n\n")
+		b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
 	}
 
 	m.chatViewport.SetContent(b.String())
@@ -1379,7 +1393,10 @@ func (m *Model) syncLayout() {
 	if cols[2] > 2 {
 		cw := cols[2] - 2
 		chatInputH := 3
-		chatVpH := ih - chatInputH - 4
+		// Chat body = viewport(chatVpH) + "\n" + separator(1) + "\n" + input(chatInputH)
+		// renderPane clips to contentH = ih - 2 (borders)
+		// So chatVpH + 1 + chatInputH = ih - 2 => chatVpH = ih - chatInputH - 3
+		chatVpH := ih - chatInputH - 3
 		if chatVpH < 1 {
 			chatVpH = 1
 		}
@@ -1480,7 +1497,9 @@ func (m Model) columns() [3]int {
 }
 
 func (m Model) contentHeight() int {
-	h := m.height - 5
+	// Total View() output = header(2) + "\n"(1) + panes(h) + "\n"(1) + footer(2)
+	// Must equal m.height, so h = m.height - 6
+	h := m.height - 6
 	if h < 5 {
 		return 5
 	}
@@ -1488,38 +1507,45 @@ func (m Model) contentHeight() int {
 }
 
 // renderDiffWithCursor renders the diff viewport with a cursor highlight
-// when the diff pane is focused.
-func (m Model) renderDiffWithCursor() string {
+// when the diff pane is focused. Also returns the current cursor line number
+// to avoid a redundant View()+Split call in the main View().
+func (m Model) renderDiffWithCursor() (string, int) {
 	raw := m.diffViewport.View()
 	if m.focusedPane != PaneDiff || m.selectedFile == "" {
-		return raw
+		return raw, 0
 	}
 
 	lines := strings.Split(raw, "\n")
+
+	// Get line number from cursor position
+	cursorLineNum := 0
+	if m.diffCursor >= 0 && m.diffCursor < len(lines) {
+		info := parseDiffLine(lines[m.diffCursor])
+		cursorLineNum = info.line
+	}
+
 	if m.diffCursor >= 0 && m.diffCursor < len(lines) {
 		// Check if this line has a line number (commentable)
-		hasLineNum := m.getDiffCursorLine() > 0
+		hasLineNum := cursorLineNum > 0
 
-		var bg lipgloss.Color
+		var highlight lipgloss.Style
 		if hasLineNum {
-			bg = lipgloss.Color("#45475A") // overlayBg — commentable line
+			highlight = styleHighlightCommentable
 		} else {
-			bg = surfaceBg // non-commentable
+			highlight = styleHighlightNormal
 		}
 		// Wrap the entire line content with a background style
-		// First strip any trailing spaces, apply bg, then pad to viewport width
 		line := lines[m.diffCursor]
-		highlight := lipgloss.NewStyle().Background(bg)
 		w := m.diffViewport.Width
 		// Pad line to full width so the highlight spans the row
-		visible := lipgloss.Width(line)
+		visible := ansi.StringWidth(line)
 		if visible < w {
 			line = line + strings.Repeat(" ", w-visible)
 		}
 		lines[m.diffCursor] = highlight.Render(line)
 	}
 
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), cursorLineNum
 }
 
 // ── View ────────────────────────────────────────────────────────────────
@@ -1530,9 +1556,15 @@ func (m Model) View() string {
 	}
 
 	if m.loading {
-		spinner := lipgloss.NewStyle().Foreground(accentBlue).Bold(true).Render("⠋")
-		msg := lipgloss.NewStyle().Foreground(textSecondary).Render(" " + m.loadingMsg)
-		return "\n  " + spinner + msg
+		spinner := styleAccentBlueBold.Render("⠋")
+		msg := styleTextSecondary.Render(" " + m.loadingMsg)
+		// Pad to full terminal height to prevent flicker on transition
+		content := "\n  " + spinner + msg
+		lines := strings.Count(content, "\n") + 1
+		if lines < m.height {
+			content += strings.Repeat("\n", m.height-lines)
+		}
+		return content
 	}
 
 	cols := m.columns()
@@ -1541,19 +1573,18 @@ func (m Model) View() string {
 	header := m.viewHeader()
 
 	diffTitle := "OVERVIEW"
+	diffBody, cursorLineNum := m.renderDiffWithCursor()
 	if m.selectedFile != "" {
-		lineNum := m.getDiffCursorLine()
-		if m.focusedPane == PaneDiff && lineNum > 0 {
-			diffTitle = fmt.Sprintf("DIFF (±%d) L%d", m.contextLines, lineNum)
+		if m.focusedPane == PaneDiff && cursorLineNum > 0 {
+			diffTitle = fmt.Sprintf("DIFF (±%d) L%d", m.contextLines, cursorLineNum)
 		} else {
 			diffTitle = fmt.Sprintf("DIFF (±%d)", m.contextLines)
 		}
 	}
-	diffBody := m.renderDiffWithCursor()
 	if m.commenting {
 		diffTitle = fmt.Sprintf("DIFF – Comment on line %d", m.commentLine)
-		commentSep := lipgloss.NewStyle().Foreground(textSubtle).Render(strings.Repeat("─", cols[1]-2))
-		commentLabel := lipgloss.NewStyle().Foreground(accentYellow).Bold(true).Render("  New comment (Ctrl+S to submit, Esc to cancel)")
+		commentSep := styleTextSubtle.Render(strings.Repeat("─", cols[1]-2))
+		commentLabel := styleAccentYellowBold.Render("  New comment (Ctrl+S to submit, Esc to cancel)")
 		diffBody = diffBody + "\n" + commentSep + "\n" + commentLabel + "\n" + m.commentInput.View()
 	}
 	middle := m.renderPane(diffTitle, diffBody, cols[1], ih, m.focusedPane == PaneDiff)
@@ -1568,17 +1599,17 @@ func (m Model) View() string {
 	paneList = append(paneList, middle)
 
 	if m.showAIPanel {
-		sep := lipgloss.NewStyle().Foreground(textSubtle).Render(strings.Repeat("─", cols[2]-2))
+		sep := styleTextSubtle.Render(strings.Repeat("─", cols[2]-2))
 		chatBody := m.chatViewport.View() + "\n" + sep + "\n" + m.chatInput.View()
 		chatTitle := "AI CHAT"
 		if m.aiStreaming {
-			chatTitle = "AI CHAT " + lipgloss.NewStyle().Foreground(accentYellow).Render("●")
+			chatTitle = "AI CHAT " + styleAccentYellow.Render("●")
 		}
 		right := m.renderPane(chatTitle, chatBody, cols[2], ih, m.focusedPane == PaneChat)
 		paneList = append(paneList, " ", right)
 	}
 
-	panes := lipgloss.JoinHorizontal(lipgloss.Top, paneList...)
+	panes := joinPanesHorizontal(paneList...)
 
 	footer := m.viewFooter()
 
@@ -1587,65 +1618,109 @@ func (m Model) View() string {
 
 // ── Bordered pane rendering ─────────────────────────────────────────────
 
+// joinPanesHorizontal joins pre-rendered, fixed-width pane strings side by side.
+// Unlike lipgloss.JoinHorizontal, this skips most width measurement since
+// renderPane already guarantees each line is padded to exact width.
+// Blocks shorter than the tallest are padded with spaces to prevent misalignment.
+func joinPanesHorizontal(panes ...string) string {
+	if len(panes) == 0 {
+		return ""
+	}
+	if len(panes) == 1 {
+		return panes[0]
+	}
+
+	blocks := make([][]string, len(panes))
+	widths := make([]int, len(panes))
+	maxH := 0
+	for i, p := range panes {
+		blocks[i] = strings.Split(p, "\n")
+		if len(blocks[i]) > maxH {
+			maxH = len(blocks[i])
+		}
+		// Measure width from first line; renderPane guarantees uniform width.
+		if len(blocks[i]) > 0 {
+			widths[i] = ansi.StringWidth(blocks[i][0])
+		}
+	}
+
+	var b strings.Builder
+	b.Grow(maxH * 200) // rough estimate
+	for row := 0; row < maxH; row++ {
+		for i, block := range blocks {
+			if row < len(block) {
+				b.WriteString(block[row])
+			} else if widths[i] > 0 {
+				// Pad missing rows to maintain alignment
+				b.WriteString(strings.Repeat(" ", widths[i]))
+			}
+		}
+		if row < maxH-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
 func (m Model) renderPane(title, content string, width, height int, focused bool) string {
 	if width < 4 {
 		return ""
 	}
 
-	var borderFg lipgloss.Color
+	var borderSt lipgloss.Style
 	var tStyle lipgloss.Style
 
 	if focused {
-		borderFg = borderFocus
+		borderSt = borderStyleFocused
 		tStyle = titleFocusedStyle
 	} else {
-		borderFg = borderClr
+		borderSt = borderStyleUnfocused
 		tStyle = titleStyle
 	}
 
 	bdr := lipgloss.RoundedBorder()
-	borderStyle := lipgloss.NewStyle().Foreground(borderFg)
 
 	// Build top border with inset title
 	titleLabel := tStyle.Render(" " + title + " ")
-	titleW := lipgloss.Width(titleLabel)
-	topLeft := borderStyle.Render(bdr.TopLeft)
-	topRight := borderStyle.Render(bdr.TopRight)
+	titleW := ansi.StringWidth(titleLabel)
+	topLeft := borderSt.Render(bdr.TopLeft)
+	topRight := borderSt.Render(bdr.TopRight)
 	// 2 chars for corners, 1 char gap before title
-	barBefore := borderStyle.Render(strings.Repeat(bdr.Top, 2))
+	barBefore := borderSt.Render(strings.Repeat(bdr.Top, 2))
 	remaining := width - 2 - 2 - titleW // corners(2) + barBefore(2) + title
 	if remaining < 0 {
 		remaining = 0
 	}
-	barAfter := borderStyle.Render(strings.Repeat(bdr.Top, remaining))
+	barAfter := borderSt.Render(strings.Repeat(bdr.Top, remaining))
 	topLine := topLeft + barBefore + titleLabel + barAfter + topRight
 
 	// Build content area with side borders
-	contentW := width - 2
+	contentW := width - 2 // subtract left + right border chars
 	if contentW < 0 {
 		contentW = 0
 	}
-	contentH := height - 2
+	contentH := height - 2 // subtract top + bottom border lines
 	if contentH < 0 {
 		contentH = 0
 	}
 
 	// Render content lines padded/clipped to contentW
 	contentLines := strings.Split(content, "\n")
-	left := borderStyle.Render(bdr.Left)
-	right := borderStyle.Render(bdr.Right)
+	left := borderSt.Render(bdr.Left)
+	right := borderSt.Render(bdr.Right)
 
 	var body strings.Builder
+	body.Grow(contentH * (contentW + 20)) // pre-allocate to reduce allocations
 	for i := 0; i < contentH; i++ {
 		line := ""
 		if i < len(contentLines) {
 			line = contentLines[i]
 		}
-		vis := lipgloss.Width(line)
+		vis := ansi.StringWidth(line)
 		if vis > contentW {
 			// Truncate wide lines to fit
 			line = truncateToWidth(line, contentW)
-			vis = lipgloss.Width(line)
+			vis = ansi.StringWidth(line)
 		}
 		if vis < contentW {
 			line = line + strings.Repeat(" ", contentW-vis)
@@ -1654,9 +1729,9 @@ func (m Model) renderPane(title, content string, width, height int, focused bool
 	}
 
 	// Build bottom border
-	bottomLeft := borderStyle.Render(bdr.BottomLeft)
-	bottomRight := borderStyle.Render(bdr.BottomRight)
-	bottomBar := borderStyle.Render(strings.Repeat(bdr.Bottom, width-2))
+	bottomLeft := borderSt.Render(bdr.BottomLeft)
+	bottomRight := borderSt.Render(bdr.BottomRight)
+	bottomBar := borderSt.Render(strings.Repeat(bdr.Bottom, width-2))
 	bottomLine := bottomLeft + bottomBar + bottomRight
 
 	return topLine + "\n" + body.String() + bottomLine
@@ -1665,30 +1740,23 @@ func (m Model) renderPane(title, content string, width, height int, focused bool
 // ── Header ──────────────────────────────────────────────────────────────
 
 func (m Model) viewHeader() string {
-	logo := lipgloss.NewStyle().
-		Foreground(accentBlue).
-		Bold(true).
-		Render("prr")
+	logo := styleAccentBlueBold.Render("prr")
 
-	prInfo := lipgloss.NewStyle().
-		Foreground(textPrimary).
-		Render(fmt.Sprintf(" · PR #%s", m.prNumber))
+	prInfo := styleTextPrimary.Render(fmt.Sprintf(" · PR #%s", m.prNumber))
 
 	reviewed, total := m.reviewedCount()
 	var reviewBadge string
 	if total > 0 {
-		clr := accentYellow
+		badgeStyle := styleAccentYellow
 		if reviewed == total {
-			clr = accentGreen
+			badgeStyle = styleAccentGreen
 		}
-		reviewBadge = lipgloss.NewStyle().
-			Foreground(clr).
-			Render(fmt.Sprintf("● %d/%d reviewed", reviewed, total))
+		reviewBadge = badgeStyle.Render(fmt.Sprintf("● %d/%d reviewed", reviewed, total))
 	}
 
 	// Calculate how much room we have for the PR title
 	right := reviewBadge + " "
-	fixedW := lipgloss.Width(" "+logo+prInfo) + lipgloss.Width(right) + 2 // 2 for min gap
+	fixedW := ansi.StringWidth(" "+logo+prInfo) + ansi.StringWidth(right) + 2 // 2 for min gap
 	maxTitleW := m.width - fixedW
 
 	prTitle := ""
@@ -1697,30 +1765,30 @@ func (m Model) viewHeader() string {
 		if len(t) > maxTitleW-3 { // -3 for " · " prefix
 			t = t[:maxTitleW-6] + "..."
 		}
-		prTitle = lipgloss.NewStyle().
-			Foreground(textSecondary).
-			Render(fmt.Sprintf(" · %s", t))
+		prTitle = styleTextSecondary.Render(fmt.Sprintf(" · %s", t))
 	}
 
 	left := " " + logo + prInfo + prTitle
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {
 		gap = 1
 	}
 
-	separator := lipgloss.NewStyle().
-		Foreground(textSubtle).
-		Render(strings.Repeat("─", m.width))
+	separator := styleTextSubtle.Render(strings.Repeat("─", m.width))
 
-	return left + strings.Repeat(" ", gap) + right + "\n" + separator
+	headerLine := left + strings.Repeat(" ", gap) + right
+	// Truncate to terminal width to prevent wrapping
+	if m.width > 0 && ansi.StringWidth(headerLine) > m.width {
+		headerLine = truncateToWidth(headerLine, m.width)
+	}
+
+	return headerLine + "\n" + separator
 }
 
 // ── Footer ──────────────────────────────────────────────────────────────
 
 func (m Model) viewFooter() string {
-	separator := lipgloss.NewStyle().
-		Foreground(textSubtle).
-		Render(strings.Repeat("─", m.width))
+	separator := styleTextSubtle.Render(strings.Repeat("─", m.width))
 
 	// Common bindings
 	bindings := []struct{ key, desc string }{
@@ -1776,6 +1844,11 @@ func (m Model) viewFooter() string {
 	}
 	sep := footerSepStyle.Render("  │  ")
 	line := " " + strings.Join(parts, sep)
+
+	// Truncate to terminal width to prevent wrapping (which adds lines and causes flicker)
+	if m.width > 0 && ansi.StringWidth(line) > m.width {
+		line = truncateToWidth(line, m.width)
+	}
 
 	return separator + "\n" + line
 }

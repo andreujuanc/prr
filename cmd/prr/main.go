@@ -54,7 +54,7 @@ func main() {
 	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s)", prNumber, cfg.Provider, cfg.Model)
 
 	model := ui.NewModel(prNumber, aiClient)
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithANSICompressor(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
 
 	if _, err := p.Run(); err != nil {
