@@ -151,10 +151,23 @@ func isBatchCached(batch reviewBatch, reviewState *state.State) bool {
 	for _, f := range batch.files {
 		fs, ok := reviewState.Files[f]
 		if !ok || fs.Purpose == "" {
+			log.Printf("Cache miss: file %q (exists=%v, purpose=%q)", f, ok, purposeSnippet(fs))
 			return false
 		}
 	}
 	return true
+}
+
+// purposeSnippet returns a truncated purpose string for logging, or "" if fs is nil.
+func purposeSnippet(fs *state.FileState) string {
+	if fs == nil {
+		return ""
+	}
+	p := fs.Purpose
+	if len(p) > 40 {
+		p = p[:40] + "..."
+	}
+	return p
 }
 
 // collectCachedFindings reassembles per-file findings from cache for synthesis input.
@@ -227,6 +240,89 @@ func parseBatchResult(raw string) []batchFileReview {
 	return results
 }
 
+const maxRetries = 3
+
+// reviewBatchWithRetry calls ChatStream for a batch and retries up to maxRetries
+// times if the result is empty or unparseable as structured JSON.
+// onToken is called for each streamed token (can be nil to discard).
+func reviewBatchWithRetry(
+	ctx context.Context,
+	client ai.Client,
+	systemPrompt string,
+	batch reviewBatch,
+	onToken func(string),
+) (string, error) {
+	if onToken == nil {
+		onToken = func(string) {}
+	}
+
+	var lastResult string
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		result, err := client.ChatStream(ctx, systemPrompt, buildBatchMessages(batch), onToken)
+		if err != nil {
+			return "", err
+		}
+
+		lastResult = result
+		trimmed := strings.TrimSpace(result)
+
+		// Success: non-empty and parseable as structured JSON
+		if trimmed != "" && parseBatchResult(trimmed) != nil {
+			return result, nil
+		}
+
+		if attempt < maxRetries {
+			reason := "empty response"
+			if trimmed != "" {
+				reason = "unparseable response"
+			}
+			log.Printf("Batch %q attempt %d/%d: %s, retrying...", batch.label, attempt, maxRetries, reason)
+		}
+	}
+
+	// Exhausted retries — return last result (persistBatchFindings handles fallback)
+	log.Printf("Batch %q: exhausted %d retries, using last result as fallback", batch.label, maxRetries)
+	return lastResult, nil
+}
+
+// synthesisWithRetry calls ChatStream for synthesis and retries up to maxRetries
+// times if the result is empty.
+func synthesisWithRetry(
+	ctx context.Context,
+	client ai.Client,
+	systemPrompt string,
+	messages []ai.Message,
+	onToken func(string),
+) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		result, err := client.ChatStream(ctx, systemPrompt, messages, onToken)
+		if err != nil {
+			return "", err
+		}
+
+		summary := strings.TrimSpace(result)
+		if summary != "" {
+			return summary, nil
+		}
+
+		lastErr = fmt.Errorf("synthesis returned empty response")
+		if attempt < maxRetries {
+			log.Printf("Synthesis attempt %d/%d: empty response, retrying...", attempt, maxRetries)
+		}
+	}
+
+	return "", lastErr
+}
+
 // persistBatchFindings parses a batch result and saves per-file purpose+findings
 // to state immediately, so they survive even if a later batch fails.
 // Returns the parsed reviews for use in building synthesis input,
@@ -236,18 +332,22 @@ func persistBatchFindings(reviewState *state.State, batch reviewBatch, rawResult
 	fileFindings := make(map[string]string)
 
 	if parsed == nil {
-		// Fallback: couldn't parse JSON — store raw result on first file only
+		// Fallback: couldn't parse JSON — store raw result on all files in batch
 		log.Printf("Warning: batch %q returned unparseable result, using raw fallback", batch.label)
-		if reviewState != nil && len(batch.files) > 0 {
-			f := batch.files[0]
-			fs, ok := reviewState.Files[f]
-			if !ok {
-				fs = &state.FileState{Status: state.StatusUnreviewed}
-				reviewState.Files[f] = fs
+		if reviewState != nil {
+			for _, f := range batch.files {
+				fs, ok := reviewState.Files[f]
+				if !ok {
+					fs = &state.FileState{Status: state.StatusUnreviewed}
+					reviewState.Files[f] = fs
+				}
+				fs.BatchFindings = rawResult
+				fs.Purpose = "unknown (parse failed)"
 			}
-			fs.BatchFindings = rawResult
-			fs.Purpose = "unknown (parse failed)"
-			fileFindings[f] = rawResult
+			// Only include in fileFindings once (keyed to first file)
+			if len(batch.files) > 0 {
+				fileFindings[batch.files[0]] = rawResult
+			}
 		}
 	} else {
 		// Build a set of batch files for validation
@@ -256,22 +356,34 @@ func persistBatchFindings(reviewState *state.State, batch reviewBatch, rawResult
 			batchFiles[f] = true
 		}
 
+		matchedFiles := make(map[string]bool)
 		for _, entry := range parsed {
 			if !batchFiles[entry.File] {
+				log.Printf("Warning: AI returned file %q not in batch %v", entry.File, batch.files)
 				continue // ignore files not in this batch
 			}
+			matchedFiles[entry.File] = true
 			if reviewState != nil {
 				fs, ok := reviewState.Files[entry.File]
 				if !ok {
 					fs = &state.FileState{Status: state.StatusUnreviewed}
 					reviewState.Files[entry.File] = fs
 				}
-				fs.Purpose = entry.Purpose
+				purpose := entry.Purpose
+				if purpose == "" {
+					purpose = "reviewed"
+				}
+				fs.Purpose = purpose
 				fs.BatchFindings = entry.Findings
 			}
 			if entry.Findings != "" {
 				fileFindings[entry.File] = entry.Findings
 			}
+		}
+
+		if len(matchedFiles) < len(batch.files) {
+			log.Printf("Warning: batch %q has %d files but AI only returned %d matching entries",
+				batch.label, len(batch.files), len(matchedFiles))
 		}
 
 		// Mark files that weren't in the parsed output (AI omitted them)
@@ -334,10 +446,7 @@ func reviewBatchesSequential(
 
 		p.Send(AIReviewProgressMsg{Batch: i, Status: BatchActive})
 
-		// Stream the batch review silently — don't show intermediate findings
-		result, err := client.ChatStream(ctx, buildBatchSystemPrompt(prMeta, customInstructions), buildBatchMessages(batch), func(token string) {
-			// Suppress batch tokens from the panel — the user sees the final synthesis
-		})
+		result, err := reviewBatchWithRetry(ctx, client, buildBatchSystemPrompt(prMeta, customInstructions), batch, nil)
 		if err != nil {
 			p.Send(AIReviewProgressMsg{Batch: i, Status: BatchFailed})
 			return AIChatDoneMsg{Err: fmt.Errorf("batch %d/%d (%s): %w", i+1, len(batches), batch.label, err)}
@@ -433,10 +542,7 @@ func reviewBatchesParallel(
 					batch := batches[idx]
 					p.Send(AIReviewProgressMsg{Batch: idx, Status: BatchActive})
 
-					// No token streaming in parallel mode — collect result silently
-					result, err := client.ChatStream(ctx, systemPrompt, buildBatchMessages(batch), func(token string) {
-						// Discard tokens in parallel mode — can't interleave output
-					})
+					result, err := reviewBatchWithRetry(ctx, client, systemPrompt, batch, nil)
 
 					results[idx] = batchResult{
 						batch:  batch,
@@ -540,16 +646,11 @@ func runSynthesis(
 		{Role: "user", Content: "Synthesize the per-file findings into a final PR review. Use the get_diff tool if you need to verify any findings against the actual code."},
 	}
 
-	result, err := client.ChatStream(ctx, synthesisSystem, synthesisMessages, func(token string) {
+	summary, err := synthesisWithRetry(ctx, client, synthesisSystem, synthesisMessages, func(token string) {
 		p.Send(AIChatDeltaMsg{Token: token})
 	})
 	if err != nil {
 		return AIChatDoneMsg{Err: fmt.Errorf("synthesis: %w", err)}
-	}
-
-	summary := strings.TrimSpace(result)
-	if summary == "" {
-		return AIChatDoneMsg{Err: fmt.Errorf("synthesis returned empty response")}
 	}
 
 	return AIChatDoneMsg{

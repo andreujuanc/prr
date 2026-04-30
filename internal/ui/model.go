@@ -557,9 +557,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				thought := strings.TrimPrefix(token, "\x00THOUGHT:")
 				m.aiStreamBuffer += styleThought.Render(thought)
 			} else if strings.HasPrefix(token, "\x00TOOL:") {
-				// Tool call — render as a subtle indicator
+				// Tool call — render as a subtle, single-line indicator.
+				// Truncate from the left if args are too long (e.g. deep file paths).
 				tool := strings.TrimPrefix(token, "\x00TOOL:")
-				m.aiStreamBuffer += "\n" + styleToolCall.Render("  ▸ " + tool) + "\n"
+				prefix := "  ▸ "
+				maxLen := m.width - 6 // account for prefix + margin
+				if maxLen < 20 {
+					maxLen = 20
+				}
+				if len(tool) > maxLen {
+					tool = "…" + tool[len(tool)-(maxLen-1):]
+				}
+				m.aiStreamBuffer += "\n" + styleToolCall.Render(prefix+tool) + "\n"
 			} else {
 				m.aiStreamBuffer += token
 			}
@@ -1310,8 +1319,15 @@ func (m Model) renderBatchList() string {
 			fileWord = "file"
 		}
 
+		// Truncate long paths from the left, keeping the deepest part visible.
+		const maxLabelLen = 24
+		displayLabel := batch.Label
+		if len(displayLabel) > maxLabelLen {
+			displayLabel = "…" + displayLabel[len(displayLabel)-(maxLabelLen-1):]
+		}
+
 		label := fmt.Sprintf(" %-24s %d %s%s",
-			batch.Label, batch.NumFiles, fileWord, suffix)
+			displayLabel, batch.NumFiles, fileWord, suffix)
 
 		if status == BatchPending {
 			b.WriteString(icon + styleTextSubtle.Render(label))
