@@ -3,8 +3,6 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -113,13 +111,9 @@ var (
 
 // renderMarkdown renders a markdown string for display in the TUI.
 // Falls back to plain text if rendering fails.
-// Thread-safe: uses sync.Map for caching so it can be called from
+// Thread-safe: uses an LRU cache so it can be called from
 // both the main goroutine and async tea.Cmd goroutines.
-// Cache is evicted when it exceeds maxMDCacheEntries to bound memory.
-var mdCache sync.Map // key: "width:content" -> value: rendered string
-var mdCacheCount int32
-
-const maxMDCacheEntries = 128
+var mdCache = newLRUCache(128)
 
 // wrapStyled applies a lipgloss style to text while handling word wrapping.
 // This ensures style (color, bold, etc.) is preserved across wrapped lines.
@@ -135,24 +129,15 @@ func renderMarkdown(content string, width int) string {
 		width = 20
 	}
 
-	// Check output cache first
+	// Check cache first
 	cacheKey := fmt.Sprintf("%d:%s", width, content)
-	if cached, ok := mdCache.Load(cacheKey); ok {
-		return cached.(string)
+	if cached, ok := mdCache.get(cacheKey); ok {
+		return cached
 	}
 
-	// Evict entire cache if it's grown too large
-	if atomic.LoadInt32(&mdCacheCount) >= maxMDCacheEntries {
-		mdCache.Range(func(key, _ any) bool {
-			mdCache.Delete(key)
-			return true
-		})
-		atomic.StoreInt32(&mdCacheCount, 0)
-	}
-
-	// Create a renderer (cheap compared to rendering itself)
+	// Create a renderer
 	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStylePath("dark"),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
@@ -163,7 +148,6 @@ func renderMarkdown(content string, width int) string {
 		return content
 	}
 	result := strings.TrimRight(out, "\n")
-	mdCache.Store(cacheKey, result)
-	atomic.AddInt32(&mdCacheCount, 1)
+	mdCache.set(cacheKey, result)
 	return result
 }

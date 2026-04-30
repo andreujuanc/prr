@@ -85,18 +85,30 @@ Evaluate EVERY dimension. Report all findings, including ones you are uncertain 
 
 ## Output Format
 
-For each file, write a section:
+You MUST return a JSON array. Each element represents one file from this batch.
+Include ALL files — even ones with no findings.
 
-### path/to/file.go
-- [severity: critical|warning|info] [confidence: high|medium|low] [dimension] Description (line N)
+` + "`" + "`" + "`" + `json
+[
+  {
+    "file": "path/to/file.go",
+    "purpose": "Brief description of what this file does (1 sentence)",
+    "findings": "- [severity: critical|warning|info] [confidence: high|medium|low] [dimension] Description (line N)\n- ..."
+  }
+]
+` + "`" + "`" + "`" + `
+
+- "file": exact path as provided in the diff
+- "purpose": what this file is responsible for in the project (1 sentence)
+- "findings": all findings as a single string with newline-separated bullets, or empty string "" if the file is clean
 
 severity levels:
 - critical: Must fix before merge (bugs, security, data loss)
 - warning: Should fix (design issues, error handling gaps, performance)
 - info: Consider (style, readability, minor improvements)
 
-If a file looks clean across all dimensions, skip it entirely — do not mention it.
-Report EVERY potential issue — the synthesis pass will filter false positives.`
+Report EVERY potential issue — the synthesis pass will filter false positives.
+Return ONLY the JSON array — no other text before or after it.`
 
 // ReviewSynthesisPrompt is the system prompt for the final synthesis pass of a multi-pass PR review.
 // Phase 2 of two-phase review: FILTER mode — verify, deduplicate, prioritize.

@@ -80,6 +80,10 @@ type AIChatDoneMsg struct {
 // aiStreamTickMsg triggers a batched render of accumulated AI tokens.
 type aiStreamTickMsg struct{}
 
+// previewTickMsg fires after a debounce delay to trigger file preview.
+// seq is compared with m.previewSeq to discard stale ticks.
+type previewTickMsg struct{ seq int }
+
 // AIReviewProgressMsg tracks multi-pass review progress.
 // AIReviewBatchInfo describes a single batch for the in-place progress list.
 type AIReviewBatchInfo struct {
@@ -185,6 +189,9 @@ type Model struct {
 
 	// Parallel review concurrency
 	parallelReviews int
+
+	// Debounce file preview (avoids expensive renders during rapid j/k navigation)
+	previewSeq int // incremented on each cursor move; debounced tick checks this
 
 	// Comments
 	comments       map[string][]git.ReviewComment // filePath -> comments
@@ -572,6 +579,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case previewTickMsg:
+		// Only act if no newer cursor move has occurred since this tick was scheduled
+		if msg.seq == m.previewSeq {
+			cmd = m.previewCurrentFile()
+			if cmd != nil {
+				return m, cmd
+			}
+		}
+		return m, nil
+
 	case AIChatDoneMsg:
 		m.aiStreaming = false
 		m.aiCancelFn = nil
@@ -738,11 +755,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Jump to next unreviewed file
 			if m.focusedPane == PaneFileList {
 				m.jumpToUnreviewed(1)
+				cmds = append(cmds, m.schedulePreview())
 			}
 		case "p":
 			// Jump to previous unreviewed file
 			if m.focusedPane == PaneFileList {
 				m.jumpToUnreviewed(-1)
+				cmds = append(cmds, m.schedulePreview())
 			}
 		case "ctrl+a":
 			m.showAIPanel = !m.showAIPanel
@@ -769,16 +788,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch km.String() {
 			case "j", "down":
 				m.fileTree.moveDown()
-				cmd = m.previewCurrentFile()
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
+				cmds = append(cmds, m.schedulePreview())
 			case "k", "up":
 				m.fileTree.moveUp()
-				cmd = m.previewCurrentFile()
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
+				cmds = append(cmds, m.schedulePreview())
 			case "l", "right":
 				// Expand dir or select file
 				if m.fileTree.selectedIsDir() {
@@ -859,8 +872,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, m.renderActiveAIView())
 				}
 			default:
-				// Only allow text input on the Chat tab
-				if m.aiPanelTab == 1 {
+				// Only allow text input on the Chat tab, and not while AI is streaming
+				if m.aiPanelTab == 1 && !m.aiStreaming {
 					m.chatInput, cmd = m.chatInput.Update(msg)
 					cmds = append(cmds, cmd)
 				}
@@ -1718,6 +1731,17 @@ func (m *Model) populateFileList(st *state.State) {
 
 	m.fileTree = newFileTree(files)
 	m.fileTree.height = m.contentHeight() - 2 // account for border
+}
+
+// schedulePreview increments the debounce sequence and schedules a preview
+// after a short delay. If the user moves again before the tick fires,
+// the sequence won't match and the stale tick is discarded.
+func (m *Model) schedulePreview() tea.Cmd {
+	m.previewSeq++
+	seq := m.previewSeq
+	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
+		return previewTickMsg{seq: seq}
+	})
 }
 
 // previewCurrentFile loads the diff for the currently highlighted file

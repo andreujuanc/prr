@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -148,20 +150,26 @@ func isBatchCached(batch reviewBatch, reviewState *state.State) bool {
 	}
 	for _, f := range batch.files {
 		fs, ok := reviewState.Files[f]
-		if !ok || fs.BatchFindings == "" {
+		if !ok || fs.Purpose == "" {
 			return false
 		}
 	}
 	return true
 }
 
-// collectCachedFindings gathers cached findings for a batch from state.
-func collectCachedFindings(batch reviewBatch, reviewState *state.State) string {
+// collectCachedFindings reassembles per-file findings from cache for synthesis input.
+// Only includes files that have findings (skips clean files).
+func collectCachedFindings(batch reviewBatch, reviewState *state.State) (string, map[string]string) {
 	var sb strings.Builder
+	fileFindings := make(map[string]string)
 	for _, f := range batch.files {
-		sb.WriteString(reviewState.Files[f].BatchFindings)
+		fs := reviewState.Files[f]
+		if fs.BatchFindings != "" {
+			sb.WriteString(fmt.Sprintf("### %s\nPurpose: %s\n%s\n\n", f, fs.Purpose, fs.BatchFindings))
+			fileFindings[f] = fs.BatchFindings
+		}
 	}
-	return sb.String()
+	return sb.String(), fileFindings
 }
 
 // buildBatchSystemPrompt constructs the system prompt for a batch review.
@@ -185,6 +193,111 @@ func buildBatchMessages(batch reviewBatch) []ai.Message {
 	}
 }
 
+// batchFileReview is the structured output from reviewing a single file in a batch.
+type batchFileReview struct {
+	File     string `json:"file"`
+	Purpose  string `json:"purpose"`
+	Findings string `json:"findings"`
+}
+
+// parseBatchResult parses the JSON array from a batch review response.
+// Handles markdown code fences (```json ... ```) that AI models commonly wrap around JSON.
+// Returns nil if parsing fails.
+func parseBatchResult(raw string) []batchFileReview {
+	s := strings.TrimSpace(raw)
+
+	// Strip markdown code fences
+	if strings.HasPrefix(s, "```") {
+		// Remove opening fence (```json or ```)
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		}
+		// Remove closing fence
+		if idx := strings.LastIndex(s, "```"); idx != -1 {
+			s = s[:idx]
+		}
+		s = strings.TrimSpace(s)
+	}
+
+	var results []batchFileReview
+	if err := json.Unmarshal([]byte(s), &results); err != nil {
+		log.Printf("Warning: failed to parse batch JSON: %v", err)
+		return nil
+	}
+	return results
+}
+
+// persistBatchFindings parses a batch result and saves per-file purpose+findings
+// to state immediately, so they survive even if a later batch fails.
+// Returns the parsed reviews for use in building synthesis input,
+// and a map of file->findings for the FileFindings output.
+func persistBatchFindings(reviewState *state.State, batch reviewBatch, rawResult string) ([]batchFileReview, map[string]string) {
+	parsed := parseBatchResult(rawResult)
+	fileFindings := make(map[string]string)
+
+	if parsed == nil {
+		// Fallback: couldn't parse JSON — store raw result on first file only
+		log.Printf("Warning: batch %q returned unparseable result, using raw fallback", batch.label)
+		if reviewState != nil && len(batch.files) > 0 {
+			f := batch.files[0]
+			fs, ok := reviewState.Files[f]
+			if !ok {
+				fs = &state.FileState{Status: state.StatusUnreviewed}
+				reviewState.Files[f] = fs
+			}
+			fs.BatchFindings = rawResult
+			fs.Purpose = "unknown (parse failed)"
+			fileFindings[f] = rawResult
+		}
+	} else {
+		// Build a set of batch files for validation
+		batchFiles := make(map[string]bool, len(batch.files))
+		for _, f := range batch.files {
+			batchFiles[f] = true
+		}
+
+		for _, entry := range parsed {
+			if !batchFiles[entry.File] {
+				continue // ignore files not in this batch
+			}
+			if reviewState != nil {
+				fs, ok := reviewState.Files[entry.File]
+				if !ok {
+					fs = &state.FileState{Status: state.StatusUnreviewed}
+					reviewState.Files[entry.File] = fs
+				}
+				fs.Purpose = entry.Purpose
+				fs.BatchFindings = entry.Findings
+			}
+			if entry.Findings != "" {
+				fileFindings[entry.File] = entry.Findings
+			}
+		}
+
+		// Mark files that weren't in the parsed output (AI omitted them)
+		if reviewState != nil {
+			for _, f := range batch.files {
+				fs, ok := reviewState.Files[f]
+				if !ok {
+					fs = &state.FileState{Status: state.StatusUnreviewed}
+					reviewState.Files[f] = fs
+				}
+				if fs.Purpose == "" {
+					fs.Purpose = "reviewed (no details)"
+				}
+			}
+		}
+	}
+
+	if reviewState != nil {
+		if err := state.Save(reviewState); err != nil {
+			log.Printf("Warning: failed to persist batch findings: %v", err)
+		}
+	}
+
+	return parsed, fileFindings
+}
+
 // reviewBatchesSequential reviews batches one at a time with token streaming.
 // This is the original behavior when parallelReviews == 1.
 func reviewBatchesSequential(
@@ -198,7 +311,7 @@ func reviewBatchesSequential(
 	p *tea.Program,
 ) tea.Msg {
 	var allFindings strings.Builder
-	fileFindings := make(map[string]string)
+	allFileFindings := make(map[string]string)
 
 	for i, batch := range batches {
 		if ctx.Err() != nil {
@@ -208,13 +321,13 @@ func reviewBatchesSequential(
 		if isBatchCached(batch, reviewState) {
 			p.Send(AIReviewProgressMsg{Batch: i, Status: BatchCached})
 
-			cached := collectCachedFindings(batch, reviewState)
+			cached, cachedFF := collectCachedFindings(batch, reviewState)
 			allFindings.WriteString(fmt.Sprintf("### Batch %d: %s\n", i+1, batch.label))
 			allFindings.WriteString(fmt.Sprintf("Files: %s\n\n", strings.Join(batch.files, ", ")))
 			allFindings.WriteString(cached)
 			allFindings.WriteString("\n\n---\n\n")
-			for _, f := range batch.files {
-				fileFindings[f] = reviewState.Files[f].BatchFindings
+			for f, findings := range cachedFF {
+				allFileFindings[f] = findings
 			}
 			continue
 		}
@@ -232,17 +345,27 @@ func reviewBatchesSequential(
 
 		p.Send(AIReviewProgressMsg{Batch: i, Status: BatchDone})
 
-		for _, f := range batch.files {
-			fileFindings[f] = result
+		parsed, batchFF := persistBatchFindings(reviewState, batch, result)
+		for f, findings := range batchFF {
+			allFileFindings[f] = findings
 		}
 
+		// Build synthesis input from parsed results or raw fallback
 		allFindings.WriteString(fmt.Sprintf("### Batch %d: %s\n", i+1, batch.label))
 		allFindings.WriteString(fmt.Sprintf("Files: %s\n\n", strings.Join(batch.files, ", ")))
-		allFindings.WriteString(result)
+		if parsed != nil {
+			for _, entry := range parsed {
+				if entry.Findings != "" {
+					allFindings.WriteString(fmt.Sprintf("#### %s\nPurpose: %s\n%s\n\n", entry.File, entry.Purpose, entry.Findings))
+				}
+			}
+		} else {
+			allFindings.WriteString(result)
+		}
 		allFindings.WriteString("\n\n---\n\n")
 	}
 
-	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), fileFindings, batches, p)
+	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, p)
 }
 
 // reviewBatchesParallel reviews batches concurrently using a worker pool.
@@ -260,14 +383,14 @@ func reviewBatchesParallel(
 	p *tea.Program,
 ) tea.Msg {
 	results := make([]batchResult, len(batches))
-	fileFindings := make(map[string]string)
+	allFileFindings := make(map[string]string)
 
 	// Separate cached vs uncached batches
 	var uncachedIndices []int
 
 	for i, batch := range batches {
 		if isBatchCached(batch, reviewState) {
-			cached := collectCachedFindings(batch, reviewState)
+			cached, cachedFF := collectCachedFindings(batch, reviewState)
 			results[i] = batchResult{
 				batch:  batch,
 				result: cached,
@@ -275,8 +398,8 @@ func reviewBatchesParallel(
 			}
 
 			p.Send(AIReviewProgressMsg{Batch: i, Status: BatchCached})
-			for _, f := range batch.files {
-				fileFindings[f] = reviewState.Files[f].BatchFindings
+			for f, findings := range cachedFF {
+				allFileFindings[f] = findings
 			}
 		} else {
 			uncachedIndices = append(uncachedIndices, i)
@@ -348,17 +471,28 @@ func reviewBatchesParallel(
 
 		allFindings.WriteString(fmt.Sprintf("### Batch %d: %s\n", i+1, res.batch.label))
 		allFindings.WriteString(fmt.Sprintf("Files: %s\n\n", strings.Join(res.batch.files, ", ")))
-		allFindings.WriteString(res.result)
-		allFindings.WriteString("\n\n---\n\n")
 
 		if !res.cached {
-			for _, f := range res.batch.files {
-				fileFindings[f] = res.result
+			parsed, batchFF := persistBatchFindings(reviewState, res.batch, res.result)
+			for f, findings := range batchFF {
+				allFileFindings[f] = findings
 			}
+			if parsed != nil {
+				for _, entry := range parsed {
+					if entry.Findings != "" {
+						allFindings.WriteString(fmt.Sprintf("#### %s\nPurpose: %s\n%s\n\n", entry.File, entry.Purpose, entry.Findings))
+					}
+				}
+			} else {
+				allFindings.WriteString(res.result)
+			}
+		} else {
+			allFindings.WriteString(res.result)
 		}
+		allFindings.WriteString("\n\n---\n\n")
 	}
 
-	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), fileFindings, batches, p)
+	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, p)
 }
 
 // runSynthesis runs Phase 2 of the multi-pass review: synthesize all findings.

@@ -34,6 +34,7 @@ func (s *State) SyncWithDiffs(currentDiffHashes map[string]string, prFiles map[s
 			// Clear specific chat history and cached batch findings for this file since the code has changed
 			fileState.Chat = nil
 			fileState.BatchFindings = ""
+			fileState.Purpose = ""
 			anyFileChanged = true
 		}
 	}

@@ -50,8 +50,8 @@ func Load(prNumber string) (*State, error) {
 
 // Save writes the given State to disk.
 func Save(state *State) error {
-	state.mu.RLock()
-	defer state.mu.RUnlock()
+	state.mu.Lock()
+	defer state.mu.Unlock()
 
 	filePath, err := getStateFilePath(state.PRNumber)
 	if err != nil {

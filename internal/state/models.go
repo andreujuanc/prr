@@ -30,6 +30,7 @@ type FileState struct {
 	Status        ReviewStatus `json:"status"`
 	DiffHash      string       `json:"diff_hash"`
 	Chat          []Message    `json:"chat,omitempty"`
+	Purpose       string       `json:"purpose,omitempty"`        // AI-generated description of what the file does
 	BatchFindings string       `json:"batch_findings,omitempty"` // cached findings from PR-level batch review
 }
 
