@@ -121,6 +121,15 @@ var mdCacheCount int32
 
 const maxMDCacheEntries = 128
 
+// wrapStyled applies a lipgloss style to text while handling word wrapping.
+// This ensures style (color, bold, etc.) is preserved across wrapped lines.
+func wrapStyled(s lipgloss.Style, text string, width int) string {
+	if width < 10 {
+		width = 10
+	}
+	return s.Width(width).Render(text)
+}
+
 func renderMarkdown(content string, width int) string {
 	if width < 20 {
 		width = 20

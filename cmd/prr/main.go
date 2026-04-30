@@ -53,7 +53,7 @@ func main() {
 	}
 	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s)", prNumber, cfg.Provider, cfg.Model)
 
-	model := ui.NewModel(prNumber, aiClient)
+	model := ui.NewModel(prNumber, aiClient, cfg.ParallelReviews)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
 

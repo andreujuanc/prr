@@ -72,18 +72,45 @@ type AIChatDoneMsg struct {
 	Err          error
 	// Review data — set by multi-pass review and file review for persistence
 	Review *state.AIReview
+	// FileFindings maps file paths to their batch findings for caching.
+	// Set by multi-pass review so individual file findings can be persisted.
+	FileFindings map[string]string
 }
 
 // aiStreamTickMsg triggers a batched render of accumulated AI tokens.
 type aiStreamTickMsg struct{}
 
 // AIReviewProgressMsg tracks multi-pass review progress.
-type AIReviewProgressMsg struct {
-	Batch int    // current batch (1-indexed)
-	Total int    // total batches
-	Label string // e.g. "internal/ui"
-	Phase string // "batch" or "synthesis"
+// AIReviewBatchInfo describes a single batch for the in-place progress list.
+type AIReviewBatchInfo struct {
+	Label    string // e.g. "internal/ui"
+	NumFiles int    // number of files in this batch
 }
+
+// AIReviewBatchStatus tracks the state of a batch during review.
+type AIReviewBatchStatus int
+
+const (
+	BatchPending  AIReviewBatchStatus = iota
+	BatchActive                       // spinner
+	BatchDone                         // green ✓
+	BatchCached                       // green ✓ (cached)
+	BatchFailed                       // red ✗
+)
+
+// AIReviewInitMsg is sent once at the start of a review to initialize the batch list.
+type AIReviewInitMsg struct {
+	Batches []AIReviewBatchInfo
+}
+
+// AIReviewProgressMsg updates the status of a single batch.
+type AIReviewProgressMsg struct {
+	Batch  int                 // batch index (0-based)
+	Status AIReviewBatchStatus // new status
+}
+
+// AIReviewSynthesisMsg signals the transition to synthesis phase.
+type AIReviewSynthesisMsg struct{}
 
 // CommentsFetchedMsg is sent when PR review comments have been loaded.
 type CommentsFetchedMsg struct {
@@ -146,14 +173,18 @@ type Model struct {
 	aiStreamDirty      bool   // true when buffer has unflushed tokens
 	aiCancelFn         context.CancelFunc
 	aiChatHistoryCache string // pre-rendered markdown of completed messages (for streaming perf)
-	aiReviewBatch      int    // current batch during multi-pass review (0 = not in multi-pass)
-	aiReviewTotal      int    // total batches
-	aiReviewLabel      string // current batch label (e.g. "internal/ui")
-	aiReviewPhase      string // "batch" or "synthesis"
+	aiReviewBatches  []AIReviewBatchInfo   // batch list for in-place rendering
+	aiReviewStatuses []AIReviewBatchStatus // per-batch status
+	aiReviewPhase    string                // "batch" or "synthesis"
 	aiPanelTab         int    // 0 = Review, 1 = Chat
+	aiReviewRendered   string // cached rendered review markdown
+	aiReviewRenderWidth int   // width used for cached render
 
 	// Custom review instructions loaded from .prr/instructions.md
 	customInstructions string
+
+	// Parallel review concurrency
+	parallelReviews int
 
 	// Comments
 	comments       map[string][]git.ReviewComment // filePath -> comments
@@ -173,7 +204,7 @@ type Model struct {
 
 // ── Constructor ─────────────────────────────────────────────────────────
 
-func NewModel(prNumber string, aiClient ai.Client) Model {
+func NewModel(prNumber string, aiClient ai.Client, parallelReviews int) Model {
 	diffVp := viewport.New(0, 0)
 	diffVp.Style = lipgloss.NewStyle().Foreground(textPrimary)
 
@@ -234,6 +265,7 @@ func NewModel(prNumber string, aiClient ai.Client) Model {
 		showFilePanel:      true,
 		showAIPanel:        true,
 		customInstructions: config.LoadCustomInstructions(),
+		parallelReviews:    parallelReviews,
 	}
 }
 
@@ -270,7 +302,9 @@ func computeHashes(prNumber, base, head string, files []git.PRFile) tea.Cmd {
 		// Compute diff hashes for all files and store raw diffs
 		hashes := make(map[string]string, len(files))
 		rawDiffs := make(map[string]string, len(files))
+		prFiles := make(map[string]bool, len(files))
 		for _, f := range files {
+			prFiles[f.Path] = true
 			rawDiff, err := git.GetRawDiff(base, head, f.Path)
 			if err != nil {
 				log.Printf("Warning: failed to get raw diff for %s: %v", f.Path, err)
@@ -281,7 +315,7 @@ func computeHashes(prNumber, base, head string, files []git.PRFile) tea.Cmd {
 		}
 
 		// Sync state with current diffs
-		st.SyncWithDiffs(hashes)
+		st.SyncWithDiffs(hashes, prFiles)
 
 		// Save updated state
 		if err := state.Save(st); err != nil {
@@ -320,24 +354,6 @@ func streamAIChat(client ai.Client, ctx context.Context, systemPrompt string, me
 			p.Send(AIChatDeltaMsg{Token: token})
 		})
 		return AIChatDoneMsg{FullResponse: fullResponse, Err: err}
-	}
-}
-
-// streamAIReview is like streamAIChat but also produces an AIReview for persistence.
-func streamAIReview(client ai.Client, ctx context.Context, systemPrompt string, messages []ai.Message, p *tea.Program) tea.Cmd {
-	return func() tea.Msg {
-		fullResponse, err := client.ChatStream(ctx, systemPrompt, messages, func(token string) {
-			p.Send(AIChatDeltaMsg{Token: token})
-		})
-		if err != nil {
-			return AIChatDoneMsg{FullResponse: fullResponse, Err: err}
-		}
-		return AIChatDoneMsg{
-			FullResponse: fullResponse,
-			Review: &state.AIReview{
-				Summary: fullResponse,
-			},
-		}
 	}
 }
 
@@ -428,6 +444,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Provide diffs to AI tool executor for the get_diff tool
 		if tc, ok := m.aiClient.(ai.ToolConfigurer); ok {
 			tc.SetRawDiffs(msg.RawDiffs)
+			tc.SetReviewGetter(func() string {
+				if m.reviewState != nil && m.reviewState.Review != nil {
+					return m.reviewState.Review.Summary
+				}
+				return ""
+			})
 		}
 		m.populateFileList(m.reviewState)
 		m.selectedFile = ""
@@ -467,8 +489,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case ChatRenderedMsg:
-		// Only apply if we're still looking at the same file and tab
-		if msg.FilePath == m.selectedFile && msg.Tab == m.aiPanelTab {
+		// For Review tab (0): cache the rendered content and always apply — content is global, not per-file
+		// For Chat tab (1): only apply if still on the same file
+		if msg.Tab == 0 {
+			m.aiReviewRendered = msg.Content
+			m.aiReviewRenderWidth = m.chatViewport.Width - 2
+		}
+		if msg.Tab == m.aiPanelTab && (msg.Tab == 0 || msg.FilePath == m.selectedFile) {
 			m.chatViewport.SetContent(msg.Content)
 			m.chatViewport.GotoTop()
 		}
@@ -496,11 +523,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case AIReviewInitMsg:
+		m.aiReviewBatches = msg.Batches
+		m.aiReviewStatuses = make([]AIReviewBatchStatus, len(msg.Batches))
+		m.aiReviewPhase = "batch"
+		m.updateChatViewWithStream()
+		return m, nil
+
 	case AIReviewProgressMsg:
-		m.aiReviewBatch = msg.Batch
-		m.aiReviewTotal = msg.Total
-		m.aiReviewLabel = msg.Label
-		m.aiReviewPhase = msg.Phase
+		if msg.Batch >= 0 && msg.Batch < len(m.aiReviewStatuses) {
+			m.aiReviewStatuses[msg.Batch] = msg.Status
+		}
+		m.updateChatViewWithStream()
+		return m, nil
+
+	case AIReviewSynthesisMsg:
+		m.aiReviewPhase = "synthesis"
+		m.updateChatViewWithStream()
 		return m, nil
 
 	case AIChatDeltaMsg:
@@ -514,10 +553,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Tool call — render as a subtle indicator
 				tool := strings.TrimPrefix(token, "\x00TOOL:")
 				m.aiStreamBuffer += "\n" + styleToolCall.Render("  ▸ " + tool) + "\n"
-			} else if strings.HasPrefix(token, "\x00DIM:") {
-				// Batch review output — muted to show it's intermediate
-				dimText := strings.TrimPrefix(token, "\x00DIM:")
-				m.aiStreamBuffer += styleBatchOutput.Render(dimText)
 			} else {
 				m.aiStreamBuffer += token
 			}
@@ -541,9 +576,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiStreaming = false
 		m.aiCancelFn = nil
 		m.aiStreamDirty = false // prevent stale tick from rendering after completion
-		m.aiReviewBatch = 0
-		m.aiReviewTotal = 0
-		m.aiReviewLabel = ""
+		m.aiReviewBatches = nil
+		m.aiReviewStatuses = nil
 		m.aiReviewPhase = ""
 		if msg.Err != nil {
 			log.Printf("AI chat error: %v", msg.Err)
@@ -556,15 +590,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Review != nil {
 				m.saveReview(msg.Review)
 			}
-			// Save the completed response to state and re-render async with markdown
-			cmd = m.saveAIResponse(msg.FullResponse)
-			// Clear stream buffer so the raw text doesn't linger while markdown renders
-			m.aiStreamBuffer = ""
-			m.aiChatHistoryCache = ""
-			// If a review was produced, auto-switch to the Review tab
+			// Save per-file batch findings for caching
+			if msg.FileFindings != nil && m.reviewState != nil {
+				for path, findings := range msg.FileFindings {
+					fs, ok := m.reviewState.Files[path]
+					if !ok {
+						fs = &state.FileState{Status: state.StatusUnreviewed}
+						m.reviewState.Files[path] = fs
+					}
+					fs.BatchFindings = findings
+				}
+				if err := state.Save(m.reviewState); err != nil {
+					log.Printf("Warning: failed to save file findings: %v", err)
+				}
+			}
 			if msg.Review != nil {
+				// Review results live in Review tab only — don't pollute Chat
+				m.aiStreamBuffer = ""
+				m.aiChatHistoryCache = ""
 				m.aiPanelTab = 0
 				cmd = m.renderActiveAIView()
+			} else {
+				// Regular chat — save response to chat history
+				cmd = m.saveAIResponse(msg.FullResponse)
+				m.aiStreamBuffer = ""
+				m.aiChatHistoryCache = ""
 			}
 		}
 		return m, cmd
@@ -755,7 +805,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.fileTree.selectedIsDir() {
 					m.fileTree.toggle()
 				} else {
-					m.toggleReviewStatus()
+					cmd = m.toggleReviewStatus()
+					if cmd != nil {
+						cmds = append(cmds, cmd)
+					}
 				}
 			case "r":
 				m.fileTree.toggleHideReviewed()
@@ -800,9 +853,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+k":
 				m.clearChat()
 			case "tab":
-				// Toggle between Review and Chat tabs
-				m.aiPanelTab = 1 - m.aiPanelTab
-				cmds = append(cmds, m.renderActiveAIView())
+				// Toggle between Review and Chat tabs (only if review exists)
+				if m.hasReview() {
+					m.aiPanelTab = 1 - m.aiPanelTab
+					cmds = append(cmds, m.renderActiveAIView())
+				}
 			default:
 				// Only allow text input on the Chat tab
 				if m.aiPanelTab == 1 {
@@ -1012,16 +1067,8 @@ func (m *Model) saveReview(review *state.AIReview) {
 		return
 	}
 
-	if m.selectedFile == "" {
-		m.reviewState.Review = review
-	} else {
-		fs, ok := m.reviewState.Files[m.selectedFile]
-		if !ok {
-			fs = &state.FileState{Status: state.StatusUnreviewed}
-			m.reviewState.Files[m.selectedFile] = fs
-		}
-		fs.Review = review
-	}
+	m.reviewState.Review = review
+	m.aiReviewRendered = "" // invalidate cached render
 
 	if err := state.Save(m.reviewState); err != nil {
 		log.Printf("Warning: failed to save review state: %v", err)
@@ -1051,6 +1098,12 @@ func (m *Model) clearChat() {
 }
 
 func (m *Model) updateChatViewWithStream() {
+	// If a PR review is streaming but the user has navigated to a file,
+	// don't overwrite the file's chat panel with review stream content.
+	if m.aiReviewPhase != "" && m.selectedFile != "" {
+		return
+	}
+
 	var b strings.Builder
 
 	// Use cached rendered prefix of completed messages (built once when streaming starts)
@@ -1063,7 +1116,7 @@ func (m *Model) updateChatViewWithStream() {
 			switch msg.Role {
 			case "user":
 				hb.WriteString(styleAccentBlueBold.Render("You") + "\n")
-				hb.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
+				hb.WriteString(wrapStyled(styleTextSecondary, msg.Content, m.chatViewport.Width-2) + "\n\n")
 			case "assistant":
 				hb.WriteString(styleAccentMauveBold.Render("AI") + "\n")
 				hb.WriteString(renderMarkdown(msg.Content, m.chatViewport.Width-2) + "\n\n")
@@ -1076,14 +1129,23 @@ func (m *Model) updateChatViewWithStream() {
 	// Render streaming AI response
 	if m.aiStreaming || m.aiStreamBuffer != "" {
 		b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
-		if m.aiStreamBuffer == "" {
-			b.WriteString(styleTextMuted.Render("thinking...") + "\n")
-		} else {
-			b.WriteString(m.aiStreamBuffer)
-			if m.aiStreaming {
-				b.WriteString(styleAccentBlue.Render("▊"))
+
+		// During review, show the in-place batch list
+		if len(m.aiReviewBatches) > 0 {
+			b.WriteString(m.renderBatchList())
+		}
+
+		if m.aiReviewPhase == "synthesis" || len(m.aiReviewBatches) == 0 {
+			// Show synthesis stream or regular chat stream
+			if m.aiStreamBuffer == "" && len(m.aiReviewBatches) == 0 {
+				b.WriteString(styleTextMuted.Render("thinking...") + "\n")
+			} else if m.aiStreamBuffer != "" {
+				b.WriteString(m.aiStreamBuffer)
+				if m.aiStreaming {
+					b.WriteString(styleAccentBlue.Render("▊"))
+				}
+				b.WriteString("\n")
 			}
-			b.WriteString("\n")
 		}
 	}
 
@@ -1114,18 +1176,24 @@ func (m Model) renderChatInputLabel(width int) string {
 	return styleTextSubtle.Render(strings.Repeat("─", width))
 }
 
+// hasReview returns true if a PR-level review exists.
+func (m Model) hasReview() bool {
+	return m.reviewState != nil && m.reviewState.Review != nil
+}
+
 // renderAIPanelTitle builds the AI panel title with tab indicators and streaming status.
 func (m Model) renderAIPanelTitle(maxWidth int) string {
 	// During streaming, show progress or spinner instead of tabs
 	if m.aiStreaming {
-		if m.aiReviewTotal > 0 {
+		if len(m.aiReviewBatches) > 0 {
 			return m.renderReviewProgress(maxWidth)
 		}
-		tabLabel := "CHAT"
-		if m.aiPanelTab == 0 {
-			tabLabel = "REVIEW"
-		}
-		return tabLabel + " " + m.spinner.View()
+		return "CHAT " + m.spinner.View()
+	}
+
+	// If no review exists, just show "Chat" — no tabs needed
+	if !m.hasReview() {
+		return styleAccentBlueBold.Render("Chat")
 	}
 
 	// Tab indicators: [Review] [Chat] — active tab is highlighted
@@ -1141,22 +1209,43 @@ func (m Model) renderAIPanelTitle(maxWidth int) string {
 	return reviewTab + styleTextSubtle.Render(" │ ") + chatTab
 }
 
-// renderReviewProgress renders the AI CHAT panel title with a progress bar
+// renderReviewProgress renders the AI panel title with a progress bar
 // during multi-pass review.
 func (m Model) renderReviewProgress(maxWidth int) string {
 	spin := m.spinner.View()
+	total := len(m.aiReviewBatches)
+
+	var completed, active int
+	for _, s := range m.aiReviewStatuses {
+		switch s {
+		case BatchDone, BatchCached, BatchFailed:
+			completed++
+		case BatchActive:
+			active++
+		}
+	}
 
 	var label string
 	if m.aiReviewPhase == "synthesis" {
-		label = "Synthesizing"
+		label = "Synthesizing final review"
+	} else if active > 1 {
+		label = fmt.Sprintf("Reviewing  %d/%d done, %d running", completed, total, active)
+	} else if active == 1 {
+		// Find the active batch label
+		for i, s := range m.aiReviewStatuses {
+			if s == BatchActive {
+				label = fmt.Sprintf("Reviewing %s  %d/%d", m.aiReviewBatches[i].Label, completed+1, total)
+				break
+			}
+		}
 	} else {
-		label = fmt.Sprintf("%d/%d %s", m.aiReviewBatch, m.aiReviewTotal, m.aiReviewLabel)
+		label = fmt.Sprintf("Reviewing  %d/%d done", completed, total)
 	}
 
 	// Build progress bar: ████░░░░
 	barWidth := 10
-	if m.aiReviewTotal > 0 && m.aiReviewPhase != "synthesis" {
-		filled := (m.aiReviewBatch * barWidth) / m.aiReviewTotal
+	if total > 0 && m.aiReviewPhase != "synthesis" {
+		filled := (completed * barWidth) / total
 		if filled > barWidth {
 			filled = barWidth
 		}
@@ -1169,6 +1258,59 @@ func (m Model) renderReviewProgress(maxWidth int) string {
 	// Synthesis phase — full bar
 	bar := styleProgressBar.Render(strings.Repeat("█", barWidth))
 	return spin + " " + bar + " " + styleTextMuted.Render(label)
+}
+
+// renderBatchList renders the in-place batch progress list shown during review.
+// Each batch is a single line: status icon + label + file count.
+func (m Model) renderBatchList() string {
+	if len(m.aiReviewBatches) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n")
+
+	for i, batch := range m.aiReviewBatches {
+		status := m.aiReviewStatuses[i]
+
+		var icon string
+		switch status {
+		case BatchPending:
+			icon = styleTextSubtle.Render("  ○")
+		case BatchActive:
+			icon = styleAccentBlue.Render("  ●")
+		case BatchDone:
+			icon = styleAccentGreen.Render("  " + checkMark)
+		case BatchCached:
+			icon = styleAccentGreen.Render("  " + checkMark)
+		case BatchFailed:
+			icon = styleAccentRed.Render("  ✗")
+		}
+
+		suffix := ""
+		if status == BatchCached {
+			suffix = " (cached)"
+		}
+
+		fileWord := "files"
+		if batch.NumFiles == 1 {
+			fileWord = "file"
+		}
+
+		label := fmt.Sprintf(" %-24s %d %s%s",
+			batch.Label, batch.NumFiles, fileWord, suffix)
+
+		if status == BatchPending {
+			b.WriteString(icon + styleTextSubtle.Render(label))
+		} else if status == BatchActive {
+			b.WriteString(icon + styleBatchOutput.Render(label))
+		} else {
+			b.WriteString(icon + styleBatchOutput.Render(label))
+		}
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }
 
 // ── Comment helpers ─────────────────────────────────────────────────────
@@ -1397,14 +1539,15 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	if path == "" {
 		// Overview mode — multi-pass PR review
 		_, prMeta := m.getAIContext()
-		userContent := "Please review the full set of changes in this PR."
 
-		// Add to state
-		userStateMsg := state.Message{Role: "user", Content: userContent}
-		m.appendMessageToState(userStateMsg)
+		// Clear the previous review so the streaming view takes precedence
+		if m.reviewState != nil {
+			m.reviewState.Review = nil
+		}
 
 		// Start streaming
 		m.aiStreaming = true
+		m.aiPanelTab = 1 // show Chat tab (batch list + synthesis stream)
 		m.aiStreamBuffer = ""
 		m.aiChatHistoryCache = ""
 		m.updateChatViewWithStream()
@@ -1413,7 +1556,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		m.aiCancelFn = cancel
 
-		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, m.customInstructions, program))
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, program))
 	}
 
 	// Single file mode
@@ -1427,7 +1570,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Skip files that are excluded from review (lock files, generated code, etc.)
 	if config.ShouldExcludeFromReview(path) {
-		m.aiPanelTab = 0 // switch to Review tab so user sees the message
+		m.aiPanelTab = 1 // show message in Chat tab
 		m.chatViewport.SetContent(
 			styleTextMuted.Render("This file is excluded from AI review (lock file, generated code, or vendored dependency)."))
 		return nil
@@ -1457,8 +1600,9 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	messages := m.buildAIMessages()
 	aiMessages := m.buildAIMessagesWithContext(messages)
 
-	// Start streaming
+	// Start streaming on the Chat tab
 	m.aiStreaming = true
+	m.aiPanelTab = 1
 	m.aiStreamBuffer = ""
 	m.aiChatHistoryCache = "" // invalidate so it's rebuilt on first tick
 	m.updateChatViewWithStream()
@@ -1466,7 +1610,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	m.aiCancelFn = cancel
 
-	return tea.Batch(m.spinner.Tick, streamAIReview(m.aiClient, ctx, systemPrompt, aiMessages, program))
+	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
 }
 
 func (m *Model) jumpToUnreviewed(direction int) {
@@ -1495,10 +1639,10 @@ func (m *Model) jumpToUnreviewed(direction int) {
 	}
 }
 
-func (m *Model) toggleReviewStatus() {
+func (m *Model) toggleReviewStatus() tea.Cmd {
 	path := m.fileTree.selectedPath()
 	if path == "" || m.reviewState == nil {
-		return
+		return nil
 	}
 
 	fs, ok := m.reviewState.Files[path]
@@ -1519,10 +1663,28 @@ func (m *Model) toggleReviewStatus() {
 		m.fileTree.flat[m.fileTree.cursor].node.status = fs.Status
 	}
 
+	// If hideReviewed is active, rebuild the flat list so the file disappears/appears
+	if m.fileTree.hideReviewed {
+		m.fileTree.flatten()
+		if m.fileTree.cursor >= len(m.fileTree.flat) {
+			m.fileTree.cursor = len(m.fileTree.flat) - 1
+		}
+		if m.fileTree.cursor < 0 {
+			m.fileTree.cursor = 0
+		}
+		m.fileTree.ensureVisible()
+	}
+
 	// Save state
 	if err := state.Save(m.reviewState); err != nil {
 		log.Printf("Warning: failed to save review state: %v", err)
 	}
+
+	// If hideReviewed caused the cursor to move, preview the new file
+	if m.fileTree.hideReviewed {
+		return m.previewCurrentFile()
+	}
+	return nil
 }
 
 func (m *Model) reloadDiff() tea.Cmd {
@@ -1621,61 +1783,46 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 
 // renderActiveAIView renders the currently selected AI panel tab for the current file.
 func (m *Model) renderActiveAIView() tea.Cmd {
-	if m.aiPanelTab == 0 {
+	// If a PR review is currently streaming and we're on the overview,
+	// show the live stream instead of static content.
+	if m.aiReviewPhase != "" && m.selectedFile == "" {
+		m.updateChatViewWithStream()
+		return nil
+	}
+	if m.aiPanelTab == 0 && m.hasReview() {
 		return m.renderReviewForFile(m.selectedFile)
 	}
+	// No review or Chat tab selected — show chat
+	m.aiPanelTab = 1
 	return m.renderChatForFile(m.selectedFile)
 }
 
-// renderReviewForFile renders the AI review content for a file (or PR overview).
+// renderReviewForFile renders the PR-level AI review in the Review tab.
+// The Review tab always shows the global PR review regardless of which file is selected.
 func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
-	if m.reviewState == nil {
-		m.chatViewport.SetContent(
-			styleTextMuted.Render("No AI review yet. Press 'a' to start a review."))
+	if m.reviewState == nil || m.reviewState.Review == nil {
 		return nil
 	}
 
-	var review *state.AIReview
+	width := m.chatViewport.Width - 2
 
-	if filePath == "" {
-		review = m.reviewState.Review
-	} else {
-		if fs, ok := m.reviewState.Files[filePath]; ok {
-			review = fs.Review
-		}
-	}
-
-	if review == nil {
-		hint := "Press 'a' to start an AI review"
-		if filePath == "" {
-			hint += " of this PR."
-		} else {
-			hint += " of this file."
-		}
-		m.chatViewport.SetContent(styleTextMuted.Render(hint))
+	// If we already rendered at this width, reuse the cached content.
+	if m.aiReviewRendered != "" && m.aiReviewRenderWidth == width {
+		m.chatViewport.SetContent(m.aiReviewRendered)
 		return nil
 	}
+
+	review := m.reviewState.Review
 
 	// Show placeholder, render markdown async
 	m.chatViewport.SetContent(styleTextMuted.Render("Rendering review..."))
 
-	width := m.chatViewport.Width - 2
 	summary := review.Summary
-	findings := review.Findings
 	fp := filePath
 
 	return func() tea.Msg {
-		var b strings.Builder
-
-		// Render findings if present (PR-level multi-pass)
-		if findings != "" {
-			b.WriteString(styleTextMuted.Render("─── Per-file Findings ───") + "\n\n")
-			b.WriteString(renderMarkdown(findings, width) + "\n\n")
-			b.WriteString(styleTextMuted.Render("─── Final Review ───") + "\n\n")
-		}
-
-		b.WriteString(renderMarkdown(summary, width))
-		return ChatRenderedMsg{FilePath: fp, Content: b.String(), Tab: 0}
+		rendered := renderMarkdown(summary, width)
+		return ChatRenderedMsg{FilePath: fp, Content: rendered, Tab: 0}
 	}
 }
 
@@ -1724,13 +1871,10 @@ func (m *Model) renderChatForFile(filePath string) tea.Cmd {
 			switch msg.Role {
 			case "user":
 				b.WriteString(styleAccentBlueBold.Render("You") + "\n")
-				b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
+				b.WriteString(wrapStyled(styleTextSecondary, msg.Content, width) + "\n\n")
 			case "assistant":
 				b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
 				b.WriteString(renderMarkdown(msg.Content, width) + "\n\n")
-			default:
-				b.WriteString(styleTextMuted.Render(msg.Role) + "\n")
-				b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
 			}
 		}
 		return ChatRenderedMsg{FilePath: fp, Content: b.String(), Tab: 1}
@@ -2437,7 +2581,6 @@ func (m Model) viewFooter() string {
 			struct{ key, desc string }{"j/k", "navigate"},
 			struct{ key, desc string }{"Enter", "select"},
 			struct{ key, desc string }{"Space", "review"},
-			struct{ key, desc string }{"h/l", "collapse/expand"},
 			struct{ key, desc string }{"r", rLabel},
 			struct{ key, desc string }{"n/p", "next/prev unreviewed"},
 			struct{ key, desc string }{"a", aiLabel},

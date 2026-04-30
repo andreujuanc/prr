@@ -10,9 +10,10 @@ import (
 
 // ToolExecutor handles executing tool calls from the LLM.
 type ToolExecutor struct {
-	HeadRef  string            // e.g. "origin/feature-branch" — the PR head ref for git show
-	BaseRef  string            // e.g. "origin/main" — the PR base ref for reading pre-change files
-	RawDiffs map[string]string // filePath -> raw unified diff (set by UI after PR load)
+	HeadRef       string            // e.g. "origin/feature-branch" — the PR head ref for git show
+	BaseRef       string            // e.g. "origin/main" — the PR base ref for reading pre-change files
+	RawDiffs      map[string]string // filePath -> raw unified diff (set by UI after PR load)
+	ReviewGetter  func() string     // returns the latest PR review summary, or "" if none
 }
 
 // ToolDeclarations returns the Gemini-format tool declarations.
@@ -112,6 +113,14 @@ func ToolDeclarations() []geminiTool {
 						},
 					},
 				},
+				{
+					Name:        "get_review",
+					Description: "Get the latest AI review of this PR, if one exists. Returns the full review summary. Use this when the user asks about the review findings or wants to discuss them.",
+					Parameters: geminiSchema{
+						Type: "OBJECT",
+						Properties: map[string]geminiSchema{},
+					},
+				},
 			},
 		},
 	}
@@ -130,6 +139,8 @@ func (t *ToolExecutor) ExecuteTool(name string, args map[string]interface{}) str
 		return t.listFiles(args)
 	case "get_diff":
 		return t.getDiff(args)
+	case "get_review":
+		return t.getReview()
 	default:
 		return fmt.Sprintf("Unknown tool: %s", name)
 	}
@@ -429,4 +440,16 @@ func (t *ToolExecutor) getDiff(args map[string]interface{}) string {
 		result.WriteString("\n(End of diffs)")
 	}
 	return result.String()
+}
+
+// getReview returns the latest PR review summary.
+func (t *ToolExecutor) getReview() string {
+	if t.ReviewGetter == nil {
+		return "No review available. Use 'a' in the PR overview to run an AI review first."
+	}
+	review := t.ReviewGetter()
+	if review == "" {
+		return "No review available. Use 'a' in the PR overview to run an AI review first."
+	}
+	return review
 }

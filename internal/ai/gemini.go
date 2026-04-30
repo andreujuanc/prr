@@ -52,6 +52,13 @@ func (g *GeminiClient) SetRawDiffs(diffs map[string]string) {
 	}
 }
 
+// SetReviewGetter provides a function that returns the latest PR review summary.
+func (g *GeminiClient) SetReviewGetter(fn func() string) {
+	if g.ToolExecutor != nil {
+		g.ToolExecutor.ReviewGetter = fn
+	}
+}
+
 // Gemini API request/response types
 
 type geminiRequest struct {

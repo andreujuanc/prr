@@ -9,9 +9,10 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	Provider string `json:"provider"` // "gemini", "anthropic", "openai"
-	APIKey   string `json:"api_key"`
-	Model    string `json:"model"`
+	Provider        string `json:"provider"`                   // "gemini", "anthropic", "openai"
+	APIKey          string `json:"api_key"`
+	Model           string `json:"model"`
+	ParallelReviews int    `json:"parallel_reviews,omitempty"` // number of concurrent batch reviews (default 3)
 }
 
 // DefaultConfigPath returns ~/.config/prr/config.json
@@ -64,6 +65,10 @@ func Load() (*Config, error) {
 		case "openai":
 			cfg.Model = "gpt-4o"
 		}
+	}
+
+	if cfg.ParallelReviews <= 0 {
+		cfg.ParallelReviews = 3
 	}
 
 	return &cfg, nil

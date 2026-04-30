@@ -27,10 +27,10 @@ type AIReview struct {
 
 // FileState holds the review status and chat history for a specific file
 type FileState struct {
-	Status   ReviewStatus `json:"status"`
-	DiffHash string       `json:"diff_hash"`
-	Chat     []Message    `json:"chat,omitempty"`
-	Review   *AIReview    `json:"review,omitempty"` // AI review result, if available
+	Status        ReviewStatus `json:"status"`
+	DiffHash      string       `json:"diff_hash"`
+	Chat          []Message    `json:"chat,omitempty"`
+	BatchFindings string       `json:"batch_findings,omitempty"` // cached findings from PR-level batch review
 }
 
 // State represents the persisted review state for a single pull request

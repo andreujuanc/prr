@@ -86,7 +86,7 @@ func TestSyncWithDiffs(t *testing.T) {
 		"file3.go": "hash3",          // new
 	}
 
-	state.SyncWithDiffs(currentHashes)
+	state.SyncWithDiffs(currentHashes, map[string]bool{"file1.go": true, "file2.go": true, "file3.go": true})
 
 	// Check file1.go (invalidated)
 	if state.Files["file1.go"].Status != StatusUnreviewed {
@@ -127,7 +127,7 @@ func TestSyncWithDiffs(t *testing.T) {
 		"file3.go": "hash3",
 	}
 	
-	state.SyncWithDiffs(currentHashes2)
+	state.SyncWithDiffs(currentHashes2, map[string]bool{"file1.go": true, "file3.go": true})
 	
 	if _, exists := state.Files["file2.go"]; exists {
 		t.Errorf("file2.go should be removed")
@@ -150,7 +150,7 @@ func TestSyncWithDiffsNoChanges(t *testing.T) {
 		"file1.go": "hash1",
 	}
 
-	state.SyncWithDiffs(currentHashes)
+	state.SyncWithDiffs(currentHashes, map[string]bool{"file1.go": true})
 
 	if len(state.GlobalChat) != 1 {
 		t.Errorf("GlobalChat should NOT be cleared if nothing changed")

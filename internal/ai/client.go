@@ -25,4 +25,6 @@ type ToolConfigurer interface {
 	SetBaseRef(ref string)
 	// SetRawDiffs provides the raw unified diffs for the get_diff tool.
 	SetRawDiffs(diffs map[string]string)
+	// SetReviewGetter provides a function that returns the latest PR review summary.
+	SetReviewGetter(fn func() string)
 }
