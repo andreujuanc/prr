@@ -10,7 +10,7 @@ import (
 // FetchPR uses the GitHub CLI to retrieve PR metadata and file list.
 func FetchPR(prNumber string) (*PullRequest, error) {
 	// Specify the fields we want to retrieve
-	fields := "number,title,body,baseRefName,headRefName,headRefOid,files"
+	fields := "number,title,body,state,baseRefName,headRefName,headRefOid,author,headRepository,reviewDecision,files"
 	
 	cmd := exec.Command("gh", "pr", "view", prNumber, "--json", fields)
 	

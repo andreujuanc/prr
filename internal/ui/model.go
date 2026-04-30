@@ -431,9 +431,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.populateFileList(m.reviewState)
 		m.selectedFile = ""
-		m.diffViewport.SetContent(
-			styleTextMuted.Render(
-				"Select a file to view its diff"))
+		m.diffViewport.SetContent(m.renderOverview())
+		m.diffViewport.GotoTop()
 		chatCmd := m.renderActiveAIView()
 		return m, tea.Batch(fetchComments(m.prNumber), chatCmd)
 
@@ -2310,6 +2309,66 @@ func (m Model) viewHeader() string {
 
 	prInfo := styleTextPrimary.Render(fmt.Sprintf(" · PR #%s", m.prNumber))
 
+	// PR metadata: repo, author, state
+	var meta string
+	if m.pr != nil {
+		var parts []string
+
+		// Repository name (owner/repo)
+		if m.pr.HeadRepository.Owner.Login != "" && m.pr.HeadRepository.Name != "" {
+			repo := m.pr.HeadRepository.Owner.Login + "/" + m.pr.HeadRepository.Name
+			parts = append(parts, styleTextMuted.Render(repo))
+		}
+
+		// Author
+		if m.pr.Author.Login != "" {
+			parts = append(parts, styleTextMuted.Render("by ")+styleTextSecondary.Render(m.pr.Author.Login))
+		}
+
+		// State badge with color
+		if m.pr.State != "" {
+			state := strings.ToUpper(m.pr.State)
+			var stateStyle lipgloss.Style
+			switch strings.ToLower(m.pr.State) {
+			case "open":
+				stateStyle = styleAccentGreen
+			case "merged":
+				stateStyle = lipgloss.NewStyle().Foreground(accentMauve)
+			case "closed":
+				stateStyle = styleAccentRed
+			default:
+				stateStyle = styleTextMuted
+			}
+			parts = append(parts, stateStyle.Render(state))
+		}
+
+		// Review decision
+		if m.pr.ReviewDecision != "" {
+			var decisionStyle lipgloss.Style
+			var label string
+			switch strings.ToUpper(m.pr.ReviewDecision) {
+			case "APPROVED":
+				decisionStyle = styleAccentGreen
+				label = "✓ Approved"
+			case "CHANGES_REQUESTED":
+				decisionStyle = styleAccentRed
+				label = "✗ Changes requested"
+			case "REVIEW_REQUIRED":
+				decisionStyle = styleAccentYellow
+				label = "● Review required"
+			default:
+				decisionStyle = styleTextMuted
+				label = m.pr.ReviewDecision
+			}
+			parts = append(parts, decisionStyle.Render(label))
+		}
+
+		if len(parts) > 0 {
+			sep := styleTextSubtle.Render(" · ")
+			meta = " " + sep + strings.Join(parts, sep)
+		}
+	}
+
 	reviewed, total := m.reviewedCount()
 	var reviewBadge string
 	if total > 0 {
@@ -2322,7 +2381,7 @@ func (m Model) viewHeader() string {
 
 	// Calculate how much room we have for the PR title
 	right := reviewBadge + " "
-	fixedW := ansi.StringWidth(" "+logo+prInfo) + ansi.StringWidth(right) + 2 // 2 for min gap
+	fixedW := ansi.StringWidth(" "+logo+prInfo+meta) + ansi.StringWidth(right) + 2 // 2 for min gap
 	maxTitleW := m.width - fixedW
 
 	prTitle := ""
@@ -2334,7 +2393,7 @@ func (m Model) viewHeader() string {
 		prTitle = styleTextSecondary.Render(fmt.Sprintf(" · %s", t))
 	}
 
-	left := " " + logo + prInfo + prTitle
+	left := " " + logo + prInfo + prTitle + meta
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {
 		gap = 1

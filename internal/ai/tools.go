@@ -394,7 +394,8 @@ func (t *ToolExecutor) getDiff(args map[string]interface{}) string {
 			}
 			if splitText.Len() > 0 {
 				curFiles = []string{p}
-				curText = splitText
+				curText.Reset()
+				curText.WriteString(splitText.String())
 			}
 			continue
 		}
