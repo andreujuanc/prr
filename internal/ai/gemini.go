@@ -38,6 +38,13 @@ func (g *GeminiClient) SetHeadRef(ref string) {
 	}
 }
 
+// SetBaseRef configures the git ref for reading base-branch files.
+func (g *GeminiClient) SetBaseRef(ref string) {
+	if g.ToolExecutor != nil {
+		g.ToolExecutor.BaseRef = ref
+	}
+}
+
 // SetRawDiffs provides the raw unified diffs for the get_diff tool.
 func (g *GeminiClient) SetRawDiffs(diffs map[string]string) {
 	if g.ToolExecutor != nil {

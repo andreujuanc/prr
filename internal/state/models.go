@@ -19,19 +19,27 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+// AIReview stores the result of an AI review for a file or the overall PR.
+type AIReview struct {
+	Summary  string `json:"summary"`            // rendered final review text
+	Findings string `json:"findings,omitempty"`  // per-batch raw findings (PR-level only)
+}
+
 // FileState holds the review status and chat history for a specific file
 type FileState struct {
 	Status   ReviewStatus `json:"status"`
 	DiffHash string       `json:"diff_hash"`
 	Chat     []Message    `json:"chat,omitempty"`
+	Review   *AIReview    `json:"review,omitempty"` // AI review result, if available
 }
 
 // State represents the persisted review state for a single pull request
 type State struct {
 	mu sync.RWMutex
 
-	PRNumber   string               `json:"pr_number"`
-	GlobalChat []Message            `json:"global_chat,omitempty"`
+	PRNumber   string                `json:"pr_number"`
+	GlobalChat []Message             `json:"global_chat,omitempty"`
+	Review     *AIReview             `json:"review,omitempty"` // PR-level AI review
 	Files      map[string]*FileState `json:"files"`
 }
 

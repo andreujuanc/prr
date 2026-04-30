@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"prr/internal/ai"
+	"prr/internal/config"
+	"prr/internal/state"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -27,9 +29,12 @@ const batchMaxChars = 20000
 // respecting the size limit. Files in the same directory are grouped
 // together when possible. Large files get their own batch.
 func buildReviewBatches(rawDiffs map[string]string) []reviewBatch {
-	// Group files by parent directory
+	// Group files by parent directory, skipping excluded files
 	dirFiles := make(map[string][]string)
 	for p := range rawDiffs {
+		if config.ShouldExcludeFromReview(p) {
+			continue
+		}
 		dir := filepath.Dir(p)
 		if dir == "." {
 			dir = "root"
@@ -89,12 +94,13 @@ func buildReviewBatches(rawDiffs map[string]string) []reviewBatch {
 // Phase 2: Synthesize all findings into a final review
 //
 // Progress and tokens are sent to the UI via program.Send().
-// Returns an AIChatDoneMsg when complete.
+// Returns an AIChatDoneMsg with Review data for persistence.
 func streamMultiPassReview(
 	ctx context.Context,
 	client ai.Client,
 	prMeta string,
 	rawDiffs map[string]string,
+	customInstructions string,
 	p *tea.Program,
 ) tea.Cmd {
 	return func() tea.Msg {
@@ -132,16 +138,18 @@ func streamMultiPassReview(
 			}
 			p.Send(AIChatDeltaMsg{Token: "\x00DIM:\n"})
 
-			// Build the batch prompt
-			systemPrompt := ai.ReviewBatchPrompt + "\n\n" +
-				"## PR Context\n" + prMeta + "\n" +
-				"## Diffs for this batch\n" + batch.diffs
+			// System prompt is instructions-only; diffs go in the user message
+			systemPrompt := ai.ReviewBatchPrompt + "\n\n## PR Context\n" + prMeta
+			if customInstructions != "" {
+				systemPrompt += "\n\n## Project-Specific Instructions\n\n" + customInstructions
+			}
 
 			messages := []ai.Message{
 				{Role: "user", Content: fmt.Sprintf(
-					"Review these %d file(s): %s",
+					"Review these %d file(s): %s\n\n%s",
 					len(batch.files),
 					strings.Join(batch.files, ", "),
+					batch.diffs,
 				)},
 			}
 
@@ -185,13 +193,19 @@ func streamMultiPassReview(
 			fileListing.WriteString(fmt.Sprintf("  %-50s +%-4d -%d\n", fp, added, removed))
 		}
 
+		// Synthesis prompt includes findings + file listing.
+		// The AI also has get_diff, read_file, read_base_file, search_code tools
+		// to verify claims from the batch reviews.
 		synthesisSystem := ai.ReviewSynthesisPrompt + "\n\n" +
 			"## PR Metadata\n" + prMeta + "\n" +
 			"## Changed Files\n" + fileListing.String() + "\n" +
 			"## Per-batch Findings\n\n" + allFindings.String()
+		if customInstructions != "" {
+			synthesisSystem += "\n\n## Project-Specific Instructions\n\n" + customInstructions
+		}
 
 		synthesisMessages := []ai.Message{
-			{Role: "user", Content: "Synthesize the per-file findings into a final PR review."},
+			{Role: "user", Content: "Synthesize the per-file findings into a final PR review. Use the get_diff tool if you need to verify any findings against the actual code."},
 		}
 
 		// Synthesis header (normal brightness)
@@ -207,6 +221,13 @@ func streamMultiPassReview(
 			return AIChatDoneMsg{Err: fmt.Errorf("synthesis: %w", err)}
 		}
 
-		return AIChatDoneMsg{FullResponse: fullResponse.String()}
+		// Return both findings and synthesis for persistence
+		return AIChatDoneMsg{
+			FullResponse: fullResponse.String(),
+			Review: &state.AIReview{
+				Summary:  fullResponse.String(),
+				Findings: allFindings.String(),
+			},
+		}
 	}
 }

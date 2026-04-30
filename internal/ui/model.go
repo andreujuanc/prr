@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"prr/internal/ai"
+	"prr/internal/config"
 	"prr/internal/git"
 	"prr/internal/state"
 
@@ -69,6 +70,8 @@ type AIChatDeltaMsg struct {
 type AIChatDoneMsg struct {
 	FullResponse string
 	Err          error
+	// Review data — set by multi-pass review and file review for persistence
+	Review *state.AIReview
 }
 
 // aiStreamTickMsg triggers a batched render of accumulated AI tokens.
@@ -94,10 +97,20 @@ type CommentCreatedMsg struct {
 	Err     error
 }
 
-// ChatRenderedMsg is sent when chat history markdown rendering completes.
+// ChatRenderedMsg is sent when chat/review markdown rendering completes.
 type ChatRenderedMsg struct {
 	FilePath string // which file this render is for ("" = overview)
-	Content  string // fully rendered chat content
+	Content  string // fully rendered content
+	Tab      int    // 0 = review, 1 = chat
+}
+
+// logoTickMsg drives the logo color animation during loading.
+type logoTickMsg struct{}
+
+// logo is the ASCII art displayed on the loading screen.
+var logoLines = [2]string{
+	"█▀█ █▀█ █▀█",
+	"█▀▀ █▀▄ █▀▄",
 }
 
 // ── Model ───────────────────────────────────────────────────────────────
@@ -137,6 +150,10 @@ type Model struct {
 	aiReviewTotal      int    // total batches
 	aiReviewLabel      string // current batch label (e.g. "internal/ui")
 	aiReviewPhase      string // "batch" or "synthesis"
+	aiPanelTab         int    // 0 = Review, 1 = Chat
+
+	// Custom review instructions loaded from .prr/instructions.md
+	customInstructions string
 
 	// Comments
 	comments       map[string][]git.ReviewComment // filePath -> comments
@@ -149,6 +166,9 @@ type Model struct {
 	// Panel visibility
 	showFilePanel bool
 	showAIPanel   bool
+
+	// Loading animation
+	logoFrame int // color animation frame counter
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────
@@ -198,26 +218,29 @@ func NewModel(prNumber string, aiClient ai.Client) Model {
 	)
 
 	return Model{
-		fileTree:     newFileTree(nil),
-		diffViewport: diffVp,
-		chatViewport: chatVp,
-		chatInput:    ta,
-		spinner:      s,
-		focusedPane:  PaneFileList,
-		prNumber:     prNumber,
-		loading:      true,
-		loadingMsg:   "Fetching PR data...",
-		aiClient:     aiClient,
-		contextLines: 3,
-		comments:     make(map[string][]git.ReviewComment),
-		commentInput: commentTa,
-		showFilePanel: true,
-		showAIPanel:   true,
+		fileTree:           newFileTree(nil),
+		diffViewport:       diffVp,
+		chatViewport:       chatVp,
+		chatInput:          ta,
+		spinner:            s,
+		focusedPane:        PaneFileList,
+		prNumber:           prNumber,
+		loading:            true,
+		loadingMsg:         "Fetching PR data...",
+		aiClient:           aiClient,
+		contextLines:       3,
+		comments:           make(map[string][]git.ReviewComment),
+		commentInput:       commentTa,
+		showFilePanel:      true,
+		showAIPanel:        true,
+		customInstructions: config.LoadCustomInstructions(),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick, fetchPR(m.prNumber))
+	return tea.Batch(textarea.Blink, m.spinner.Tick, fetchPR(m.prNumber), tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+		return logoTickMsg{}
+	}))
 }
 
 // ── Async commands ──────────────────────────────────────────────────────
@@ -229,9 +252,9 @@ func fetchPR(prNumber string) tea.Cmd {
 	}
 }
 
-func fetchRefs(base, head string) tea.Cmd {
+func fetchRefs(base, head, headRefOid string) tea.Cmd {
 	return func() tea.Msg {
-		err := git.FetchRefs(base, head)
+		err := git.FetchRefs(base, head, headRefOid)
 		return RefsFetchedMsg{Err: err}
 	}
 }
@@ -300,6 +323,24 @@ func streamAIChat(client ai.Client, ctx context.Context, systemPrompt string, me
 	}
 }
 
+// streamAIReview is like streamAIChat but also produces an AIReview for persistence.
+func streamAIReview(client ai.Client, ctx context.Context, systemPrompt string, messages []ai.Message, p *tea.Program) tea.Cmd {
+	return func() tea.Msg {
+		fullResponse, err := client.ChatStream(ctx, systemPrompt, messages, func(token string) {
+			p.Send(AIChatDeltaMsg{Token: token})
+		})
+		if err != nil {
+			return AIChatDoneMsg{FullResponse: fullResponse, Err: err}
+		}
+		return AIChatDoneMsg{
+			FullResponse: fullResponse,
+			Review: &state.AIReview{
+				Summary: fullResponse,
+			},
+		}
+	}
+}
+
 // ── Update ──────────────────────────────────────────────────────────────
 
 // SetProgram stores the tea.Program reference needed for streaming.
@@ -325,6 +366,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case logoTickMsg:
+		if m.loading {
+			m.logoFrame++
+			return m, tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+				return logoTickMsg{}
+			})
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -342,12 +392,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pr = msg.PR
-		// Configure AI tools with the PR head ref
+		// Configure AI tools with the PR head and base refs
 		if tc, ok := m.aiClient.(ai.ToolConfigurer); ok {
 			tc.SetHeadRef(fmt.Sprintf("origin/%s", m.pr.HeadRefName))
+			tc.SetBaseRef(fmt.Sprintf("origin/%s", m.pr.BaseRefName))
 		}
 		m.loadingMsg = "Fetching git refs..."
-		return m, fetchRefs(m.pr.BaseRefName, m.pr.HeadRefName)
+		return m, fetchRefs(m.pr.BaseRefName, m.pr.HeadRefName, m.pr.HeadRefOid)
 
 	case RefsFetchedMsg:
 		if msg.Err != nil {
@@ -383,7 +434,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diffViewport.SetContent(
 			styleTextMuted.Render(
 				"Select a file to view its diff"))
-		chatCmd := m.renderChatForFile("")
+		chatCmd := m.renderActiveAIView()
 		return m, tea.Batch(fetchComments(m.prNumber), chatCmd)
 
 	case CommentsFetchedMsg:
@@ -417,8 +468,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case ChatRenderedMsg:
-		// Only apply if we're still looking at the same file
-		if msg.FilePath == m.selectedFile {
+		// Only apply if we're still looking at the same file and tab
+		if msg.FilePath == m.selectedFile && msg.Tab == m.aiPanelTab {
 			m.chatViewport.SetContent(msg.Content)
 			m.chatViewport.GotoTop()
 		}
@@ -502,11 +553,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Sprintf("[error: %v]", msg.Err))
 			m.updateChatViewWithStream()
 		} else {
+			// Save the review if present
+			if msg.Review != nil {
+				m.saveReview(msg.Review)
+			}
 			// Save the completed response to state and re-render async with markdown
 			cmd = m.saveAIResponse(msg.FullResponse)
 			// Clear stream buffer so the raw text doesn't linger while markdown renders
 			m.aiStreamBuffer = ""
 			m.aiChatHistoryCache = ""
+			// If a review was produced, auto-switch to the Review tab
+			if msg.Review != nil {
+				m.aiPanelTab = 0
+				cmd = m.renderActiveAIView()
+			}
 		}
 		return m, cmd
 
@@ -581,11 +641,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.fileTree.selectedIsDir() {
 					m.fileTree.toggle()
 				} else {
-					cmd = m.selectCurrentFile()
-					if cmd != nil {
-						cmds = append(cmds, cmd)
-					}
-					// Move focus to diff pane
+					// Preview already loaded the diff on cursor move;
+					// Enter just moves focus to the diff pane.
 					m.focusedPane = PaneDiff
 					m.syncFocus()
 				}
@@ -743,9 +800,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			case "ctrl+k":
 				m.clearChat()
+			case "tab":
+				// Toggle between Review and Chat tabs
+				m.aiPanelTab = 1 - m.aiPanelTab
+				cmds = append(cmds, m.renderActiveAIView())
 			default:
-				m.chatInput, cmd = m.chatInput.Update(msg)
-				cmds = append(cmds, cmd)
+				// Only allow text input on the Chat tab
+				if m.aiPanelTab == 1 {
+					m.chatInput, cmd = m.chatInput.Update(msg)
+					cmds = append(cmds, cmd)
+				}
 			}
 		} else {
 			// Pass mouse/resize events to viewport for scroll support
@@ -767,6 +831,9 @@ func (m *Model) sendChatMessage() tea.Cmd {
 		return nil
 	}
 
+	// Auto-switch to Chat tab when sending a message
+	m.aiPanelTab = 1
+
 	// Clear input
 	m.chatInput.Reset()
 
@@ -777,22 +844,12 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	// Build conversation history for AI
 	messages := m.buildAIMessages()
 
-	// Determine system prompt and diff context
-	systemPrompt, diffContext := m.getAIContext()
+	// Determine system prompt — keep instructions-only, diff context is in messages
+	systemPrompt := m.getSystemPrompt()
 
-	// Prepend diff context to the system prompt
-	if diffContext != "" {
-		systemPrompt = systemPrompt + "\n\nHere is the code diff for context:\n```\n" + diffContext + "\n```"
-	}
-
-	// Convert state messages to AI messages
-	var aiMessages []ai.Message
-	for _, msg := range messages {
-		aiMessages = append(aiMessages, ai.Message{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
-	}
+	// If this is the first message in a file chat, inject the diff as context
+	// in the first user message position so the AI has it.
+	aiMessages := m.buildAIMessagesWithContext(messages)
 
 	// Start streaming
 	m.aiStreaming = true
@@ -853,8 +910,7 @@ func (m *Model) getAIContext() (string, string) {
 	}
 
 	if m.selectedFile == "" {
-		// PR overview: use all diffs (truncated)
-		// Sort paths for deterministic output and consistent truncation
+		// PR overview: file listing with stats — diffs are fetched via get_diff tool
 		paths := make([]string, 0, len(m.rawDiffs))
 		for p := range m.rawDiffs {
 			paths = append(paths, p)
@@ -863,8 +919,6 @@ func (m *Model) getAIContext() (string, string) {
 
 		var allDiffs strings.Builder
 		allDiffs.WriteString(meta.String())
-
-		// File listing with add/remove stats — diffs are fetched via get_diff tool
 		allDiffs.WriteString(fmt.Sprintf("Files changed (%d):\n", len(paths)))
 		for _, p := range paths {
 			diff := m.rawDiffs[p]
@@ -873,12 +927,67 @@ func (m *Model) getAIContext() (string, string) {
 		}
 		allDiffs.WriteString("\nUse the get_diff tool to read the actual diffs (paginated by file).\n")
 
-		return ai.ReviewPRPrompt, allDiffs.String()
+		return m.withInstructions(ai.ReviewPRPrompt), allDiffs.String()
 	}
 
-	// Single file
+	// Single file — return metadata + diff
 	diff := m.rawDiffs[m.selectedFile]
-	return ai.ChatPrompt, meta.String() + diff
+	return m.withInstructions(ai.ReviewFilePrompt), meta.String() + "File: " + m.selectedFile + "\n```diff\n" + diff + "\n```"
+}
+
+// withInstructions appends custom review instructions to a system prompt.
+func (m *Model) withInstructions(prompt string) string {
+	if m.customInstructions == "" {
+		return prompt
+	}
+	return prompt + "\n\n## Project-Specific Instructions\n\n" + m.customInstructions
+}
+
+// getSystemPrompt returns the appropriate system prompt for the current context.
+// System prompts contain only instructions, never data.
+func (m *Model) getSystemPrompt() string {
+	if m.selectedFile == "" {
+		return m.withInstructions(ai.ChatPrompt)
+	}
+	// Use ReviewFilePrompt for file-level chats — keeps the reviewer persona
+	// consistent across initial review and follow-up questions.
+	return m.withInstructions(ai.ReviewFilePrompt)
+}
+
+// buildAIMessagesWithContext converts state messages to AI messages,
+// injecting diff context as the first message if not already present.
+func (m *Model) buildAIMessagesWithContext(messages []state.Message) []ai.Message {
+	aiMessages := make([]ai.Message, 0, len(messages)+1)
+
+	// For file-level chats, check if diff context is already in the first message
+	// (from triggerAIReview). If not, inject it as a system-context user message.
+	needsContext := m.selectedFile != "" && len(messages) > 0
+	if needsContext {
+		first := messages[0]
+		if first.Role == "user" && !strings.Contains(first.Content, "```diff") {
+			// Inject diff context before the conversation
+			diff := m.rawDiffs[m.selectedFile]
+			if diff != "" {
+				var meta strings.Builder
+				if m.pr != nil {
+					meta.WriteString(fmt.Sprintf("PR #%d: %s\n", m.pr.Number, m.pr.Title))
+					meta.WriteString(fmt.Sprintf("Base: %s → Head: %s\n\n", m.pr.BaseRefName, m.pr.HeadRefName))
+				}
+				contextMsg := fmt.Sprintf("%sHere is the diff for `%s`:\n\n```diff\n%s\n```\n\nI'll be asking questions about this file.",
+					meta.String(), m.selectedFile, diff)
+				aiMessages = append(aiMessages, ai.Message{Role: "user", Content: contextMsg})
+				aiMessages = append(aiMessages, ai.Message{Role: "assistant", Content: "I've reviewed the diff. What would you like to know?"})
+			}
+		}
+	}
+
+	for _, msg := range messages {
+		aiMessages = append(aiMessages, ai.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
+	return aiMessages
 }
 
 func (m *Model) saveAIResponse(response string) tea.Cmd {
@@ -894,8 +1003,30 @@ func (m *Model) saveAIResponse(response string) tea.Cmd {
 		log.Printf("Warning: failed to save chat state: %v", err)
 	}
 
-	// Re-render chat from state (clean render without streaming artifacts)
-	return m.renderChatForFile(m.selectedFile)
+	// Re-render the active view
+	return m.renderActiveAIView()
+}
+
+// saveReview persists an AI review to the state for the current file/PR.
+func (m *Model) saveReview(review *state.AIReview) {
+	if m.reviewState == nil {
+		return
+	}
+
+	if m.selectedFile == "" {
+		m.reviewState.Review = review
+	} else {
+		fs, ok := m.reviewState.Files[m.selectedFile]
+		if !ok {
+			fs = &state.FileState{Status: state.StatusUnreviewed}
+			m.reviewState.Files[m.selectedFile] = fs
+		}
+		fs.Review = review
+	}
+
+	if err := state.Save(m.reviewState); err != nil {
+		log.Printf("Warning: failed to save review state: %v", err)
+	}
 }
 
 func (m *Model) clearChat() {
@@ -982,6 +1113,33 @@ func (m Model) renderChatInputLabel(width int) string {
 	}
 	// Blurred: subtle separator
 	return styleTextSubtle.Render(strings.Repeat("─", width))
+}
+
+// renderAIPanelTitle builds the AI panel title with tab indicators and streaming status.
+func (m Model) renderAIPanelTitle(maxWidth int) string {
+	// During streaming, show progress or spinner instead of tabs
+	if m.aiStreaming {
+		if m.aiReviewTotal > 0 {
+			return m.renderReviewProgress(maxWidth)
+		}
+		tabLabel := "CHAT"
+		if m.aiPanelTab == 0 {
+			tabLabel = "REVIEW"
+		}
+		return tabLabel + " " + m.spinner.View()
+	}
+
+	// Tab indicators: [Review] [Chat] — active tab is highlighted
+	reviewTab := "Review"
+	chatTab := "Chat"
+	if m.aiPanelTab == 0 {
+		reviewTab = styleAccentBlueBold.Render("Review")
+		chatTab = styleTextMuted.Render("Chat")
+	} else {
+		reviewTab = styleTextMuted.Render("Review")
+		chatTab = styleAccentBlueBold.Render("Chat")
+	}
+	return reviewTab + styleTextSubtle.Render(" │ ") + chatTab
 }
 
 // renderReviewProgress renders the AI CHAT panel title with a progress bar
@@ -1256,7 +1414,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		m.aiCancelFn = cancel
 
-		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, program))
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, m.customInstructions, program))
 	}
 
 	// Single file mode
@@ -1267,8 +1425,30 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	if diff == "" {
 		return nil
 	}
-	systemPrompt := ai.ReviewFilePrompt + "\n\nHere is the code diff for the file `" + path + "`:\n```\n" + diff + "\n```"
-	userContent := "Please review this file's changes."
+
+	// Skip files that are excluded from review (lock files, generated code, etc.)
+	if config.ShouldExcludeFromReview(path) {
+		m.aiPanelTab = 0 // switch to Review tab so user sees the message
+		m.chatViewport.SetContent(
+			styleTextMuted.Render("This file is excluded from AI review (lock file, generated code, or vendored dependency)."))
+		return nil
+	}
+
+	// System prompt is instructions-only; diff goes in the user message
+	systemPrompt := m.withInstructions(ai.ReviewFilePrompt)
+
+	// For large diffs, instruct the AI to use the get_diff tool instead of
+	// pasting the full diff inline. This avoids hitting context limits.
+	const largeDiffThreshold = 5000
+	var userContent string
+	if len(diff) > largeDiffThreshold {
+		userContent = fmt.Sprintf(
+			"Please review the changes to `%s`. The diff is large (%d chars), so use the get_diff tool to read it.",
+			path, len(diff),
+		)
+	} else {
+		userContent = fmt.Sprintf("Please review the changes to `%s`.\n\n```diff\n%s\n```", path, diff)
+	}
 
 	// Add to state
 	userStateMsg := state.Message{Role: "user", Content: userContent}
@@ -1276,13 +1456,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Build full conversation history so the AI sees prior messages
 	messages := m.buildAIMessages()
-	var aiMessages []ai.Message
-	for _, msg := range messages {
-		aiMessages = append(aiMessages, ai.Message{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
-	}
+	aiMessages := m.buildAIMessagesWithContext(messages)
 
 	// Start streaming
 	m.aiStreaming = true
@@ -1293,7 +1467,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	m.aiCancelFn = cancel
 
-	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
+	return tea.Batch(m.spinner.Tick, streamAIReview(m.aiClient, ctx, systemPrompt, aiMessages, program))
 }
 
 func (m *Model) jumpToUnreviewed(direction int) {
@@ -1400,7 +1574,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 		m.diffViewport.SetContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
-		return m.renderChatForFile("")
+		return m.renderActiveAIView()
 	}
 
 	path := m.fileTree.selectedPath()
@@ -1411,7 +1585,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	m.selectedFile = path
 	m.diffViewport.SetContent(
 		styleTextMuted.Render("Loading diff..."))
-	chatCmd := m.renderChatForFile(path)
+	chatCmd := m.renderActiveAIView()
 	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
 	return tea.Batch(chatCmd, diffCmd)
 }
@@ -1430,7 +1604,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 		m.diffViewport.SetContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
-		return m.renderChatForFile("")
+		return m.renderActiveAIView()
 	}
 
 	path := m.fileTree.selectedPath()
@@ -1441,9 +1615,69 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 	m.selectedFile = path
 	m.diffViewport.SetContent(
 		styleTextMuted.Render("Loading diff..."))
-	chatCmd := m.renderChatForFile(path)
+	chatCmd := m.renderActiveAIView()
 	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
 	return tea.Batch(chatCmd, diffCmd)
+}
+
+// renderActiveAIView renders the currently selected AI panel tab for the current file.
+func (m *Model) renderActiveAIView() tea.Cmd {
+	if m.aiPanelTab == 0 {
+		return m.renderReviewForFile(m.selectedFile)
+	}
+	return m.renderChatForFile(m.selectedFile)
+}
+
+// renderReviewForFile renders the AI review content for a file (or PR overview).
+func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
+	if m.reviewState == nil {
+		m.chatViewport.SetContent(
+			styleTextMuted.Render("No AI review yet. Press 'a' to start a review."))
+		return nil
+	}
+
+	var review *state.AIReview
+
+	if filePath == "" {
+		review = m.reviewState.Review
+	} else {
+		if fs, ok := m.reviewState.Files[filePath]; ok {
+			review = fs.Review
+		}
+	}
+
+	if review == nil {
+		hint := "Press 'a' to start an AI review"
+		if filePath == "" {
+			hint += " of this PR."
+		} else {
+			hint += " of this file."
+		}
+		m.chatViewport.SetContent(styleTextMuted.Render(hint))
+		return nil
+	}
+
+	// Show placeholder, render markdown async
+	m.chatViewport.SetContent(styleTextMuted.Render("Rendering review..."))
+
+	width := m.chatViewport.Width - 2
+	summary := review.Summary
+	findings := review.Findings
+	fp := filePath
+
+	return func() tea.Msg {
+		var b strings.Builder
+
+		// Render findings if present (PR-level multi-pass)
+		if findings != "" {
+			b.WriteString(styleTextMuted.Render("─── Per-file Findings ───") + "\n\n")
+			b.WriteString(renderMarkdown(findings, width) + "\n\n")
+			b.WriteString(styleTextMuted.Render("─── Final Review ───") + "\n\n")
+		}
+
+		b.WriteString(renderMarkdown(summary, width))
+		return ChatRenderedMsg{FilePath: fp, Content: b.String(), Tab: 0}
+	}
 }
 
 func (m *Model) renderChatForFile(filePath string) tea.Cmd {
@@ -1464,8 +1698,13 @@ func (m *Model) renderChatForFile(filePath string) tea.Cmd {
 	}
 
 	if len(messages) == 0 {
-		m.chatViewport.SetContent(
-			styleTextMuted.Render("No chat history for this file"))
+		hint := "Type a message to ask questions"
+		if filePath != "" {
+			hint += " about this file."
+		} else {
+			hint += " about this PR."
+		}
+		m.chatViewport.SetContent(styleTextMuted.Render(hint))
 		m.chatViewport.GotoTop()
 		return nil
 	}
@@ -1495,7 +1734,7 @@ func (m *Model) renderChatForFile(filePath string) tea.Cmd {
 				b.WriteString(styleTextSecondary.Render(msg.Content) + "\n\n")
 			}
 		}
-		return ChatRenderedMsg{FilePath: fp, Content: b.String()}
+		return ChatRenderedMsg{FilePath: fp, Content: b.String(), Tab: 1}
 	}
 }
 
@@ -1815,15 +2054,76 @@ func (m Model) View() string {
 	}
 
 	if m.loading {
+		// Gradient colors for the logo sweep animation (Catppuccin palette)
+		logoColors := [5]lipgloss.Color{
+			lipgloss.Color("#585B70"), // subtle
+			lipgloss.Color("#6C7086"), // muted
+			lipgloss.Color("#89B4FA"), // blue (highlight)
+			lipgloss.Color("#CBA6F7"), // mauve
+			lipgloss.Color("#585B70"), // subtle
+		}
+
+		// Render logo with gradient sweep
+		// Each rune column gets a color based on (column + frame) mod len(colors)
+		var logoRendered []string
+		for _, line := range logoLines {
+			var b strings.Builder
+			runes := []rune(line)
+			for i, r := range runes {
+				if r == ' ' {
+					b.WriteRune(' ')
+					continue
+				}
+				ci := (i/2 + m.logoFrame) % len(logoColors)
+				style := lipgloss.NewStyle().Foreground(logoColors[ci])
+				b.WriteString(style.Render(string(r)))
+			}
+			logoRendered = append(logoRendered, b.String())
+		}
+
 		spin := m.spinner.View()
 		msg := styleTextSecondary.Render(" " + m.loadingMsg)
-		// Pad to full terminal height to prevent flicker on transition
-		content := "\n  " + spin + msg
-		lines := strings.Count(content, "\n") + 1
-		if lines < m.height {
-			content += strings.Repeat("\n", m.height-lines)
+		statusLine := spin + msg
+
+		// Measure widths for centering
+		logoVisualWidth := ansi.StringWidth(logoLines[0])
+		statusWidth := ansi.StringWidth(statusLine)
+		maxWidth := logoVisualWidth
+		if statusWidth > maxWidth {
+			maxWidth = statusWidth
 		}
-		return content
+
+		// Build centered content block
+		totalLines := len(logoRendered) + 1 + 1 // logo + blank + status
+		padTop := 0
+		if m.height > totalLines {
+			padTop = (m.height - totalLines) / 2
+		}
+
+		var content strings.Builder
+		content.WriteString(strings.Repeat("\n", padTop))
+		for _, line := range logoRendered {
+			pad := 0
+			if m.width > logoVisualWidth {
+				pad = (m.width - logoVisualWidth) / 2
+			}
+			content.WriteString(strings.Repeat(" ", pad) + line + "\n")
+		}
+		// Blank line between logo and status
+		content.WriteString("\n")
+		pad := 0
+		if m.width > statusWidth {
+			pad = (m.width - statusWidth) / 2
+		}
+		content.WriteString(strings.Repeat(" ", pad) + statusLine)
+
+		// Pad to full terminal height to prevent flicker on transition
+		result := content.String()
+		lines := strings.Count(result, "\n") + 1
+		if lines < m.height {
+			result += strings.Repeat("\n", m.height-lines)
+		}
+		return result
 	}
 
 	cols := m.columns()
@@ -1859,17 +2159,18 @@ func (m Model) View() string {
 
 	if m.showAIPanel {
 		cw := cols[2] - 2 // content width inside borders
-		inputLabel := m.renderChatInputLabel(cw)
-		chatBody := m.chatViewport.View() + "\n" + inputLabel + "\n" + m.chatInput.View()
-		chatTitle := "AI CHAT"
-		if m.aiStreaming {
-			if m.aiReviewTotal > 0 {
-				// Multi-pass review — show progress bar
-				chatTitle = m.renderReviewProgress(cw)
-			} else {
-				chatTitle = "AI CHAT " + m.spinner.View()
-			}
+
+		// Build chat body — show input only on Chat tab
+		var chatBody string
+		if m.aiPanelTab == 1 {
+			inputLabel := m.renderChatInputLabel(cw)
+			chatBody = m.chatViewport.View() + "\n" + inputLabel + "\n" + m.chatInput.View()
+		} else {
+			chatBody = m.chatViewport.View()
 		}
+
+		// Build title with tab indicators
+		chatTitle := m.renderAIPanelTitle(cw)
 		right := m.renderPane(chatTitle, chatBody, cols[2], ih, m.focusedPane == PaneChat)
 		paneList = append(paneList, " ", right)
 	}
@@ -2057,13 +2358,14 @@ func (m Model) viewFooter() string {
 
 	// Common bindings
 	bindings := []struct{ key, desc string }{
-		{"Tab", "next pane"},
 		{"S-Tab", "prev pane"},
 	}
 
 	// Pane-specific bindings
 	switch m.focusedPane {
 	case PaneFileList:
+		// Tab cycles panes from file list
+		bindings = append([]struct{ key, desc string }{{"Tab", "next pane"}}, bindings...)
 		aiLabel := "AI review file"
 		if m.selectedFile == "" {
 			aiLabel = "AI review PR"
@@ -2082,6 +2384,8 @@ func (m Model) viewFooter() string {
 			struct{ key, desc string }{"a", aiLabel},
 		)
 	case PaneDiff:
+		// Tab cycles panes from diff
+		bindings = append([]struct{ key, desc string }{{"Tab", "next pane"}}, bindings...)
 		aiLabel := "AI review file"
 		if m.selectedFile == "" {
 			aiLabel = "AI review PR"
@@ -2093,9 +2397,13 @@ func (m Model) viewFooter() string {
 			struct{ key, desc string }{"a", aiLabel},
 		)
 	case PaneChat:
-		bindings = append(bindings,
-			struct{ key, desc string }{"Enter", "send"},
-		)
+		// Tab toggles Review/Chat tabs in the AI panel
+		bindings = append([]struct{ key, desc string }{{"Tab", "review/chat"}}, bindings...)
+		if m.aiPanelTab == 1 {
+			bindings = append(bindings,
+				struct{ key, desc string }{"Enter", "send"},
+			)
+		}
 		if m.aiStreaming {
 			bindings = append(bindings,
 				struct{ key, desc string }{"Esc", "cancel AI"},

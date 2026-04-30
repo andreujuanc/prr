@@ -11,6 +11,7 @@ import (
 // ToolExecutor handles executing tool calls from the LLM.
 type ToolExecutor struct {
 	HeadRef  string            // e.g. "origin/feature-branch" — the PR head ref for git show
+	BaseRef  string            // e.g. "origin/main" — the PR base ref for reading pre-change files
 	RawDiffs map[string]string // filePath -> raw unified diff (set by UI after PR load)
 }
 
@@ -21,7 +22,7 @@ func ToolDeclarations() []geminiTool {
 			FunctionDeclarations: []geminiFunction{
 				{
 					Name:        "read_file",
-					Description: "Read the contents of a file from the PR branch. Returns paginated content. Use offset and limit to read large files in chunks.",
+					Description: "Read a file from the PR branch (after changes). Returns paginated content with line numbers. Use offset and limit for large files.",
 					Parameters: geminiSchema{
 						Type: "OBJECT",
 						Properties: map[string]geminiSchema{
@@ -39,6 +40,50 @@ func ToolDeclarations() []geminiTool {
 							},
 						},
 						Required: []string{"path"},
+					},
+				},
+				{
+					Name:        "read_base_file",
+					Description: "Read a file from the base branch (before changes). Useful for understanding what the code looked like before the PR, comparing old vs new implementations, and verifying refactors. Returns paginated content with line numbers.",
+					Parameters: geminiSchema{
+						Type: "OBJECT",
+						Properties: map[string]geminiSchema{
+							"path": {
+								Type:        "STRING",
+								Description: "File path relative to the repository root",
+							},
+							"offset": {
+								Type:        "INTEGER",
+								Description: "Line number to start reading from (1-indexed, default: 1)",
+							},
+							"limit": {
+								Type:        "INTEGER",
+								Description: "Maximum number of lines to return (default: 200, max: 500)",
+							},
+						},
+						Required: []string{"path"},
+					},
+				},
+				{
+					Name:        "search_code",
+					Description: "Search for a pattern across all files in the PR branch using regex. Returns matching lines with file paths and line numbers. Useful for finding callers, usages, type definitions, and related code.",
+					Parameters: geminiSchema{
+						Type: "OBJECT",
+						Properties: map[string]geminiSchema{
+							"pattern": {
+								Type:        "STRING",
+								Description: "Regular expression pattern to search for (e.g. 'func.*Handler', 'import.*fmt')",
+							},
+							"path": {
+								Type:        "STRING",
+								Description: "Optional directory or file to scope the search (default: entire repo)",
+							},
+							"max_results": {
+								Type:        "INTEGER",
+								Description: "Maximum number of matching lines to return (default: 50, max: 200)",
+							},
+						},
+						Required: []string{"pattern"},
 					},
 				},
 				{
@@ -76,7 +121,11 @@ func ToolDeclarations() []geminiTool {
 func (t *ToolExecutor) ExecuteTool(name string, args map[string]interface{}) string {
 	switch name {
 	case "read_file":
-		return t.readFile(args)
+		return t.readFile(args, t.HeadRef)
+	case "read_base_file":
+		return t.readFile(args, t.BaseRef)
+	case "search_code":
+		return t.searchCode(args)
 	case "list_files":
 		return t.listFiles(args)
 	case "get_diff":
@@ -86,10 +135,14 @@ func (t *ToolExecutor) ExecuteTool(name string, args map[string]interface{}) str
 	}
 }
 
-func (t *ToolExecutor) readFile(args map[string]interface{}) string {
+// readFile reads a file at the given git ref with pagination.
+func (t *ToolExecutor) readFile(args map[string]interface{}, ref string) string {
 	path, _ := args["path"].(string)
 	if path == "" {
 		return "Error: 'path' is required"
+	}
+	if ref == "" {
+		return "Error: git ref not configured"
 	}
 
 	offset := 1
@@ -111,18 +164,15 @@ func (t *ToolExecutor) readFile(args map[string]interface{}) string {
 		limit = 500
 	}
 
-	// Read file from the PR head ref
-	ref := t.HeadRef
 	cmd := exec.Command("git", "show", fmt.Sprintf("%s:%s", ref, path))
 	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Sprintf("Error reading file '%s': %v", path, err)
+		return fmt.Sprintf("Error reading file '%s' at ref '%s': %v", path, ref, err)
 	}
 
 	lines := strings.Split(string(out), "\n")
 	totalLines := len(lines)
 
-	// Apply pagination
 	startIdx := offset - 1
 	if startIdx >= totalLines {
 		return fmt.Sprintf("File '%s' has %d lines, offset %d is past the end", path, totalLines, offset)
@@ -140,6 +190,73 @@ func (t *ToolExecutor) readFile(args map[string]interface{}) string {
 	}
 	if endIdx < totalLines {
 		result.WriteString(fmt.Sprintf("\n... %d more lines. Use offset=%d to continue reading.", totalLines-endIdx, endIdx+1))
+	}
+
+	return result.String()
+}
+
+// searchCode uses git grep to search for a pattern in the PR branch.
+func (t *ToolExecutor) searchCode(args map[string]interface{}) string {
+	pattern, _ := args["pattern"].(string)
+	if pattern == "" {
+		return "Error: 'pattern' is required"
+	}
+
+	maxResults := 50
+	if v, ok := args["max_results"].(float64); ok {
+		maxResults = int(v)
+	}
+	if maxResults < 1 {
+		maxResults = 1
+	}
+	if maxResults > 200 {
+		maxResults = 200
+	}
+
+	ref := t.HeadRef
+	if ref == "" {
+		return "Error: git ref not configured"
+	}
+
+	// Build git grep command
+	cmdArgs := []string{"grep", "-n", "-E", "--no-color", pattern, ref}
+
+	// Optional path scope
+	if scopePath, ok := args["path"].(string); ok && scopePath != "" {
+		cmdArgs = append(cmdArgs, "--", scopePath)
+	}
+
+	cmd := exec.Command("git", cmdArgs...)
+	out, err := cmd.Output()
+	if err != nil {
+		// git grep returns exit code 1 when no matches found
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return fmt.Sprintf("No matches found for pattern: %s", pattern)
+		}
+		return fmt.Sprintf("Error searching: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	totalMatches := len(lines)
+
+	// Strip the ref prefix from each line (git grep outputs "ref:path:line:content")
+	refPrefix := ref + ":"
+	var result strings.Builder
+	result.WriteString(fmt.Sprintf("Search: %s (%d match(es))\n", pattern, totalMatches))
+	result.WriteString(strings.Repeat("─", 40) + "\n")
+
+	shown := 0
+	for _, line := range lines {
+		if shown >= maxResults {
+			break
+		}
+		line = strings.TrimPrefix(line, refPrefix)
+		result.WriteString(line + "\n")
+		shown++
+	}
+
+	if totalMatches > maxResults {
+		result.WriteString(fmt.Sprintf("\n... %d more matches not shown. Use max_results=%d or narrow the path.", totalMatches-maxResults, totalMatches))
 	}
 
 	return result.String()

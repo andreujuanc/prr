@@ -10,9 +10,33 @@ import (
 	"time"
 )
 
+// GetLocalRefHash resolves a remote-tracking ref (e.g. "origin/main") to its
+// commit hash, returning an empty string if the ref doesn't exist locally.
+func GetLocalRefHash(ref string) string {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ref)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(stdout.String())
+}
+
 // FetchRefs ensures that the local git repository has the latest
 // commits for the base and head branches of the pull request.
-func FetchRefs(base, head string) error {
+// If headRefOid is provided and matches the local origin/<head> ref,
+// the fetch is skipped since the local repo is already up-to-date.
+func FetchRefs(base, head, headRefOid string) error {
+	// Check if the local head ref already matches the latest remote commit.
+	// If so, we also verify the base ref exists locally and skip the fetch.
+	if headRefOid != "" {
+		localHead := GetLocalRefHash("origin/" + head)
+		localBase := GetLocalRefHash("origin/" + base)
+		if localHead == headRefOid && localBase != "" {
+			return nil
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
