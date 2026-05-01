@@ -1,0 +1,181 @@
+# prr
+
+AI-powered pull request reviewer in your terminal. Review diffs, navigate findings, comment, and submit — without leaving the CLI.
+
+Built with Go and [Bubble Tea](https://github.com/charmbracelet/bubbletea). Diffs styled by [delta](https://github.com/dandavison/delta).
+
+## Prerequisites
+
+- [Go 1.22+](https://go.dev/dl/)
+- [gh](https://cli.github.com/) (GitHub CLI, authenticated)
+- [delta](https://github.com/dandavison/delta) (git-delta)
+- A Gemini API key
+
+## Install
+
+```bash
+go install github.com/andreujuanc/prr/cmd/prr@latest
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/andreujuanc/prr.git
+cd prr
+go build -o prr ./cmd/prr
+```
+
+## Setup
+
+On first run, prr creates `~/.config/prr/config.json`:
+
+```json
+{
+  "provider": "gemini",
+  "api_key": "YOUR_API_KEY",
+  "model": "gemini-2.5-pro",
+  "parallel_reviews": 3
+}
+```
+
+Set your API key and you're ready to go.
+
+## Usage
+
+```bash
+prr 42        # Review PR #42
+prr           # Pick from open PRs
+prr --debug   # Enable debug logging
+```
+
+## Features
+
+**Three-pane layout** — file tree, diff viewer, and AI panel side by side.
+
+**AI-powered review** — Multi-pass batch review with structured findings. The AI reads diffs, uses tools (grep, git blame, read file), and produces a prioritized list of issues with severity ratings and a recommended verdict.
+
+**Review workflow** — Track file review status, navigate between unreviewed files, submit your review to GitHub with approve/comment/request-changes verdicts.
+
+**Inline comments** — Position cursor on any diff line and press `c` to leave a review comment directly on the PR.
+
+**Chat** — Ask follow-up questions about any file or the PR as a whole. The AI has access to the full codebase via tools.
+
+**Model switching** — Press `m` to switch between models on the fly. Choice is persisted to config.
+
+**Smart caching** — Per-file review findings are cached. Re-running a review only re-analyzes changed files. Stale reviews are detected and flagged.
+
+**Refresh from origin** — Press `o` to pull the latest changes without restarting.
+
+## Keybindings
+
+### Global
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` | Cycle panes |
+| `Ctrl+A` | Toggle AI panel |
+| `Ctrl+B` | Toggle file panel |
+| `a` | AI review (file or full PR) |
+| `A` | Force re-review (ignore cache) |
+| `m` | Switch model |
+| `?` | Help |
+| `q` | Quit |
+
+### File List
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate files |
+| `Enter` | Select file |
+| `l` / `h` | Expand / collapse directory |
+| `Space` | Toggle reviewed status |
+| `r` | Hide/show reviewed files |
+| `n` / `p` | Next / previous unreviewed |
+| `o` | Refresh PR from origin |
+
+### Diff
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move cursor |
+| `G` / `g` | Jump to bottom / top |
+| `Ctrl+D` / `Ctrl+U` | Half-page down / up |
+| `+` / `-` | More / less context lines |
+| `Space` | Toggle reviewed status |
+| `n` / `p` | Next / previous unreviewed |
+| `c` | Comment on line |
+
+### Review Panel
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate findings |
+| `Enter` | Jump to finding in diff |
+| `Tab` | Switch to Chat tab |
+| `Ctrl+S` | Submit review to GitHub |
+
+### Chat Panel
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message |
+| `Ctrl+K` | Clear chat history |
+| `Tab` | Switch to Review tab |
+
+## Custom Instructions
+
+Add project-specific review instructions that get included in every AI review:
+
+```
+.prr/instructions.md          # preferred
+.github/prr-instructions.md   # alternative
+```
+
+Example:
+
+```markdown
+- This project uses the repository pattern; data access should go through repository interfaces
+- Error handling must use wrapped errors with fmt.Errorf("context: %w", err)
+- All public functions need doc comments
+```
+
+## Model Configuration
+
+Model parameters are in `~/.config/prr/models.json`:
+
+```json
+{
+  "gemini-2.5-flash": {
+    "max_output_tokens": 65536,
+    "temperature": 0.2,
+    "thinking_budget": 8192
+  }
+}
+```
+
+Available models (switchable with `m`):
+
+| Model | Thinking |
+|-------|----------|
+| `gemini-3.1-pro-preview` | Yes (16K budget) |
+| `gemini-3.1-flash-lite-preview` | Yes (8K budget) |
+| `gemini-2.5-flash` | Yes (8K budget) |
+
+## Files Excluded from AI Review
+
+prr automatically skips files that aren't useful for code review:
+
+- **Binary files** — images, fonts, archives, compiled artifacts
+- **Generated files** — lock files, `.min.js`, `.pb.go`, `.gen.go`
+- **Large diffs** — files with diffs exceeding 100KB
+- **Vendored code** — `vendor/`, `node_modules/`
+
+Excluded files still appear in the file tree (dimmed with a tag) but aren't sent to the AI.
+
+## State
+
+Review state is stored per-PR at `.git/pr-tui/<pr_number>.json`. This includes review status per file, cached AI findings, and chat history. State is local to your clone and not committed.
+
+## License
+
+MIT
