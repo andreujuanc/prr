@@ -97,15 +97,15 @@ func GetStyledDiffWithContext(base, head, file string, contextLines int) (string
 		"--dark",
 		"--syntax-theme=Nord",
 
-		// Added lines: subtle green tint
-		"--plus-style", "syntax #1a2e22",
-		"--plus-emph-style", "syntax #264032",
-		"--plus-empty-line-marker-style", "syntax #1a2e22",
+		// Added lines: green-tinted background
+		"--plus-style", "syntax #122f1c",
+		"--plus-emph-style", "syntax #1a4028",
+		"--plus-empty-line-marker-style", "syntax #122f1c",
 
-		// Removed lines: warm red tint
-		"--minus-style", "syntax #3b1e26",
-		"--minus-emph-style", "syntax #55293a",
-		"--minus-empty-line-marker-style", "syntax #3b1e26",
+		// Removed lines: red-tinted background
+		"--minus-style", "syntax #361420",
+		"--minus-emph-style", "syntax #4d1a2a",
+		"--minus-empty-line-marker-style", "syntax #361420",
 
 		// Hunk headers: mauve text, boxed in surface color
 		"--hunk-header-style", "file line-number #CBA6F7",

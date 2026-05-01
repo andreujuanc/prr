@@ -488,7 +488,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.loading = false
 			m.loadingMsg = ""
-			m.diffViewport.SetContent(
+			m.setDiffContent(
 				styleAccentRed.Render(
 					fmt.Sprintf("Error fetching PR: %v", msg.Err)))
 			return m, nil
@@ -517,7 +517,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.loading = false
 			m.loadingMsg = ""
-			m.diffViewport.SetContent(
+			m.setDiffContent(
 				styleAccentRed.Render(
 					fmt.Sprintf("Error fetching refs: %v", msg.Err)))
 			m.populateFileList(nil)
@@ -530,7 +530,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.loadingMsg = ""
 		if msg.Err != nil {
-			m.diffViewport.SetContent(
+			m.setDiffContent(
 				styleAccentRed.Render(
 					fmt.Sprintf("Error syncing state: %v", msg.Err)))
 			m.populateFileList(nil)
@@ -551,7 +551,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.populateFileList(m.reviewState)
 		m.selectedFile = ""
-		m.diffViewport.SetContent(m.renderOverview())
+		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		chatCmd := m.renderActiveAIView()
 		return m, tea.Batch(fetchComments(m.prNumber), chatCmd)
@@ -570,7 +570,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CommentCreatedMsg:
 		if msg.Err != nil {
-			m.diffViewport.SetContent(
+			m.setDiffContent(
 				styleAccentRed.Render(
 					fmt.Sprintf("Error posting comment: %v", msg.Err)))
 		} else if msg.Comment != nil {
@@ -629,7 +629,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StyledDiffMsg:
 		if msg.Err != nil {
-			m.diffViewport.SetContent(
+			m.setDiffContent(
 				styleAccentRed.Render(
 					fmt.Sprintf("Error loading diff: %v", msg.Err)))
 		} else {
@@ -644,7 +644,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diffContent = content // cache for line scanning
 				savedOffset := m.diffViewport.YOffset
 				savedCursor := m.diffCursor
-				m.diffViewport.SetContent(content)
+				m.setDiffContent(content)
 				if msg.Reload {
 					m.diffViewport.SetYOffset(savedOffset)
 					m.diffCursor = savedCursor
@@ -1183,8 +1183,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "k", "up":
 				m.moveDiffCursor(-1)
 				return m, nil
+			case "G", "end":
+				// Jump to bottom of diff
+				total := m.diffViewport.TotalLineCount()
+				vpH := m.diffViewport.Height
+				maxOffset := total - vpH
+				if maxOffset < 0 {
+					maxOffset = 0
+				}
+				m.diffViewport.SetYOffset(maxOffset)
+				visible := m.diffViewport.VisibleLineCount()
+				if visible > 0 {
+					m.diffCursor = visible - 1
+				}
+				return m, nil
+			case "g", "home":
+				// Jump to top of diff (gg in vim)
+				m.diffViewport.GotoTop()
+				m.diffCursor = 0
+				return m, nil
+			case "ctrl+d":
+				// Half-page down
+				half := m.diffViewport.Height / 2
+				if half < 1 {
+					half = 1
+				}
+				m.diffViewport.LineDown(half)
+				m.clampDiffCursor()
+				return m, nil
+			case "ctrl+u":
+				// Half-page up
+				half := m.diffViewport.Height / 2
+				if half < 1 {
+					half = 1
+				}
+				m.diffViewport.LineUp(half)
+				m.clampDiffCursor()
+				return m, nil
+			case "pgdown", "ctrl+f":
+				m.diffViewport.LineDown(m.diffViewport.Height)
+				m.clampDiffCursor()
+				return m, nil
+			case "pgup", "ctrl+b":
+				m.diffViewport.LineUp(m.diffViewport.Height)
+				m.clampDiffCursor()
+				return m, nil
 			default:
+				prev := m.diffViewport.YOffset
 				m.diffViewport, cmd = m.diffViewport.Update(msg)
+				if m.diffViewport.YOffset != prev {
+					m.clampDiffCursor()
+				}
 				cmds = append(cmds, cmd)
 			}
 		} else {
@@ -1866,6 +1915,36 @@ func truncateToWidth(s string, maxW int) string {
 	return b.String()
 }
 
+// clampDiffCursor ensures diffCursor is within valid bounds after a viewport
+// scroll that didn't go through moveDiffCursor (e.g. page down, G).
+func (m *Model) clampDiffCursor() {
+	visible := m.diffViewport.VisibleLineCount()
+	if m.diffCursor >= visible {
+		m.diffCursor = visible - 1
+	}
+	if m.diffCursor < 0 {
+		m.diffCursor = 0
+	}
+}
+
+// setDiffContent sets viewport content after truncating lines to viewport width.
+// This prevents lipgloss wrapping inside the viewport's View(), which would
+// cause a mismatch between logical line count (used for scrolling) and visual
+// line count (used for rendering), making the bottom of long diffs unreachable.
+func (m *Model) setDiffContent(content string) {
+	w := m.diffViewport.Width
+	if w > 0 {
+		lines := strings.Split(content, "\n")
+		for i, line := range lines {
+			if ansi.StringWidth(line) > w {
+				lines[i] = ansi.Truncate(line, w, "")
+			}
+		}
+		content = strings.Join(lines, "\n")
+	}
+	m.diffViewport.SetContent(content)
+}
+
 // getDiffCursorLine returns the file line number at the current diff cursor position
 // by parsing it directly from the rendered viewport output.
 func (m *Model) getDiffCursorLine() int {
@@ -2182,7 +2261,7 @@ func (m *Model) jumpToFinding(idx int) tea.Cmd {
 	m.chatInput.Blur()
 
 	// Load the diff
-	m.diffViewport.SetContent(styleTextMuted.Render("Loading diff..."))
+	m.setDiffContent(styleTextMuted.Render("Loading diff..."))
 	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, finding.File, m.contextLines, false)
 	return diffCmd
 }
@@ -2296,7 +2375,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 			return nil // already showing overview
 		}
 		m.selectedFile = ""
-		m.diffViewport.SetContent(m.renderOverview())
+		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
 		return m.renderActiveAIView()
@@ -2308,7 +2387,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	}
 
 	m.selectedFile = path
-	m.diffViewport.SetContent(
+	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
 	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
@@ -2326,7 +2405,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 
 	if m.fileTree.selectedIsOverview() {
 		m.selectedFile = ""
-		m.diffViewport.SetContent(m.renderOverview())
+		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
 		return m.renderActiveAIView()
@@ -2338,7 +2417,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 	}
 
 	m.selectedFile = path
-	m.diffViewport.SetContent(
+	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
 	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)

@@ -35,7 +35,36 @@ func FetchPR(prNumber string) (*PullRequest, error) {
 	}
 	pr.Files = files
 
+	// Fallback: if headRepository is empty, resolve from current repo
+	if pr.HeadRepository.Owner.Login == "" || pr.HeadRepository.Name == "" {
+		if owner, name, err := currentRepo(); err == nil {
+			pr.HeadRepository.Owner.Login = owner
+			pr.HeadRepository.Name = name
+		}
+	}
+
 	return &pr, nil
+}
+
+// currentRepo returns the owner and name of the current GitHub repository
+// by querying the gh CLI.
+func currentRepo() (owner, name string, err error) {
+	cmd := exec.Command("gh", "repo", "view", "--json", "owner,name")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return "", "", err
+	}
+	var repo struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &repo); err != nil {
+		return "", "", err
+	}
+	return repo.Owner.Login, repo.Name, nil
 }
 
 // prFileREST matches the GitHub REST API response for PR file entries.
