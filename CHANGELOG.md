@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/andreujuanc/prr/compare/v1.0.1...v1.1.0) (2026-05-01)
+
+
+### Features
+
+* update all dependencies ([9628845](https://github.com/andreujuanc/prr/commit/96288451a23e781cd6fe04024717b954df76e7ae))
+* update dependencies, code review cleanups, and TUI e2e tests ([a3f169e](https://github.com/andreujuanc/prr/commit/a3f169e0984393879a4949701eab7357bc66d53c))
+
 ## [1.0.1](https://github.com/andreujuanc/prr/compare/v1.0.0...v1.0.1) (2026-05-01)
 
 
