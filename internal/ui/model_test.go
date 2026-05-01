@@ -61,7 +61,7 @@ func testDiffs() map[string]string {
 // that would normally come from async messages (PRFetchedMsg, DiffHashedMsg).
 func newTestModel(t *testing.T) Model {
 	t.Helper()
-	m := NewModel("999", nil, 1)
+	m := NewModel("999", nil, 1, false)
 
 	// Simulate PRFetchedMsg
 	m.pr = testPR()

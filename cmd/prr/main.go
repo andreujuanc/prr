@@ -28,11 +28,14 @@ func main() {
 
 	// Parse flags
 	debug := false
+	useChroma := false
 	args := os.Args[1:]
 	var positional []string
 	for _, arg := range args {
 		if arg == "--debug" {
 			debug = true
+		} else if arg == "--chroma" {
+			useChroma = true
 		} else if arg == "--version" || arg == "-v" {
 			fmt.Println("prr " + version)
 			os.Exit(0)
@@ -50,7 +53,7 @@ func main() {
 	}
 
 	// Pre-flight checks before launching the TUI
-	if err := preflight(prNumber); err != nil {
+	if err := preflight(prNumber, useChroma); err != nil {
 		printError(err)
 		os.Exit(1)
 	}
@@ -62,6 +65,11 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.Debug = debug
+
+	// Apply saved theme
+	if cfg.Theme != "" {
+		ui.SetTheme(ui.ThemeByID(cfg.Theme))
+	}
 
 	// Create AI client based on provider
 	aiClient := createAIClient(cfg)
@@ -77,7 +85,7 @@ func main() {
 	}
 	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s)", prLabel, cfg.Provider, cfg.Model)
 
-	model := ui.NewModel(prNumber, aiClient, cfg.ParallelReviews)
+	model := ui.NewModel(prNumber, aiClient, cfg.ParallelReviews, useChroma)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
 
@@ -124,7 +132,7 @@ func createAIClient(cfg *config.Config) ai.Client {
 
 // ── Pre-flight checks ──────────────────────────────────────────────────
 
-func preflight(prNumber string) error {
+func preflight(prNumber string, useChroma bool) error {
 	// 1. Check we're inside a git repository
 	if err := runSilent("git", "rev-parse", "--git-dir"); err != nil {
 		return fmt.Errorf("not a git repository\n  Run prr from inside a git repo that has the PR you want to review")
@@ -140,21 +148,23 @@ func preflight(prNumber string) error {
 		return fmt.Errorf("gh is not authenticated\n  Run: gh auth login")
 	}
 
-	// 4. Check delta is installed
-	if _, err := exec.LookPath("delta"); err != nil {
-		if runtime.GOOS == "linux" {
-			if err := offerInstallDelta(); err != nil {
-				return err
+	// 4. Check delta is installed (skip when using chroma renderer)
+	if !useChroma {
+		if _, err := exec.LookPath("delta"); err != nil {
+			if runtime.GOOS == "linux" {
+				if err := offerInstallDelta(); err != nil {
+					return err
+				}
+			} else {
+				hint := "Install it:\n"
+				switch runtime.GOOS {
+				case "darwin":
+					hint += "  brew install git-delta"
+				default:
+					hint += "  See https://github.com/dandavison/delta#installation"
+				}
+				return fmt.Errorf("delta is not installed\n  %s", hint)
 			}
-		} else {
-			hint := "Install it:\n"
-			switch runtime.GOOS {
-			case "darwin":
-				hint += "  brew install git-delta"
-			default:
-				hint += "  See https://github.com/dandavison/delta#installation"
-			}
-			return fmt.Errorf("delta is not installed\n  %s", hint)
 		}
 	}
 
@@ -461,7 +471,9 @@ func printUsage() {
 		dim.Render("Usage:"))
 	fmt.Fprintf(os.Stderr, "  %s  prr 42       Review PR #42\n",
 		dim.Render(""))
-	fmt.Fprintf(os.Stderr, "  %s  prr          Pick from open PRs\n\n",
+	fmt.Fprintf(os.Stderr, "  %s  prr          Pick from open PRs\n",
+		dim.Render(""))
+	fmt.Fprintf(os.Stderr, "  %s  prr --chroma  Use experimental chroma renderer (no delta needed)\n\n",
 		dim.Render(""))
 }
 

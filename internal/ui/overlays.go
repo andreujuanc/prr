@@ -220,12 +220,14 @@ func (m Model) helpSections() []helpSection {
 		{
 			title: "GLOBAL",
 			bindings: []helpBinding{
+				{"j/k", "Navigate / move cursor"},
 				{"Tab / S-Tab", "Cycle panes"},
 				{"Ctrl+A", "Toggle AI panel"},
 				{"Ctrl+B", "Toggle file panel"},
 				{"a", "AI review (file or PR)"},
 				{"A", "Force re-review (no cache)"},
 				{"m", "Switch model"},
+				{"T", "Switch theme"},
 				{"?", "Toggle this help"},
 				{"q", "Quit"},
 			},
@@ -233,9 +235,8 @@ func (m Model) helpSections() []helpSection {
 		{
 			title: "FILE LIST",
 			bindings: []helpBinding{
-				{"j/k", "Navigate files"},
 				{"Enter", "Select file"},
-				{"l/h", "Expand / collapse dir"},
+				{"l/h", "Expand dir / go to parent"},
 				{"Space", "Toggle reviewed status"},
 				{"r", "Toggle hide reviewed"},
 				{"n/p", "Next / prev unreviewed"},
@@ -245,13 +246,13 @@ func (m Model) helpSections() []helpSection {
 		{
 			title: "DIFF",
 			bindings: []helpBinding{
-				{"j/k", "Move cursor"},
 				{"G/g", "Jump to bottom / top"},
 				{"Ctrl+D/U", "Half-page down / up"},
 				{"+/-", "More / less context"},
 				{"Space", "Toggle reviewed status"},
 				{"n/p", "Next / prev unreviewed"},
 				{"c", "Comment on line"},
+				{"b", "Toggle git blame"},
 				{"Esc", "Back to review (from finding)"},
 			},
 		},
@@ -262,9 +263,8 @@ func (m Model) helpSections() []helpSection {
 		sections = append(sections, helpSection{
 			title: "REVIEW",
 			bindings: []helpBinding{
-				{"j/k", "Navigate findings"},
 				{"Enter", "Jump to finding"},
-				{"Tab", "Switch to Chat tab"},
+				{"Ctrl+Tab", "Switch sub-tab"},
 				{"Ctrl+S", "Submit review to GitHub"},
 			},
 		})
@@ -274,7 +274,7 @@ func (m Model) helpSections() []helpSection {
 			bindings: []helpBinding{
 				{"Enter", "Send message"},
 				{"Ctrl+K", "Clear chat"},
-				{"Tab", "Switch to Review tab"},
+				{"Ctrl+Tab", "Switch sub-tab"},
 			},
 		})
 	}
@@ -368,7 +368,118 @@ func (m Model) renderSubmitReviewModal() string {
 	return b.String()
 }
 
-// centerOverlay renders content as a centered overlay on top of the existing view.
+// ── Theme Picker ────────────────────────────────────────────────────────
+
+// renderThemePicker renders the theme selection overlay with a color swatch preview.
+func (m Model) renderThemePicker() string {
+	themes := BuiltinThemes()
+
+	width := 52
+	var b strings.Builder
+
+	b.WriteString(styleAccentBlueBold.Render("  SELECT THEME"))
+	b.WriteString("\n\n")
+
+	for i, theme := range themes {
+		isSelected := i == m.themePickerCursor
+		isCurrent := theme.ID == m.themeBeforePicker
+
+		marker := "  "
+		if isSelected {
+			marker = styleAccentBlueBold.Render("> ")
+		}
+
+		name := theme.Name
+		if isSelected {
+			name = styleTextPrimary.Bold(true).Render(name)
+		} else {
+			name = styleTextSecondary.Render(name)
+		}
+
+		// Color swatch: show theme accent colors as colored blocks
+		swatch := lipgloss.NewStyle().Foreground(theme.AccentBlue).Render("\u2588") +
+			lipgloss.NewStyle().Foreground(theme.AccentGreen).Render("\u2588") +
+			lipgloss.NewStyle().Foreground(theme.AccentRed).Render("\u2588") +
+			lipgloss.NewStyle().Foreground(theme.AccentYellow).Render("\u2588") +
+			lipgloss.NewStyle().Foreground(theme.AccentMauve).Render("\u2588") +
+			lipgloss.NewStyle().Foreground(theme.AccentPeach).Render("\u2588")
+
+		suffix := ""
+		if isCurrent {
+			suffix = styleAccentGreen.Render(" *")
+		}
+
+		line := fmt.Sprintf("%s%s  %s%s", marker, swatch, name, suffix)
+		line = truncateToWidth(line, width)
+		b.WriteString(line + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleTextMuted.Render("  j/k preview  Enter apply  Esc cancel"))
+
+	return b.String()
+}
+
+// floatOverlay composites a small floating panel on top of the base view,
+// positioned in the top-right area. Unlike centerOverlay, the base content
+// remains visible so the user can preview theme changes in real time.
+func floatOverlay(base, content string, screenWidth, screenHeight int) string {
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderFocus).
+		Padding(0, 1)
+
+	box := boxStyle.Render(content)
+	boxLines := strings.Split(box, "\n")
+
+	// Measure box width from rendered output
+	boxW := 0
+	for _, l := range boxLines {
+		if w := ansi.StringWidth(l); w > boxW {
+			boxW = w
+		}
+	}
+
+	baseLines := strings.Split(base, "\n")
+	// Pad base to fill screen height if needed
+	for len(baseLines) < screenHeight {
+		baseLines = append(baseLines, "")
+	}
+
+	// Position: top-right with a small margin
+	startRow := 2
+	startCol := screenWidth - boxW - 2
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	// Composite box lines onto base
+	for i, bline := range boxLines {
+		row := startRow + i
+		if row >= len(baseLines) {
+			break
+		}
+		baseLine := baseLines[row]
+		baseW := ansi.StringWidth(baseLine)
+
+		// Build: left portion of base + box line
+		var composed string
+		if startCol <= baseW {
+			composed = ansi.Truncate(baseLine, startCol, "") + bline
+		} else {
+			composed = baseLine +
+				strings.Repeat(" ", startCol-baseW) + bline
+		}
+		baseLines[row] = composed
+	}
+
+	// Trim to screen height
+	if len(baseLines) > screenHeight {
+		baseLines = baseLines[:screenHeight]
+	}
+
+	return strings.Join(baseLines, "\n")
+}
 func centerOverlay(content string, screenWidth, screenHeight int) string {
 	lines := strings.Split(content, "\n")
 
