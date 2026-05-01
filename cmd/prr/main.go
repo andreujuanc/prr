@@ -19,6 +19,9 @@ import (
 	"github.com/muesli/termenv"
 )
 
+// Set by GoReleaser via ldflags at build time.
+var version = "dev"
+
 func main() {
 	// Force truecolor early so styled error output works too
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -30,6 +33,9 @@ func main() {
 	for _, arg := range args {
 		if arg == "--debug" {
 			debug = true
+		} else if arg == "--version" || arg == "-v" {
+			fmt.Println("prr " + version)
+			os.Exit(0)
 		} else if arg == "--help" || arg == "-h" {
 			printUsage()
 			os.Exit(0)
@@ -447,8 +453,9 @@ func printUsage() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
 
-	fmt.Fprintf(os.Stderr, "\n  %s  %s\n\n",
+	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
 		logo.Render("prr"),
+		dim.Render(version),
 		dim.Render("— review PRs in your terminal"))
 	fmt.Fprintf(os.Stderr, "  %s  prr [pr_number]\n\n",
 		dim.Render("Usage:"))
