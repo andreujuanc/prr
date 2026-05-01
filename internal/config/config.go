@@ -12,6 +12,7 @@ type Config struct {
 	Provider        string `json:"provider"` // "gemini", "anthropic", "openai"
 	APIKey          string `json:"api_key"`
 	Model           string `json:"model"`
+	Theme           string `json:"theme,omitempty"`            // UI theme ID (e.g. "catppuccin-mocha", "dracula")
 	ParallelReviews int    `json:"parallel_reviews,omitempty"` // number of concurrent batch reviews (default 3)
 	Debug           bool   `json:"-"`                          // set via --debug flag, not persisted
 }
@@ -114,6 +115,9 @@ func Save(cfg *Config) error {
 	existing["provider"] = cfg.Provider
 	existing["api_key"] = cfg.APIKey
 	existing["model"] = cfg.Model
+	if cfg.Theme != "" {
+		existing["theme"] = cfg.Theme
+	}
 	if cfg.ParallelReviews > 0 {
 		existing["parallel_reviews"] = cfg.ParallelReviews
 	}

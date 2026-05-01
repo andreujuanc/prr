@@ -80,50 +80,90 @@ func GetRawDiffWithContext(base, head, file string, contextLines int) (string, e
 }
 
 // GetStyledDiff runs a git diff and pipes it to delta to get ANSI-styled output.
-func GetStyledDiff(base, head, file string) (string, error) {
-	return GetStyledDiffWithContext(base, head, file, 3)
+func GetStyledDiff(base, head, file string, theme DiffTheme) (string, error) {
+	return GetStyledDiffWithContext(base, head, file, 3, theme)
+}
+
+// DiffTheme holds colors for the styled diff renderer.
+// Populated from the active UI theme so delta output matches.
+type DiffTheme struct {
+	SyntaxTheme       string // delta --syntax-theme value
+	ChromaSyntaxStyle string // chroma style name (e.g. "monokai", "dracula")
+	AddedBg           string // e.g. "#122f1c"
+	AddedEmphBg       string
+	RemovedBg         string
+	RemovedEmphBg     string
+	AccentMauve       string // hunk header text
+	AccentBlue        string // file header text
+	AccentGreen       string // line number plus
+	AccentRed         string // line number minus
+	AccentPeach       string // hunk line number, commit style
+	SurfaceColor      string // hunk header box, line number zero
+	SubtleColor       string // file decoration, overlay
+}
+
+// DefaultDiffTheme returns the Catppuccin Mocha theme colors (legacy default).
+func DefaultDiffTheme() DiffTheme {
+	return DiffTheme{
+		SyntaxTheme:       "Nord",
+		ChromaSyntaxStyle: "catppuccin-mocha",
+		AddedBg:           "#122f1c",
+		AddedEmphBg:       "#1a4028",
+		RemovedBg:         "#361420",
+		RemovedEmphBg:     "#4d1a2a",
+		AccentMauve:       "#CBA6F7",
+		AccentBlue:        "#89B4FA",
+		AccentGreen:       "#A6E3A1",
+		AccentRed:         "#F38BA8",
+		AccentPeach:       "#FAB387",
+		SurfaceColor:      "#45475A",
+		SubtleColor:       "#585B70",
+	}
 }
 
 // GetStyledDiffWithContext runs a styled git diff with configurable context lines.
-func GetStyledDiffWithContext(base, head, file string, contextLines int) (string, error) {
+// The theme parameter controls all colors used by the delta subprocess.
+func GetStyledDiffWithContext(base, head, file string, contextLines int, theme DiffTheme) (string, error) {
 	diffRange := fmt.Sprintf("origin/%s...origin/%s", base, head)
 
 	// Prepare the git command
 	gitCmd := exec.Command("git", "diff", fmt.Sprintf("-U%d", contextLines), diffRange, "--", file)
 
-	// Prepare the delta command styled to match the prr Catppuccin Mocha theme
+	t := theme
+
+	// Prepare the delta command styled to match the active theme
 	deltaCmd := exec.Command("delta",
 		"--paging=never",
 		"--dark",
-		"--syntax-theme=Nord",
+		"--syntax-theme="+t.SyntaxTheme,
 
 		// Added lines: green-tinted background
-		"--plus-style", "syntax #122f1c",
-		"--plus-emph-style", "syntax #1a4028",
-		"--plus-empty-line-marker-style", "syntax #122f1c",
+		"--plus-style", "syntax "+t.AddedBg,
+		"--plus-emph-style", "syntax "+t.AddedEmphBg,
+		"--plus-empty-line-marker-style", "syntax "+t.AddedBg,
 
 		// Removed lines: red-tinted background
-		"--minus-style", "syntax #361420",
-		"--minus-emph-style", "syntax #4d1a2a",
-		"--minus-empty-line-marker-style", "syntax #361420",
+		"--minus-style", "syntax "+t.RemovedBg,
+		"--minus-emph-style", "syntax "+t.RemovedEmphBg,
+		"--minus-empty-line-marker-style", "syntax "+t.RemovedBg,
 
 		// Hunk headers: mauve text, boxed in surface color
-		"--hunk-header-style", "file line-number #CBA6F7",
-		"--hunk-header-decoration-style", "#45475A box",
-		"--hunk-header-file-style", "#89B4FA bold",
-		"--hunk-header-line-number-style", "#FAB387",
+		"--hunk-header-style", "file line-number "+t.AccentMauve,
+		"--hunk-header-decoration-style", t.SurfaceColor+" box",
+		"--hunk-header-file-style", t.AccentBlue+" bold",
+		"--hunk-header-line-number-style", t.AccentPeach,
 
 		// Line numbers
 		"--line-numbers",
-		"--line-numbers-minus-style", "#F38BA8",
-		"--line-numbers-plus-style", "#A6E3A1",
-		"--line-numbers-zero-style", "#45475A",
+		"--line-numbers-minus-style", t.AccentRed,
+		"--line-numbers-plus-style", t.AccentGreen,
+		"--line-numbers-zero-style", t.SurfaceColor,
 		"--line-numbers-left-format", "{nm:>3}│",
 		"--line-numbers-right-format", "{np:>3}│ ",
 
 		// File headers: blue accent with overline
-		"--file-style", "bold #89B4FA",
-		"--file-decoration-style", "#585B70 ol",
+		"--file-style", "bold "+t.AccentBlue,
+		"--file-decoration-style", t.SubtleColor+" ol",
 		"--file-modified-label", "modified:",
 		"--file-added-label", "added:",
 		"--file-removed-label", "removed:",
@@ -132,7 +172,7 @@ func GetStyledDiffWithContext(base, head, file string, contextLines int) (string
 		"--zero-style", "syntax",
 
 		// Commit/meta styles
-		"--commit-style", "#FAB387 bold",
+		"--commit-style", t.AccentPeach+" bold",
 		"--commit-decoration-style", "none",
 
 		// Whitespace: don't highlight trailing whitespace

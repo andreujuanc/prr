@@ -132,6 +132,13 @@ type CommentCreatedMsg struct {
 	Err     error
 }
 
+// BlameFetchedMsg is sent when git blame data for a file is ready.
+type BlameFetchedMsg struct {
+	FilePath string
+	Blame    map[int]git.BlameLine
+	Err      error
+}
+
 // ChatRenderedMsg is sent when chat/review markdown rendering completes.
 type ChatRenderedMsg struct {
 	FilePath string // which file this render is for ("" = overview)
@@ -237,11 +244,15 @@ type Model struct {
 	showAIPanel   bool
 
 	// Modal overlays
-	showHelp           bool // help modal visible
-	showModelPicker    bool // model picker visible
-	modelPickerCursor  int  // selected index in model picker
-	showSubmitReview   bool // submit review confirmation visible
-	submitReviewCursor int  // 0 = Submit, 1 = Cancel
+	showHelp           bool   // help modal visible
+	showModelPicker    bool   // model picker visible
+	modelPickerCursor  int    // selected index in model picker
+	showSubmitReview   bool   // submit review confirmation visible
+	submitReviewCursor int    // 0 = Submit, 1 = Cancel
+	showThemePicker    bool   // theme picker visible
+	themePickerCursor  int    // selected index in theme picker
+	themeBeforePicker  string // theme ID before opening picker (for revert on Esc)
+	errorMsg           string // transient error shown as modal overlay
 
 	// PR picker modal (shown when no PR number given on startup)
 	showPRPicker    bool             // PR picker visible
@@ -252,11 +263,18 @@ type Model struct {
 
 	// Loading animation
 	logoFrame int // color animation frame counter
+
+	// Experimental: use chroma for syntax highlighting instead of delta
+	useChroma bool
+
+	// Git blame toggle
+	blameEnabled bool                             // whether blame overlay is active
+	blameCache   map[string]map[int]git.BlameLine // filePath -> lineNum -> blame info
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────
 
-func NewModel(prNumber string, aiClient ai.Client, parallelReviews int) Model {
+func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChroma bool) Model {
 	diffVp := viewport.New(0, 0)
 	diffVp.Style = lipgloss.NewStyle().Foreground(textPrimary)
 
@@ -326,6 +344,8 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int) Model {
 		customInstructions: config.LoadCustomInstructions(),
 		parallelReviews:    parallelReviews,
 		reviewCursor:       -1,
+		useChroma:          useChroma,
+		blameCache:         make(map[string]map[int]git.BlameLine),
 	}
 
 	// PR picker mode: no PR number given — show modal instead of loading
@@ -415,9 +435,18 @@ func computeHashes(prNumber, base, head string, files []git.PRFile) tea.Cmd {
 	}
 }
 
-func fetchStyledDiff(base, head, filePath string, contextLines int, reload bool) tea.Cmd {
+func fetchStyledDiff(base, head, filePath string, contextLines int, reload bool, useChroma bool, width int) tea.Cmd {
+	// Snapshot the theme now so the goroutine uses a consistent copy,
+	// avoiding a data race if the theme is changed mid-render.
+	theme := DiffThemeFromCurrent()
 	return func() tea.Msg {
-		content, err := git.GetStyledDiffWithContext(base, head, filePath, contextLines)
+		var content string
+		var err error
+		if useChroma {
+			content, err = git.GetChromaDiffWithContext(base, head, filePath, contextLines, theme, width)
+		} else {
+			content, err = git.GetStyledDiffWithContext(base, head, filePath, contextLines, theme)
+		}
 		return StyledDiffMsg{FilePath: filePath, Content: content, Err: err, Reload: reload}
 	}
 }
@@ -426,6 +455,14 @@ func fetchComments(prNumber string) tea.Cmd {
 	return func() tea.Msg {
 		comments, err := git.FetchReviewComments(prNumber)
 		return CommentsFetchedMsg{Comments: comments, Err: err}
+	}
+}
+
+func (m *Model) fetchBlame(filePath string) tea.Cmd {
+	ref := "origin/" + m.pr.HeadRefName
+	return func() tea.Msg {
+		blame, err := git.BlameFile(context.Background(), ref, filePath)
+		return BlameFetchedMsg{FilePath: filePath, Blame: blame, Err: err}
 	}
 }
 
@@ -561,6 +598,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewState = msg.State
 		m.rawDiffs = msg.RawDiffs
 		m.skippedFiles = msg.SkippedFiles
+		// Clear blame cache — diffs may have changed
+		m.blameCache = make(map[string]map[int]git.BlameLine)
 		// Provide diffs to AI tool executor for the git_diff tool
 		if tc, ok := m.aiClient.(ai.ToolConfigurer); ok {
 			tc.SetRawDiffs(msg.RawDiffs)
@@ -590,6 +629,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case BlameFetchedMsg:
+		if msg.Err != nil {
+			log.Printf("Warning: failed to fetch blame for %s: %v", msg.FilePath, msg.Err)
+		} else {
+			m.blameCache[msg.FilePath] = msg.Blame
+		}
+		return m, nil
+
 	case CommentCreatedMsg:
 		if msg.Err != nil {
 			m.setDiffContent(
@@ -610,10 +657,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case SubmitReviewMsg:
 		if msg.Err != nil {
-			m.chatViewport.SetContent(
-				styleAccentRed.Render(
-					fmt.Sprintf("Error submitting review: %v", msg.Err)))
+			m.errorMsg = fmt.Sprintf("Error submitting review:\n\n%v", msg.Err)
 		} else {
+			m.errorMsg = ""
 			m.chatViewport.SetContent(
 				styleAccentGreen.Render("Review submitted to GitHub successfully."))
 		}
@@ -892,6 +938,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.errorMsg != "" {
+			// Any key dismisses the error modal
+			m.errorMsg = ""
+			return m, nil
+		}
 		if m.showModelPicker {
 			models := availableModels()
 			switch msg.String() {
@@ -935,6 +986,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.showSubmitReview = false
 				}
+			}
+			return m, nil
+		}
+		if m.showThemePicker {
+			themes := BuiltinThemes()
+			switch msg.String() {
+			case "esc", "q":
+				// Revert to original theme
+				m.showThemePicker = false
+				for _, t := range themes {
+					if t.ID == m.themeBeforePicker {
+						SetTheme(t)
+						mdCache = newLRUCache(128)
+						if m.selectedFile != "" && m.pr != nil {
+							cmd = m.reloadDiff()
+							if cmd != nil {
+								cmds = append(cmds, cmd)
+							}
+						}
+						break
+					}
+				}
+				return m, tea.Batch(cmds...)
+			case "j", "down":
+				if m.themePickerCursor < len(themes)-1 {
+					m.themePickerCursor++
+					m.applyThemePreview(themes[m.themePickerCursor])
+					cmds = append(cmds, m.reloadDiff())
+				}
+				return m, tea.Batch(cmds...)
+			case "k", "up":
+				if m.themePickerCursor > 0 {
+					m.themePickerCursor--
+					m.applyThemePreview(themes[m.themePickerCursor])
+					cmds = append(cmds, m.reloadDiff())
+				}
+				return m, tea.Batch(cmds...)
+			case "enter":
+				selected := themes[m.themePickerCursor]
+				SetTheme(selected)
+				m.showThemePicker = false
+				// Persist to config
+				if cfg, err := config.Load(); err == nil {
+					cfg.Theme = selected.ID
+					if err := config.Save(cfg); err != nil {
+						log.Printf("Warning: failed to persist theme: %v", err)
+					}
+				}
+				// Diff already reloaded by preview; clear markdown cache
+				mdCache = newLRUCache(128)
+				return m, tea.Batch(cmds...)
 			}
 			return m, nil
 		}
@@ -1110,6 +1212,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case "T":
+			if m.focusedPane != PaneChat && !m.aiStreaming {
+				m.showThemePicker = true
+				m.themeBeforePicker = currentTheme.ID
+				// Pre-select current theme
+				themes := BuiltinThemes()
+				m.themePickerCursor = 0
+				for i, t := range themes {
+					if t.ID == currentTheme.ID {
+						m.themePickerCursor = i
+						break
+					}
+				}
+			}
+		case "b":
+			if m.focusedPane == PaneDiff && m.selectedFile != "" {
+				m.blameEnabled = !m.blameEnabled
+				// Pre-fetch blame data for the current file if not cached
+				if m.blameEnabled && m.pr != nil {
+					if _, ok := m.blameCache[m.selectedFile]; !ok {
+						cmds = append(cmds, m.fetchBlame(m.selectedFile))
+					}
+				}
+			}
 		case "A":
 			// Force re-review: clear all caches and re-run
 			if m.focusedPane != PaneChat && !m.aiStreaming {
@@ -1151,12 +1277,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case "h", "left":
-				// Collapse dir
 				if m.fileTree.selectedIsDir() {
 					entry := m.fileTree.flat[m.fileTree.cursor]
 					if entry.node.expanded {
+						// Collapse expanded directory
 						m.fileTree.toggle()
+					} else {
+						// Already collapsed — go to parent directory
+						m.fileTree.moveToParent()
 					}
+				} else {
+					// File — go to parent directory
+					m.fileTree.moveToParent()
 				}
 			case " ":
 				// Toggle dir expand/collapse, or toggle file review status
@@ -1304,8 +1436,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			case "ctrl+k":
 				m.clearChat()
-			case "tab":
-				// Toggle between Review and Chat tabs (only if review exists)
+			case "ctrl+tab":
+				// Toggle between Review and Chat sub-tabs (only if review exists)
 				if m.hasReview() {
 					m.aiPanelTab = 1 - m.aiPanelTab
 					cmds = append(cmds, m.renderActiveAIView())
@@ -2292,7 +2424,7 @@ func (m *Model) jumpToFinding(idx int) tea.Cmd {
 
 	// Load the diff
 	m.setDiffContent(styleTextMuted.Render("Loading diff..."))
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, finding.File, m.contextLines, false)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, finding.File, m.contextLines, false, m.useChroma, m.diffViewport.Width)
 	return diffCmd
 }
 
@@ -2349,7 +2481,13 @@ func (m *Model) reloadDiff() tea.Cmd {
 		return nil
 	}
 	// Don't replace content with "Loading..." — keep current diff visible to avoid flicker
-	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, m.selectedFile, m.contextLines, true)
+	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, m.selectedFile, m.contextLines, true, m.useChroma, m.diffViewport.Width)
+}
+
+// applyThemePreview switches the active theme for live preview without persisting.
+func (m *Model) applyThemePreview(t Theme) {
+	SetTheme(t)
+	mdCache = newLRUCache(128)
 }
 
 func (m *Model) populateFileList(st *state.State) {
@@ -2420,7 +2558,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma, m.diffViewport.Width)
 	return tea.Batch(chatCmd, diffCmd)
 }
 
@@ -2450,7 +2588,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma, m.diffViewport.Width)
 	return tea.Batch(chatCmd, diffCmd)
 }
 
@@ -2935,6 +3073,30 @@ func (m Model) renderDiffWithCursor() (string, int) {
 		// Wrap the entire line content with a background style
 		line := lines[m.diffCursor]
 		w := m.diffViewport.Width
+
+		// Append blame info if blame mode is enabled
+		if m.blameEnabled && hasLineNum {
+			blameStr := m.formatBlameForLine(cursorLineNum)
+			if blameStr != "" {
+				blameWidth := ansi.StringWidth(blameStr)
+				// Reserve space: 2 char gap + blame text
+				maxCode := w - blameWidth - 2
+				if maxCode < 20 {
+					maxCode = 20 // don't crush the code too much
+				}
+				// Truncate code portion to make room for blame
+				if ansi.StringWidth(line) > maxCode {
+					line = ansi.Truncate(line, maxCode, "")
+				}
+				visible := ansi.StringWidth(line)
+				gap := w - visible - blameWidth
+				if gap < 2 {
+					gap = 2
+				}
+				line = line + strings.Repeat(" ", gap) + blameStr
+			}
+		}
+
 		// Pad line to full width so the highlight spans the row
 		visible := ansi.StringWidth(line)
 		if visible < w {
@@ -2944,6 +3106,24 @@ func (m Model) renderDiffWithCursor() (string, int) {
 	}
 
 	return strings.Join(lines, "\n"), cursorLineNum
+}
+
+// formatBlameForLine returns a styled blame annotation for a line number,
+// e.g. "Juan Potato  2024-01-01". Returns "" if blame data isn't available.
+func (m Model) formatBlameForLine(lineNum int) string {
+	blame, ok := m.blameCache[m.selectedFile]
+	if !ok || blame == nil {
+		return styleTextMuted.Render("loading blame...")
+	}
+
+	bl, ok := blame[lineNum]
+	if !ok {
+		return ""
+	}
+
+	author := styleAccentPeach.Render(bl.Author)
+	date := styleTextMuted.Render(bl.Date)
+	return author + "  " + date
 }
 
 // ── View ────────────────────────────────────────────────────────────────
@@ -3098,6 +3278,13 @@ func (m Model) View() string {
 	}
 	if m.showSubmitReview {
 		overlay := centerOverlay(m.renderSubmitReviewModal(), m.width, m.height)
+		return overlay
+	}
+	if m.showThemePicker {
+		return floatOverlay(base, m.renderThemePicker(), m.width, m.height)
+	}
+	if m.errorMsg != "" {
+		overlay := centerOverlay(m.renderErrorModal(), m.width, m.height)
 		return overlay
 	}
 

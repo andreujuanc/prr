@@ -208,6 +208,23 @@ func (ft *fileTree) moveDown() {
 	}
 }
 
+// moveToParent moves the cursor to the parent directory of the current entry.
+// It scans backwards for the nearest directory entry at a shallower depth.
+func (ft *fileTree) moveToParent() {
+	if ft.cursor <= 0 || ft.cursor >= len(ft.flat) {
+		return
+	}
+	currentDepth := ft.flat[ft.cursor].depth
+	for i := ft.cursor - 1; i >= 0; i-- {
+		e := ft.flat[i]
+		if e.node.isDir && e.depth < currentDepth {
+			ft.cursor = i
+			ft.ensureVisible()
+			return
+		}
+	}
+}
+
 func (ft *fileTree) toggle() {
 	if ft.cursor >= 0 && ft.cursor < len(ft.flat) {
 		entry := ft.flat[ft.cursor]
