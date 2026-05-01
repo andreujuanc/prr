@@ -40,3 +40,11 @@ type ToolConfigurer interface {
 	// SetReviewGetter provides a function that returns the latest PR review summary.
 	SetReviewGetter(fn func() string)
 }
+
+// ModelSwitcher is optionally implemented by clients that support switching
+// the underlying model at runtime (e.g. via a TUI model picker).
+type ModelSwitcher interface {
+	// SwitchModel changes the active model to the given ID and applies the
+	// provided tuning parameters. Returns an error if the model is invalid.
+	SwitchModel(modelID string, maxOutputTokens int, temperature float64, thinkingBudget int) error
+}

@@ -31,7 +31,10 @@ func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, s
 	// ── Stale banner ────────────────────────────────────────
 	if stale {
 		banner := styleStaleReview.Render("STALE — diffs have changed since this review was generated")
+		hint := styleTextMuted.Render("  press a to re-review, or A to force re-review (no cache)")
 		b.WriteString(banner)
+		b.WriteString("\n")
+		b.WriteString(hint)
 		b.WriteString("\n\n")
 	}
 

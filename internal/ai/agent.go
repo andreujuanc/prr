@@ -427,6 +427,18 @@ func (a *Agent) SetReviewGetter(fn func() string) {
 	}
 }
 
+// SwitchModel changes the underlying model at runtime.
+func (a *Agent) SwitchModel(modelID string, maxOutputTokens int, temperature float64, thinkingBudget int) error {
+	if gp, ok := a.provider.(*GeminiProvider); ok {
+		gp.Model = modelID
+		gp.ModelConfig.MaxOutputTokens = maxOutputTokens
+		gp.ModelConfig.Temperature = temperature
+		gp.ModelConfig.ThinkingBudget = thinkingBudget
+		return nil
+	}
+	return fmt.Errorf("model switching not supported for provider %s", a.provider.Name())
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 // formatToolArgs formats json.RawMessage args for display.

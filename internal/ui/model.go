@@ -223,6 +223,13 @@ type Model struct {
 	showFilePanel bool
 	showAIPanel   bool
 
+	// Modal overlays
+	showHelp           bool // help modal visible
+	showModelPicker    bool // model picker visible
+	modelPickerCursor  int  // selected index in model picker
+	showSubmitReview   bool // submit review confirmation visible
+	submitReviewCursor int  // 0 = Submit, 1 = Cancel
+
 	// Loading animation
 	logoFrame int // color animation frame counter
 }
@@ -521,6 +528,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case SubmitReviewMsg:
+		if msg.Err != nil {
+			m.chatViewport.SetContent(
+				styleAccentRed.Render(
+					fmt.Sprintf("Error submitting review: %v", msg.Err)))
+		} else {
+			m.chatViewport.SetContent(
+				styleAccentGreen.Render("Review submitted to GitHub successfully."))
+		}
+		return m, nil
+
 	case ChatRenderedMsg:
 		// For Review tab (0): cache the rendered content and always apply — content is global, not per-file
 		// For Chat tab (1): only apply if still on the same file
@@ -732,6 +750,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
+		// ── Modal overlays intercept all keys when visible ──────
+		if m.showHelp {
+			switch msg.String() {
+			case "?", "esc", "q":
+				m.showHelp = false
+			}
+			return m, nil
+		}
+		if m.showModelPicker {
+			models := availableModels()
+			switch msg.String() {
+			case "esc", "q":
+				m.showModelPicker = false
+			case "j", "down":
+				if m.modelPickerCursor < len(models)-1 {
+					m.modelPickerCursor++
+				}
+			case "k", "up":
+				if m.modelPickerCursor > 0 {
+					m.modelPickerCursor--
+				}
+			case "enter":
+				selected := models[m.modelPickerCursor]
+				m.switchModel(selected.id)
+				m.showModelPicker = false
+			}
+			return m, nil
+		}
+		if m.showSubmitReview {
+			switch msg.String() {
+			case "esc", "q":
+				m.showSubmitReview = false
+			case "j", "down":
+				if m.submitReviewCursor < 1 {
+					m.submitReviewCursor++
+				}
+			case "k", "up":
+				if m.submitReviewCursor > 0 {
+					m.submitReviewCursor--
+				}
+			case "enter":
+				if m.submitReviewCursor == 0 {
+					// Submit
+					m.showSubmitReview = false
+					cmd := m.submitReviewToGitHub()
+					if cmd != nil {
+						return m, cmd
+					}
+				} else {
+					m.showSubmitReview = false
+				}
+			}
+			return m, nil
+		}
+
 		// While AI is streaming, allow navigation but block chat input
 		if m.aiStreaming {
 			if msg.String() == "esc" || msg.String() == "ctrl+c" {
@@ -876,6 +949,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 			m.syncLayout()
+		case "?":
+			if m.focusedPane != PaneChat || m.aiPanelTab != 1 {
+				m.showHelp = !m.showHelp
+			}
+		case "m":
+			if m.focusedPane != PaneChat && !m.aiStreaming {
+				m.showModelPicker = true
+				// Pre-select current model
+				models := availableModels()
+				m.modelPickerCursor = 0
+				for i, mod := range models {
+					if mod.id == m.aiModelName {
+						m.modelPickerCursor = i
+						break
+					}
+				}
+			}
+		case "A":
+			// Force re-review: clear all caches and re-run
+			if m.focusedPane != PaneChat && !m.aiStreaming {
+				cmd = m.forceReReview()
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		case "ctrl+s":
+			// Submit review to GitHub (from any pane, as long as review exists)
+			if !m.aiStreaming && m.hasReview() {
+				m.showSubmitReview = true
+				m.submitReviewCursor = 0
+			}
 		}
 	}
 
@@ -1291,7 +1395,13 @@ func (m *Model) updateChatViewWithStream() {
 			if m.aiStreamBuffer == "" && len(m.aiReviewBatches) == 0 {
 				b.WriteString(styleTextMuted.Render("thinking...") + "\n")
 			} else if m.aiStreamBuffer != "" {
-				b.WriteString(m.aiStreamBuffer)
+				if m.aiReviewPhase == "synthesis" {
+					// During synthesis the model outputs raw JSON — hide it
+					// and show a friendlier progress message instead.
+					b.WriteString(styleTextMuted.Render("Synthesizing final review...") + "\n")
+				} else {
+					b.WriteString(m.aiStreamBuffer)
+				}
 				if m.aiStreaming {
 					b.WriteString(styleAccentBlue.Render("▊"))
 				}
@@ -1771,6 +1881,64 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	m.aiCancelFn = cancel
 
 	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
+}
+
+// forceReReview clears all cached batch findings and triggers a fresh PR review.
+func (m *Model) forceReReview() tea.Cmd {
+	if m.reviewState == nil {
+		return m.triggerAIReview()
+	}
+
+	// Clear per-file batch findings so nothing is cached
+	for _, fs := range m.reviewState.Files {
+		fs.BatchFindings = ""
+		fs.Purpose = ""
+	}
+	// Clear the PR-level review
+	m.reviewState.Review = nil
+	m.aiReviewRendered = ""
+	m.reviewFindings = nil
+	m.reviewCursor = -1
+
+	// Persist cleared state
+	if err := state.Save(m.reviewState); err != nil {
+		log.Printf("Warning: failed to save cleared state: %v", err)
+	}
+
+	// Now trigger a normal review — with caches cleared it will re-run everything
+	return m.triggerAIReview()
+}
+
+// SubmitReviewMsg is sent when a GitHub review submission completes.
+type SubmitReviewMsg struct {
+	Err error
+}
+
+// submitReviewToGitHub submits the current AI review as a formal GitHub review.
+func (m *Model) submitReviewToGitHub() tea.Cmd {
+	if m.reviewState == nil || m.reviewState.Review == nil || m.reviewState.Review.Structured == nil {
+		return nil
+	}
+
+	verdict := m.reviewState.Review.Structured.Verdict
+	body := m.reviewState.Review.Structured.Summary
+	prNumber := m.prNumber
+
+	// Map AI verdict to GitHub review event
+	var ghVerdict string
+	switch verdict {
+	case "approve":
+		ghVerdict = "APPROVE"
+	case "request_changes":
+		ghVerdict = "REQUEST_CHANGES"
+	default:
+		ghVerdict = "COMMENT"
+	}
+
+	return func() tea.Msg {
+		err := git.SubmitReview(prNumber, ghVerdict, body)
+		return SubmitReviewMsg{Err: err}
+	}
 }
 
 func (m *Model) jumpToUnreviewed(direction int) {
@@ -2657,7 +2825,23 @@ func (m Model) View() string {
 
 	footer := m.viewFooter()
 
-	return header + "\n" + panes + "\n" + footer
+	base := header + "\n" + panes + "\n" + footer
+
+	// ── Modal overlays ──────────────────────────────────────────
+	if m.showHelp {
+		overlay := centerOverlay(m.renderHelpModal(), m.width, m.height)
+		return overlay
+	}
+	if m.showModelPicker {
+		overlay := centerOverlay(m.renderModelPicker(), m.width, m.height)
+		return overlay
+	}
+	if m.showSubmitReview {
+		overlay := centerOverlay(m.renderSubmitReviewModal(), m.width, m.height)
+		return overlay
+	}
+
+	return base
 }
 
 // ── Bordered pane rendering ─────────────────────────────────────────────
@@ -2907,63 +3091,46 @@ func (m Model) viewHeader() string {
 func (m Model) viewFooter() string {
 	separator := styleTextSubtle.Render(strings.Repeat("─", m.width))
 
-	// Common bindings
-	bindings := []struct{ key, desc string }{
-		{"S-Tab", "prev pane"},
-	}
+	// Minimal footer — context-sensitive essentials + ? for full help
+	bindings := []struct{ key, desc string }{}
 
-	// Pane-specific bindings
 	switch m.focusedPane {
 	case PaneFileList:
-		// Tab cycles panes from file list
-		bindings = append([]struct{ key, desc string }{{"Tab", "next pane"}}, bindings...)
-		aiLabel := "AI review file"
-		if m.selectedFile == "" {
-			aiLabel = "AI review PR"
-		}
-		rLabel := "hide reviewed"
-		if m.fileTree.hideReviewed {
-			rLabel = "show all"
-		}
 		bindings = append(bindings,
 			struct{ key, desc string }{"j/k", "navigate"},
 			struct{ key, desc string }{"Enter", "select"},
-			struct{ key, desc string }{"Space", "review"},
-			struct{ key, desc string }{"r", rLabel},
-			struct{ key, desc string }{"n/p", "next/prev unreviewed"},
-			struct{ key, desc string }{"a", aiLabel},
+			struct{ key, desc string }{"Space", "reviewed"},
 		)
 	case PaneDiff:
-		// Tab cycles panes from diff
-		bindings = append([]struct{ key, desc string }{{"Tab", "next pane"}}, bindings...)
-		aiLabel := "AI review file"
-		if m.selectedFile == "" {
-			aiLabel = "AI review PR"
-		}
 		bindings = append(bindings,
 			struct{ key, desc string }{"j/k", "select line"},
-			struct{ key, desc string }{"+/−", "context"},
 			struct{ key, desc string }{"c", "comment"},
-			struct{ key, desc string }{"a", aiLabel},
 		)
 	case PaneChat:
-		// Tab toggles Review/Chat tabs in the AI panel
-		bindings = append([]struct{ key, desc string }{{"Tab", "review/chat"}}, bindings...)
-		if m.aiPanelTab == 1 {
+		if m.aiPanelTab == 0 {
+			bindings = append(bindings,
+				struct{ key, desc string }{"j/k", "findings"},
+				struct{ key, desc string }{"Enter", "jump"},
+			)
+		} else {
 			bindings = append(bindings,
 				struct{ key, desc string }{"Enter", "send"},
 			)
 		}
-		if m.aiStreaming {
-			bindings = append(bindings,
-				struct{ key, desc string }{"Esc", "cancel AI"},
-			)
-		}
+	}
+
+	if m.aiStreaming {
+		bindings = append(bindings,
+			struct{ key, desc string }{"Esc", "cancel AI"},
+		)
+	} else {
+		bindings = append(bindings,
+			struct{ key, desc string }{"a", "review"},
+		)
 	}
 
 	bindings = append(bindings,
-		struct{ key, desc string }{"^B", "files"},
-		struct{ key, desc string }{"^A", "AI"},
+		struct{ key, desc string }{"?", "help"},
 		struct{ key, desc string }{"q", "quit"},
 	)
 
