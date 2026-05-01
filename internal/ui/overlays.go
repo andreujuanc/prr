@@ -239,13 +239,18 @@ func (m Model) helpSections() []helpSection {
 				{"Space", "Toggle reviewed status"},
 				{"r", "Toggle hide reviewed"},
 				{"n/p", "Next / prev unreviewed"},
+				{"o", "Refresh PR from origin"},
 			},
 		},
 		{
 			title: "DIFF",
 			bindings: []helpBinding{
 				{"j/k", "Move cursor"},
+				{"G/g", "Jump to bottom / top"},
+				{"Ctrl+D/U", "Half-page down / up"},
 				{"+/-", "More / less context"},
+				{"Space", "Toggle reviewed status"},
+				{"n/p", "Next / prev unreviewed"},
 				{"c", "Comment on line"},
 				{"Esc", "Back to review (from finding)"},
 			},

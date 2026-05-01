@@ -184,6 +184,9 @@ type Model struct {
 	selectedFile string // currently selected file path ("" = overview)
 	rawDiffs     map[string]string // filePath -> raw diff (for AI context)
 
+	// Refresh tracking: when non-empty, PRFetchedMsg compares OIDs to skip no-op refreshes
+	refreshOldOid string
+
 	// Diff context
 	contextLines int // number of context lines for git diff (-U<n>)
 
@@ -488,11 +491,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.loading = false
 			m.loadingMsg = ""
+			m.refreshOldOid = ""
 			m.setDiffContent(
 				styleAccentRed.Render(
 					fmt.Sprintf("Error fetching PR: %v", msg.Err)))
 			return m, nil
 		}
+
+		// If this is a refresh, check whether the PR actually changed
+		if m.refreshOldOid != "" {
+			if msg.PR.HeadRefOid == m.refreshOldOid {
+				m.loading = false
+				m.loadingMsg = ""
+				m.refreshOldOid = ""
+				log.Printf("Refresh: PR is up to date (head=%s)", msg.PR.HeadRefOid[:8])
+				// Brief flash message via diff title — just update PR metadata
+				m.pr = msg.PR
+				m.populateFileList(m.reviewState)
+				return m, nil
+			}
+			log.Printf("Refresh: PR has new commits (old=%s new=%s)",
+				m.refreshOldOid[:8], msg.PR.HeadRefOid[:8])
+			m.refreshOldOid = ""
+		}
+
 		m.pr = msg.PR
 		// Configure AI tools with the PR head and base refs
 		if tc, ok := m.aiClient.(ai.ToolConfigurer); ok {
@@ -1034,6 +1056,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
+			}
+		case "o":
+			// Refresh PR from origin (re-fetch metadata, refs, diffs)
+			if m.focusedPane == PaneFileList && !m.loading && !m.aiStreaming && m.pr != nil {
+				m.refreshOldOid = m.pr.HeadRefOid
+				m.loading = true
+				m.loadingMsg = "Refreshing PR from origin..."
+				return m, tea.Batch(m.spinner.Tick, fetchPR(m.prNumber))
 			}
 		case "n":
 			// Jump to next unreviewed file
