@@ -11,6 +11,106 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// ── PR Picker ───────────────────────────────────────────────────────────
+
+// renderPRPicker renders the pull request selection overlay.
+func (m Model) renderPRPicker() string {
+	width := 64
+	var b strings.Builder
+
+	b.WriteString(styleAccentBlueBold.Render("  SELECT PULL REQUEST"))
+	b.WriteString("\n")
+
+	if m.prPickerLoading {
+		b.WriteString("\n")
+		b.WriteString("  " + m.spinner.View() + " " + styleTextSecondary.Render("Fetching open pull requests..."))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	if m.prPickerError != "" {
+		b.WriteString("\n")
+		b.WriteString("  " + styleAccentRed.Render(m.prPickerError))
+		b.WriteString("\n\n")
+		b.WriteString(styleTextMuted.Render("  Press q to quit"))
+		return b.String()
+	}
+
+	b.WriteString("\n")
+
+	// Clamp visible items to fit the terminal (header=2, footer=2, border=2)
+	maxVisible := m.height - 8
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+	total := len(m.prPickerItems)
+
+	// Compute visible window centered on cursor
+	start := 0
+	end := total
+	if total > maxVisible {
+		start = m.prPickerCursor - maxVisible/2
+		if start < 0 {
+			start = 0
+		}
+		end = start + maxVisible
+		if end > total {
+			end = total
+			start = end - maxVisible
+		}
+	}
+
+	if start > 0 {
+		b.WriteString(styleTextMuted.Render("  ...") + "\n")
+	}
+
+	for i := start; i < end; i++ {
+		pr := m.prPickerItems[i]
+		isSelected := i == m.prPickerCursor
+
+		marker := "  "
+		if isSelected {
+			marker = styleAccentBlueBold.Render("> ")
+		}
+
+		num := fmt.Sprintf("#%-4d", pr.Number)
+		title := pr.Title
+		maxTitle := width - 16 // room for marker + #num + author
+		if maxTitle < 20 {
+			maxTitle = 20
+		}
+		titleRunes := []rune(title)
+		if len(titleRunes) > maxTitle {
+			title = string(titleRunes[:maxTitle-3]) + "..."
+		}
+		author := pr.Author.Login
+
+		var line string
+		if isSelected {
+			line = fmt.Sprintf("%s%s %s %s", marker,
+				styleAccentBlueBold.Render(num),
+				styleTextPrimary.Bold(true).Render(title),
+				styleTextMuted.Render("("+author+")"))
+		} else {
+			line = fmt.Sprintf("%s%s %s %s", marker,
+				styleTextSecondary.Render(num),
+				styleTextSecondary.Render(title),
+				styleTextMuted.Render("("+author+")"))
+		}
+		line = truncateToWidth(line, width)
+		b.WriteString(line + "\n")
+	}
+
+	if end < total {
+		b.WriteString(styleTextMuted.Render("  ...") + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleTextMuted.Render("  Enter select  q quit"))
+
+	return b.String()
+}
+
 // ── Model Picker ────────────────────────────────────────────────────────
 
 // modelPickerItem represents a selectable model in the picker.

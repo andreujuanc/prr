@@ -145,6 +145,12 @@ type ReviewRenderedMsg struct {
 	Findings []state.ReviewFinding // ordered findings for navigation
 }
 
+// PRListFetchedMsg is sent when the list of open PRs has been fetched.
+type PRListFetchedMsg struct {
+	PRs []git.PRListItem
+	Err error
+}
+
 // logoTickMsg drives the logo color animation during loading.
 type logoTickMsg struct{}
 
@@ -230,6 +236,13 @@ type Model struct {
 	showSubmitReview   bool // submit review confirmation visible
 	submitReviewCursor int  // 0 = Submit, 1 = Cancel
 
+	// PR picker modal (shown when no PR number given on startup)
+	showPRPicker    bool             // PR picker visible
+	prPickerItems   []git.PRListItem // fetched open PRs
+	prPickerCursor  int              // selected index
+	prPickerLoading bool             // true while fetching PR list
+	prPickerError   string           // error message if fetch failed
+
 	// Loading animation
 	logoFrame int // color animation frame counter
 }
@@ -286,7 +299,7 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int) Model {
 		modelName = mi.ModelName()
 	}
 
-	return Model{
+	m := Model{
 		fileTree:           newFileTree(nil),
 		diffViewport:       diffVp,
 		chatViewport:       chatVp,
@@ -307,9 +320,23 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int) Model {
 		parallelReviews:    parallelReviews,
 		reviewCursor:       -1,
 	}
+
+	// PR picker mode: no PR number given — show modal instead of loading
+	if prNumber == "" {
+		m.loading = false
+		m.loadingMsg = ""
+		m.showPRPicker = true
+		m.prPickerLoading = true
+	}
+
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
+	if m.prNumber == "" {
+		// PR picker mode — fetch list of open PRs
+		return tea.Batch(m.spinner.Tick, fetchPRList())
+	}
 	return tea.Batch(textarea.Blink, m.spinner.Tick, fetchPR(m.prNumber), tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
 		return logoTickMsg{}
 	}))
@@ -321,6 +348,13 @@ func fetchPR(prNumber string) tea.Cmd {
 	return func() tea.Msg {
 		pr, err := git.FetchPR(prNumber)
 		return PRFetchedMsg{PR: pr, Err: err}
+	}
+}
+
+func fetchPRList() tea.Cmd {
+	return func() tea.Msg {
+		prs, err := git.ListPRs()
+		return PRListFetchedMsg{PRs: prs, Err: err}
 	}
 }
 
@@ -416,7 +450,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
 		// Only tick spinner when something is loading/streaming
-		if m.loading || m.aiStreaming {
+		if m.loading || m.aiStreaming || m.prPickerLoading {
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
 		}
@@ -455,6 +489,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loadingMsg = "Fetching git refs..."
 		return m, fetchRefs(m.pr.BaseRefName, m.pr.HeadRefName, m.pr.HeadRefOid)
+
+	case PRListFetchedMsg:
+		m.prPickerLoading = false
+		if msg.Err != nil {
+			m.prPickerError = msg.Err.Error()
+		} else if len(msg.PRs) == 0 {
+			m.prPickerError = "No open pull requests found"
+		} else {
+			m.prPickerItems = msg.PRs
+		}
+		return m, nil
 
 	case RefsFetchedMsg:
 		if msg.Err != nil {
@@ -751,6 +796,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// ── Modal overlays intercept all keys when visible ──────
+		if m.showPRPicker {
+			if m.prPickerLoading {
+				// Still loading — only allow quit
+				switch msg.String() {
+				case "esc", "q", "ctrl+c":
+					return m, tea.Quit
+				}
+				return m, nil
+			}
+			if m.prPickerError != "" {
+				// Error state — allow quit
+				switch msg.String() {
+				case "esc", "q", "ctrl+c", "enter":
+					return m, tea.Quit
+				}
+				return m, nil
+			}
+			// Normal picker interaction
+			switch msg.String() {
+			case "esc", "q", "ctrl+c":
+				return m, tea.Quit
+			case "j", "down":
+				if m.prPickerCursor < len(m.prPickerItems)-1 {
+					m.prPickerCursor++
+				}
+			case "k", "up":
+				if m.prPickerCursor > 0 {
+					m.prPickerCursor--
+				}
+			case "enter":
+				if len(m.prPickerItems) > 0 {
+					selected := m.prPickerItems[m.prPickerCursor]
+					m.prNumber = strconv.Itoa(selected.Number)
+					m.showPRPicker = false
+					m.loading = true
+					m.loadingMsg = "Fetching PR data..."
+					return m, tea.Batch(
+						fetchPR(m.prNumber),
+						m.spinner.Tick,
+						textarea.Blink,
+						tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+							return logoTickMsg{}
+						}),
+					)
+				}
+			}
+			return m, nil
+		}
 		if m.showHelp {
 			switch msg.String() {
 			case "?", "esc", "q":
@@ -2770,6 +2863,12 @@ func (m Model) View() string {
 			result += strings.Repeat("\n", m.height-lines)
 		}
 		return result
+	}
+
+	// PR picker modal — rendered before panes to avoid nil PR panics
+	if m.showPRPicker {
+		overlay := centerOverlay(m.renderPRPicker(), m.width, m.height)
+		return overlay
 	}
 
 	cols := m.columns()

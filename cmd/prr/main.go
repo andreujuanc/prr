@@ -12,7 +12,6 @@ import (
 
 	"prr/internal/ai"
 	"prr/internal/config"
-	"prr/internal/git"
 	"prr/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,14 +41,6 @@ func main() {
 	var prNumber string
 	if len(positional) >= 1 {
 		prNumber = positional[0]
-	} else {
-		// No PR number given — show interactive picker
-		picked, err := pickPR()
-		if err != nil {
-			printError(err)
-			os.Exit(1)
-		}
-		prNumber = picked
 	}
 
 	// Pre-flight checks before launching the TUI
@@ -74,7 +65,11 @@ func main() {
 		printError(fmt.Errorf("failed to initialize logger: %w", err))
 		os.Exit(1)
 	}
-	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s)", prNumber, cfg.Provider, cfg.Model)
+	prLabel := prNumber
+	if prLabel == "" {
+		prLabel = "(picker)"
+	}
+	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s)", prLabel, cfg.Provider, cfg.Model)
 
 	model := ui.NewModel(prNumber, aiClient, cfg.ParallelReviews)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
@@ -160,10 +155,12 @@ func preflight(prNumber string) error {
 	// 5. Ensure SSH host keys are trusted (prevents interactive prompt during fetch)
 	ensureSSHHostKeys()
 
-	// 6. Validate PR number (quick sanity check)
-	prNumber = strings.TrimSpace(prNumber)
-	if prNumber == "" {
-		return fmt.Errorf("PR number cannot be empty")
+	// 6. Validate PR number (skip if empty — TUI picker will handle selection)
+	if prNumber != "" {
+		prNumber = strings.TrimSpace(prNumber)
+		if prNumber == "" {
+			return fmt.Errorf("PR number cannot be empty")
+		}
 	}
 
 	return nil
@@ -459,75 +456,6 @@ func printUsage() {
 		dim.Render(""))
 	fmt.Fprintf(os.Stderr, "  %s  prr          Pick from open PRs\n\n",
 		dim.Render(""))
-}
-
-// pickPR shows an interactive list of open PRs and returns the selected number.
-func pickPR() (string, error) {
-	// Pre-flight: need git repo and gh auth before listing
-	if err := runSilent("git", "rev-parse", "--git-dir"); err != nil {
-		return "", fmt.Errorf("not a git repository\n  Run prr from inside a git repo")
-	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		return "", fmt.Errorf("gh (GitHub CLI) is not installed\n  Install it: https://cli.github.com")
-	}
-	if err := runSilent("gh", "auth", "status"); err != nil {
-		return "", fmt.Errorf("gh is not authenticated\n  Run: gh auth login")
-	}
-
-	prs, err := git.ListPRs()
-	if err != nil {
-		return "", fmt.Errorf("failed to list PRs: %w", err)
-	}
-
-	if len(prs) == 0 {
-		return "", fmt.Errorf("no open pull requests found in this repository")
-	}
-
-	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
-	num := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA"))
-	title := lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
-	author := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
-
-	fmt.Fprintf(os.Stderr, "\n  %s\n\n", info.Render("Open pull requests:"))
-	for i, pr := range prs {
-		prTitle := pr.Title
-		if len(prTitle) > 60 {
-			prTitle = prTitle[:57] + "..."
-		}
-		fmt.Fprintf(os.Stderr, "  %s  %s %s\n",
-			num.Render(fmt.Sprintf("[%d] #%-4d", i+1, pr.Number)),
-			title.Render(prTitle),
-			author.Render("("+pr.Author.Login+")"),
-		)
-	}
-	fmt.Fprintf(os.Stderr, "\n  %s ", dim.Render("Enter number (1-"+fmt.Sprintf("%d", len(prs))+"):"))
-
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(answer)
-
-	if answer == "" {
-		return "", fmt.Errorf("no selection made")
-	}
-
-	// Parse as index (1-based)
-	idx := 0
-	if _, err := fmt.Sscanf(answer, "%d", &idx); err != nil {
-		return "", fmt.Errorf("invalid selection: %q", answer)
-	}
-	if idx < 1 || idx > len(prs) {
-		return "", fmt.Errorf("selection out of range: %d", idx)
-	}
-
-	selected := prs[idx-1]
-	fmt.Fprintf(os.Stderr, "\n  %s PR #%d: %s\n\n",
-		info.Render("Selected"),
-		selected.Number,
-		dim.Render(selected.Title),
-	)
-
-	return fmt.Sprintf("%d", selected.Number), nil
 }
 
 func printError(err error) {
