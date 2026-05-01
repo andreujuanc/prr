@@ -24,8 +24,8 @@ func TestDiffSnapshotFromFiles(t *testing.T) {
 
 func TestIsReviewStale(t *testing.T) {
 	tests := []struct {
-		name     string
-		setup    func(s *State)
+		name      string
+		setup     func(s *State)
 		wantStale bool
 	}{
 		{

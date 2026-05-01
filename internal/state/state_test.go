@@ -9,7 +9,7 @@ import (
 func TestStateSaveAndLoad(t *testing.T) {
 	// Use a dummy PR number to avoid conflicts (must be numeric to pass validation)
 	prNumber := "9999"
-	
+
 	// Ensure cleanup
 	defer func() {
 		filePath, _ := getStateFilePath(prNumber)
@@ -55,11 +55,11 @@ func TestStateSaveAndLoad(t *testing.T) {
 	if file1State.Status != StatusReviewed {
 		t.Errorf("Expected status reviewed, got %s", file1State.Status)
 	}
-	
+
 	if file1State.DiffHash != "hash123" {
 		t.Errorf("Expected diff hash hash123, got %s", file1State.DiffHash)
 	}
-	
+
 	if !reflect.DeepEqual(file1State.Chat, state.Files["file1.go"].Chat) {
 		t.Errorf("File Chat mismatch")
 	}
@@ -126,9 +126,9 @@ func TestSyncWithDiffs(t *testing.T) {
 		"file1.go": "hash1_modified",
 		"file3.go": "hash3",
 	}
-	
+
 	state.SyncWithDiffs(currentHashes2, map[string]bool{"file1.go": true, "file3.go": true})
-	
+
 	if _, exists := state.Files["file2.go"]; exists {
 		t.Errorf("file2.go should be removed")
 	}

@@ -12,7 +12,7 @@ func (s *State) SyncWithDiffs(currentDiffHashes map[string]string, prFiles map[s
 
 	for path, currentHash := range currentDiffHashes {
 		fileState, exists := s.Files[path]
-		
+
 		if !exists {
 			// New file added to the PR
 			s.Files[path] = &FileState{

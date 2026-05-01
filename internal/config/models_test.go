@@ -16,10 +16,9 @@ func TestLoadModels_EmbeddedDefaults(t *testing.T) {
 		maxOutputTokens int
 		thinkingBudget  int
 	}{
-		{"gemini-2.5-pro", 65536, 8192},
+		{"gemini-3.1-pro-preview", 65536, 16384},
+		{"gemini-3.1-flash-lite-preview", 65536, 8192},
 		{"gemini-2.5-flash", 65536, 8192},
-		{"gemini-2.0-flash", 8192, 0},
-		{"gemini-1.5-pro", 8192, 0},
 	}
 
 	for _, tt := range tests {
@@ -47,7 +46,7 @@ func TestGetModelConfig_Known(t *testing.T) {
 		t.Fatalf("LoadModels() error: %v", err)
 	}
 
-	cfg := GetModelConfig(models, "gemini-2.5-pro")
+	cfg := GetModelConfig(models, "gemini-2.5-flash")
 	if cfg.MaxOutputTokens != 65536 {
 		t.Errorf("MaxOutputTokens = %d, want 65536", cfg.MaxOutputTokens)
 	}

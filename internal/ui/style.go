@@ -13,9 +13,9 @@ import (
 
 var (
 	// Base backgrounds
-	baseBg     = lipgloss.Color("#1E1E2E") // Main background
-	surfaceBg  = lipgloss.Color("#313244") // Elevated surfaces (pane bg)
-	overlayBg  = lipgloss.Color("#45475A") // Overlay / selected row bg
+	baseBg    = lipgloss.Color("#1E1E2E") // Main background
+	surfaceBg = lipgloss.Color("#313244") // Elevated surfaces (pane bg)
+	overlayBg = lipgloss.Color("#45475A") // Overlay / selected row bg
 
 	// Text hierarchy
 	textPrimary   = lipgloss.Color("#CDD6F4") // Primary text
@@ -32,8 +32,8 @@ var (
 	accentPeach  = lipgloss.Color("#FAB387") // Highlights
 
 	// Semantic
-	headerBg   = lipgloss.Color("#1E1E2E")
-	borderClr  = lipgloss.Color("#313244") // Borders (darker)
+	headerBg    = lipgloss.Color("#1E1E2E")
+	borderClr   = lipgloss.Color("#313244") // Borders (darker)
 	borderFocus = lipgloss.Color("#585B70") // Focused border (subtle)
 )
 
@@ -71,23 +71,23 @@ var (
 	footerSepStyle  = lipgloss.NewStyle().Foreground(textSubtle)
 
 	// Pre-computed styles for hot render paths (avoid allocations in View)
-	styleTextMuted       = lipgloss.NewStyle().Foreground(textMuted)
-	styleTextSubtle      = lipgloss.NewStyle().Foreground(textSubtle)
-	styleTextPrimary     = lipgloss.NewStyle().Foreground(textPrimary)
-	styleTextSecondary   = lipgloss.NewStyle().Foreground(textSecondary)
-	styleAccentBlue      = lipgloss.NewStyle().Foreground(accentBlue)
-	styleAccentBlueBold  = lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
-	styleAccentGreen     = lipgloss.NewStyle().Foreground(accentGreen)
+	styleTextMuted      = lipgloss.NewStyle().Foreground(textMuted)
+	styleTextSubtle     = lipgloss.NewStyle().Foreground(textSubtle)
+	styleTextPrimary    = lipgloss.NewStyle().Foreground(textPrimary)
+	styleTextSecondary  = lipgloss.NewStyle().Foreground(textSecondary)
+	styleAccentBlue     = lipgloss.NewStyle().Foreground(accentBlue)
+	styleAccentBlueBold = lipgloss.NewStyle().Foreground(accentBlue).Bold(true)
+	styleAccentGreen    = lipgloss.NewStyle().Foreground(accentGreen)
 
 	// AI thought text — dim italic, ~65% opacity feel
-	styleThought     = lipgloss.NewStyle().Foreground(lipgloss.Color("#585B70")).Italic(true)
-	styleToolCall    = lipgloss.NewStyle().Foreground(lipgloss.Color("#45475A"))                  // very subtle tool call indicators
-	styleBatchOutput = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))                  // muted batch review output (intermediate)
-	styleProgressBar = lipgloss.NewStyle().Foreground(accentBlue)
-	styleProgressBg  = lipgloss.NewStyle().Foreground(lipgloss.Color("#313244"))
-	styleAccentMauveBold = lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
-	styleAccentRed       = lipgloss.NewStyle().Foreground(accentRed)
-	styleAccentYellow    = lipgloss.NewStyle().Foreground(accentYellow)
+	styleThought          = lipgloss.NewStyle().Foreground(lipgloss.Color("#585B70")).Italic(true)
+	styleToolCall         = lipgloss.NewStyle().Foreground(lipgloss.Color("#45475A")) // very subtle tool call indicators
+	styleBatchOutput      = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086")) // muted batch review output (intermediate)
+	styleProgressBar      = lipgloss.NewStyle().Foreground(accentBlue)
+	styleProgressBg       = lipgloss.NewStyle().Foreground(lipgloss.Color("#313244"))
+	styleAccentMauveBold  = lipgloss.NewStyle().Foreground(accentMauve).Bold(true)
+	styleAccentRed        = lipgloss.NewStyle().Foreground(accentRed)
+	styleAccentYellow     = lipgloss.NewStyle().Foreground(accentYellow)
 	styleAccentYellowBold = lipgloss.NewStyle().Foreground(accentYellow).Bold(true)
 
 	// Diff cursor highlight styles

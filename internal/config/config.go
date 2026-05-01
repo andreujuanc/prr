@@ -9,7 +9,7 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	Provider        string `json:"provider"`                   // "gemini", "anthropic", "openai"
+	Provider        string `json:"provider"` // "gemini", "anthropic", "openai"
 	APIKey          string `json:"api_key"`
 	Model           string `json:"model"`
 	ParallelReviews int    `json:"parallel_reviews,omitempty"` // number of concurrent batch reviews (default 3)
@@ -60,7 +60,7 @@ func Load() (*Config, error) {
 		// Default models per provider
 		switch cfg.Provider {
 		case "gemini":
-			cfg.Model = "gemini-2.5-pro"
+			cfg.Model = "gemini-2.5-flash"
 		case "anthropic":
 			cfg.Model = "claude-sonnet-4-20250514"
 		case "openai":
@@ -84,7 +84,7 @@ func createDefault(path string) error {
 	defaultCfg := Config{
 		Provider: "gemini",
 		APIKey:   "YOUR_API_KEY",
-		Model:    "gemini-2.5-pro",
+		Model:    "gemini-2.5-flash",
 	}
 
 	data, err := json.MarshalIndent(defaultCfg, "", "  ")

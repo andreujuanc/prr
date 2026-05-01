@@ -45,7 +45,7 @@ func (g *GeminiProvider) httpClient() *http.Client {
 }
 
 func (g *GeminiProvider) Name() string    { return "gemini" }
-func (g *GeminiProvider) ModelID() string  { return g.Model }
+func (g *GeminiProvider) ModelID() string { return g.Model }
 
 func (g *GeminiProvider) Capabilities() Capabilities {
 	return Capabilities{
@@ -106,12 +106,12 @@ func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 // ── Gemini native types ─────────────────────────────────────────────────
 
 type geminiRequest struct {
-	SystemInstruction *geminiContent       `json:"systemInstruction,omitempty"`
-	Contents          []geminiContent      `json:"contents"`
-	Tools             []geminiTool         `json:"tools,omitempty"`
-	GenerationConfig  *geminiGenConfig     `json:"generationConfig,omitempty"`
-	ToolConfig        *geminiToolConfig    `json:"toolConfig,omitempty"`
-	SafetySettings    []geminiSafety       `json:"safetySettings,omitempty"`
+	SystemInstruction *geminiContent    `json:"systemInstruction,omitempty"`
+	Contents          []geminiContent   `json:"contents"`
+	Tools             []geminiTool      `json:"tools,omitempty"`
+	GenerationConfig  *geminiGenConfig  `json:"generationConfig,omitempty"`
+	ToolConfig        *geminiToolConfig `json:"toolConfig,omitempty"`
+	SafetySettings    []geminiSafety    `json:"safetySettings,omitempty"`
 }
 
 type geminiContent struct {
@@ -120,11 +120,11 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text             string                `json:"text,omitempty"`
-	Thought          *bool                 `json:"thought,omitempty"`
-	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
-	FunctionCall     *geminiFunctionCall   `json:"functionCall,omitempty"`
-	FunctionResponse *geminiFuncResponse   `json:"functionResponse,omitempty"`
+	Text             string              `json:"text,omitempty"`
+	Thought          *bool               `json:"thought,omitempty"`
+	ThoughtSignature string              `json:"thoughtSignature,omitempty"`
+	FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFuncResponse `json:"functionResponse,omitempty"`
 }
 
 type geminiFunctionCall struct {
@@ -160,8 +160,8 @@ type geminiSchema struct {
 
 // Generation config types
 type geminiGenConfig struct {
-	MaxOutputTokens int                  `json:"maxOutputTokens,omitempty"`
-	Temperature     *float64             `json:"temperature,omitempty"`
+	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
+	Temperature     *float64              `json:"temperature,omitempty"`
 	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
@@ -198,8 +198,8 @@ type geminiStreamResponse struct {
 		} `json:"content"`
 	} `json:"candidates"`
 	UsageMetadata *struct {
-		PromptTokenCount     int `json:"promptTokenCount"`
-		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		PromptTokenCount        int `json:"promptTokenCount"`
+		CandidatesTokenCount    int `json:"candidatesTokenCount"`
 		CachedContentTokenCount int `json:"cachedContentTokenCount"`
 	} `json:"usageMetadata,omitempty"`
 }
@@ -450,34 +450,34 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 
 		for _, candidate := range chunk.Candidates {
 			for _, part := range candidate.Content.Parts {
-			// Handle function calls
-			if part.FunctionCall != nil {
-				args, _ := json.Marshal(part.FunctionCall.Args)
-				tub := ToolUseBlock{
-					ID:        part.FunctionCall.ID,
-					Name:      part.FunctionCall.Name,
-					Args:      args,
-					Signature: part.ThoughtSignature,
-				}
-				// If the function call part doesn't carry its own
-				// thoughtSignature, inherit it from the most recent
-				// ThinkingBlock. Gemini requires this on every
-				// functionCall part when echoing the turn back.
-				if tub.Signature == "" {
-					for i := len(contentBlocks) - 1; i >= 0; i-- {
-						if tb, ok := contentBlocks[i].(ThinkingBlock); ok && tb.Signature != "" {
-							tub.Signature = tb.Signature
-							break
+				// Handle function calls
+				if part.FunctionCall != nil {
+					args, _ := json.Marshal(part.FunctionCall.Args)
+					tub := ToolUseBlock{
+						ID:        part.FunctionCall.ID,
+						Name:      part.FunctionCall.Name,
+						Args:      args,
+						Signature: part.ThoughtSignature,
+					}
+					// If the function call part doesn't carry its own
+					// thoughtSignature, inherit it from the most recent
+					// ThinkingBlock. Gemini requires this on every
+					// functionCall part when echoing the turn back.
+					if tub.Signature == "" {
+						for i := len(contentBlocks) - 1; i >= 0; i-- {
+							if tb, ok := contentBlocks[i].(ThinkingBlock); ok && tb.Signature != "" {
+								tub.Signature = tb.Signature
+								break
+							}
 						}
 					}
+					// Generate a synthetic ID if Gemini didn't provide one
+					if tub.ID == "" {
+						tub.ID = fmt.Sprintf("call_%d", len(contentBlocks))
+					}
+					contentBlocks = append(contentBlocks, tub)
+					ch <- ChatEvent{Type: EventToolUse, ToolUse: &tub}
 				}
-				// Generate a synthetic ID if Gemini didn't provide one
-				if tub.ID == "" {
-					tub.ID = fmt.Sprintf("call_%d", len(contentBlocks))
-				}
-				contentBlocks = append(contentBlocks, tub)
-				ch <- ChatEvent{Type: EventToolUse, ToolUse: &tub}
-			}
 
 				// Handle text (regular or thinking)
 				if part.Text != "" {

@@ -8,18 +8,18 @@ import (
 func TestHashDiff(t *testing.T) {
 	diff1 := "--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+new"
 	diff2 := "--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+newer"
-	
+
 	hash1 := HashDiff(diff1)
 	hash2 := HashDiff(diff2)
-	
+
 	if hash1 == "" {
 		t.Errorf("HashDiff returned empty string")
 	}
-	
+
 	if hash1 == hash2 {
 		t.Errorf("HashDiff returned identical hashes for different diffs: %s", hash1)
 	}
-	
+
 	// Ensure determinism
 	if HashDiff(diff1) != hash1 {
 		t.Errorf("HashDiff is not deterministic")

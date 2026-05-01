@@ -50,7 +50,7 @@ type RefsFetchedMsg struct {
 // DiffHashedMsg is sent when all diff hashes have been computed and state synced.
 type DiffHashedMsg struct {
 	State        *state.State
-	RawDiffs     map[string]string        // filePath -> raw diff content
+	RawDiffs     map[string]string         // filePath -> raw diff content
 	SkippedFiles map[string]git.SkipReason // filePath -> reason skipped from AI
 	Err          error
 }
@@ -99,11 +99,11 @@ type AIReviewBatchInfo struct {
 type AIReviewBatchStatus int
 
 const (
-	BatchPending  AIReviewBatchStatus = iota
-	BatchActive                       // spinner
-	BatchDone                         // green ✓
-	BatchCached                       // green ✓ (cached)
-	BatchFailed                       // red ✗
+	BatchPending AIReviewBatchStatus = iota
+	BatchActive                      // spinner
+	BatchDone                        // green ✓
+	BatchCached                      // green ✓ (cached)
+	BatchFailed                      // red ✗
 )
 
 // AIReviewInitMsg is sent once at the start of a review to initialize the batch list.
@@ -181,7 +181,7 @@ type Model struct {
 	reviewState  *state.State
 	loading      bool
 	loadingMsg   string
-	selectedFile string // currently selected file path ("" = overview)
+	selectedFile string            // currently selected file path ("" = overview)
 	rawDiffs     map[string]string // filePath -> raw diff (for AI context)
 
 	// Refresh tracking: when non-empty, PRFetchedMsg compares OIDs to skip no-op refreshes
@@ -194,19 +194,19 @@ type Model struct {
 	skippedFiles map[string]git.SkipReason
 
 	// AI
-	aiClient           ai.Client
-	aiModelName        string // model identifier for display (e.g. "gemini-2.5-pro")
+	aiClient            ai.Client
+	aiModelName         string // model identifier for display (e.g. "gemini-2.5-pro")
 	aiStreaming         bool   // true while AI is generating
-	aiStreamBuffer     string // accumulated streamed response
-	aiStreamDirty      bool   // true when buffer has unflushed tokens
-	aiCancelFn         context.CancelFunc
-	aiChatHistoryCache string // pre-rendered markdown of completed messages (for streaming perf)
-	aiReviewBatches  []AIReviewBatchInfo   // batch list for in-place rendering
-	aiReviewStatuses []AIReviewBatchStatus // per-batch status
-	aiReviewPhase    string                // "batch" or "synthesis"
-	aiPanelTab         int    // 0 = Review, 1 = Chat
-	aiReviewRendered   string // cached rendered review markdown
-	aiReviewRenderWidth int   // width used for cached render
+	aiStreamBuffer      string // accumulated streamed response
+	aiStreamDirty       bool   // true when buffer has unflushed tokens
+	aiCancelFn          context.CancelFunc
+	aiChatHistoryCache  string                // pre-rendered markdown of completed messages (for streaming perf)
+	aiReviewBatches     []AIReviewBatchInfo   // batch list for in-place rendering
+	aiReviewStatuses    []AIReviewBatchStatus // per-batch status
+	aiReviewPhase       string                // "batch" or "synthesis"
+	aiPanelTab          int                   // 0 = Review, 1 = Chat
+	aiReviewRendered    string                // cached rendered review markdown
+	aiReviewRenderWidth int                   // width used for cached render
 
 	// Custom review instructions loaded from .prr/instructions.md
 	customInstructions string
@@ -218,19 +218,19 @@ type Model struct {
 	previewSeq int // incremented on each cursor move; debounced tick checks this
 
 	// Comments
-	comments       map[string][]git.ReviewComment // filePath -> comments
-	commenting     bool                           // true when comment input is active
-	commentInput   textarea.Model                 // input for new comment
-	commentLine    int                            // line number for new comment
-	commentSide    string                         // "LEFT" or "RIGHT"
-	diffCursor     int                            // cursor position within visible diff lines (for line selection)
+	comments     map[string][]git.ReviewComment // filePath -> comments
+	commenting   bool                           // true when comment input is active
+	commentInput textarea.Model                 // input for new comment
+	commentLine  int                            // line number for new comment
+	commentSide  string                         // "LEFT" or "RIGHT"
+	diffCursor   int                            // cursor position within visible diff lines (for line selection)
 
 	// Navigable review findings
 	reviewFindings    []state.ReviewFinding // flat ordered list of findings (severity-sorted, matching render order)
 	reviewCursor      int                   // currently highlighted finding index (-1 = none)
 	pendingScrollLine int                   // line to scroll to after diff loads (0 = none)
 	cameFromFinding   bool                  // true when diff was opened via finding jump (Esc returns to review)
-	diffContent       string               // cached diff content for line scanning (set on StyledDiffMsg)
+	diffContent       string                // cached diff content for line scanning (set on StyledDiffMsg)
 
 	// Panel visibility
 	showFilePanel bool

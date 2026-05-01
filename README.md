@@ -4,6 +4,8 @@ AI-powered pull request reviewer in your terminal. Review diffs, navigate findin
 
 Built with Go and [Bubble Tea](https://github.com/charmbracelet/bubbletea). Diffs styled by [delta](https://github.com/dandavison/delta).
 
+![prr demo](docs/demo/demo.gif)
+
 ## Prerequisites
 
 - [Go 1.22+](https://go.dev/dl/)
