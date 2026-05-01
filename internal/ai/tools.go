@@ -313,8 +313,8 @@ func CanonicalToolDefs() []ToolDef {
 			},
 		},
 		{
-			Name:     "gh_pr_files",
-			ReadOnly: true,
+			Name:        "gh_pr_files",
+			ReadOnly:    true,
 			Description: "List files changed in a PR with additions/deletions counts.",
 			Parameters: ToolParams{
 				Type: "object",

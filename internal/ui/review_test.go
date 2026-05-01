@@ -74,9 +74,9 @@ func TestReviewBatchWithRetry_SuccessFirstAttempt(t *testing.T) {
 func TestReviewBatchWithRetry_EmptyThenSuccess(t *testing.T) {
 	client := &mockClient{
 		responses: []mockResponse{
-			{result: ""},                    // attempt 1: empty
-			{result: "not json"},            // attempt 2: unparseable
-			{result: validBatchJSON()},      // attempt 3: success
+			{result: ""},               // attempt 1: empty
+			{result: "not json"},       // attempt 2: unparseable
+			{result: validBatchJSON()}, // attempt 3: success
 		},
 	}
 	batch := reviewBatch{label: "pkg", files: []string{"main.go"}, diffs: "diff"}
@@ -182,7 +182,7 @@ func TestSynthesisWithRetry_EmptyThenSuccess(t *testing.T) {
 	client := &mockClient{
 		responses: []mockResponse{
 			{result: ""},
-			{result: "   "},                    // whitespace-only counts as empty
+			{result: "   "}, // whitespace-only counts as empty
 			{result: "## Final review"},
 		},
 	}
@@ -403,10 +403,10 @@ func TestBuildReviewBatches_SingleFile(t *testing.T) {
 
 func TestBuildReviewBatches_GroupsByDirectory(t *testing.T) {
 	diffs := map[string]string{
-		"internal/ui/model.go":  "diff-model",
-		"internal/ui/style.go":  "diff-style",
-		"internal/ai/agent.go":  "diff-agent",
-		"main.go":               "diff-main",
+		"internal/ui/model.go": "diff-model",
+		"internal/ui/style.go": "diff-style",
+		"internal/ai/agent.go": "diff-agent",
+		"main.go":              "diff-main",
 	}
 
 	batches := buildReviewBatches(diffs)
@@ -469,9 +469,9 @@ func TestBuildReviewBatches_LargeFileSplitsBatch(t *testing.T) {
 func TestBuildReviewBatches_ExcludedFilesSkipped(t *testing.T) {
 	diffs := map[string]string{
 		"main.go":           "diff-main",
-		"go.sum":            "diff-gosum",           // excluded by default
-		"vendor/lib/lib.go": "diff-vendor",          // excluded by vendor/** pattern
-		"style.min.css":     "diff-css",             // excluded by *.min.css
+		"go.sum":            "diff-gosum",  // excluded by default
+		"vendor/lib/lib.go": "diff-vendor", // excluded by vendor/** pattern
+		"style.min.css":     "diff-css",    // excluded by *.min.css
 	}
 
 	batches := buildReviewBatches(diffs)
@@ -723,11 +723,11 @@ func liveModel() string {
 
 // testReporter implements ReviewReporter and records all events for assertions.
 type testReporter struct {
-	mu         sync.Mutex
-	batches    []AIReviewBatchInfo
-	progress   []AIReviewProgressMsg
-	synthesis  bool
-	tokens     []string
+	mu        sync.Mutex
+	batches   []AIReviewBatchInfo
+	progress  []AIReviewProgressMsg
+	synthesis bool
+	tokens    []string
 }
 
 func (r *testReporter) InitBatches(batches []AIReviewBatchInfo) {

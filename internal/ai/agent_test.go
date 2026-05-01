@@ -22,7 +22,7 @@ type mockProvider struct {
 }
 
 func (m *mockProvider) Name() string               { return "mock" }
-func (m *mockProvider) ModelID() string             { return "mock-model" }
+func (m *mockProvider) ModelID() string            { return "mock-model" }
 func (m *mockProvider) Capabilities() Capabilities { return m.capabilities }
 
 func (m *mockProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {

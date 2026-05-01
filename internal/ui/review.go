@@ -139,6 +139,7 @@ type batchResult struct {
 //     In parallel mode, batch tokens are not streamed (would be garbled); instead,
 //     the UI shows a progress counter of completed/active/total batches.
 //   - When parallelReviews == 1, batches are reviewed sequentially with token streaming.
+//
 // Phase 2: Synthesize all findings into a final review (always streamed)
 //
 // Progress and tokens are sent to the UI via program.Send().

@@ -56,11 +56,11 @@ func TestTool_ReadFile(t *testing.T) {
 	fileContent := "line1\nline2\nline3\nline4\nline5\n"
 
 	tests := []struct {
-		name     string
-		args     map[string]interface{}
-		git      map[string]fakeResult
-		wantSub  string // substring that must appear in result
-		wantErr  string // if non-empty, result must start with "Error:"
+		name    string
+		args    map[string]interface{}
+		git     map[string]fakeResult
+		wantSub string // substring that must appear in result
+		wantErr string // if non-empty, result must start with "Error:"
 	}{
 		{
 			name:    "happy path, defaults",
@@ -407,15 +407,15 @@ func TestTool_GitShow(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name: "commit info",
-			args: map[string]interface{}{"commit": "abc123"},
-			git:  map[string]fakeResult{"show": {out: "commit abc123\nAuthor: dev\n\nfix stuff\n"}},
+			name:    "commit info",
+			args:    map[string]interface{}{"commit": "abc123"},
+			git:     map[string]fakeResult{"show": {out: "commit abc123\nAuthor: dev\n\nfix stuff\n"}},
 			wantSub: "fix stuff",
 		},
 		{
-			name: "file at commit",
-			args: map[string]interface{}{"commit": "abc123", "path": "main.go"},
-			git:  map[string]fakeResult{"show": {out: "package main\n"}},
+			name:    "file at commit",
+			args:    map[string]interface{}{"commit": "abc123", "path": "main.go"},
+			git:     map[string]fakeResult{"show": {out: "package main\n"}},
 			wantSub: "package main",
 		},
 		{
@@ -663,9 +663,9 @@ func TestTool_GhIssueView(t *testing.T) {
 
 func TestTool_GetReview(t *testing.T) {
 	tests := []struct {
-		name     string
-		getter   func() string
-		wantSub  string
+		name    string
+		getter  func() string
+		wantSub string
 	}{
 		{
 			name:    "no getter",
@@ -818,8 +818,8 @@ type fakeExitError struct {
 	code int
 }
 
-func (e *fakeExitError) Error() string   { return fmt.Sprintf("exit status %d", e.code) }
-func (e *fakeExitError) ExitCode() int   { return e.code }
+func (e *fakeExitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+func (e *fakeExitError) ExitCode() int { return e.code }
 
 // ══════════════════════════════════════════════════════════════════════════
 // Integration tests — real git commands, no faked runners
@@ -1142,9 +1142,10 @@ func TestIntegration_GitLog(t *testing.T) {
 	ex := newRealExecutor()
 
 	tests := []struct {
-		name    string
-		args    map[string]interface{}
-		wantSub string
+		name      string
+		args      map[string]interface{}
+		wantSub   string
+		needDepth int // minimum commits required (0 = no check)
 	}{
 		{
 			name:    "default log",
@@ -1157,14 +1158,28 @@ func TestIntegration_GitLog(t *testing.T) {
 			wantSub: "", // just verify no error
 		},
 		{
-			name:    "with rev_range",
-			args:    map[string]interface{}{"rev_range": "HEAD~2..HEAD", "max": 5.0},
-			wantSub: "", // just verify no error
+			name:      "with rev_range",
+			args:      map[string]interface{}{"rev_range": "HEAD~2..HEAD", "max": 5.0},
+			wantSub:   "", // just verify no error
+			needDepth: 3,  // needs at least 3 commits for HEAD~2
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.needDepth > 0 {
+				// Check that the repo has enough commits for rev_range tests
+				// (shallow clones in CI may not have sufficient history)
+				out, err := runGit("rev-list", "--count", "HEAD")
+				if err != nil {
+					t.Skipf("cannot count commits: %v", err)
+				}
+				count := 0
+				fmt.Sscanf(strings.TrimSpace(out), "%d", &count)
+				if count < tt.needDepth {
+					t.Skipf("repo has %d commits, need %d; skipping", count, tt.needDepth)
+				}
+			}
 			result, isErr := ex.ExecuteTool("git_log", tt.args)
 			if isErr {
 				t.Fatalf("unexpected error: %s", result)
@@ -1289,9 +1304,9 @@ func TestIntegration_GitStatus(t *testing.T) {
 
 func TestIntegration_GetReview(t *testing.T) {
 	tests := []struct {
-		name     string
-		getter   func() string
-		wantSub  string
+		name    string
+		getter  func() string
+		wantSub string
 	}{
 		{
 			name:    "nil getter",

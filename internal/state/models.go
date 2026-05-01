@@ -33,8 +33,8 @@ type ReviewOutput struct {
 
 // ReviewFinding is a single finding from the structured review.
 type ReviewFinding struct {
-	Severity   string `json:"severity"`   // "critical", "high", "medium", "low", "nit"
-	Category   string `json:"category"`   // "bug", "security", "performance", "testing", "style", "architecture", "docs"
+	Severity   string `json:"severity"` // "critical", "high", "medium", "low", "nit"
+	Category   string `json:"category"` // "bug", "security", "performance", "testing", "style", "architecture", "docs"
 	File       string `json:"file"`
 	Line       int    `json:"line"`
 	Title      string `json:"title"`
@@ -66,7 +66,7 @@ func (f ReviewFinding) SeverityRank() int {
 // AIReview stores the result of an AI review for a file or the overall PR.
 type AIReview struct {
 	Summary  string `json:"summary"`            // rendered final review text (legacy: free-form markdown)
-	Findings string `json:"findings,omitempty"`  // per-batch raw findings (PR-level only)
+	Findings string `json:"findings,omitempty"` // per-batch raw findings (PR-level only)
 
 	// Structured review output — populated by Phase 5+ review flows.
 	// When present, the TUI renders this instead of the legacy Summary field.

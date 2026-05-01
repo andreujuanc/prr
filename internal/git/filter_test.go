@@ -7,11 +7,11 @@ import (
 
 func TestShouldSkipForAI_BinaryDiffMarker(t *testing.T) {
 	tests := []struct {
-		name    string
-		path    string
-		diff    string
-		skip    bool
-		reason  SkipReason
+		name   string
+		path   string
+		diff   string
+		skip   bool
+		reason SkipReason
 	}{
 		{
 			name: "new binary file",

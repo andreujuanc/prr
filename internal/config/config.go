@@ -9,7 +9,7 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	Provider        string `json:"provider"`                   // "gemini", "anthropic", "openai"
+	Provider        string `json:"provider"` // "gemini", "anthropic", "openai"
 	APIKey          string `json:"api_key"`
 	Model           string `json:"model"`
 	ParallelReviews int    `json:"parallel_reviews,omitempty"` // number of concurrent batch reviews (default 3)

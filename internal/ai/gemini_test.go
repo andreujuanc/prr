@@ -497,7 +497,8 @@ func TestGeminiStreamChat_SystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for range ch {} // drain
+	for range ch {
+	} // drain
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -535,7 +536,8 @@ func TestGeminiStreamChat_NoSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for range ch {} // drain
+	for range ch {
+	} // drain
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -576,7 +578,8 @@ func TestGeminiTranslation_ThinkingBlockEchoedBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for range ch {} // drain
+	for range ch {
+	} // drain
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -621,7 +624,8 @@ func TestGeminiTranslation_ToolResultToFunctionResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for range ch {} // drain
+	for range ch {
+	} // drain
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -675,7 +679,8 @@ func TestGeminiTranslation_ToolDefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for range ch {} // drain
+	for range ch {
+	} // drain
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -707,9 +712,9 @@ func TestGeminiTranslation_MessagesToNative(t *testing.T) {
 	provider := &GeminiProvider{APIKey: "k", Model: "m"}
 
 	tests := []struct {
-		name     string
-		req      ChatRequest
-		checkFn  func(t *testing.T, native geminiRequest)
+		name    string
+		req     ChatRequest
+		checkFn func(t *testing.T, native geminiRequest)
 	}{
 		{
 			name: "system prompt → systemInstruction",

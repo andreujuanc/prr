@@ -14,10 +14,10 @@ import (
 
 // treeNode represents a directory or file in the tree.
 type treeNode struct {
-	name       string         // just the segment name (e.g., "model.go")
-	path       string         // full path (e.g., "internal/ui/model.go"), empty for dirs
+	name       string // just the segment name (e.g., "model.go")
+	path       string // full path (e.g., "internal/ui/model.go"), empty for dirs
 	isDir      bool
-	isOverview bool           // special PR overview item
+	isOverview bool // special PR overview item
 	children   []*treeNode
 	additions  int
 	deletions  int

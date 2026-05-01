@@ -67,15 +67,15 @@ func GetRawDiff(base, head, file string) (string, error) {
 func GetRawDiffWithContext(base, head, file string, contextLines int) (string, error) {
 	diffRange := fmt.Sprintf("origin/%s...origin/%s", base, head)
 	cmd := exec.Command("git", "diff", fmt.Sprintf("-U%d", contextLines), diffRange, "--", file)
-	
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	
+
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git diff failed: %v\n%s", err, stderr.String())
 	}
-	
+
 	return stdout.String(), nil
 }
 
@@ -87,10 +87,10 @@ func GetStyledDiff(base, head, file string) (string, error) {
 // GetStyledDiffWithContext runs a styled git diff with configurable context lines.
 func GetStyledDiffWithContext(base, head, file string, contextLines int) (string, error) {
 	diffRange := fmt.Sprintf("origin/%s...origin/%s", base, head)
-	
+
 	// Prepare the git command
 	gitCmd := exec.Command("git", "diff", fmt.Sprintf("-U%d", contextLines), diffRange, "--", file)
-	
+
 	// Prepare the delta command styled to match the prr Catppuccin Mocha theme
 	deltaCmd := exec.Command("delta",
 		"--paging=never",
@@ -141,38 +141,38 @@ func GetStyledDiffWithContext(base, head, file string, contextLines int) (string
 		// Inline hints: show which words changed within a line
 		"--inline-hint-style", "syntax",
 	)
-	
+
 	// Setup pipes
 	gitStdout, err := gitCmd.StdoutPipe()
 	if err != nil {
 		return "", fmt.Errorf("error piping git diff stdout: %v", err)
 	}
-	
+
 	deltaCmd.Stdin = gitStdout
-	
+
 	var deltaStdout, deltaStderr bytes.Buffer
 	deltaCmd.Stdout = &deltaStdout
 	deltaCmd.Stderr = &deltaStderr
-	
+
 	// Start git diff
 	if err := gitCmd.Start(); err != nil {
 		return "", fmt.Errorf("error starting git diff: %v", err)
 	}
-	
+
 	// Start delta
 	if err := deltaCmd.Start(); err != nil {
 		return "", fmt.Errorf("error starting delta: %v\n%s", err, deltaStderr.String())
 	}
-	
+
 	// Wait for commands to finish
 	if err := gitCmd.Wait(); err != nil {
 		return "", fmt.Errorf("git diff execution failed: %v", err)
 	}
-	
+
 	if err := deltaCmd.Wait(); err != nil {
 		return "", fmt.Errorf("delta execution failed: %v\n%s", err, deltaStderr.String())
 	}
-	
+
 	return sanitizeANSI(deltaStdout.String()), nil
 }
 

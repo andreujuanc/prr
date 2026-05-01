@@ -181,10 +181,10 @@ const (
 // ChatEvent is a single streaming event from a provider.
 type ChatEvent struct {
 	Type     ChatEventType
-	Text     string         // EventText, EventThinking
-	ToolUse  *ToolUseBlock  // EventToolUse
-	Response *ChatResponse  // EventDone
-	Err      error          // EventError
+	Text     string        // EventText, EventThinking
+	ToolUse  *ToolUseBlock // EventToolUse
+	Response *ChatResponse // EventDone
+	Err      error         // EventError
 }
 
 // ── Provider interface ──────────────────────────────────────────────────

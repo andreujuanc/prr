@@ -11,10 +11,10 @@ import (
 type ReviewComment struct {
 	ID        int    `json:"id"`
 	Path      string `json:"path"`
-	Line      int    `json:"line"`       // line number in the diff (new file side)
-	Side      string `json:"side"`       // "LEFT" or "RIGHT"
+	Line      int    `json:"line"` // line number in the diff (new file side)
+	Side      string `json:"side"` // "LEFT" or "RIGHT"
 	Body      string `json:"body"`
-	Author    string `json:"-"`          // populated from user.login
+	Author    string `json:"-"` // populated from user.login
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
