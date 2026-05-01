@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"strconv"
 )
 
 // FetchPR uses the GitHub CLI to retrieve PR metadata and file list.
@@ -78,7 +77,7 @@ type prFileREST struct {
 // with automatic pagination (no 100-file cap).
 // Uses {owner}/{repo} template variables resolved by gh to the current repo.
 func fetchPRFiles(prNumber int) ([]PRFile, error) {
-	endpoint := fmt.Sprintf("repos/{owner}/{repo}/pulls/%s/files", strconv.Itoa(prNumber))
+	endpoint := fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/files", prNumber)
 	cmd := exec.Command("gh", "api", endpoint, "--paginate")
 
 	var stdout, stderr bytes.Buffer
