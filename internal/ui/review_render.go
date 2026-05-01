@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"prr/internal/state"
+	"github.com/andreujuanc/prr/internal/state"
 
 	"github.com/charmbracelet/lipgloss"
 )

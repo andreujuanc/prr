@@ -10,9 +10,9 @@ import (
 	"runtime"
 	"strings"
 
-	"prr/internal/ai"
-	"prr/internal/config"
-	"prr/internal/ui"
+	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/config"
+	"github.com/andreujuanc/prr/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"

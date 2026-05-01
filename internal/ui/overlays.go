@@ -5,8 +5,8 @@ import (
 	"log"
 	"strings"
 
-	"prr/internal/ai"
-	"prr/internal/config"
+	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/config"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"

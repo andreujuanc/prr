@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"prr/internal/ai"
-	"prr/internal/state"
+	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 // mockClient implements ai.Client with configurable responses per call.

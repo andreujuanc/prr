@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"prr/internal/state"
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 // ParseReviewOutput parses a raw AI response into a structured ReviewOutput.

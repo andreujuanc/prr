@@ -1,4 +1,4 @@
-module prr
+module github.com/andreujuanc/prr
 
 go 1.22.12
 

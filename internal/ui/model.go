@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"prr/internal/ai"
-	"prr/internal/config"
-	"prr/internal/git"
-	"prr/internal/state"
+	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/config"
+	"github.com/andreujuanc/prr/internal/git"
+	"github.com/andreujuanc/prr/internal/state"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
