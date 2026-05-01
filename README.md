@@ -13,11 +13,15 @@ Built with Go and [Bubble Tea](https://github.com/charmbracelet/bubbletea). Diff
 
 ## Install
 
+**Download a binary** from the [latest release](https://github.com/andreujuanc/prr/releases/latest).
+
+**Or via Go:**
+
 ```bash
 go install github.com/andreujuanc/prr/cmd/prr@latest
 ```
 
-Or build from source:
+**Or build from source:**
 
 ```bash
 git clone https://github.com/andreujuanc/prr.git
