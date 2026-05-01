@@ -23,6 +23,7 @@ type treeNode struct {
 	deletions  int
 	status     state.ReviewStatus
 	expanded   bool
+	skipReason string // non-empty if skipped from AI review (e.g. "binary", "generated", "large")
 }
 
 // fileTree is a navigable file tree component.
@@ -55,12 +56,13 @@ func newFileTree(files []fileInfo) fileTree {
 			if isLast {
 				// File node
 				current.children = append(current.children, &treeNode{
-					name:      part,
-					path:      f.path,
-					isDir:     false,
-					additions: f.additions,
-					deletions: f.deletions,
-					status:    f.status,
+					name:       part,
+					path:       f.path,
+					isDir:      false,
+					additions:  f.additions,
+					deletions:  f.deletions,
+					status:     f.status,
+					skipReason: f.skipReason,
 				})
 			} else {
 				// Find or create directory node
@@ -93,11 +95,13 @@ func newFileTree(files []fileInfo) fileTree {
 }
 
 // fileInfo holds data needed to build the tree.
+// fileInfo holds data needed to build the tree.
 type fileInfo struct {
-	path      string
-	additions int
-	deletions int
-	status    state.ReviewStatus
+	path       string
+	additions  int
+	deletions  int
+	status     state.ReviewStatus
+	skipReason string // non-empty if file is skipped from AI review
 }
 
 func sortTree(node *treeNode) {
@@ -306,11 +310,17 @@ func (ft *fileTree) View() string {
 			stats := ftAddClr.Render(fmt.Sprintf("+%d", entry.node.additions)) +
 				" " + ftDelClr.Render(fmt.Sprintf("−%d", entry.node.deletions))
 
+			// Skip reason tag for files excluded from AI review
+			skipTag := ""
+			if entry.node.skipReason != "" {
+				skipTag = " " + styleTextMuted.Render("["+entry.node.skipReason+"]")
+			}
+
 			name := entry.node.name
 			if isSelected {
-				line = indent + icon + styleAccentBlueBold.Render(name) + "  " + stats
+				line = indent + icon + styleAccentBlueBold.Render(name) + "  " + stats + skipTag
 			} else {
-				line = indent + icon + styleTextSecondary.Render(name) + "  " + stats
+				line = indent + icon + styleTextSecondary.Render(name) + "  " + stats + skipTag
 			}
 		}
 

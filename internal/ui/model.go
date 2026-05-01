@@ -49,9 +49,10 @@ type RefsFetchedMsg struct {
 
 // DiffHashedMsg is sent when all diff hashes have been computed and state synced.
 type DiffHashedMsg struct {
-	State    *state.State
-	RawDiffs map[string]string // filePath -> raw diff content
-	Err      error
+	State        *state.State
+	RawDiffs     map[string]string        // filePath -> raw diff content
+	SkippedFiles map[string]git.SkipReason // filePath -> reason skipped from AI
+	Err          error
 }
 
 // StyledDiffMsg is sent when a styled diff for a file is ready.
@@ -185,6 +186,9 @@ type Model struct {
 
 	// Diff context
 	contextLines int // number of context lines for git diff (-U<n>)
+
+	// Files skipped from AI review (binary, generated, large)
+	skippedFiles map[string]git.SkipReason
 
 	// AI
 	aiClient           ai.Client
@@ -376,6 +380,7 @@ func computeHashes(prNumber, base, head string, files []git.PRFile) tea.Cmd {
 		// Compute diff hashes for all files and store raw diffs
 		hashes := make(map[string]string, len(files))
 		rawDiffs := make(map[string]string, len(files))
+		skippedFiles := make(map[string]git.SkipReason)
 		prFiles := make(map[string]bool, len(files))
 		for _, f := range files {
 			prFiles[f.Path] = true
@@ -385,6 +390,13 @@ func computeHashes(prNumber, base, head string, files []git.PRFile) tea.Cmd {
 				continue
 			}
 			hashes[f.Path] = git.HashDiff(rawDiff)
+
+			// Filter out binary/generated/large files from AI review
+			if skip, reason := git.ShouldSkipForAI(f.Path, rawDiff); skip {
+				skippedFiles[f.Path] = reason
+				log.Printf("Skipping %s from AI review: %s", f.Path, reason)
+				continue
+			}
 			rawDiffs[f.Path] = rawDiff
 		}
 
@@ -396,7 +408,7 @@ func computeHashes(prNumber, base, head string, files []git.PRFile) tea.Cmd {
 			log.Printf("Warning: failed to save state: %v", err)
 		}
 
-		return DiffHashedMsg{State: st, RawDiffs: rawDiffs, Err: nil}
+		return DiffHashedMsg{State: st, RawDiffs: rawDiffs, SkippedFiles: skippedFiles, Err: nil}
 	}
 }
 
@@ -526,6 +538,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.reviewState = msg.State
 		m.rawDiffs = msg.RawDiffs
+		m.skippedFiles = msg.SkippedFiles
 		// Provide diffs to AI tool executor for the git_diff tool
 		if tc, ok := m.aiClient.(ai.ToolConfigurer); ok {
 			tc.SetRawDiffs(msg.RawDiffs)
@@ -622,6 +635,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			if msg.FilePath == m.selectedFile {
 				content := m.injectComments(msg.Content, msg.FilePath)
+				// Prepend skip banner if file is excluded from AI review
+				if reason, ok := m.skippedFiles[msg.FilePath]; ok {
+					banner := styleTextMuted.Render(
+						fmt.Sprintf("  ── skipped from AI review (%s) ──", reason))
+					content = banner + "\n\n" + content
+				}
 				m.diffContent = content // cache for line scanning
 				savedOffset := m.diffViewport.YOffset
 				savedCursor := m.diffCursor
@@ -922,6 +941,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.commenting = false
 				m.commentInput.Reset()
 				m.commentInput.Blur()
+				m.syncLayout()
 				return m, nil
 			case "ctrl+s":
 				// Submit comment
@@ -929,6 +949,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.commenting = false
 				m.commentInput.Blur()
 				m.commentInput.Reset()
+				m.syncLayout()
 				if body != "" && m.pr != nil && m.selectedFile != "" {
 					cmd = createComment(
 						m.prNumber,
@@ -1016,13 +1037,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "n":
 			// Jump to next unreviewed file
-			if m.focusedPane == PaneFileList {
+			if m.focusedPane == PaneFileList || m.focusedPane == PaneDiff {
 				m.jumpToUnreviewed(1)
 				cmds = append(cmds, m.schedulePreview())
 			}
 		case "p":
 			// Jump to previous unreviewed file
-			if m.focusedPane == PaneFileList {
+			if m.focusedPane == PaneFileList || m.focusedPane == PaneDiff {
 				m.jumpToUnreviewed(-1)
 				cmds = append(cmds, m.schedulePreview())
 			}
@@ -1144,7 +1165,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.commenting = true
 						m.commentInput.Reset()
 						m.commentInput.Focus()
+						m.syncLayout()
 						return m, textarea.Blink
+					}
+				}
+			case " ":
+				// Toggle reviewed status for current file
+				if m.selectedFile != "" {
+					cmd = m.toggleReviewStatus()
+					if cmd != nil {
+						cmds = append(cmds, cmd)
 					}
 				}
 			case "j", "down":
@@ -1924,6 +1954,15 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	if m.selectedFile != path {
 		m.selectedFile = path
 	}
+
+	// Skip files excluded by content filter (binary, generated, large)
+	if reason, ok := m.skippedFiles[path]; ok {
+		m.aiPanelTab = 1
+		m.chatViewport.SetContent(
+			styleTextMuted.Render(fmt.Sprintf("This file is excluded from AI review (%s).", reason)))
+		return nil
+	}
+
 	diff := m.rawDiffs[path]
 	if diff == "" {
 		return nil
@@ -2217,11 +2256,16 @@ func (m *Model) populateFileList(st *state.State) {
 				status = fs.Status
 			}
 		}
+		var skipReason string
+		if reason, ok := m.skippedFiles[f.Path]; ok {
+			skipReason = string(reason)
+		}
 		files = append(files, fileInfo{
-			path:      f.Path,
-			additions: f.Additions,
-			deletions: f.Deletions,
-			status:    status,
+			path:       f.Path,
+			additions:  f.Additions,
+			deletions:  f.Deletions,
+			status:     status,
+			skipReason: skipReason,
 		})
 	}
 
@@ -2624,7 +2668,15 @@ func (m *Model) syncLayout() {
 	}
 
 	m.diffViewport.Width = cols[1] - 2
-	m.diffViewport.Height = ih - 2
+	diffH := ih - 2
+	if m.commenting {
+		// Make room for comment separator(1) + label(1) + textarea(3) + newlines(2)
+		diffH -= 5
+		if diffH < 1 {
+			diffH = 1
+		}
+	}
+	m.diffViewport.Height = diffH
 
 	if cols[2] > 2 {
 		cw := cols[2] - 2
