@@ -200,7 +200,7 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 	}
 
 	// Check if we exhausted maxRounds
-	if a.reachedMaxRounds(full.String(), round(provMsgs)) {
+	if countToolRounds(provMsgs) >= a.maxRounds {
 		maxMsg := fmt.Sprintf("\n\n[max iterations (%d) reached — partial result returned]", a.maxRounds)
 		full.WriteString(maxMsg)
 		if onToken != nil {
@@ -212,15 +212,8 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 	return full.String(), nil
 }
 
-// reachedMaxRounds checks whether the loop terminated because it ran all maxRounds
-// iterations with active tool calls. It counts how many tool-result user messages
-// exist; if equal to maxRounds, the loop was capped.
-func (a *Agent) reachedMaxRounds(text string, toolResultRounds int) bool {
-	return toolResultRounds >= a.maxRounds
-}
-
-// round counts the number of user messages that contain ToolResultBlocks.
-func round(msgs []ProviderMessage) int {
+// countToolRounds counts the number of user messages that contain ToolResultBlocks.
+func countToolRounds(msgs []ProviderMessage) int {
 	count := 0
 	for _, m := range msgs {
 		if m.Role != RoleUser {

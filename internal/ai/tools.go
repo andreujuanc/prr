@@ -952,22 +952,16 @@ func truncateOutput(s, hint string) string {
 
 // runGit runs a git command and returns stdout.
 func runGit(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			stderr := strings.TrimSpace(string(exitErr.Stderr))
-			if stderr != "" {
-				return string(out), fmt.Errorf("git %s: %s", args[0], stderr)
-			}
-		}
-		return string(out), fmt.Errorf("git %s: %w", args[0], err)
-	}
-	return string(out), nil
+	return runCommand("git", args...)
 }
 
 // runCmd runs an external command and returns stdout.
 func runCmd(name string, args ...string) (string, error) {
+	return runCommand(name, args...)
+}
+
+// runCommand runs a command and returns stdout, with stderr in the error message.
+func runCommand(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
 	if err != nil {

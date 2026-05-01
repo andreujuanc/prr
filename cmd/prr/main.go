@@ -498,10 +498,8 @@ func initLogger() error {
 	}
 
 	logFile := filepath.Join(logDir, "debug.log")
-	f, err := tea.LogToFile(logFile, "debug")
-	if err != nil {
-		return err
-	}
-	_ = f
-	return nil
+	// NOTE: We intentionally don't close the log file; the OS reclaims it on exit.
+	// tea.LogToFile sets log output globally, so it must stay open for the process lifetime.
+	_, err = tea.LogToFile(logFile, "debug")
+	return err
 }

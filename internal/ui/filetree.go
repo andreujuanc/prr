@@ -95,7 +95,6 @@ func newFileTree(files []fileInfo) fileTree {
 }
 
 // fileInfo holds data needed to build the tree.
-// fileInfo holds data needed to build the tree.
 type fileInfo struct {
 	path       string
 	additions  int
