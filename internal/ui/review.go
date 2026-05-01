@@ -17,6 +17,36 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// ReviewReporter decouples review orchestration from the Bubble Tea event
+// loop. Production code uses teaReporter (wraps *tea.Program); tests can
+// supply a lightweight recording implementation.
+type ReviewReporter interface {
+	// InitBatches is called once at the start with the batch list.
+	InitBatches(batches []AIReviewBatchInfo)
+	// BatchProgress reports a status change for a single batch.
+	BatchProgress(batch int, status AIReviewBatchStatus)
+	// SynthesisStarted signals the transition to the synthesis phase.
+	SynthesisStarted()
+	// Token delivers a streaming token from the synthesis phase.
+	Token(token string)
+}
+
+// teaReporter adapts ReviewReporter to *tea.Program.
+type teaReporter struct{ p *tea.Program }
+
+func (r teaReporter) InitBatches(batches []AIReviewBatchInfo) {
+	r.p.Send(AIReviewInitMsg{Batches: batches})
+}
+func (r teaReporter) BatchProgress(batch int, status AIReviewBatchStatus) {
+	r.p.Send(AIReviewProgressMsg{Batch: batch, Status: status})
+}
+func (r teaReporter) SynthesisStarted() {
+	r.p.Send(AIReviewSynthesisMsg{})
+}
+func (r teaReporter) Token(token string) {
+	r.p.Send(AIChatDeltaMsg{Token: token})
+}
+
 // reviewBatch represents a group of related files to review together.
 type reviewBatch struct {
 	label string   // e.g. "internal/ui" or "root"
@@ -121,7 +151,7 @@ func streamMultiPassReview(
 	customInstructions string,
 	reviewState *state.State,
 	parallelReviews int,
-	p *tea.Program,
+	rr ReviewReporter,
 ) tea.Cmd {
 	return func() tea.Msg {
 		batches := buildReviewBatches(rawDiffs)
@@ -134,12 +164,12 @@ func streamMultiPassReview(
 		for i, b := range batches {
 			batchInfos[i] = AIReviewBatchInfo{Label: b.label, NumFiles: len(b.files)}
 		}
-		p.Send(AIReviewInitMsg{Batches: batchInfos})
+		rr.InitBatches(batchInfos)
 
 		if parallelReviews <= 1 {
-			return reviewBatchesSequential(ctx, client, prMeta, rawDiffs, customInstructions, reviewState, batches, p)
+			return reviewBatchesSequential(ctx, client, prMeta, rawDiffs, customInstructions, reviewState, batches, rr)
 		}
-		return reviewBatchesParallel(ctx, client, prMeta, rawDiffs, customInstructions, reviewState, batches, parallelReviews, p)
+		return reviewBatchesParallel(ctx, client, prMeta, rawDiffs, customInstructions, reviewState, batches, parallelReviews, rr)
 	}
 }
 
@@ -194,6 +224,27 @@ func buildBatchSystemPrompt(prMeta, customInstructions string) string {
 	return systemPrompt
 }
 
+// maxDiffLines is the approximate max number of diff lines included inline in
+// the user message. Beyond this the model is instructed to use git_diff to
+// paginate. Keeping the inline diff bounded stabilises the cacheable prefix
+// and avoids blowing context on very large batches.
+const maxDiffLines = 4000
+
+// capDiff truncates a diff to maxDiffLines and appends a tool-use hint.
+// Returns the original string unchanged if it's within the limit.
+func capDiff(diff string, files []string) string {
+	lines := strings.Split(diff, "\n")
+	if len(lines) <= maxDiffLines {
+		return diff
+	}
+	capped := strings.Join(lines[:maxDiffLines], "\n")
+	pathList := strings.Join(files, " ")
+	return capped + fmt.Sprintf(
+		"\n\n... (diff truncated at %d lines — %d more lines omitted)"+
+			"\nUse git_diff with paths=\"%s\" to read the remaining context.",
+		maxDiffLines, len(lines)-maxDiffLines, pathList)
+}
+
 // buildBatchMessages constructs the user message for a batch review.
 func buildBatchMessages(batch reviewBatch) []ai.Message {
 	return []ai.Message{
@@ -201,7 +252,7 @@ func buildBatchMessages(batch reviewBatch) []ai.Message {
 			"Review these %d file(s): %s\n\n%s",
 			len(batch.files),
 			strings.Join(batch.files, ", "),
-			batch.diffs,
+			capDiff(batch.diffs, batch.files),
 		)},
 	}
 }
@@ -420,7 +471,7 @@ func reviewBatchesSequential(
 	customInstructions string,
 	reviewState *state.State,
 	batches []reviewBatch,
-	p *tea.Program,
+	rr ReviewReporter,
 ) tea.Msg {
 	var allFindings strings.Builder
 	allFileFindings := make(map[string]string)
@@ -431,7 +482,7 @@ func reviewBatchesSequential(
 		}
 
 		if isBatchCached(batch, reviewState) {
-			p.Send(AIReviewProgressMsg{Batch: i, Status: BatchCached})
+			rr.BatchProgress(i, BatchCached)
 
 			cached, cachedFF := collectCachedFindings(batch, reviewState)
 			allFindings.WriteString(fmt.Sprintf("### Batch %d: %s\n", i+1, batch.label))
@@ -444,15 +495,15 @@ func reviewBatchesSequential(
 			continue
 		}
 
-		p.Send(AIReviewProgressMsg{Batch: i, Status: BatchActive})
+		rr.BatchProgress(i, BatchActive)
 
 		result, err := reviewBatchWithRetry(ctx, client, buildBatchSystemPrompt(prMeta, customInstructions), batch, nil)
 		if err != nil {
-			p.Send(AIReviewProgressMsg{Batch: i, Status: BatchFailed})
+			rr.BatchProgress(i, BatchFailed)
 			return AIChatDoneMsg{Err: fmt.Errorf("batch %d/%d (%s): %w", i+1, len(batches), batch.label, err)}
 		}
 
-		p.Send(AIReviewProgressMsg{Batch: i, Status: BatchDone})
+		rr.BatchProgress(i, BatchDone)
 
 		parsed, batchFF := persistBatchFindings(reviewState, batch, result)
 		for f, findings := range batchFF {
@@ -474,7 +525,7 @@ func reviewBatchesSequential(
 		allFindings.WriteString("\n\n---\n\n")
 	}
 
-	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, p)
+	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, rr)
 }
 
 // reviewBatchesParallel reviews batches concurrently using a worker pool.
@@ -489,7 +540,7 @@ func reviewBatchesParallel(
 	reviewState *state.State,
 	batches []reviewBatch,
 	maxWorkers int,
-	p *tea.Program,
+	rr ReviewReporter,
 ) tea.Msg {
 	results := make([]batchResult, len(batches))
 	allFileFindings := make(map[string]string)
@@ -506,7 +557,7 @@ func reviewBatchesParallel(
 				cached: true,
 			}
 
-			p.Send(AIReviewProgressMsg{Batch: i, Status: BatchCached})
+			rr.BatchProgress(i, BatchCached)
 			for f, findings := range cachedFF {
 				allFileFindings[f] = findings
 			}
@@ -535,12 +586,12 @@ func reviewBatchesParallel(
 				for idx := range work {
 					if ctx.Err() != nil {
 						results[idx] = batchResult{batch: batches[idx], err: ctx.Err()}
-						p.Send(AIReviewProgressMsg{Batch: idx, Status: BatchFailed})
+						rr.BatchProgress(idx, BatchFailed)
 						continue
 					}
 
 					batch := batches[idx]
-					p.Send(AIReviewProgressMsg{Batch: idx, Status: BatchActive})
+					rr.BatchProgress(idx, BatchActive)
 
 					result, err := reviewBatchWithRetry(ctx, client, systemPrompt, batch, nil)
 
@@ -551,9 +602,9 @@ func reviewBatchesParallel(
 					}
 
 					if err == nil {
-						p.Send(AIReviewProgressMsg{Batch: idx, Status: BatchDone})
+						rr.BatchProgress(idx, BatchDone)
 					} else {
-						p.Send(AIReviewProgressMsg{Batch: idx, Status: BatchFailed})
+						rr.BatchProgress(idx, BatchFailed)
 					}
 				}
 			}()
@@ -598,11 +649,14 @@ func reviewBatchesParallel(
 		allFindings.WriteString("\n\n---\n\n")
 	}
 
-	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, p)
+	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, rr)
 }
 
 // runSynthesis runs Phase 2 of the multi-pass review: synthesize all findings.
 // This is shared between sequential and parallel modes.
+// The synthesis prompt now requests structured JSON output (ReviewOutput).
+// If parsing fails, it retries once with an error correction prompt.
+// Falls back to raw text if structured parsing fails entirely.
 func runSynthesis(
 	ctx context.Context,
 	client ai.Client,
@@ -612,13 +666,13 @@ func runSynthesis(
 	allFindings string,
 	fileFindings map[string]string,
 	batches []reviewBatch,
-	p *tea.Program,
+	rr ReviewReporter,
 ) tea.Msg {
 	if ctx.Err() != nil {
 		return AIChatDoneMsg{Err: ctx.Err()}
 	}
 
-	p.Send(AIReviewSynthesisMsg{})
+	rr.SynthesisStarted()
 
 	// Build file listing for synthesis context
 	var fileListing strings.Builder
@@ -643,22 +697,48 @@ func runSynthesis(
 	}
 
 	synthesisMessages := []ai.Message{
-		{Role: "user", Content: "Synthesize the per-file findings into a final PR review. Use the get_diff tool if you need to verify any findings against the actual code."},
+		{Role: "user", Content: "Synthesize the per-file findings into a final PR review. Use tools to verify any findings you are uncertain about. Return ONLY the JSON review object."},
 	}
 
 	summary, err := synthesisWithRetry(ctx, client, synthesisSystem, synthesisMessages, func(token string) {
-		p.Send(AIChatDeltaMsg{Token: token})
+		rr.Token(token)
 	})
 	if err != nil {
 		return AIChatDoneMsg{Err: fmt.Errorf("synthesis: %w", err)}
 	}
 
-	return AIChatDoneMsg{
+	// Try to parse as structured ReviewOutput
+	structured := ai.ParseReviewOutput(summary)
+
+	if structured == nil {
+		// Retry once with error correction prompt
+		log.Printf("Synthesis: initial JSON parse failed, retrying with correction prompt")
+		correctionMessages := []ai.Message{
+			{Role: "user", Content: "Synthesize the per-file findings into a final PR review. Return ONLY the JSON review object."},
+			{Role: "assistant", Content: summary},
+			{Role: "user", Content: "Your response was not valid JSON. Please return ONLY a valid JSON object matching the schema specified in the system prompt. No markdown, no prose — just the raw JSON object starting with { and ending with }."},
+		}
+
+		corrected, corrErr := synthesisWithRetry(ctx, client, synthesisSystem, correctionMessages, func(token string) {
+			rr.Token(token)
+		})
+		if corrErr == nil {
+			structured = ai.ParseReviewOutput(corrected)
+			if structured != nil {
+				summary = corrected
+			}
+		}
+	}
+
+	result := AIChatDoneMsg{
 		FullResponse: summary,
 		Review: &state.AIReview{
 			Summary:  summary,
 			Findings: allFindings,
 		},
-		FileFindings: fileFindings,
+		StructuredReview: structured,
+		FileFindings:     fileFindings,
 	}
+
+	return result
 }

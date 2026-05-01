@@ -94,6 +94,19 @@ var (
 	styleHighlightCommentable = lipgloss.NewStyle().Background(overlayBg)
 	styleHighlightNormal      = lipgloss.NewStyle().Background(surfaceBg)
 
+	// Structured review styles
+	styleSeverityCritical = lipgloss.NewStyle().Foreground(accentRed).Bold(true)
+	styleSeverityHigh     = lipgloss.NewStyle().Foreground(accentPeach).Bold(true)
+	styleSeverityMedium   = lipgloss.NewStyle().Foreground(accentYellow)
+	styleSeverityLow      = lipgloss.NewStyle().Foreground(textSecondary)
+	styleSeverityNit      = lipgloss.NewStyle().Foreground(textMuted).Italic(true)
+	styleVerdictApprove   = lipgloss.NewStyle().Foreground(accentGreen).Bold(true)
+	styleVerdictChanges   = lipgloss.NewStyle().Foreground(accentRed).Bold(true)
+	styleVerdictComment   = lipgloss.NewStyle().Foreground(accentYellow).Bold(true)
+	styleAccentPeach      = lipgloss.NewStyle().Foreground(accentPeach)
+	styleFileLine         = lipgloss.NewStyle().Foreground(accentBlue).Underline(true)
+	styleStaleReview      = lipgloss.NewStyle().Foreground(accentYellow).Bold(true)
+
 	// Border styles for pane rendering (focused/unfocused)
 	borderStyleFocused   = lipgloss.NewStyle().Foreground(borderFocus)
 	borderStyleUnfocused = lipgloss.NewStyle().Foreground(borderClr)

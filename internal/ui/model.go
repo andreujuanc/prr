@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -72,6 +73,8 @@ type AIChatDoneMsg struct {
 	Err          error
 	// Review data — set by multi-pass review and file review for persistence
 	Review *state.AIReview
+	// StructuredReview — set when the review was parsed as structured JSON
+	StructuredReview *state.ReviewOutput
 	// FileFindings maps file paths to their batch findings for caching.
 	// Set by multi-pass review so individual file findings can be persisted.
 	FileFindings map[string]string
@@ -135,6 +138,13 @@ type ChatRenderedMsg struct {
 	Tab      int    // 0 = review, 1 = chat
 }
 
+// ReviewRenderedMsg is sent when a structured review render completes,
+// carrying both the rendered content and the ordered findings list.
+type ReviewRenderedMsg struct {
+	Content  string                // rendered review text
+	Findings []state.ReviewFinding // ordered findings for navigation
+}
+
 // logoTickMsg drives the logo color animation during loading.
 type logoTickMsg struct{}
 
@@ -172,6 +182,7 @@ type Model struct {
 
 	// AI
 	aiClient           ai.Client
+	aiModelName        string // model identifier for display (e.g. "gemini-2.5-pro")
 	aiStreaming         bool   // true while AI is generating
 	aiStreamBuffer     string // accumulated streamed response
 	aiStreamDirty      bool   // true when buffer has unflushed tokens
@@ -200,6 +211,13 @@ type Model struct {
 	commentLine    int                            // line number for new comment
 	commentSide    string                         // "LEFT" or "RIGHT"
 	diffCursor     int                            // cursor position within visible diff lines (for line selection)
+
+	// Navigable review findings
+	reviewFindings    []state.ReviewFinding // flat ordered list of findings (severity-sorted, matching render order)
+	reviewCursor      int                   // currently highlighted finding index (-1 = none)
+	pendingScrollLine int                   // line to scroll to after diff loads (0 = none)
+	cameFromFinding   bool                  // true when diff was opened via finding jump (Esc returns to review)
+	diffContent       string               // cached diff content for line scanning (set on StyledDiffMsg)
 
 	// Panel visibility
 	showFilePanel bool
@@ -255,6 +273,12 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int) Model {
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(accentBlue)),
 	)
 
+	// Extract model name from AI client if it supports ModelInfo
+	var modelName string
+	if mi, ok := aiClient.(ai.ModelInfo); ok {
+		modelName = mi.ModelName()
+	}
+
 	return Model{
 		fileTree:           newFileTree(nil),
 		diffViewport:       diffVp,
@@ -266,6 +290,7 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int) Model {
 		loading:            true,
 		loadingMsg:         "Fetching PR data...",
 		aiClient:           aiClient,
+		aiModelName:        modelName,
 		contextLines:       3,
 		comments:           make(map[string][]git.ReviewComment),
 		commentInput:       commentTa,
@@ -273,6 +298,7 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int) Model {
 		showAIPanel:        true,
 		customInstructions: config.LoadCustomInstructions(),
 		parallelReviews:    parallelReviews,
+		reviewCursor:       -1,
 	}
 }
 
@@ -448,7 +474,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.reviewState = msg.State
 		m.rawDiffs = msg.RawDiffs
-		// Provide diffs to AI tool executor for the get_diff tool
+		// Provide diffs to AI tool executor for the git_diff tool
 		if tc, ok := m.aiClient.(ai.ToolConfigurer); ok {
 			tc.SetRawDiffs(msg.RawDiffs)
 			tc.SetReviewGetter(func() string {
@@ -508,6 +534,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ReviewRenderedMsg:
+		// Structured review rendered — store findings and cache content
+		m.reviewFindings = msg.Findings
+		m.aiReviewRendered = msg.Content
+		m.aiReviewRenderWidth = m.chatViewport.Width - 2
+		if m.aiPanelTab == 0 {
+			m.chatViewport.SetContent(msg.Content)
+			m.chatViewport.GotoTop()
+		}
+		// Initialize cursor to first finding and re-render with the
+		// indicator visible, so the user sees the cursor immediately.
+		if m.reviewCursor < 0 && len(m.reviewFindings) > 0 {
+			m.reviewCursor = 0
+			return m, m.rerenderReviewWithCursor()
+		}
+		return m, nil
+
 	case StyledDiffMsg:
 		if msg.Err != nil {
 			m.diffViewport.SetContent(
@@ -516,12 +559,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			if msg.FilePath == m.selectedFile {
 				content := m.injectComments(msg.Content, msg.FilePath)
+				m.diffContent = content // cache for line scanning
 				savedOffset := m.diffViewport.YOffset
 				savedCursor := m.diffCursor
 				m.diffViewport.SetContent(content)
 				if msg.Reload {
 					m.diffViewport.SetYOffset(savedOffset)
 					m.diffCursor = savedCursor
+				} else if m.pendingScrollLine > 0 {
+					// Jump to the line requested by a finding navigation
+					m.scrollDiffToLine(m.pendingScrollLine)
+					m.pendingScrollLine = 0
 				} else {
 					m.diffViewport.GotoTop()
 					m.diffCursor = 0
@@ -553,15 +601,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.aiStreaming {
 			token := msg.Token
 			if strings.HasPrefix(token, "\x00THOUGHT:") {
-				// Thought text — render with dim/italic style
+				// Thought text — render each line individually to prevent
+				// viewport word-wrapping from breaking ANSI escape codes
 				thought := strings.TrimPrefix(token, "\x00THOUGHT:")
-				m.aiStreamBuffer += styleThought.Render(thought)
+				for _, line := range strings.Split(thought, "\n") {
+					m.aiStreamBuffer += styleThought.Render(line) + "\n"
+				}
+			} else if strings.HasPrefix(token, "\x00TOOL_START:") {
+				// Tool execution starting — show name and args
+				tool := strings.TrimPrefix(token, "\x00TOOL_START:")
+				prefix := "  ▸ "
+				maxLen := m.width - 6
+				if maxLen < 20 {
+					maxLen = 20
+				}
+				if len(tool) > maxLen {
+					tool = "…" + tool[len(tool)-(maxLen-1):]
+				}
+				m.aiStreamBuffer += "\n" + styleToolCall.Render(prefix+tool+" …") + "\n"
+			} else if strings.HasPrefix(token, "\x00TOOL_DONE:") {
+				// Tool execution finished — show status and duration
+				// Format: name|status|duration
+				parts := strings.SplitN(strings.TrimPrefix(token, "\x00TOOL_DONE:"), "|", 3)
+				if len(parts) == 3 {
+					name, status, dur := parts[0], parts[1], parts[2]
+					indicator := "  ✓ "
+					if status == "error" {
+						indicator = "  ✗ "
+					}
+					line := fmt.Sprintf("%s%s (%s)", indicator, name, dur)
+					maxLen := m.width - 6
+					if maxLen < 20 {
+						maxLen = 20
+					}
+					if len(line) > maxLen {
+						line = line[:maxLen-1] + "…"
+					}
+					m.aiStreamBuffer += styleToolCall.Render(line) + "\n"
+				}
 			} else if strings.HasPrefix(token, "\x00TOOL:") {
-				// Tool call — render as a subtle, single-line indicator.
-				// Truncate from the left if args are too long (e.g. deep file paths).
+				// Legacy tool call indicator (backward compat)
 				tool := strings.TrimPrefix(token, "\x00TOOL:")
 				prefix := "  ▸ "
-				maxLen := m.width - 6 // account for prefix + margin
+				maxLen := m.width - 6
 				if maxLen < 20 {
 					maxLen = 20
 				}
@@ -614,6 +696,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			// Save the review if present
 			if msg.Review != nil {
+				// If we have a structured review, attach it
+				if msg.StructuredReview != nil {
+					msg.Review.Structured = msg.StructuredReview
+				}
 				m.saveReview(msg.Review)
 			}
 			// Save per-file batch findings for caching
@@ -721,7 +807,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.focusedPane = PaneDiff
 					m.syncFocus()
 				}
-			} else if m.focusedPane == PaneChat {
+			} else if m.focusedPane == PaneChat && m.aiPanelTab == 1 {
+				// Send chat message only on Chat tab; on Review tab Enter is
+				// handled by the pane-specific finding navigation below.
 				cmd = m.sendChatMessage()
 				if cmd != nil {
 					cmds = append(cmds, cmd)
@@ -840,6 +928,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PaneDiff:
 		if km, ok := msg.(tea.KeyMsg); ok {
 			switch km.String() {
+			case "esc":
+				// If we came from a finding jump, return to the review panel
+				if m.cameFromFinding && m.showAIPanel {
+					m.cameFromFinding = false
+					m.focusedPane = PaneChat
+					m.aiPanelTab = 0
+					cmds = append(cmds, m.syncFocus())
+					cmds = append(cmds, m.renderActiveAIView())
+					return m, tea.Batch(cmds...)
+				}
 			case "c":
 				if m.selectedFile != "" && !m.commenting {
 					info := m.getDiffCursorInfo()
@@ -868,6 +966,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case PaneChat:
 		if km, ok := msg.(tea.KeyMsg); ok {
+			// Review tab finding navigation (j/k/Enter when findings exist)
+			if m.aiPanelTab == 0 && len(m.reviewFindings) > 0 {
+				switch km.String() {
+				case "j", "down":
+					if m.reviewCursor < len(m.reviewFindings)-1 {
+						m.reviewCursor++
+						cmds = append(cmds, m.rerenderReviewWithCursor())
+					}
+					return m, tea.Batch(cmds...)
+				case "k", "up":
+					if m.reviewCursor > 0 {
+						m.reviewCursor--
+						cmds = append(cmds, m.rerenderReviewWithCursor())
+					}
+					return m, tea.Batch(cmds...)
+				case "enter":
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						cmd = m.jumpToFinding(m.reviewCursor)
+						if cmd != nil {
+							cmds = append(cmds, cmd)
+						}
+					}
+					return m, tea.Batch(cmds...)
+				}
+			}
+
 			switch km.String() {
 			case "pgup", "pgdown":
 				m.chatViewport, cmd = m.chatViewport.Update(msg)
@@ -986,7 +1110,7 @@ func (m *Model) getAIContext() (string, string) {
 	}
 
 	if m.selectedFile == "" {
-		// PR overview: file listing with stats — diffs are fetched via get_diff tool
+		// PR overview: file listing with stats — diffs are fetched via git_diff tool
 		paths := make([]string, 0, len(m.rawDiffs))
 		for p := range m.rawDiffs {
 			paths = append(paths, p)
@@ -1001,7 +1125,7 @@ func (m *Model) getAIContext() (string, string) {
 			added, removed := countDiffStats(diff)
 			allDiffs.WriteString(fmt.Sprintf("  %-50s +%-4d -%d\n", p, added, removed))
 		}
-		allDiffs.WriteString("\nUse the get_diff tool to read the actual diffs (paginated by file).\n")
+		allDiffs.WriteString("\nUse the git_diff tool to read the actual diffs.\n")
 
 		return m.withInstructions(ai.ReviewPRPrompt), allDiffs.String()
 	}
@@ -1089,8 +1213,13 @@ func (m *Model) saveReview(review *state.AIReview) {
 		return
 	}
 
+	// Stamp the diff snapshot so we can detect staleness later.
+	review.DiffSnapshot = m.reviewState.DiffSnapshotFromFiles()
+
 	m.reviewState.Review = review
 	m.aiReviewRendered = "" // invalidate cached render
+	m.reviewFindings = nil  // reset findings for re-population
+	m.reviewCursor = -1     // reset cursor
 
 	if err := state.Save(m.reviewState); err != nil {
 		log.Printf("Warning: failed to save review state: %v", err)
@@ -1585,7 +1714,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		m.aiCancelFn = cancel
 
-		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, program))
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}))
 	}
 
 	// Single file mode
@@ -1608,14 +1737,16 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	// System prompt is instructions-only; diff goes in the user message
 	systemPrompt := m.withInstructions(ai.ReviewFilePrompt)
 
-	// For large diffs, instruct the AI to use the get_diff tool instead of
-	// pasting the full diff inline. This avoids hitting context limits.
-	const largeDiffThreshold = 5000
+	// For large diffs, instruct the AI to use the git_diff tool instead of
+	// pasting the full diff inline. This keeps the cacheable prefix stable
+	// and avoids blowing context limits.
+	const largeDiffLines = 4000
+	diffLines := strings.Count(diff, "\n")
 	var userContent string
-	if len(diff) > largeDiffThreshold {
+	if diffLines > largeDiffLines {
 		userContent = fmt.Sprintf(
-			"Please review the changes to `%s`. The diff is large (%d chars), so use the get_diff tool to read it.",
-			path, len(diff),
+			"Please review the changes to `%s`. The diff is large (%d lines), so use the git_diff tool with paths=\"%s\" to read it, using pagination if needed.",
+			path, diffLines, path,
 		)
 	} else {
 		userContent = fmt.Sprintf("Please review the changes to `%s`.\n\n```diff\n%s\n```", path, diff)
@@ -1666,6 +1797,94 @@ func (m *Model) jumpToUnreviewed(direction int) {
 			return
 		}
 	}
+}
+
+// scrollDiffToLine scans the cached diff content and scrolls the viewport
+// so that the line matching targetLine (right-side line number) is visible.
+func (m *Model) scrollDiffToLine(targetLine int) {
+	if targetLine <= 0 || m.diffContent == "" {
+		return
+	}
+
+	allLines := strings.Split(m.diffContent, "\n")
+
+	bestOffset := -1
+	bestDist := math.MaxInt
+
+	for i, line := range allLines {
+		info := parseDiffLine(line)
+		if info.rightLine > 0 {
+			dist := info.rightLine - targetLine
+			if dist < 0 {
+				dist = -dist
+			}
+			if dist < bestDist {
+				bestDist = dist
+				bestOffset = i
+			}
+			if info.rightLine == targetLine {
+				break // exact match
+			}
+		}
+	}
+
+	if bestOffset >= 0 {
+		// Center the target line in the viewport
+		vpHeight := m.diffViewport.Height
+		offset := bestOffset - vpHeight/2
+		if offset < 0 {
+			offset = 0
+		}
+		// Clamp to max scroll position to keep cursor calculation consistent
+		maxOffset := m.diffViewport.TotalLineCount() - vpHeight
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if offset > maxOffset {
+			offset = maxOffset
+		}
+		m.diffViewport.SetYOffset(offset)
+
+		// Set diff cursor to the target line within the visible area
+		m.diffCursor = bestOffset - offset
+		if m.diffCursor < 0 {
+			m.diffCursor = 0
+		}
+		if m.diffCursor >= vpHeight {
+			m.diffCursor = vpHeight - 1
+		}
+	}
+}
+
+// jumpToFinding navigates to the file:line referenced by the finding at
+// the given index. Selects the file in the tree, loads the diff, and
+// sets up pending scroll to the target line.
+func (m *Model) jumpToFinding(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.reviewFindings) || m.pr == nil {
+		return nil
+	}
+
+	finding := m.reviewFindings[idx]
+	if finding.File == "" {
+		return nil
+	}
+
+	// Select the file in the tree
+	m.fileTree.selectByPath(finding.File)
+
+	// Set up pending scroll target
+	m.selectedFile = finding.File
+	m.pendingScrollLine = finding.Line
+	m.cameFromFinding = true
+
+	// Switch focus to diff pane
+	m.focusedPane = PaneDiff
+	m.chatInput.Blur()
+
+	// Load the diff
+	m.diffViewport.SetContent(styleTextMuted.Render("Loading diff..."))
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, finding.File, m.contextLines, false)
+	return diffCmd
 }
 
 func (m *Model) toggleReviewStatus() tea.Cmd {
@@ -1838,15 +2057,19 @@ func (m *Model) renderActiveAIView() tea.Cmd {
 }
 
 // renderReviewForFile renders the PR-level AI review in the Review tab.
-// The Review tab always shows the global PR review regardless of which file is selected.
+// If a structured ReviewOutput is available, it renders that with severity
+// grouping and color coding. Otherwise falls back to markdown rendering.
 func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 	if m.reviewState == nil || m.reviewState.Review == nil {
 		return nil
 	}
 
 	width := m.chatViewport.Width - 2
+	cursor := m.reviewCursor
 
 	// If we already rendered at this width, reuse the cached content.
+	// (Cache is invalidated when a new review arrives or cursor changes
+	// via rerenderReviewWithCursor.)
 	if m.aiReviewRendered != "" && m.aiReviewRenderWidth == width {
 		m.chatViewport.SetContent(m.aiReviewRendered)
 		return nil
@@ -1854,16 +2077,88 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 
 	review := m.reviewState.Review
 
-	// Show placeholder, render markdown async
+	// Show placeholder, render async
 	m.chatViewport.SetContent(styleTextMuted.Render("Rendering review..."))
 
-	summary := review.Summary
-	fp := filePath
+	// Check if we have structured review data
+	if review.Structured != nil {
+		structured := review.Structured
+		stale := m.reviewState.IsReviewStale()
+		return func() tea.Msg {
+			rendered, findings := renderStructuredReview(structured, width, cursor, stale)
+			return ReviewRenderedMsg{Content: rendered, Findings: findings}
+		}
+	}
 
+	// Fallback: render raw summary as markdown
+	fp := filePath // capture for closure
+	summary := review.Summary
 	return func() tea.Msg {
 		rendered := renderMarkdown(summary, width)
 		return ChatRenderedMsg{FilePath: fp, Content: rendered, Tab: 0}
 	}
+}
+
+// rerenderReviewWithCursor re-renders the structured review synchronously
+// with the current cursor position and updates the viewport. This is called
+// when the user moves the finding cursor (j/k) so the indicator updates
+// immediately without async rendering delay.
+func (m *Model) rerenderReviewWithCursor() tea.Cmd {
+	if m.reviewState == nil || m.reviewState.Review == nil || m.reviewState.Review.Structured == nil {
+		return nil
+	}
+
+	width := m.chatViewport.Width - 2
+	stale := m.reviewState.IsReviewStale()
+	rendered, _ := renderStructuredReview(m.reviewState.Review.Structured, width, m.reviewCursor, stale)
+	m.aiReviewRendered = rendered
+	m.aiReviewRenderWidth = width
+	m.chatViewport.SetContent(rendered)
+
+	// Scroll the review viewport to keep the selected finding visible.
+	m.scrollReviewToFinding(m.reviewCursor)
+
+	return nil
+}
+
+// scrollReviewToFinding scrolls the chat viewport so the selected finding
+// is visible. Scans the rendered content for the "▸" cursor marker.
+func (m *Model) scrollReviewToFinding(idx int) {
+	if idx < 0 {
+		return
+	}
+
+	content := m.aiReviewRendered
+	if content == "" {
+		return
+	}
+
+	lines := strings.Split(content, "\n")
+	targetLine := -1
+	for i, line := range lines {
+		if strings.Contains(stripANSI(line), "▸") {
+			targetLine = i
+			break
+		}
+	}
+
+	if targetLine < 0 {
+		return
+	}
+
+	vpHeight := m.chatViewport.Height
+	offset := targetLine - vpHeight/3 // show marker in upper third
+	if offset < 0 {
+		offset = 0
+	}
+	maxOffset := m.chatViewport.TotalLineCount() - vpHeight
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	m.chatViewport.SetYOffset(offset)
 }
 
 func (m *Model) renderChatForFile(filePath string) tea.Cmd {
@@ -2563,8 +2858,21 @@ func (m Model) viewHeader() string {
 		reviewBadge = badgeStyle.Render(fmt.Sprintf("● %d/%d reviewed", reviewed, total))
 	}
 
+	// Model name badge
+	var modelBadge string
+	if m.aiModelName != "" {
+		modelBadge = styleTextMuted.Render(m.aiModelName)
+	}
+
 	// Calculate how much room we have for the PR title
-	right := reviewBadge + " "
+	var rightParts []string
+	if reviewBadge != "" {
+		rightParts = append(rightParts, reviewBadge)
+	}
+	if modelBadge != "" {
+		rightParts = append(rightParts, modelBadge)
+	}
+	right := strings.Join(rightParts, styleTextSubtle.Render(" · ")) + " "
 	fixedW := ansi.StringWidth(" "+logo+prInfo+meta) + ansi.StringWidth(right) + 2 // 2 for min gap
 	maxTitleW := m.width - fixedW
 

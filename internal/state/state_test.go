@@ -7,8 +7,8 @@ import (
 )
 
 func TestStateSaveAndLoad(t *testing.T) {
-	// Use a dummy PR number to avoid conflicts
-	prNumber := "test_9999"
+	// Use a dummy PR number to avoid conflicts (must be numeric to pass validation)
+	prNumber := "9999"
 	
 	// Ensure cleanup
 	defer func() {
@@ -88,9 +88,9 @@ func TestSyncWithDiffs(t *testing.T) {
 
 	state.SyncWithDiffs(currentHashes, map[string]bool{"file1.go": true, "file2.go": true, "file3.go": true})
 
-	// Check file1.go (invalidated)
-	if state.Files["file1.go"].Status != StatusUnreviewed {
-		t.Errorf("file1.go should be unreviewed")
+	// Check file1.go (invalidated — was reviewed, now modified)
+	if state.Files["file1.go"].Status != StatusModified {
+		t.Errorf("file1.go should be modified, got %s", state.Files["file1.go"].Status)
 	}
 	if len(state.Files["file1.go"].Chat) != 0 {
 		t.Errorf("file1.go chat should be cleared")

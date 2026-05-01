@@ -13,6 +13,7 @@ type Config struct {
 	APIKey          string `json:"api_key"`
 	Model           string `json:"model"`
 	ParallelReviews int    `json:"parallel_reviews,omitempty"` // number of concurrent batch reviews (default 3)
+	Debug           bool   `json:"-"`                          // set via --debug flag, not persisted
 }
 
 // DefaultConfigPath returns ~/.config/prr/config.json

@@ -14,57 +14,100 @@ import (
 	"time"
 )
 
-// GeminiClient implements Client for the Google Gemini API.
-type GeminiClient struct {
-	APIKey       string
-	Model        string
-	ToolExecutor *ToolExecutor
-	BaseURL      string       // override for testing; empty uses the real Gemini API
-	HTTPClient   *http.Client // optional; defaults to a client with 5-minute timeout
+// GeminiProvider implements Provider for the Google Gemini API.
+// It handles single request/response translation; the iterative
+// tool-calling loop lives in Agent.
+type GeminiProvider struct {
+	APIKey     string
+	Model      string
+	BaseURL    string       // override for testing; empty uses the real Gemini API
+	HTTPClient *http.Client // optional; defaults to a client with 5-minute timeout
+
+	// ModelConfig holds per-model tuning (maxOutputTokens, temperature,
+	// thinkingBudget). Set by the caller from config.GetModelConfig().
+	ModelConfig struct {
+		MaxOutputTokens int
+		Temperature     float64
+		ThinkingBudget  int
+	}
 }
 
 // httpClient returns the configured HTTP client or a sensible default.
-func (g *GeminiClient) httpClient() *http.Client {
+func (g *GeminiProvider) httpClient() *http.Client {
 	if g.HTTPClient != nil {
 		return g.HTTPClient
 	}
 	return &http.Client{Timeout: 5 * time.Minute}
 }
 
-// SetHeadRef configures the git ref for file reading tools.
-func (g *GeminiClient) SetHeadRef(ref string) {
-	if g.ToolExecutor != nil {
-		g.ToolExecutor.HeadRef = ref
+func (g *GeminiProvider) Name() string    { return "gemini" }
+func (g *GeminiProvider) ModelID() string  { return g.Model }
+
+func (g *GeminiProvider) Capabilities() Capabilities {
+	return Capabilities{
+		PromptCaching:     true,
+		StructuredOutput:  true,
+		ParallelToolCalls: true,
+		MaxContextTokens:  1_000_000,
 	}
 }
 
-// SetBaseRef configures the git ref for reading base-branch files.
-func (g *GeminiClient) SetBaseRef(ref string) {
-	if g.ToolExecutor != nil {
-		g.ToolExecutor.BaseRef = ref
+// Chat performs a non-streaming request by collecting StreamChat events.
+func (g *GeminiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	ch, err := g.StreamChat(ctx, req)
+	if err != nil {
+		return nil, err
 	}
+	var resp *ChatResponse
+	for event := range ch {
+		switch event.Type {
+		case EventError:
+			return nil, event.Err
+		case EventDone:
+			resp = event.Response
+		}
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("gemini: no response received")
+	}
+	return resp, nil
 }
 
-// SetRawDiffs provides the raw unified diffs for the get_diff tool.
-func (g *GeminiClient) SetRawDiffs(diffs map[string]string) {
-	if g.ToolExecutor != nil {
-		g.ToolExecutor.RawDiffs = diffs
+// StreamChat makes a single streaming API call and returns a channel of events.
+// It translates ChatRequest to Gemini's native format, streams the SSE response,
+// and emits canonical ChatEvents. The channel is closed when the response ends.
+func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
+	nativeReq := g.toNativeRequest(req)
+
+	body, err := json.Marshal(nativeReq)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: failed to marshal request: %w", err)
 	}
+
+	resp, err := g.doHTTPRequest(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan ChatEvent, 64)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		g.parseSSEStream(ctx, resp.Body, ch)
+	}()
+
+	return ch, nil
 }
 
-// SetReviewGetter provides a function that returns the latest PR review summary.
-func (g *GeminiClient) SetReviewGetter(fn func() string) {
-	if g.ToolExecutor != nil {
-		g.ToolExecutor.ReviewGetter = fn
-	}
-}
-
-// Gemini API request/response types
+// ── Gemini native types ─────────────────────────────────────────────────
 
 type geminiRequest struct {
-	SystemInstruction *geminiContent  `json:"systemInstruction,omitempty"`
-	Contents          []geminiContent `json:"contents"`
-	Tools             []geminiTool    `json:"tools,omitempty"`
+	SystemInstruction *geminiContent       `json:"systemInstruction,omitempty"`
+	Contents          []geminiContent      `json:"contents"`
+	Tools             []geminiTool         `json:"tools,omitempty"`
+	GenerationConfig  *geminiGenConfig     `json:"generationConfig,omitempty"`
+	ToolConfig        *geminiToolConfig    `json:"toolConfig,omitempty"`
+	SafetySettings    []geminiSafety       `json:"safetySettings,omitempty"`
 }
 
 type geminiContent struct {
@@ -73,11 +116,11 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text               string                `json:"text,omitempty"`
-	Thought            *bool                 `json:"thought,omitempty"`
-	ThoughtSignature   string                `json:"thoughtSignature,omitempty"`
-	FunctionCall       *geminiFunctionCall   `json:"functionCall,omitempty"`
-	FunctionResponse   *geminiFuncResponse   `json:"functionResponse,omitempty"`
+	Text             string                `json:"text,omitempty"`
+	Thought          *bool                 `json:"thought,omitempty"`
+	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
+	FunctionCall     *geminiFunctionCall   `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFuncResponse   `json:"functionResponse,omitempty"`
 }
 
 type geminiFunctionCall struct {
@@ -111,6 +154,33 @@ type geminiSchema struct {
 	Enum        []string                `json:"enum,omitempty"`
 }
 
+// Generation config types
+type geminiGenConfig struct {
+	MaxOutputTokens int                  `json:"maxOutputTokens,omitempty"`
+	Temperature     *float64             `json:"temperature,omitempty"`
+	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type geminiThinkingConfig struct {
+	IncludeThoughts bool `json:"includeThoughts"`
+	ThinkingBudget  int  `json:"thinkingBudget,omitempty"`
+}
+
+// Tool config types
+type geminiToolConfig struct {
+	FunctionCallingConfig *geminiFuncCallingConfig `json:"functionCallingConfig,omitempty"`
+}
+
+type geminiFuncCallingConfig struct {
+	Mode string `json:"mode"` // AUTO, ANY, NONE, VALIDATED
+}
+
+// Safety settings
+type geminiSafety struct {
+	Category  string `json:"category"`
+	Threshold string `json:"threshold"`
+}
+
 // Streaming response
 type geminiStreamResponse struct {
 	Candidates []struct {
@@ -119,126 +189,193 @@ type geminiStreamResponse struct {
 				Text             string              `json:"text,omitempty"`
 				Thought          *bool               `json:"thought,omitempty"`
 				ThoughtSignature string              `json:"thoughtSignature,omitempty"`
-				FunctionCall     *geminiFunctionCall  `json:"functionCall,omitempty"`
+				FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
 			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
+	UsageMetadata *struct {
+		PromptTokenCount     int `json:"promptTokenCount"`
+		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		CachedContentTokenCount int `json:"cachedContentTokenCount"`
+	} `json:"usageMetadata,omitempty"`
 }
 
-func (g *GeminiClient) ChatStream(ctx context.Context, systemPrompt string, messages []Message, onToken func(string)) (string, error) {
-	// Build initial contents from messages
-	var contents []geminiContent
+// ── Translation: canonical → Gemini native ──────────────────────────────
 
-	for _, m := range messages {
+func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
+	var native geminiRequest
+
+	if req.System != "" {
+		native.SystemInstruction = &geminiContent{
+			Parts: []geminiPart{{Text: req.System}},
+		}
+	}
+
+	for _, msg := range req.Messages {
 		role := "user"
-		if m.Role == "assistant" {
+		if msg.Role == RoleAssistant {
 			role = "model"
 		}
-		contents = append(contents, geminiContent{
+
+		var parts []geminiPart
+		for _, block := range msg.Content {
+			switch b := block.(type) {
+			case TextBlock:
+				parts = append(parts, geminiPart{Text: b.Text})
+			case ThinkingBlock:
+				p := geminiPart{
+					Text:    b.Text,
+					Thought: boolPtr(true),
+				}
+				if b.Signature != "" {
+					p.ThoughtSignature = b.Signature
+				}
+				parts = append(parts, p)
+			case ToolUseBlock:
+				args := make(map[string]interface{})
+				_ = json.Unmarshal(b.Args, &args)
+				p := geminiPart{
+					FunctionCall: &geminiFunctionCall{
+						Name: b.Name,
+						Args: args,
+						ID:   b.ID,
+					},
+				}
+				if b.Signature != "" {
+					p.ThoughtSignature = b.Signature
+				}
+				parts = append(parts, p)
+			case ToolResultBlock:
+				parts = append(parts, geminiPart{
+					FunctionResponse: &geminiFuncResponse{
+						Name:     b.Name,
+						Response: map[string]string{"result": b.Content},
+					},
+				})
+			}
+		}
+
+		native.Contents = append(native.Contents, geminiContent{
 			Role:  role,
-			Parts: []geminiPart{{Text: m.Content}},
+			Parts: parts,
 		})
 	}
 
-	var full strings.Builder
-
-	// Tool call loop: keep making requests until we get a text response
-	maxToolRounds := 10
-	for round := 0; round < maxToolRounds; round++ {
-		// Build request
-		req := geminiRequest{
-			Contents: contents,
-		}
-
-		if systemPrompt != "" {
-			req.SystemInstruction = &geminiContent{
-				Parts: []geminiPart{{Text: systemPrompt}},
-			}
-		}
-
-		// Add tools if executor is configured
-		if g.ToolExecutor != nil {
-			req.Tools = ToolDeclarations()
-		}
-
-		// Stream the response
-		textResult, toolCalls, modelParts, err := g.doStreamRequest(ctx, req, onToken, &full)
-		if err != nil {
-			return full.String(), err
-		}
-
-		// If no tool calls, we're done
-		if len(toolCalls) == 0 {
-			_ = textResult
-			break
-		}
-
-		// Append the full model turn (includes thought signatures + function calls)
-		contents = append(contents, geminiContent{
-			Role:  "model",
-			Parts: modelParts,
-		})
-
-		// Execute tools and build response parts
-		var responseParts []geminiPart
-		for _, tc := range toolCalls {
-			log.Printf("AI tool call: %s(%v)", tc.Name, tc.Args)
-			if onToken != nil {
-				onToken(fmt.Sprintf("\x00TOOL:%s(%s)", tc.Name, formatArgs(tc.Args)))
-			}
-
-			result := g.ToolExecutor.ExecuteTool(tc.Name, tc.Args)
-
-			responseParts = append(responseParts, geminiPart{
-				FunctionResponse: &geminiFuncResponse{
-					Name:     tc.Name,
-					Response: map[string]string{"result": result},
-				},
-			})
-		}
-		contents = append(contents, geminiContent{
-			Role:  "user",
-			Parts: responseParts,
-		})
-
-		// Continue loop — next iteration will send the tool results
+	if len(req.Tools) > 0 {
+		native.Tools = convertToolDefs(req.Tools)
 	}
 
-	return full.String(), nil
+	// Generation config: temperature, max tokens, thinking
+	native.GenerationConfig = g.buildGenConfig()
+
+	// Tool config: use VALIDATED mode for constrained decoding when tools are present
+	if len(req.Tools) > 0 {
+		native.ToolConfig = &geminiToolConfig{
+			FunctionCallingConfig: &geminiFuncCallingConfig{Mode: "VALIDATED"},
+		}
+	}
+
+	// Safety settings: disable all blocking — code content frequently
+	// triggers false positives on security/profanity/violence filters
+	native.SafetySettings = []geminiSafety{
+		{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
+		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
+		{Category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", Threshold: "BLOCK_NONE"},
+		{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_NONE"},
+	}
+
+	return native
 }
 
-// doStreamRequest makes a single streaming request and returns text output, any tool calls,
-// and the full set of model parts (needed to echo thought signatures back for thinking models).
-func (g *GeminiClient) doStreamRequest(ctx context.Context, req geminiRequest, onToken func(string), full *strings.Builder) (string, []geminiFunctionCall, []geminiPart, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to marshal request: %w", err)
+// buildGenConfig constructs the generationConfig from the provider's ModelConfig.
+func (g *GeminiProvider) buildGenConfig() *geminiGenConfig {
+	cfg := &geminiGenConfig{}
+
+	if g.ModelConfig.MaxOutputTokens > 0 {
+		cfg.MaxOutputTokens = g.ModelConfig.MaxOutputTokens
 	}
 
+	if g.ModelConfig.Temperature > 0 {
+		t := g.ModelConfig.Temperature
+		cfg.Temperature = &t
+	}
+
+	if g.ModelConfig.ThinkingBudget > 0 {
+		cfg.ThinkingConfig = &geminiThinkingConfig{
+			IncludeThoughts: true,
+			ThinkingBudget:  g.ModelConfig.ThinkingBudget,
+		}
+	}
+
+	return cfg
+}
+
+// convertToolDefs translates canonical ToolDefs to Gemini's native format.
+func convertToolDefs(tools []ToolDef) []geminiTool {
+	var fns []geminiFunction
+	for _, t := range tools {
+		fns = append(fns, geminiFunction{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  convertToolParams(t.Parameters),
+		})
+	}
+	return []geminiTool{{FunctionDeclarations: fns}}
+}
+
+func convertToolParams(p ToolParams) geminiSchema {
+	schema := geminiSchema{
+		Type:     strings.ToUpper(p.Type),
+		Required: p.Required,
+	}
+	if len(p.Properties) > 0 {
+		schema.Properties = make(map[string]geminiSchema, len(p.Properties))
+		for name, param := range p.Properties {
+			schema.Properties[name] = convertToolParam(param)
+		}
+	}
+	return schema
+}
+
+func convertToolParam(p ToolParam) geminiSchema {
+	schema := geminiSchema{
+		Type:        strings.ToUpper(p.Type),
+		Description: p.Description,
+		Enum:        p.Enum,
+	}
+	if p.Items != nil {
+		items := convertToolParam(*p.Items)
+		schema.Items = &items
+	}
+	return schema
+}
+
+// ── HTTP request with retry ─────────────────────────────────────────────
+
+func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.Response, error) {
 	base := g.BaseURL
 	if base == "" {
 		base = "https://generativelanguage.googleapis.com/v1beta"
 	}
 	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", base, g.Model)
 
-	// Retry loop for transient errors (429 rate limit, 503 unavailable)
 	maxRetries := 2
 	var resp *http.Response
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
-			return "", nil, nil, fmt.Errorf("failed to create request: %w", err)
+			return nil, fmt.Errorf("gemini: failed to create request: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("x-goog-api-key", g.APIKey)
 
 		resp, err = g.httpClient().Do(httpReq)
 		if err != nil {
-			return "", nil, nil, fmt.Errorf("request failed: %w", err)
+			return nil, fmt.Errorf("gemini: request failed: %w", err)
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			break // success
+			return resp, nil
 		}
 
 		errBody, _ := io.ReadAll(resp.Body)
@@ -252,25 +389,38 @@ func (g *GeminiClient) doStreamRequest(ctx context.Context, req geminiRequest, o
 			case <-time.After(delay):
 				continue
 			case <-ctx.Done():
-				return "", nil, nil, ctx.Err()
+				return nil, ctx.Err()
 			}
 		}
 
 		log.Printf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
-		return "", nil, nil, fmt.Errorf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, fmt.Errorf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
 	}
-	defer resp.Body.Close()
 
-	var textResult strings.Builder
-	var toolCalls []geminiFunctionCall
-	var modelParts []geminiPart
+	// Unreachable: the loop always returns from the StatusOK branch or the error branch.
+	// If we somehow get here, return a clear error rather than a closed response body.
+	return nil, fmt.Errorf("gemini: exhausted retries without a response")
+}
 
-	scanner := bufio.NewScanner(resp.Body)
+// ── SSE stream parsing ──────────────────────────────────────────────────
+
+func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent) {
+	var contentBlocks []ContentBlock
+	var usage TokenUsage
+
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
-		line := scanner.Text()
+		// Respect context cancellation during parsing
+		select {
+		case <-ctx.Done():
+			ch <- ChatEvent{Type: EventError, Err: ctx.Err()}
+			return
+		default:
+		}
 
+		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -285,41 +435,82 @@ func (g *GeminiClient) doStreamRequest(ctx context.Context, req geminiRequest, o
 			continue
 		}
 
+		// Extract usage from the last chunk
+		if chunk.UsageMetadata != nil {
+			usage = TokenUsage{
+				InputTokens:  chunk.UsageMetadata.PromptTokenCount,
+				OutputTokens: chunk.UsageMetadata.CandidatesTokenCount,
+				CacheHits:    chunk.UsageMetadata.CachedContentTokenCount,
+			}
+		}
+
 		for _, candidate := range chunk.Candidates {
 			for _, part := range candidate.Content.Parts {
-				// Collect all parts (text, thought, functionCall) for replay
-				p := geminiPart{
-					Thought:          part.Thought,
-					ThoughtSignature: part.ThoughtSignature,
+			// Handle function calls
+			if part.FunctionCall != nil {
+				args, _ := json.Marshal(part.FunctionCall.Args)
+				tub := ToolUseBlock{
+					ID:        part.FunctionCall.ID,
+					Name:      part.FunctionCall.Name,
+					Args:      args,
+					Signature: part.ThoughtSignature,
 				}
-				if part.FunctionCall != nil {
-					toolCalls = append(toolCalls, *part.FunctionCall)
-					p.FunctionCall = &geminiFunctionCall{
-						Name: part.FunctionCall.Name,
-						Args: part.FunctionCall.Args,
-						ID:   part.FunctionCall.ID,
+				// If the function call part doesn't carry its own
+				// thoughtSignature, inherit it from the most recent
+				// ThinkingBlock. Gemini requires this on every
+				// functionCall part when echoing the turn back.
+				if tub.Signature == "" {
+					for i := len(contentBlocks) - 1; i >= 0; i-- {
+						if tb, ok := contentBlocks[i].(ThinkingBlock); ok && tb.Signature != "" {
+							tub.Signature = tb.Signature
+							break
+						}
 					}
 				}
+				// Generate a synthetic ID if Gemini didn't provide one
+				if tub.ID == "" {
+					tub.ID = fmt.Sprintf("call_%d", len(contentBlocks))
+				}
+				contentBlocks = append(contentBlocks, tub)
+				ch <- ChatEvent{Type: EventToolUse, ToolUse: &tub}
+			}
+
+				// Handle text (regular or thinking)
 				if part.Text != "" {
-					p.Text = part.Text
 					if part.Thought != nil && *part.Thought {
-						// Stream thought text with a marker prefix so the UI
-						// can style it differently (dim/italic).
-						if onToken != nil {
-							onToken("\x00THOUGHT:" + part.Text)
+						tb := ThinkingBlock{
+							Text:      part.Text,
+							Signature: part.ThoughtSignature,
 						}
+						contentBlocks = append(contentBlocks, tb)
+						ch <- ChatEvent{Type: EventThinking, Text: part.Text}
 					} else {
-						textResult.WriteString(part.Text)
-						full.WriteString(part.Text)
-						if onToken != nil {
-							onToken(part.Text)
+						contentBlocks = append(contentBlocks, TextBlock{Text: part.Text})
+						ch <- ChatEvent{Type: EventText, Text: part.Text}
+					}
+				} else if part.Thought != nil && *part.Thought && part.ThoughtSignature != "" {
+					// Gemini sometimes sends the thoughtSignature in a
+					// separate part with empty text after the thinking
+					// content. Attach the signature to the most recent
+					// ThinkingBlock so it is echoed back correctly;
+					// without it the API rejects tool-call turns with
+					// "Function call is missing a thought signature".
+					attached := false
+					for i := len(contentBlocks) - 1; i >= 0; i-- {
+						if tb, ok := contentBlocks[i].(ThinkingBlock); ok && tb.Signature == "" {
+							tb.Signature = part.ThoughtSignature
+							contentBlocks[i] = tb
+							attached = true
+							break
 						}
 					}
-				}
-				// Only keep parts that carry actual data — empty parts
-				// cause "required oneof field 'data'" errors on the next request.
-				if p.Text != "" || p.FunctionCall != nil {
-					modelParts = append(modelParts, p)
+					if !attached {
+						// No prior ThinkingBlock — create a minimal one
+						// so the signature is preserved in the turn.
+						contentBlocks = append(contentBlocks, ThinkingBlock{
+							Signature: part.ThoughtSignature,
+						})
+					}
 				}
 			}
 		}
@@ -327,20 +518,32 @@ func (g *GeminiClient) doStreamRequest(ctx context.Context, req geminiRequest, o
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("Gemini stream read error: %v", err)
-		return textResult.String(), toolCalls, modelParts, fmt.Errorf("stream read error: %w", err)
+		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
+		return
 	}
 
-	return textResult.String(), toolCalls, modelParts, nil
+	// Determine stop reason from content
+	stopReason := StopEndTurn
+	for _, block := range contentBlocks {
+		if _, ok := block.(ToolUseBlock); ok {
+			stopReason = StopToolUse
+			break
+		}
+	}
+
+	ch <- ChatEvent{
+		Type: EventDone,
+		Response: &ChatResponse{
+			Content:    contentBlocks,
+			StopReason: stopReason,
+			Usage:      usage,
+		},
+	}
 }
 
-// formatArgs creates a readable summary of tool call arguments.
-func formatArgs(args map[string]interface{}) string {
-	var parts []string
-	for k, v := range args {
-		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
-	}
-	return strings.Join(parts, ", ")
-}
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+func boolPtr(v bool) *bool { return &v }
 
 // parseRetryDelay extracts the retry delay from a Gemini error response body.
 // Falls back to 5 seconds if parsing fails.

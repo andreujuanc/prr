@@ -337,6 +337,44 @@ func (ft *fileTree) View() string {
 	return strings.Join(lines, "\n")
 }
 
+// selectByPath moves the cursor to the file entry matching path.
+// If the file is inside a collapsed directory, parent dirs are expanded
+// and the tree is re-flattened. Returns true if the path was found.
+func (ft *fileTree) selectByPath(path string) bool {
+	// First try finding it in the current flat list.
+	for i, entry := range ft.flat {
+		if entry.node.path == path {
+			ft.cursor = i
+			ft.ensureVisible()
+			return true
+		}
+	}
+
+	// Not visible — expand all directories and re-flatten, then search.
+	expandAll(ft.root)
+	ft.flatten()
+
+	for i, entry := range ft.flat {
+		if entry.node.path == path {
+			ft.cursor = i
+			ft.ensureVisible()
+			return true
+		}
+	}
+
+	return false
+}
+
+// expandAll recursively expands all directory nodes.
+func expandAll(node *treeNode) {
+	if node.isDir {
+		node.expanded = true
+		for _, child := range node.children {
+			expandAll(child)
+		}
+	}
+}
+
 // maxContentWidth returns the widest line needed to display all entries
 // without truncation. Counts: marker(1) + indent + icon(2) + name + gap(2) + stats.
 func (ft *fileTree) maxContentWidth() int {

@@ -23,12 +23,27 @@ func main() {
 	// Force truecolor early so styled error output works too
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
-	if len(os.Args) < 2 {
+	// Parse flags
+	debug := false
+	args := os.Args[1:]
+	var positional []string
+	for _, arg := range args {
+		if arg == "--debug" {
+			debug = true
+		} else if arg == "--help" || arg == "-h" {
+			printUsage()
+			os.Exit(0)
+		} else {
+			positional = append(positional, arg)
+		}
+	}
+
+	if len(positional) < 1 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	prNumber := os.Args[1]
+	prNumber := positional[0]
 
 	// Pre-flight checks before launching the TUI
 	if err := preflight(prNumber); err != nil {
@@ -42,6 +57,7 @@ func main() {
 		printError(err)
 		os.Exit(1)
 	}
+	cfg.Debug = debug
 
 	// Create AI client based on provider
 	aiClient := createAIClient(cfg)
@@ -65,20 +81,37 @@ func main() {
 // ── AI client factory ──────────────────────────────────────────────────
 
 func createAIClient(cfg *config.Config) ai.Client {
-	// ToolExecutor.HeadRef is set later when the PR is fetched
 	toolExec := &ai.ToolExecutor{}
 
+	// Load per-model tuning (maxOutputTokens, temperature, thinkingBudget)
+	models, err := config.LoadModels()
+	if err != nil {
+		log.Printf("Warning: failed to load models config: %v", err)
+	}
+	modelCfg := config.GetModelConfig(models, cfg.Model)
+
+	var provider ai.Provider
 	switch cfg.Provider {
 	case "gemini":
-		return &ai.GeminiClient{
-			APIKey:       cfg.APIKey,
-			Model:        cfg.Model,
-			ToolExecutor: toolExec,
+		gp := &ai.GeminiProvider{
+			APIKey: cfg.APIKey,
+			Model:  cfg.Model,
 		}
+		gp.ModelConfig.MaxOutputTokens = modelCfg.MaxOutputTokens
+		gp.ModelConfig.Temperature = modelCfg.Temperature
+		gp.ModelConfig.ThinkingBudget = modelCfg.ThinkingBudget
+		provider = gp
 	default:
-		log.Fatalf("Unsupported AI provider: %q. Supported providers: gemini", cfg.Provider)
-		return nil // unreachable, log.Fatalf exits
+		log.Fatalf("Unsupported AI provider: %q. Supported: gemini, anthropic, openai", cfg.Provider)
 	}
+
+	var opts []ai.AgentOption
+	if cfg.Debug {
+		// Debug log goes to the same log file as the rest of the app
+		opts = append(opts, ai.WithDebugLogger(log.Writer()))
+	}
+
+	return ai.NewAgent(provider, toolExec, opts...)
 }
 
 // ── Pre-flight checks ──────────────────────────────────────────────────
