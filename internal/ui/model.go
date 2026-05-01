@@ -252,6 +252,7 @@ type Model struct {
 	showThemePicker    bool   // theme picker visible
 	themePickerCursor  int    // selected index in theme picker
 	themeBeforePicker  string // theme ID before opening picker (for revert on Esc)
+	errorMsg           string // transient error shown as modal overlay
 
 	// PR picker modal (shown when no PR number given on startup)
 	showPRPicker    bool             // PR picker visible
@@ -434,7 +435,7 @@ func computeHashes(prNumber, base, head string, files []git.PRFile) tea.Cmd {
 	}
 }
 
-func fetchStyledDiff(base, head, filePath string, contextLines int, reload bool, useChroma bool) tea.Cmd {
+func fetchStyledDiff(base, head, filePath string, contextLines int, reload bool, useChroma bool, width int) tea.Cmd {
 	// Snapshot the theme now so the goroutine uses a consistent copy,
 	// avoiding a data race if the theme is changed mid-render.
 	theme := DiffThemeFromCurrent()
@@ -442,7 +443,7 @@ func fetchStyledDiff(base, head, filePath string, contextLines int, reload bool,
 		var content string
 		var err error
 		if useChroma {
-			content, err = git.GetChromaDiffWithContext(base, head, filePath, contextLines, theme)
+			content, err = git.GetChromaDiffWithContext(base, head, filePath, contextLines, theme, width)
 		} else {
 			content, err = git.GetStyledDiffWithContext(base, head, filePath, contextLines, theme)
 		}
@@ -656,10 +657,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case SubmitReviewMsg:
 		if msg.Err != nil {
-			m.chatViewport.SetContent(
-				styleAccentRed.Render(
-					fmt.Sprintf("Error submitting review: %v", msg.Err)))
+			m.errorMsg = fmt.Sprintf("Error submitting review:\n\n%v", msg.Err)
 		} else {
+			m.errorMsg = ""
 			m.chatViewport.SetContent(
 				styleAccentGreen.Render("Review submitted to GitHub successfully."))
 		}
@@ -936,6 +936,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "?", "esc", "q":
 				m.showHelp = false
 			}
+			return m, nil
+		}
+		if m.errorMsg != "" {
+			// Any key dismisses the error modal
+			m.errorMsg = ""
 			return m, nil
 		}
 		if m.showModelPicker {
@@ -2419,7 +2424,7 @@ func (m *Model) jumpToFinding(idx int) tea.Cmd {
 
 	// Load the diff
 	m.setDiffContent(styleTextMuted.Render("Loading diff..."))
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, finding.File, m.contextLines, false, m.useChroma)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, finding.File, m.contextLines, false, m.useChroma, m.diffViewport.Width)
 	return diffCmd
 }
 
@@ -2476,7 +2481,7 @@ func (m *Model) reloadDiff() tea.Cmd {
 		return nil
 	}
 	// Don't replace content with "Loading..." — keep current diff visible to avoid flicker
-	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, m.selectedFile, m.contextLines, true, m.useChroma)
+	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, m.selectedFile, m.contextLines, true, m.useChroma, m.diffViewport.Width)
 }
 
 // applyThemePreview switches the active theme for live preview without persisting.
@@ -2553,7 +2558,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma, m.diffViewport.Width)
 	return tea.Batch(chatCmd, diffCmd)
 }
 
@@ -2583,7 +2588,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma, m.diffViewport.Width)
 	return tea.Batch(chatCmd, diffCmd)
 }
 
@@ -3277,6 +3282,10 @@ func (m Model) View() string {
 	}
 	if m.showThemePicker {
 		return floatOverlay(base, m.renderThemePicker(), m.width, m.height)
+	}
+	if m.errorMsg != "" {
+		overlay := centerOverlay(m.renderErrorModal(), m.width, m.height)
+		return overlay
 	}
 
 	return base

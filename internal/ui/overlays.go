@@ -319,6 +319,19 @@ func (m Model) renderHelpModal() string {
 	return b.String()
 }
 
+// ── Error Modal ─────────────────────────────────────────────────────────
+
+// renderErrorModal renders an error message as a dismissable overlay.
+func (m Model) renderErrorModal() string {
+	var b strings.Builder
+	b.WriteString(styleAccentRed.Bold(true).Render("  ERROR"))
+	b.WriteString("\n\n")
+	b.WriteString(styleTextPrimary.Render("  " + strings.ReplaceAll(m.errorMsg, "\n", "\n  ")))
+	b.WriteString("\n\n")
+	b.WriteString(styleTextMuted.Render("  Press any key to dismiss"))
+	return b.String()
+}
+
 // ── Submit Review Modal ─────────────────────────────────────────────────
 
 // renderSubmitReviewModal renders the review submission confirmation overlay.

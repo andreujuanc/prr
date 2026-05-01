@@ -164,7 +164,7 @@ func TestRenderChromaDiff_ProducesOutput(t *testing.T) {
 +import "fmt"
 `
 	theme := DefaultDiffTheme()
-	out, err := renderChromaDiff(raw, "main.go", theme)
+	out, err := renderChromaDiff(raw, "main.go", theme, 80)
 	if err != nil {
 		t.Fatalf("renderChromaDiff error: %v", err)
 	}

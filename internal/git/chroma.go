@@ -12,7 +12,7 @@ import (
 // GetChromaDiffWithContext renders a syntax-highlighted diff using chroma
 // instead of the external delta binary. This is an experimental alternative
 // renderer enabled via --chroma flag.
-func GetChromaDiffWithContext(base, head, file string, contextLines int, theme DiffTheme) (string, error) {
+func GetChromaDiffWithContext(base, head, file string, contextLines int, theme DiffTheme, width int) (string, error) {
 	raw, err := GetRawDiffWithContext(base, head, file, contextLines)
 	if err != nil {
 		return "", err
@@ -21,12 +21,12 @@ func GetChromaDiffWithContext(base, head, file string, contextLines int, theme D
 		return "", nil
 	}
 
-	return renderChromaDiff(raw, file, theme)
+	return renderChromaDiff(raw, file, theme, width)
 }
 
 // renderChromaDiff takes a raw unified diff string and renders it with
 // chroma syntax highlighting and ANSI colors.
-func renderChromaDiff(rawDiff, filePath string, theme DiffTheme) (string, error) {
+func renderChromaDiff(rawDiff, filePath string, theme DiffTheme, width int) (string, error) {
 	// Pick lexer based on file extension
 	lexer := lexers.Match(filePath)
 	if lexer == nil {
@@ -49,10 +49,14 @@ func renderChromaDiff(rawDiff, filePath string, theme DiffTheme) (string, error)
 
 	var b strings.Builder
 
-	// File header
-	b.WriteString(ansiColorize(filePath, theme.AccentBlue))
+	// File header — overline then file name (matches delta's "ol" decoration)
+	sepWidth := width
+	if sepWidth < 20 {
+		sepWidth = 80
+	}
+	b.WriteString(ansiColorize(strings.Repeat("─", sepWidth), theme.SubtleColor))
 	b.WriteString("\n")
-	b.WriteString(ansiColorize(strings.Repeat("─", 60), theme.SubtleColor))
+	b.WriteString(ansiColorize(filePath, theme.AccentBlue))
 	b.WriteString("\n")
 
 	for _, hunk := range hunks {
