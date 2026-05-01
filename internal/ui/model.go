@@ -244,11 +244,11 @@ type Model struct {
 	showAIPanel   bool
 
 	// Modal overlays
-	showHelp           bool // help modal visible
-	showModelPicker    bool // model picker visible
-	modelPickerCursor  int  // selected index in model picker
-	showSubmitReview   bool // submit review confirmation visible
-	submitReviewCursor int  // 0 = Submit, 1 = Cancel
+	showHelp           bool   // help modal visible
+	showModelPicker    bool   // model picker visible
+	modelPickerCursor  int    // selected index in model picker
+	showSubmitReview   bool   // submit review confirmation visible
+	submitReviewCursor int    // 0 = Submit, 1 = Cancel
 	showThemePicker    bool   // theme picker visible
 	themePickerCursor  int    // selected index in theme picker
 	themeBeforePicker  string // theme ID before opening picker (for revert on Esc)
