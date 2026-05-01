@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"prr/internal/ai"
@@ -130,7 +131,7 @@ func availableModels() []modelPickerItem {
 }
 
 // switchModel attempts to switch the AI client to the given model.
-// Returns the new model name on success.
+// Returns the new model name on success. Persists the choice to config.
 func (m *Model) switchModel(modelID string) string {
 	switcher, ok := m.aiClient.(ai.ModelSwitcher)
 	if !ok {
@@ -145,6 +146,15 @@ func (m *Model) switchModel(modelID string) string {
 	}
 
 	m.aiModelName = modelID
+
+	// Persist to config so the choice survives restarts
+	if cfg, err := config.Load(); err == nil {
+		cfg.Model = modelID
+		if err := config.Save(cfg); err != nil {
+			log.Printf("Warning: failed to persist model selection: %v", err)
+		}
+	}
+
 	return modelID
 }
 

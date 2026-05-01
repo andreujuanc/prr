@@ -94,3 +94,34 @@ func createDefault(path string) error {
 
 	return os.WriteFile(path, append(data, '\n'), 0600)
 }
+
+// Save writes the config back to the default path, preserving any fields
+// the user may have set manually. It re-reads the file first so that
+// only known fields are overwritten (provider, model, parallel_reviews).
+func Save(cfg *Config) error {
+	path, err := DefaultConfigPath()
+	if err != nil {
+		return err
+	}
+
+	// Read existing file to preserve unknown/extra fields and formatting
+	existing := make(map[string]interface{})
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &existing)
+	}
+
+	// Update only the fields we manage
+	existing["provider"] = cfg.Provider
+	existing["api_key"] = cfg.APIKey
+	existing["model"] = cfg.Model
+	if cfg.ParallelReviews > 0 {
+		existing["parallel_reviews"] = cfg.ParallelReviews
+	}
+
+	data, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	return os.WriteFile(path, append(data, '\n'), 0600)
+}

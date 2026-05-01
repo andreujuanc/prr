@@ -1286,7 +1286,7 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	// Render chat with the new user message and streaming indicator
 	m.updateChatViewWithStream()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	m.aiCancelFn = cancel
 
 	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
@@ -2009,7 +2009,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	m.aiChatHistoryCache = "" // invalidate so it's rebuilt on first tick
 	m.updateChatViewWithStream()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	m.aiCancelFn = cancel
 
 	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
@@ -3121,18 +3121,19 @@ func (m Model) renderPane(title, content string, width, height int, focused bool
 func (m Model) viewHeader() string {
 	logo := styleAccentBlueBold.Render("prr")
 
+	// Repository name right after logo (owner/repo, skip github.com)
+	repoLabel := ""
+	if m.pr != nil && m.pr.HeadRepository.Owner.Login != "" && m.pr.HeadRepository.Name != "" {
+		repo := m.pr.HeadRepository.Owner.Login + "/" + m.pr.HeadRepository.Name
+		repoLabel = styleTextSubtle.Render(" · ") + styleTextSecondary.Render(repo)
+	}
+
 	prInfo := styleTextPrimary.Render(fmt.Sprintf(" · PR #%s", m.prNumber))
 
-	// PR metadata: repo, author, state
+	// PR metadata: author, state
 	var meta string
 	if m.pr != nil {
 		var parts []string
-
-		// Repository name (owner/repo)
-		if m.pr.HeadRepository.Owner.Login != "" && m.pr.HeadRepository.Name != "" {
-			repo := m.pr.HeadRepository.Owner.Login + "/" + m.pr.HeadRepository.Name
-			parts = append(parts, styleTextMuted.Render(repo))
-		}
 
 		// Author
 		if m.pr.Author.Login != "" {
@@ -3208,19 +3209,21 @@ func (m Model) viewHeader() string {
 		rightParts = append(rightParts, modelBadge)
 	}
 	right := strings.Join(rightParts, styleTextSubtle.Render(" · ")) + " "
-	fixedW := ansi.StringWidth(" "+logo+prInfo+meta) + ansi.StringWidth(right) + 2 // 2 for min gap
+	fixedW := ansi.StringWidth(" "+logo+repoLabel+prInfo+meta) + ansi.StringWidth(right) + 2 // 2 for min gap
 	maxTitleW := m.width - fixedW
 
 	prTitle := ""
 	if m.pr != nil && maxTitleW > 4 {
 		t := m.pr.Title
-		if len(t) > maxTitleW-3 { // -3 for " · " prefix
-			t = t[:maxTitleW-6] + "..."
+		titleRunes := []rune(t)
+		if len(titleRunes) > maxTitleW-3 { // -3 for " · " prefix
+			titleRunes = titleRunes[:maxTitleW-6]
+			t = string(titleRunes) + "..."
 		}
 		prTitle = styleTextSecondary.Render(fmt.Sprintf(" · %s", t))
 	}
 
-	left := " " + logo + prInfo + prTitle + meta
+	left := " " + logo + repoLabel + prInfo + prTitle + meta
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {
 		gap = 1

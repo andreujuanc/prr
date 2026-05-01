@@ -21,7 +21,7 @@ type GeminiProvider struct {
 	APIKey     string
 	Model      string
 	BaseURL    string       // override for testing; empty uses the real Gemini API
-	HTTPClient *http.Client // optional; defaults to a client with 5-minute timeout
+	HTTPClient *http.Client // optional; defaults to a client with no timeout (context-based cancellation)
 
 	// ModelConfig holds per-model tuning (maxOutputTokens, temperature,
 	// thinkingBudget). Set by the caller from config.GetModelConfig().
@@ -33,11 +33,15 @@ type GeminiProvider struct {
 }
 
 // httpClient returns the configured HTTP client or a sensible default.
+// No Timeout is set because http.Client.Timeout covers the entire request
+// lifecycle including reading the streaming response body — which can take
+// minutes for long-thinking models. Cancellation is handled via the
+// request context instead.
 func (g *GeminiProvider) httpClient() *http.Client {
 	if g.HTTPClient != nil {
 		return g.HTTPClient
 	}
-	return &http.Client{Timeout: 5 * time.Minute}
+	return &http.Client{}
 }
 
 func (g *GeminiProvider) Name() string    { return "gemini" }

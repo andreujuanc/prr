@@ -1060,7 +1060,7 @@ func TestIntegration_Grep(t *testing.T) {
 		},
 		{
 			name:    "no matches returns message",
-			args:    map[string]interface{}{"pattern": "zzz_this_pattern_will_never_match_anything_42"},
+			args:    map[string]interface{}{"pattern": "zzz_n" + "omatch_42"},
 			wantSub: "No matches found",
 		},
 		{
