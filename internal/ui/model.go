@@ -159,6 +159,22 @@ type PRListFetchedMsg struct {
 	Err error
 }
 
+// ActionsFetchedMsg is sent when GitHub Actions workflow runs have been loaded.
+type ActionsFetchedMsg struct {
+	Runs []git.WorkflowRun
+	Err  error
+}
+
+// ActionsJobsFetchedMsg is sent when jobs for a workflow run have been loaded.
+type ActionsJobsFetchedMsg struct {
+	RunID int
+	Jobs  []git.WorkflowJob
+	Err   error
+}
+
+// actionsTickMsg triggers a re-fetch of workflow runs for polling.
+type actionsTickMsg struct{}
+
 // logoTickMsg drives the logo color animation during loading.
 type logoTickMsg struct{}
 
@@ -169,6 +185,15 @@ var logoLines = [2]string{
 }
 
 // ── Model ───────────────────────────────────────────────────────────────
+
+// viewMode tracks what the diff viewport is currently displaying.
+type viewMode int
+
+const (
+	viewModeOverview viewMode = iota // PR overview (default)
+	viewModeFile                     // file diff
+	viewModeActions                  // GitHub Actions status
+)
 
 type Model struct {
 	fileTree     fileTree
@@ -188,7 +213,8 @@ type Model struct {
 	reviewState  *state.State
 	loading      bool
 	loadingMsg   string
-	selectedFile string            // currently selected file path ("" = overview)
+	selectedFile string            // currently selected file path (meaningful only when viewMode == viewModeFile)
+	viewMode     viewMode          // what the diff pane is currently showing
 	rawDiffs     map[string]string // filePath -> raw diff (for AI context)
 
 	// Refresh tracking: when non-empty, PRFetchedMsg compares OIDs to skip no-op refreshes
@@ -270,6 +296,13 @@ type Model struct {
 	// Git blame toggle
 	blameEnabled bool                             // whether blame overlay is active
 	blameCache   map[string]map[int]git.BlameLine // filePath -> lineNum -> blame info
+
+	// GitHub Actions
+	actionsRuns     []git.WorkflowRun          // workflow runs for the PR
+	actionsLoading  bool                       // true while fetching runs
+	actionsPolling  bool                       // true when auto-polling active runs
+	actionsExpanded map[int][]git.WorkflowJob  // runID -> expanded jobs (nil = collapsed)
+	actionsCursor   int                        // cursor position in actions view
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────
@@ -473,6 +506,30 @@ func createComment(prNumber, commitSHA, path, body string, line int, side string
 	}
 }
 
+// ── GitHub Actions commands ─────────────────────────────────────────────
+
+func fetchActions(headSHA string) tea.Cmd {
+	return func() tea.Msg {
+		runs, err := git.FetchWorkflowRuns(headSHA)
+		return ActionsFetchedMsg{Runs: runs, Err: err}
+	}
+}
+
+func fetchActionsJobs(runID int) tea.Cmd {
+	return func() tea.Msg {
+		jobs, err := git.FetchWorkflowJobs(runID)
+		return ActionsJobsFetchedMsg{RunID: runID, Jobs: jobs, Err: err}
+	}
+}
+
+const actionsPollInterval = 15 * time.Second
+
+func pollActionsTick() tea.Cmd {
+	return tea.Tick(actionsPollInterval, func(_ time.Time) tea.Msg {
+		return actionsTickMsg{}
+	})
+}
+
 // streamAIChat sends the conversation to the AI and streams tokens back via tea.Msg.
 func streamAIChat(client ai.Client, ctx context.Context, systemPrompt string, messages []ai.Message, p *tea.Program) tea.Cmd {
 	return func() tea.Msg {
@@ -550,6 +607,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			log.Printf("Refresh: PR has new commits (old=%s new=%s)",
 				m.refreshOldOid[:8], msg.PR.HeadRefOid[:8])
 			m.refreshOldOid = ""
+			m.actionsResetPolling()
 		}
 
 		m.pr = msg.PR
@@ -612,10 +670,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.populateFileList(m.reviewState)
 		m.selectedFile = ""
+		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		chatCmd := m.renderActiveAIView()
-		return m, tea.Batch(fetchComments(m.prNumber), chatCmd)
+		var actionsCmd tea.Cmd
+		if m.pr != nil && m.pr.HeadRefOid != "" {
+			m.actionsResetPolling()
+			m.actionsLoading = true
+			actionsCmd = fetchActions(m.pr.HeadRefOid)
+		}
+		return m, tea.Batch(fetchComments(m.prNumber), chatCmd, actionsCmd)
 
 	case CommentsFetchedMsg:
 		if msg.Err != nil {
@@ -628,6 +693,71 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case ActionsFetchedMsg:
+		m.actionsLoading = false
+		if msg.Err != nil {
+			log.Printf("Warning: failed to fetch actions: %v", msg.Err)
+			// On error, continue polling if we were polling (retry on next tick)
+			if m.actionsPolling {
+				return m, pollActionsTick()
+			}
+			return m, nil
+		}
+		m.actionsRuns = msg.Runs
+		m.fileTree.actionStatus = git.AggregateActionStatus(msg.Runs)
+		// Clamp cursor to new bounds
+		total := m.actionsRowCount()
+		if total == 0 {
+			m.actionsCursor = 0
+		} else if m.actionsCursor >= total {
+			m.actionsCursor = total - 1
+		}
+		// Prune expanded jobs for runs that no longer exist
+		if m.actionsExpanded != nil {
+			runIDs := make(map[int]bool, len(msg.Runs))
+			for _, r := range msg.Runs {
+				runIDs[r.ID] = true
+			}
+			for id := range m.actionsExpanded {
+				if !runIDs[id] {
+					delete(m.actionsExpanded, id)
+				}
+			}
+		}
+		// Re-render if currently viewing actions
+		if m.viewMode == viewModeActions {
+			m.setDiffContent(m.renderActionsView())
+		}
+		// Schedule next tick if any runs are still active
+		if git.HasActiveRuns(msg.Runs) {
+			m.actionsPolling = true
+			return m, pollActionsTick()
+		}
+		m.actionsPolling = false
+		return m, nil
+
+	case ActionsJobsFetchedMsg:
+		if msg.Err != nil {
+			log.Printf("Warning: failed to fetch jobs for run %d: %v", msg.RunID, msg.Err)
+			return m, nil
+		}
+		if m.actionsExpanded == nil {
+			m.actionsExpanded = make(map[int][]git.WorkflowJob)
+		}
+		m.actionsExpanded[msg.RunID] = msg.Jobs
+		// Re-render if currently viewing actions
+		if m.viewMode == viewModeActions {
+			m.setDiffContent(m.renderActionsView())
+		}
+		return m, nil
+
+	case actionsTickMsg:
+		if !m.actionsPolling || m.pr == nil {
+			return m, nil
+		}
+		// Only fetch — the ActionsFetchedMsg handler decides whether to schedule the next tick
+		return m, fetchActions(m.pr.HeadRefOid)
 
 	case BlameFetchedMsg:
 		if msg.Err != nil {
@@ -646,7 +776,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Add to local state
 			m.comments[msg.Comment.Path] = append(m.comments[msg.Comment.Path], *msg.Comment)
 			// Re-render the diff with the new comment
-			if m.selectedFile == msg.Comment.Path {
+			if m.hasFileSelected() && m.selectedFile == msg.Comment.Path {
 				cmd = m.reloadDiff()
 				if cmd != nil {
 					cmds = append(cmds, cmd)
@@ -919,6 +1049,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.showPRPicker = false
 					m.loading = true
 					m.loadingMsg = "Fetching PR data..."
+					m.actionsResetPolling()
 					return m, tea.Batch(
 						fetchPR(m.prNumber),
 						m.spinner.Tick,
@@ -999,7 +1130,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if t.ID == m.themeBeforePicker {
 						SetTheme(t)
 						mdCache = newLRUCache(128)
-						if m.selectedFile != "" && m.pr != nil {
+						if m.hasFileSelected() && m.pr != nil {
 							cmd = m.reloadDiff()
 							if cmd != nil {
 								cmds = append(cmds, cmd)
@@ -1074,7 +1205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.commentInput.Blur()
 				m.commentInput.Reset()
 				m.syncLayout()
-				if body != "" && m.pr != nil && m.selectedFile != "" {
+				if body != "" && m.pr != nil && m.hasFileSelected() {
 					cmd = createComment(
 						m.prNumber,
 						m.pr.HeadRefOid,
@@ -1129,7 +1260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "+", "=":
 			// Increase diff context
-			if m.focusedPane == PaneDiff && m.selectedFile != "" {
+			if m.focusedPane == PaneDiff && m.hasFileSelected() {
 				m.contextLines += 3
 				if m.contextLines > 100 {
 					m.contextLines = 100
@@ -1141,7 +1272,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "-", "_":
 			// Decrease diff context
-			if m.focusedPane == PaneDiff && m.selectedFile != "" {
+			if m.focusedPane == PaneDiff && m.hasFileSelected() {
 				m.contextLines -= 3
 				if m.contextLines < 0 {
 					m.contextLines = 0
@@ -1227,7 +1358,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "b":
-			if m.focusedPane == PaneDiff && m.selectedFile != "" {
+			if m.focusedPane == PaneDiff && m.hasFileSelected() {
 				m.blameEnabled = !m.blameEnabled
 				// Pre-fetch blame data for the current file if not cached
 				if m.blameEnabled && m.pr != nil {
@@ -1307,6 +1438,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case PaneDiff:
 		if km, ok := msg.(tea.KeyMsg); ok {
+			// Actions view has its own keybindings
+			if m.viewMode == viewModeActions {
+				switch km.String() {
+				case "j", "down":
+					m.moveActionsCursor(1)
+					m.setDiffContent(m.renderActionsView())
+					return m, nil
+				case "k", "up":
+					m.moveActionsCursor(-1)
+					m.setDiffContent(m.renderActionsView())
+					return m, nil
+				case "enter":
+					cmd = m.toggleActionsExpand()
+					return m, cmd
+				case "r":
+					if m.pr != nil && m.pr.HeadRefOid != "" {
+						m.actionsLoading = true
+						m.setDiffContent(m.renderActionsView())
+						return m, fetchActions(m.pr.HeadRefOid)
+					}
+					return m, nil
+				}
+			}
 			switch km.String() {
 			case "esc":
 				// If we came from a finding jump, return to the review panel
@@ -1319,7 +1473,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, tea.Batch(cmds...)
 				}
 			case "c":
-				if m.selectedFile != "" && !m.commenting {
+				if m.hasFileSelected() && !m.commenting {
 					info := m.getDiffCursorInfo()
 					if info.line > 0 {
 						m.commentLine = info.line
@@ -1333,7 +1487,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case " ":
 				// Toggle reviewed status for current file
-				if m.selectedFile != "" {
+				if m.hasFileSelected() {
 					cmd = m.toggleReviewStatus()
 					if cmd != nil {
 						cmds = append(cmds, cmd)
@@ -1508,7 +1662,7 @@ func (m *Model) appendMessageToState(msg state.Message) {
 		return
 	}
 
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		// Global chat
 		m.reviewState.GlobalChat = append(m.reviewState.GlobalChat, msg)
 	} else {
@@ -1526,7 +1680,7 @@ func (m *Model) buildAIMessages() []state.Message {
 		return nil
 	}
 
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		return m.reviewState.GlobalChat
 	}
 
@@ -1547,7 +1701,7 @@ func (m *Model) getAIContext() (string, string) {
 		meta.WriteString(fmt.Sprintf("Base: %s → Head: %s\n\n", m.pr.BaseRefName, m.pr.HeadRefName))
 	}
 
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		// PR overview: file listing with stats — diffs are fetched via git_diff tool
 		paths := make([]string, 0, len(m.rawDiffs))
 		for p := range m.rawDiffs {
@@ -1584,7 +1738,7 @@ func (m *Model) withInstructions(prompt string) string {
 // getSystemPrompt returns the appropriate system prompt for the current context.
 // System prompts contain only instructions, never data.
 func (m *Model) getSystemPrompt() string {
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		return m.withInstructions(ai.ChatPrompt)
 	}
 	// Use ReviewFilePrompt for file-level chats — keeps the reviewer persona
@@ -1599,7 +1753,7 @@ func (m *Model) buildAIMessagesWithContext(messages []state.Message) []ai.Messag
 
 	// For file-level chats, check if diff context is already in the first message
 	// (from triggerAIReview). If not, inject it as a system-context user message.
-	needsContext := m.selectedFile != "" && len(messages) > 0
+	needsContext := m.hasFileSelected() && len(messages) > 0
 	if needsContext {
 		first := messages[0]
 		if first.Role == "user" && !strings.Contains(first.Content, "```diff") {
@@ -1669,7 +1823,7 @@ func (m *Model) clearChat() {
 		return
 	}
 
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		m.reviewState.GlobalChat = nil
 	} else {
 		if fs, ok := m.reviewState.Files[m.selectedFile]; ok {
@@ -1689,7 +1843,7 @@ func (m *Model) clearChat() {
 func (m *Model) updateChatViewWithStream() {
 	// If a PR review is streaming but the user has navigated to a file,
 	// don't overwrite the file's chat panel with review stream content.
-	if m.aiReviewPhase != "" && m.selectedFile != "" {
+	if m.aiReviewPhase != "" && m.hasFileSelected() {
 		return
 	}
 
@@ -2150,6 +2304,73 @@ func (m *Model) moveDiffCursor(dir int) {
 
 // ── Data helpers ────────────────────────────────────────────────────────
 
+// ── Actions view helpers ────────────────────────────────────────────────
+
+// actionsRowCount returns the total number of navigable rows in the actions view.
+func (m *Model) actionsRowCount() int {
+	count := len(m.actionsRuns)
+	for _, run := range m.actionsRuns {
+		if jobs, ok := m.actionsExpanded[run.ID]; ok {
+			count += len(jobs)
+		}
+	}
+	return count
+}
+
+// actionsResetPolling clears all GitHub Actions state. Call this at every
+// PR transition point (picker, refresh) so stale ticks are discarded.
+func (m *Model) actionsResetPolling() {
+	m.actionsPolling = false
+	m.actionsRuns = nil
+	m.actionsLoading = false
+	m.actionsExpanded = nil
+	m.actionsCursor = 0
+}
+
+func (m *Model) moveActionsCursor(dir int) {
+	total := m.actionsRowCount()
+	if total == 0 {
+		return
+	}
+	m.actionsCursor += dir
+	if m.actionsCursor < 0 {
+		m.actionsCursor = 0
+	}
+	if m.actionsCursor >= total {
+		m.actionsCursor = total - 1
+	}
+}
+
+// toggleActionsExpand expands or collapses the run at the current actions cursor.
+func (m *Model) toggleActionsExpand() tea.Cmd {
+	if len(m.actionsRuns) == 0 {
+		return nil
+	}
+
+	// Map flat cursor to a run index
+	row := 0
+	for _, run := range m.actionsRuns {
+		if row == m.actionsCursor {
+			// This is a run row — toggle expansion
+			if m.actionsExpanded == nil {
+				m.actionsExpanded = make(map[int][]git.WorkflowJob)
+			}
+			if _, expanded := m.actionsExpanded[run.ID]; expanded {
+				delete(m.actionsExpanded, run.ID)
+				m.setDiffContent(m.renderActionsView())
+				return nil
+			}
+			// Fetch jobs for this run
+			return fetchActionsJobs(run.ID)
+		}
+		row++
+		if jobs, ok := m.actionsExpanded[run.ID]; ok {
+			row += len(jobs)
+		}
+	}
+	return nil
+}
+
 func (m *Model) triggerAIReview() tea.Cmd {
 	if m.aiClient == nil || program == nil || m.pr == nil {
 		return nil
@@ -2328,7 +2549,7 @@ func (m *Model) jumpToUnreviewed(direction int) {
 			continue
 		}
 		entry := m.fileTree.flat[idx]
-		if entry.node.isDir {
+		if entry.node.isDir || entry.node.isOverview || entry.node.isActions {
 			continue
 		}
 		// Check if unreviewed
@@ -2476,8 +2697,13 @@ func (m *Model) toggleReviewStatus() tea.Cmd {
 	return nil
 }
 
+// hasFileSelected returns true when the diff pane is showing an actual file diff.
+func (m *Model) hasFileSelected() bool {
+	return m.viewMode == viewModeFile && m.selectedFile != ""
+}
+
 func (m *Model) reloadDiff() tea.Cmd {
-	if m.selectedFile == "" || m.pr == nil {
+	if m.viewMode != viewModeFile || m.selectedFile == "" || m.pr == nil {
 		return nil
 	}
 	// Don't replace content with "Loading..." — keep current diff visible to avoid flicker
@@ -2539,14 +2765,24 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	}
 
 	if m.fileTree.selectedIsOverview() {
-		if m.selectedFile == "" {
+		if m.viewMode == viewModeOverview {
 			return nil // already showing overview
 		}
 		m.selectedFile = ""
+		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
 		return m.renderActiveAIView()
+	}
+
+	if m.fileTree.selectedIsActions() {
+		m.selectedFile = ""
+		m.viewMode = viewModeActions
+		m.setDiffContent(m.renderActionsView())
+		m.diffViewport.GotoTop()
+		m.diffCursor = 0
+		return nil
 	}
 
 	path := m.fileTree.selectedPath()
@@ -2555,6 +2791,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	}
 
 	m.selectedFile = path
+	m.viewMode = viewModeFile
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
@@ -2573,10 +2810,20 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 
 	if m.fileTree.selectedIsOverview() {
 		m.selectedFile = ""
+		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
 		return m.renderActiveAIView()
+	}
+
+	if m.fileTree.selectedIsActions() {
+		m.selectedFile = ""
+		m.viewMode = viewModeActions
+		m.setDiffContent(m.renderActionsView())
+		m.diffViewport.GotoTop()
+		m.diffCursor = 0
+		return nil
 	}
 
 	path := m.fileTree.selectedPath()
@@ -2585,6 +2832,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 	}
 
 	m.selectedFile = path
+	m.viewMode = viewModeFile
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
@@ -2596,7 +2844,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 func (m *Model) renderActiveAIView() tea.Cmd {
 	// If a PR review is currently streaming and we're on the overview,
 	// show the live stream instead of static content.
-	if m.aiReviewPhase != "" && m.selectedFile == "" {
+	if m.aiReviewPhase != "" && m.viewMode != viewModeFile {
 		m.updateChatViewWithStream()
 		return nil
 	}
@@ -3047,7 +3295,7 @@ func (m Model) contentHeight() int {
 // to avoid a redundant View()+Split call in the main View().
 func (m Model) renderDiffWithCursor() (string, int) {
 	raw := m.diffViewport.View()
-	if m.focusedPane != PaneDiff || m.selectedFile == "" {
+	if m.focusedPane != PaneDiff || !m.hasFileSelected() {
 		return raw, 0
 	}
 
@@ -3219,7 +3467,9 @@ func (m Model) View() string {
 
 	diffTitle := "OVERVIEW"
 	diffBody, cursorLineNum := m.renderDiffWithCursor()
-	if m.selectedFile != "" {
+	if m.viewMode == viewModeActions {
+		diffTitle = "ACTIONS"
+	} else if m.hasFileSelected() {
 		if m.focusedPane == PaneDiff && cursorLineNum > 0 {
 			diffTitle = fmt.Sprintf("DIFF (±%d) L%d", m.contextLines, cursorLineNum)
 		} else {
