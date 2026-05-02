@@ -383,8 +383,9 @@ func (ft *fileTree) View() string {
 		}
 
 		// Truncate to panel width to prevent wrapping (Golden Rule 2)
-		if ft.width > 0 && ansi.StringWidth(line) > ft.width {
-			line = truncateToWidth(line, ft.width)
+		maxW := ft.width - 1
+		if maxW > 0 && ansi.StringWidth(line) > maxW {
+			line = truncateToWidth(line, maxW)
 		}
 
 		lines = append(lines, line)

@@ -58,7 +58,10 @@ func renderInlineFinding(f state.ReviewFinding, width int, fs findingStyles) []s
 	truncatedHeader := truncateToWidth(header, maxW-2)
 	headerRendered := titleStyle.Render(truncatedHeader)
 
-	topPad := maxW - ansi.StringWidth(truncatedHeader) + 2
+	// Fill remaining width with dashes: total visual width should not exceed 'width'.
+	// Prefix "  ┌──── " = 8, then header, " ", then dashes.
+	usedW := 8 + ansi.StringWidth(truncatedHeader) + 1
+	topPad := width - usedW - 1 // -1 for safety margin
 	if topPad < 1 {
 		topPad = 1
 	}
@@ -80,9 +83,8 @@ func renderInlineFinding(f state.ReviewFinding, width int, fs findingStyles) []s
 		}
 	}
 
-	// Bottom border: "  └" is 3 chars vs top "  ┌──── " is 8 chars, so add 5 to
-	// make the bottom rule visually align with the top border's trailing dashes.
-	bottomW := maxW + 5
+	// Bottom border: "  └" is 3 chars; fill to just under the pane width.
+	bottomW := width - 4 // 3 (prefix) + bottomW dashes ≤ width - 1
 	if bottomW < 6 {
 		bottomW = 6
 	}

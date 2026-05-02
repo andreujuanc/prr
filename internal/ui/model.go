@@ -2789,11 +2789,15 @@ func (m *Model) clampDiffCursor() {
 // line count (used for rendering), making the bottom of long diffs unreachable.
 func (m *Model) setDiffContent(content string) {
 	w := m.diffViewport.Width
-	if w > 0 {
+	if w > 1 {
+		// Truncate to w-1 to leave a 1-cell safety margin. This prevents
+		// characters with ambiguous terminal width (emoji, CJK, etc.) from
+		// visually overflowing the pane border.
+		maxW := w - 1
 		lines := strings.Split(content, "\n")
 		for i, line := range lines {
-			if ansi.StringWidth(line) > w {
-				lines[i] = ansi.Truncate(line, w, "")
+			if ansi.StringWidth(line) > maxW {
+				lines[i] = ansi.Truncate(line, maxW, "")
 			}
 		}
 		content = strings.Join(lines, "\n")

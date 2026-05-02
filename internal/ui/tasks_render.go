@@ -162,7 +162,9 @@ func (m Model) renderTaskOutput(taskID int) string {
 		if w < 40 {
 			w = 80
 		}
-		b.WriteString(renderMarkdown(output, w-4))
+		// Use w-2 to leave a small margin and prevent glamour's padding
+		// from pushing content past the pane boundary.
+		b.WriteString(renderMarkdown(output, w-2))
 	}
 
 	if status == TaskRunning {
