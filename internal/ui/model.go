@@ -1051,6 +1051,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+		// Stop the OpenCode server if no tasks are still running
+		if !hasAnyRunningTask(m.tasks) && m.opencodeMgr != nil {
+			mgr := m.opencodeMgr
+			go mgr.Stop()
+		}
 		return m, tea.Batch(cmds...)
 
 	case ChatRenderedMsg:

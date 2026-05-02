@@ -6,9 +6,11 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
@@ -88,6 +90,15 @@ func main() {
 	model := ui.NewModel(prNumber, aiClient, cfg.ParallelReviews, useChroma)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
+
+	// Ensure OpenCode server is killed on signals (SIGINT/SIGTERM).
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		ui.Shutdown()
+		os.Exit(1)
+	}()
 
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)

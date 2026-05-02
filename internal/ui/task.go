@@ -442,3 +442,13 @@ func hasRunningTaskForFinding(tasks []*Task, findingIdx int) bool {
 	}
 	return false
 }
+
+// hasAnyRunningTask checks if there are any tasks still running.
+func hasAnyRunningTask(tasks []*Task) bool {
+	for _, t := range tasks {
+		if t.GetStatus() == TaskRunning {
+			return true
+		}
+	}
+	return false
+}

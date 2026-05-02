@@ -122,16 +122,29 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Stop() {
 	s.mu.Lock()
 	cancel := s.cancel
+	cmd := s.cmd
 	s.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
 
-	s.mu.Lock()
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Wait()
+	// Wait for the process to exit with a timeout; force-kill if needed.
+	if cmd != nil && cmd.Process != nil {
+		done := make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
 	}
+
+	s.mu.Lock()
 	s.status = ServerDisconnected
 	s.started = false
 	s.client = nil
