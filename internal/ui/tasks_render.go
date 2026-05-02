@@ -33,7 +33,8 @@ func renderTaskRow(b *strings.Builder, t *Task, width int, isSelected bool) {
 		marker = styleAccentBlueBold.Render("▸ ")
 	}
 
-	icon := taskStatusIcon(t.Status)
+	status := t.GetStatus()
+	icon := taskStatusIcon(status)
 	elapsed := taskElapsed(t)
 
 	title := t.Title
@@ -47,11 +48,11 @@ func renderTaskRow(b *strings.Builder, t *Task, width int, isSelected bool) {
 	}
 
 	titleStyle := styleTextPrimary
-	if t.Status == TaskCompleted {
+	if status == TaskCompleted {
 		titleStyle = styleAccentGreen
-	} else if t.Status == TaskFailed {
+	} else if status == TaskFailed {
 		titleStyle = styleAccentRed
-	} else if t.Status == TaskCancelled {
+	} else if status == TaskCancelled {
 		titleStyle = styleTextMuted
 	}
 
@@ -67,12 +68,15 @@ func renderTaskRow(b *strings.Builder, t *Task, width int, isSelected bool) {
 	b.WriteString(line + "\n")
 
 	// Show error on second line for failed tasks
-	if t.Status == TaskFailed && t.Error != "" && isSelected {
-		errLine := fmt.Sprintf("    %s", styleTextMuted.Render(t.Error))
-		if width > 0 {
-			errLine = truncateToWidth(errLine, width)
+	if status == TaskFailed && isSelected {
+		errMsg := t.GetError()
+		if errMsg != "" {
+			errLine := fmt.Sprintf("    %s", styleTextMuted.Render(errMsg))
+			if width > 0 {
+				errLine = truncateToWidth(errLine, width)
+			}
+			b.WriteString(errLine + "\n")
 		}
-		b.WriteString(errLine + "\n")
 	}
 }
 
@@ -123,13 +127,15 @@ func (m Model) renderTaskOutput(taskID int) string {
 		return styleTextMuted.Render("Task not found")
 	}
 
+	status := task.GetStatus()
+
 	var b strings.Builder
 	b.WriteString(styleAccentBlueBold.Render(task.Title) + "\n")
 	b.WriteString(styleTextSubtle.Render(strings.Repeat("─", 40)) + "\n\n")
 
 	output := task.Output()
 	if output == "" {
-		if task.Status == TaskRunning {
+		if status == TaskRunning {
 			b.WriteString(styleTextMuted.Render("  Waiting for output..."))
 		} else {
 			b.WriteString(styleTextMuted.Render("  No output"))
@@ -138,13 +144,13 @@ func (m Model) renderTaskOutput(taskID int) string {
 		b.WriteString(output)
 	}
 
-	if task.Status == TaskRunning {
+	if status == TaskRunning {
 		b.WriteString("\n\n" + styleAccentBlueBold.Render("  ⟳ Running..."))
-	} else if task.Status == TaskFailed {
-		b.WriteString("\n\n" + styleAccentRed.Render("  ✗ Failed: "+task.Error))
-	} else if task.Status == TaskCompleted {
+	} else if status == TaskFailed {
+		b.WriteString("\n\n" + styleAccentRed.Render("  ✗ Failed: "+task.GetError()))
+	} else if status == TaskCompleted {
 		b.WriteString("\n\n" + styleAccentGreen.Render("  ✓ Completed"))
-	} else if task.Status == TaskCancelled {
+	} else if status == TaskCancelled {
 		b.WriteString("\n\n" + styleTextMuted.Render("  ○ Cancelled"))
 	}
 

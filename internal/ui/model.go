@@ -981,7 +981,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i, t := range m.tasks {
 			if t.ID == msg.ID {
 				// Auto-resolve the finding if task completed successfully
-				if t.Status == TaskCompleted {
+				if t.GetStatus() == TaskCompleted {
 					if t.FindingIdx >= 0 && t.FindingIdx < len(m.reviewFindings) {
 						m.reviewFindings[t.FindingIdx].Resolved = true
 						// Re-render review if on Review tab
@@ -1940,32 +1940,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.viewTaskOutput(m.tasks[m.taskCursor].ID)
 					}
 					return m, nil
-				case "d":
-					// Cancel running task
-					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
-						t := m.tasks[m.taskCursor]
-						if t.Status == TaskRunning {
-							cancelTask(t)
-							cmds = append(cmds, m.setFlash("Task cancelled"))
+			case "d":
+				// Cancel running task
+				if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+					t := m.tasks[m.taskCursor]
+					if t.GetStatus() == TaskRunning {
+						cancelTask(t)
+						cmds = append(cmds, m.setFlash("Task cancelled"))
+					}
+				}
+				return m, tea.Batch(cmds...)
+			case "x":
+				// Remove completed/failed/cancelled task
+				if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+					t := m.tasks[m.taskCursor]
+					if t.GetStatus() != TaskRunning {
+						m.tasks = append(m.tasks[:m.taskCursor], m.tasks[m.taskCursor+1:]...)
+						if m.taskCursor >= len(m.tasks) && m.taskCursor > 0 {
+							m.taskCursor--
+						}
+						// If we were viewing this task, go back to overview
+						if m.viewMode == viewModeTaskOutput && m.viewingTaskID == t.ID {
+							m.viewMode = viewModeOverview
+							m.viewingTaskID = -1
+							m.setDiffContent(m.renderOverview())
+							m.diffViewport.GotoTop()
 						}
 					}
-					return m, tea.Batch(cmds...)
-				case "x":
-					// Remove completed/failed/cancelled task
-					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
-						t := m.tasks[m.taskCursor]
-						if t.Status != TaskRunning {
-							m.tasks = append(m.tasks[:m.taskCursor], m.tasks[m.taskCursor+1:]...)
-							if m.taskCursor >= len(m.tasks) && m.taskCursor > 0 {
-								m.taskCursor--
-							}
-							// If we were viewing this task, go back to overview
-							if m.viewMode == viewModeTaskOutput && m.viewingTaskID == t.ID {
-								m.viewMode = viewModeOverview
-							}
-						}
-					}
-					return m, nil
+				}
+				return m, nil
 				}
 			}
 
@@ -2352,7 +2355,7 @@ func (m Model) renderAIPanelTitle(maxWidth int) string {
 		if t.idx == 1 {
 			running := 0
 			for _, task := range m.tasks {
-				if task.Status == TaskRunning {
+				if task.GetStatus() == TaskRunning {
 					running++
 				}
 			}
@@ -2843,14 +2846,18 @@ func (m *Model) executeActionMenuByKey(key string) bool {
 // spawnFixTask creates a new task for the given finding and launches it.
 // Returns a tea.Cmd that sets the flash message (actual spawning is async via program.Send).
 func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
+	if program == nil {
+		return m.setFlash("Error: program not initialized")
+	}
+
 	task := &Task{
 		ID:         m.taskNextID,
 		Title:      taskTitle(f),
 		FindingIdx: m.reviewCursor,
 		Finding:    f,
-		Status:     TaskRunning,
 		StartedAt:  time.Now(),
 	}
+	task.setStatus(TaskRunning, "")
 	m.taskNextID++
 	m.tasks = append(m.tasks, task)
 

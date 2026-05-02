@@ -33,11 +33,11 @@ type Task struct {
 	Title      string              // short label e.g. "Fix: null check in auth.go:42"
 	FindingIdx int                 // index into m.reviewFindings
 	Finding    state.ReviewFinding // snapshot of the finding at spawn time
-	Status     TaskStatus
-	Error      string // error message if failed
 	StartedAt  time.Time
 
 	mu     sync.Mutex
+	status TaskStatus      // protected by mu
+	err    string          // error message if failed; protected by mu
 	output strings.Builder // accumulated stdout/stderr
 	cancel context.CancelFunc
 }
@@ -49,12 +49,26 @@ func (t *Task) Output() string {
 	return t.output.String()
 }
 
-// appendOutput appends a line to the output buffer (thread-safe).
-func (t *Task) appendOutput(line string) {
+// Status returns the task status (thread-safe).
+func (t *Task) GetStatus() TaskStatus {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.output.WriteString(line)
-	t.output.WriteByte('\n')
+	return t.status
+}
+
+// GetError returns the task error message (thread-safe).
+func (t *Task) GetError() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.err
+}
+
+// setStatus sets status and optional error (thread-safe).
+func (t *Task) setStatus(s TaskStatus, errMsg string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.status = s
+	t.err = errMsg
 }
 
 // ── Messages ────────────────────────────────────────────────────────────
@@ -91,42 +105,59 @@ func spawnOpenCodeTask(task *Task, repoRoot string, p *tea.Program) {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		task.Status = TaskFailed
-		task.Error = fmt.Sprintf("stdout pipe: %v", err)
+		task.setStatus(TaskFailed, fmt.Sprintf("stdout pipe: %v", err))
 		p.Send(TaskDoneMsg{ID: task.ID, Err: err})
 		return
 	}
-	cmd.Stderr = cmd.Stdout // merge stderr into stdout
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		task.setStatus(TaskFailed, fmt.Sprintf("stderr pipe: %v", err))
+		p.Send(TaskDoneMsg{ID: task.ID, Err: err})
+		return
+	}
 
 	if err := cmd.Start(); err != nil {
-		task.Status = TaskFailed
-		task.Error = fmt.Sprintf("start: %v", err)
+		task.setStatus(TaskFailed, fmt.Sprintf("start: %v", err))
 		p.Send(TaskDoneMsg{ID: task.ID, Err: err})
 		return
 	}
 
 	p.Send(TaskSpawnedMsg{ID: task.ID})
 
-	// Stream output lines
+	// Stream output lines from both stdout and stderr
 	go func() {
-		scanner := bufio.NewScanner(stdout)
-		// Increase scanner buffer for long lines from opencode
-		scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+		lineCh := make(chan string, 64)
+		doneCh := make(chan struct{})
+
+		// Reader goroutines — one for stdout, one for stderr
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			scanner := bufio.NewScanner(stdout)
+			scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+			for scanner.Scan() {
+				lineCh <- scanner.Text()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			scanner := bufio.NewScanner(stderr)
+			scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+			for scanner.Scan() {
+				lineCh <- scanner.Text()
+			}
+		}()
+
+		// Signal when both readers are done
+		go func() {
+			wg.Wait()
+			close(doneCh)
+		}()
 
 		var batch strings.Builder
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
-
-		lineCh := make(chan string, 64)
-		doneCh := make(chan struct{})
-
-		// Reader goroutine
-		go func() {
-			for scanner.Scan() {
-				lineCh <- scanner.Text()
-			}
-			close(doneCh)
-		}()
 
 		flush := func() {
 			if batch.Len() > 0 {
@@ -141,11 +172,7 @@ func spawnOpenCodeTask(task *Task, repoRoot string, p *tea.Program) {
 
 		for {
 			select {
-			case line, ok := <-lineCh:
-				if !ok {
-					// Channel closed but doneCh might not have fired yet
-					continue
-				}
+			case line := <-lineCh:
 				batch.WriteString(line + "\n")
 			case <-ticker.C:
 				flush()
@@ -164,14 +191,13 @@ func spawnOpenCodeTask(task *Task, repoRoot string, p *tea.Program) {
 				// Wait for process to exit
 				waitErr := cmd.Wait()
 				if ctx.Err() == context.Canceled {
-					task.Status = TaskCancelled
+					task.setStatus(TaskCancelled, "")
 					p.Send(TaskDoneMsg{ID: task.ID, Err: nil})
 				} else if waitErr != nil {
-					task.Status = TaskFailed
-					task.Error = waitErr.Error()
+					task.setStatus(TaskFailed, waitErr.Error())
 					p.Send(TaskDoneMsg{ID: task.ID, Err: waitErr})
 				} else {
-					task.Status = TaskCompleted
+					task.setStatus(TaskCompleted, "")
 					p.Send(TaskDoneMsg{ID: task.ID, Err: nil})
 				}
 				return
@@ -182,7 +208,7 @@ func spawnOpenCodeTask(task *Task, repoRoot string, p *tea.Program) {
 
 // cancelTask sends cancel signal to a running task.
 func cancelTask(task *Task) {
-	if task.cancel != nil && task.Status == TaskRunning {
+	if task.cancel != nil && task.GetStatus() == TaskRunning {
 		task.cancel()
 	}
 }
@@ -219,7 +245,7 @@ func taskTitle(f state.ReviewFinding) string {
 // hasRunningTaskForFinding checks if there's already a running task for the given finding index.
 func hasRunningTaskForFinding(tasks []*Task, findingIdx int) bool {
 	for _, t := range tasks {
-		if t.FindingIdx == findingIdx && t.Status == TaskRunning {
+		if t.FindingIdx == findingIdx && t.GetStatus() == TaskRunning {
 			return true
 		}
 	}
