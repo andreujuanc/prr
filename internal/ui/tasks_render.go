@@ -156,7 +156,13 @@ func (m Model) renderTaskOutput(taskID int) string {
 			b.WriteString(styleTextMuted.Render("  No output"))
 		}
 	} else {
-		b.WriteString(output)
+		// Render LLM output as markdown with colors; tool status lines
+		// (prefixed with emoji) pass through as plain text paragraphs.
+		w := m.diffViewport.Width
+		if w < 40 {
+			w = 80
+		}
+		b.WriteString(renderMarkdown(output, w-4))
 	}
 
 	if status == TaskRunning {

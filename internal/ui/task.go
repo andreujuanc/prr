@@ -329,7 +329,7 @@ func handleToolEvent(task *Task, part *opencode.Part, batch *strings.Builder, p 
 		if title == "" {
 			title = formatToolInput(part.Tool, part.State.Input)
 		}
-		batch.WriteString(fmt.Sprintf("▶ Tool: %s — %s\n", part.Tool, title))
+		batch.WriteString(fmt.Sprintf("\n▶ **%s** — `%s`\n", part.Tool, title))
 
 	case "completed":
 		output := part.State.Output
@@ -337,14 +337,14 @@ func handleToolEvent(task *Task, part *opencode.Part, batch *strings.Builder, p 
 			output = output[:500] + "…"
 		}
 		if output != "" {
-			batch.WriteString(fmt.Sprintf("✓ %s done: %s\n", part.Tool, strings.TrimSpace(output)))
+			batch.WriteString(fmt.Sprintf("\n✓ **%s** done: %s\n", part.Tool, strings.TrimSpace(output)))
 		} else {
-			batch.WriteString(fmt.Sprintf("✓ %s done\n", part.Tool))
+			batch.WriteString(fmt.Sprintf("\n✓ **%s** done\n", part.Tool))
 		}
 
 	case "error":
 		errMsg := part.State.Output
-		batch.WriteString(fmt.Sprintf("✗ %s error: %s\n", part.Tool, errMsg))
+		batch.WriteString(fmt.Sprintf("\n✗ **%s** error: %s\n", part.Tool, errMsg))
 	}
 }
 
