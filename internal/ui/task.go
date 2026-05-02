@@ -1,14 +1,13 @@
 package ui
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/andreujuanc/prr/internal/opencode"
 	"github.com/andreujuanc/prr/internal/state"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -19,27 +18,30 @@ import (
 type TaskStatus int
 
 const (
-	TaskRunning   TaskStatus = iota // process is executing
-	TaskCompleted                   // exited successfully
-	TaskFailed                      // exited with error
+	TaskRunning   TaskStatus = iota // session is active
+	TaskCompleted                   // finished successfully
+	TaskFailed                      // finished with error
 	TaskCancelled                   // user cancelled
 )
 
 // ── Task ────────────────────────────────────────────────────────────────
 
-// Task represents a background "Fix with OpenCode" process.
+// Task represents a background "Fix with OpenCode" session.
 type Task struct {
 	ID         int
 	Title      string              // short label e.g. "Fix: null check in auth.go:42"
 	FindingIdx int                 // index into m.reviewFindings
 	Finding    state.ReviewFinding // snapshot of the finding at spawn time
 	StartedAt  time.Time
+	SessionID  string // OpenCode session ID
 
-	mu     sync.Mutex
-	status TaskStatus      // protected by mu
-	err    string          // error message if failed; protected by mu
-	output strings.Builder // accumulated stdout/stderr
-	cancel context.CancelFunc
+	mu         sync.Mutex
+	status     TaskStatus      // protected by mu
+	err        string          // error message if failed; protected by mu
+	output     strings.Builder // accumulated session output
+	cancel     context.CancelFunc
+	permission *opencode.Permission // pending permission request (nil if none)
+	question   *opencode.Question   // pending question request (nil if none)
 }
 
 // Output returns the accumulated output (thread-safe).
@@ -71,144 +73,322 @@ func (t *Task) setStatus(s TaskStatus, errMsg string) {
 	t.err = errMsg
 }
 
+// GetPermission returns the pending permission request, if any (thread-safe).
+func (t *Task) GetPermission() *opencode.Permission {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.permission
+}
+
+// setPermission sets or clears the pending permission (thread-safe).
+func (t *Task) setPermission(p *opencode.Permission) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.permission = p
+}
+
+// GetQuestion returns the pending question request, if any (thread-safe).
+func (t *Task) GetQuestion() *opencode.Question {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.question
+}
+
+// setQuestion sets or clears the pending question (thread-safe).
+func (t *Task) setQuestion(q *opencode.Question) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.question = q
+}
+
+// appendOutput appends text to the output buffer (thread-safe).
+func (t *Task) appendOutput(text string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.output.WriteString(text)
+}
+
 // ── Messages ────────────────────────────────────────────────────────────
 
-// TaskSpawnedMsg is sent when a task process has been started.
+// TaskSpawnedMsg is sent when a task session has been created.
 type TaskSpawnedMsg struct {
 	ID int
 }
 
-// TaskOutputMsg delivers streaming output lines from a running task.
+// TaskOutputMsg delivers streaming output from a running task.
 type TaskOutputMsg struct {
 	ID    int
 	Lines string // one or more lines of output
 }
 
-// TaskDoneMsg is sent when a task process exits.
+// TaskDoneMsg is sent when a task session finishes.
 type TaskDoneMsg struct {
 	ID  int
 	Err error // nil on success
 }
 
+// TaskPermissionMsg is sent when a task needs permission approval.
+type TaskPermissionMsg struct {
+	ID         int
+	Permission opencode.Permission
+}
+
+// TaskQuestionMsg is sent when a task needs the user to answer a question.
+type TaskQuestionMsg struct {
+	ID       int
+	Question opencode.Question
+}
+
 // ── Spawn ───────────────────────────────────────────────────────────────
 
-// spawnOpenCodeTask launches an `opencode run` process in the background.
-// It streams output lines back to the TUI via program.Send.
-func spawnOpenCodeTask(task *Task, repoRoot string, p *tea.Program) {
-	ctx, cancel := context.WithCancel(context.Background())
+// spawnOpenCodeTask launches a fix task via the OpenCode HTTP API.
+// It creates a session, sends the prompt, and monitors SSE events.
+func spawnOpenCodeTask(task *Task, mgr *opencode.Manager, p *tea.Program) {
+	ctx, cancel := context.WithCancel(mgr.Context())
 	task.cancel = cancel
 
+	client := mgr.Client()
+	if client == nil {
+		task.setStatus(TaskFailed, "OpenCode server not connected")
+		p.Send(TaskDoneMsg{ID: task.ID, Err: fmt.Errorf("server not connected")})
+		return
+	}
+
+	// Create a session for this task
 	prompt := buildFixPrompt(task.Finding)
-
-	cmd := exec.CommandContext(ctx, "opencode", "run", "--dir", repoRoot)
-	cmd.Stdin = strings.NewReader(prompt)
-
-	stdout, err := cmd.StdoutPipe()
+	session, err := client.CreateSession(ctx, task.Title)
 	if err != nil {
-		task.setStatus(TaskFailed, fmt.Sprintf("stdout pipe: %v", err))
+		task.setStatus(TaskFailed, fmt.Sprintf("create session: %v", err))
 		p.Send(TaskDoneMsg{ID: task.ID, Err: err})
 		return
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		task.setStatus(TaskFailed, fmt.Sprintf("stderr pipe: %v", err))
-		p.Send(TaskDoneMsg{ID: task.ID, Err: err})
-		return
-	}
+	task.SessionID = session.ID
 
-	if err := cmd.Start(); err != nil {
-		task.setStatus(TaskFailed, fmt.Sprintf("start: %v", err))
-		p.Send(TaskDoneMsg{ID: task.ID, Err: err})
+	// Subscribe to events for this session
+	stream := mgr.Stream()
+	if stream == nil {
+		task.setStatus(TaskFailed, "event stream not available")
+		p.Send(TaskDoneMsg{ID: task.ID, Err: fmt.Errorf("no event stream")})
 		return
 	}
+	events, unsubscribe := stream.Subscribe(ctx, session.ID)
+	defer unsubscribe()
 
 	p.Send(TaskSpawnedMsg{ID: task.ID})
 
-	// Stream output lines from both stdout and stderr
-	go func() {
-		lineCh := make(chan string, 64)
-		doneCh := make(chan struct{})
+	// Send the prompt (fire-and-forget; results come via SSE)
+	if err := client.SendPrompt(ctx, session.ID, prompt); err != nil {
+		task.setStatus(TaskFailed, fmt.Sprintf("send prompt: %v", err))
+		p.Send(TaskDoneMsg{ID: task.ID, Err: err})
+		return
+	}
 
-		// Reader goroutines — one for stdout, one for stderr
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			scanner := bufio.NewScanner(stdout)
-			scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-			for scanner.Scan() {
-				lineCh <- scanner.Text()
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			scanner := bufio.NewScanner(stderr)
-			scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-			for scanner.Scan() {
-				lineCh <- scanner.Text()
-			}
-		}()
+	task.appendOutput("▶ Session created: " + session.ID + "\n")
+	task.appendOutput("▶ Prompt sent, waiting for response...\n\n")
+	p.Send(TaskOutputMsg{ID: task.ID, Lines: "▶ Session created\n▶ Prompt sent, waiting for response...\n\n"})
 
-		// Signal when both readers are done
-		go func() {
-			wg.Wait()
-			close(doneCh)
-		}()
+	// Monitor events for this session
+	monitorSessionEvents(ctx, task, events, client, p)
+}
 
-		var batch strings.Builder
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
+// monitorSessionEvents reads events from the session-filtered channel
+// and processes them until the session goes idle or the context is cancelled.
+func monitorSessionEvents(ctx context.Context, task *Task, events <-chan opencode.Event, client *opencode.Client, p *tea.Program) {
+	var batch strings.Builder
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
-		flush := func() {
-			if batch.Len() > 0 {
-				lines := batch.String()
-				task.mu.Lock()
-				task.output.WriteString(lines)
-				task.mu.Unlock()
-				p.Send(TaskOutputMsg{ID: task.ID, Lines: lines})
-				batch.Reset()
-			}
+	flush := func() {
+		if batch.Len() > 0 {
+			lines := batch.String()
+			task.appendOutput(lines)
+			p.Send(TaskOutputMsg{ID: task.ID, Lines: lines})
+			batch.Reset()
 		}
+	}
 
-		for {
-			select {
-			case line := <-lineCh:
-				batch.WriteString(line + "\n")
-			case <-ticker.C:
+	for {
+		select {
+		case <-ctx.Done():
+			flush()
+			if task.GetStatus() == TaskRunning {
+				task.setStatus(TaskCancelled, "")
+				p.Send(TaskDoneMsg{ID: task.ID, Err: nil})
+			}
+			return
+
+		case <-ticker.C:
+			flush()
+
+		case event, ok := <-events:
+			if !ok {
+				// Stream closed
 				flush()
-			case <-doneCh:
-				// Drain remaining
-				for {
-					select {
-					case line := <-lineCh:
-						batch.WriteString(line + "\n")
-					default:
-						goto drained
-					}
-				}
-			drained:
-				flush()
-				// Wait for process to exit
-				waitErr := cmd.Wait()
-				if ctx.Err() == context.Canceled {
-					task.setStatus(TaskCancelled, "")
-					p.Send(TaskDoneMsg{ID: task.ID, Err: nil})
-				} else if waitErr != nil {
-					task.setStatus(TaskFailed, waitErr.Error())
-					p.Send(TaskDoneMsg{ID: task.ID, Err: waitErr})
-				} else {
-					task.setStatus(TaskCompleted, "")
-					p.Send(TaskDoneMsg{ID: task.ID, Err: nil})
+				if task.GetStatus() == TaskRunning {
+					task.setStatus(TaskFailed, "event stream closed")
+					p.Send(TaskDoneMsg{ID: task.ID, Err: fmt.Errorf("event stream closed")})
 				}
 				return
 			}
+
+			switch event.Type {
+			case opencode.EventMessagePartDelta:
+				// Streaming text delta — append to output
+				if event.Properties.Delta != "" {
+					batch.WriteString(event.Properties.Delta)
+				}
+
+			case opencode.EventMessagePartUpdated:
+				part := event.Properties.Part
+				if part == nil {
+					continue
+				}
+
+				switch part.Type {
+				case "tool":
+					if part.State != nil {
+						handleToolEvent(task, part, &batch, p)
+					}
+				case "text":
+					// Full text part — already covered by deltas
+				case "step-finish":
+					// Step completed
+				}
+
+			case opencode.EventSessionStatus:
+				if event.Properties.Status != nil && event.Properties.Status.Type == "idle" {
+					// Session went idle — work is complete
+					flush()
+					task.setStatus(TaskCompleted, "")
+					p.Send(TaskDoneMsg{ID: task.ID, Err: nil})
+					return
+				}
+
+			case opencode.EventPermissionAsked:
+				perm := event.Properties.Permission
+				if perm != nil {
+					flush()
+					task.setPermission(perm)
+					batch.WriteString(fmt.Sprintf("\n⚠ Permission requested: %s\n", perm.Tool))
+					flush()
+					p.Send(TaskPermissionMsg{ID: task.ID, Permission: *perm})
+				}
+
+			case opencode.EventPermissionReplied:
+				// Permission was handled — clear pending state
+				task.setPermission(nil)
+
+			case opencode.EventQuestionAsked:
+				q := event.Properties.Question
+				if q != nil {
+					flush()
+					task.setQuestion(q)
+					header := ""
+					if len(q.Questions) > 0 {
+						header = q.Questions[0].Header
+					}
+					batch.WriteString(fmt.Sprintf("\n❓ Question: %s\n", header))
+					flush()
+					p.Send(TaskQuestionMsg{ID: task.ID, Question: *q})
+				}
+
+			case opencode.EventQuestionReplied, opencode.EventQuestionRejected:
+				// Question was handled — clear pending state
+				task.setQuestion(nil)
+
+			case opencode.EventMessageUpdated:
+				// Track message completion for informational purposes
+			}
 		}
-	}()
+	}
+}
+
+// handleToolEvent processes tool call state changes and formats output.
+func handleToolEvent(task *Task, part *opencode.Part, batch *strings.Builder, p *tea.Program) {
+	if part.State == nil {
+		return
+	}
+
+	switch part.State.Status {
+	case "pending":
+		batch.WriteString(fmt.Sprintf("\n⏳ Tool: %s (pending)\n", part.Tool))
+
+	case "running":
+		title := part.State.Title
+		if title == "" {
+			title = formatToolInput(part.Tool, part.State.Input)
+		}
+		batch.WriteString(fmt.Sprintf("▶ Tool: %s — %s\n", part.Tool, title))
+
+	case "completed":
+		output := part.State.Output
+		if len(output) > 500 {
+			output = output[:500] + "…"
+		}
+		if output != "" {
+			batch.WriteString(fmt.Sprintf("✓ %s done: %s\n", part.Tool, strings.TrimSpace(output)))
+		} else {
+			batch.WriteString(fmt.Sprintf("✓ %s done\n", part.Tool))
+		}
+
+	case "error":
+		errMsg := part.State.Output
+		batch.WriteString(fmt.Sprintf("✗ %s error: %s\n", part.Tool, errMsg))
+	}
+}
+
+// formatToolInput creates a brief description of a tool call from its input.
+func formatToolInput(tool string, input map[string]interface{}) string {
+	switch tool {
+	case "bash":
+		if cmd, ok := input["command"].(string); ok {
+			if len(cmd) > 80 {
+				cmd = cmd[:77] + "..."
+			}
+			return cmd
+		}
+	case "write":
+		if fp, ok := input["filePath"].(string); ok {
+			return fp
+		}
+	case "edit":
+		if fp, ok := input["filePath"].(string); ok {
+			return fp
+		}
+	case "read":
+		if fp, ok := input["filePath"].(string); ok {
+			return fp
+		}
+	case "glob":
+		if pat, ok := input["pattern"].(string); ok {
+			return pat
+		}
+	case "grep":
+		if pat, ok := input["pattern"].(string); ok {
+			return pat
+		}
+	}
+	return ""
 }
 
 // cancelTask sends cancel signal to a running task.
-func cancelTask(task *Task) {
-	if task.cancel != nil && task.GetStatus() == TaskRunning {
+func cancelTask(task *Task, mgr *opencode.Manager) {
+	if task.GetStatus() != TaskRunning {
+		return
+	}
+
+	// Try to abort the session on the server
+	if mgr != nil && task.SessionID != "" {
+		client := mgr.Client()
+		if client != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = client.Abort(ctx, task.SessionID)
+		}
+	}
+
+	// Cancel the local context
+	if task.cancel != nil {
 		task.cancel()
 	}
 }

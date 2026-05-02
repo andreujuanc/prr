@@ -92,6 +92,7 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
 	}
+	ui.Shutdown()
 }
 
 // ── AI client factory ──────────────────────────────────────────────────

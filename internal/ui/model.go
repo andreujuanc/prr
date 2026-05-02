@@ -14,6 +14,7 @@ import (
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/git"
+	"github.com/andreujuanc/prr/internal/opencode"
 	"github.com/andreujuanc/prr/internal/pipe"
 	"github.com/andreujuanc/prr/internal/state"
 
@@ -198,6 +199,12 @@ type PRCommentPostedMsg struct {
 	Err     error
 }
 
+// opencodeReadyMsg is sent after the OpenCode server has started,
+// so the task can be spawned.
+type opencodeReadyMsg struct {
+	finding state.ReviewFinding
+}
+
 // PipeResultMsg is sent when an external pipe process completes.
 type PipeResultMsg struct {
 	Finding state.ReviewFinding
@@ -326,6 +333,11 @@ type Model struct {
 	taskCursor      int     // selected task in Tasks tab
 	taskNextID      int     // auto-incrementing task ID
 	viewingTaskID   int     // task ID currently shown in diff pane (-1 = none)
+	opencodeMgr     *opencode.Manager // manages OpenCode server + SSE stream
+
+	// Permission/question overlays (from background tasks)
+	permissionOverlay *permissionModal // non-nil when permission approval needed
+	questionOverlay   *questionModal   // non-nil when question needs answering
 
 	// PR picker modal (shown when no PR number given on startup)
 	showPRPicker    bool             // PR picker visible
@@ -404,6 +416,8 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		modelName = mi.ModelName()
 	}
 
+	repoRoot := resolveRepoRoot()
+
 	m := Model{
 		fileTree:           newFileTree(nil),
 		diffViewport:       diffVp,
@@ -423,7 +437,8 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		showAIPanel:        true,
 		customInstructions: config.LoadCustomInstructions(),
 		pipeTargets:        config.LoadPipeTargets(),
-		repoRoot:           resolveRepoRoot(),
+		repoRoot:           repoRoot,
+		opencodeMgr:        opencode.NewManager(repoRoot),
 		viewingTaskID:      -1,
 		parallelReviews:    parallelReviews,
 		reviewCursor:       -1,
@@ -439,6 +454,9 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		m.showPRPicker = true
 		m.prPickerLoading = true
 	}
+
+	// Store manager ref for shutdown cleanup
+	opencodeMgrRef = m.opencodeMgr
 
 	return m
 }
@@ -662,6 +680,18 @@ var program *tea.Program
 
 func SetProgram(p *tea.Program) {
 	program = p
+}
+
+// opencodeMgrRef holds a reference to the active manager for shutdown.
+var opencodeMgrRef *opencode.Manager
+
+// Shutdown cleans up resources (stops the OpenCode server, etc.).
+// Call after the bubbletea program exits.
+func Shutdown() {
+	if opencodeMgrRef != nil {
+		opencodeMgrRef.Stop()
+		opencodeMgrRef = nil
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -957,8 +987,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flashMsg = ""
 		return m, nil
 
+	case opencodeReadyMsg:
+		// Server is now running — spawn the task
+		return m, m.spawnFixTask(msg.finding)
+
 	case TaskSpawnedMsg:
 		// Task started — nothing extra to do (already tracked in m.tasks)
+		return m, nil
+
+	case TaskPermissionMsg:
+		// A task needs permission approval — show the modal
+		m.permissionOverlay = &permissionModal{
+			taskID:     msg.ID,
+			permission: msg.Permission,
+			cursor:     0, // default to Approve
+		}
+		return m, nil
+
+	case TaskQuestionMsg:
+		// A task needs the user to answer a question — show the modal
+		m.questionOverlay = &questionModal{
+			taskID:   msg.ID,
+			question: msg.Question,
+			cursor:   0,
+		}
 		return m, nil
 
 	case TaskOutputMsg:
@@ -1225,6 +1277,66 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear flash message on any key press
 		if m.flashMsg != "" {
 			m.flashMsg = ""
+		}
+		// Permission overlay intercepts all keys
+		if m.permissionOverlay != nil {
+			switch msg.String() {
+			case "esc", "n":
+				cmd = m.denyPermission()
+				m.permissionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "y":
+				cmd = m.approvePermission()
+				m.permissionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "enter":
+				if m.permissionOverlay.cursor == 0 {
+					cmd = m.approvePermission()
+				} else {
+					cmd = m.denyPermission()
+				}
+				m.permissionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "h", "left":
+				m.permissionOverlay.cursor = 0
+			case "l", "right":
+				m.permissionOverlay.cursor = 1
+			case "tab":
+				m.permissionOverlay.cursor = (m.permissionOverlay.cursor + 1) % 2
+			}
+			return m, nil
+		}
+		// Question overlay intercepts all keys
+		if m.questionOverlay != nil {
+			switch msg.String() {
+			case "esc":
+				cmd = m.dismissQuestion()
+				m.questionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "enter":
+				cmd = m.selectQuestionOption()
+				m.questionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "j", "down":
+				if m.questionOverlay.cursor < m.questionOverlay.optionCount()-1 {
+					m.questionOverlay.cursor++
+				}
+			case "k", "up":
+				if m.questionOverlay.cursor > 0 {
+					m.questionOverlay.cursor--
+				}
+			}
+			return m, nil
 		}
 		// Confirm modal intercepts all keys
 		if m.confirmOverlay != nil {
@@ -1945,7 +2057,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
 					t := m.tasks[m.taskCursor]
 					if t.GetStatus() == TaskRunning {
-						cancelTask(t)
+						cancelTask(t, m.opencodeMgr)
 						cmds = append(cmds, m.setFlash("Task cancelled"))
 					}
 				}
@@ -2351,7 +2463,7 @@ func (m Model) renderAIPanelTitle(maxWidth int) string {
 			continue
 		}
 		label := t.label
-		// Add running task count indicator
+		// Add running task count indicator + server status
 		if t.idx == 1 {
 			running := 0
 			for _, task := range m.tasks {
@@ -2361,6 +2473,15 @@ func (m Model) renderAIPanelTitle(maxWidth int) string {
 			}
 			if running > 0 {
 				label = fmt.Sprintf("Tasks(%d)", running)
+			}
+			// Server status dot
+			if m.opencodeMgr != nil {
+				switch m.opencodeMgr.Status() {
+				case opencode.ServerConnected:
+					label += " " + styleAccentGreen.Render("●")
+				case opencode.ServerConnecting:
+					label += " " + styleAccentYellow.Render("●")
+				}
 			}
 		}
 		if t.idx == m.aiPanelTab {
@@ -2849,6 +2970,23 @@ func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
 	if program == nil {
 		return m.setFlash("Error: program not initialized")
 	}
+	if m.opencodeMgr == nil {
+		return m.setFlash("Error: OpenCode manager not initialized")
+	}
+
+	// Ensure the server is started (lazy init on first task)
+	if m.opencodeMgr.Status() != opencode.ServerConnected {
+		mgr := m.opencodeMgr
+		go func() {
+			if err := mgr.Start(context.Background()); err != nil {
+				program.Send(TaskDoneMsg{ID: -1, Err: fmt.Errorf("server start: %v", err)})
+				return
+			}
+			// Retry the spawn now that server is up
+			program.Send(opencodeReadyMsg{finding: f})
+		}()
+		return m.setFlash("Starting OpenCode server...")
+	}
 
 	task := &Task{
 		ID:         m.taskNextID,
@@ -2865,8 +3003,8 @@ func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
 	m.aiPanelTab = 1
 	m.taskCursor = len(m.tasks) - 1
 
-	// Launch the background process
-	go spawnOpenCodeTask(task, m.repoRoot, program)
+	// Launch the background task via HTTP API
+	go spawnOpenCodeTask(task, m.opencodeMgr, program)
 
 	return m.setFlash("Task started: " + task.Title)
 }
@@ -4123,6 +4261,13 @@ func (m Model) View() string {
 		return overlay
 	}
 	// Confirm/action overlays float at bottom (no background dimming)
+	// Permission/question overlays take priority
+	if m.permissionOverlay != nil {
+		return bottomOverlay(base, m.renderPermissionModal(), m.width, m.height)
+	}
+	if m.questionOverlay != nil {
+		return bottomOverlay(base, m.renderQuestionModal(), m.width, m.height)
+	}
 	if m.confirmOverlay != nil {
 		return bottomOverlay(base, m.renderConfirmModal(), m.width, m.height)
 	}

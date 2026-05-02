@@ -56,10 +56,19 @@ func renderTaskRow(b *strings.Builder, t *Task, width int, isSelected bool) {
 		titleStyle = styleTextMuted
 	}
 
-	line := fmt.Sprintf("%s%s %s  %s",
+	// Pending action badge
+	badge := ""
+	if t.GetPermission() != nil {
+		badge = " " + styleAccentYellowBold.Render("[PERMISSION]")
+	} else if t.GetQuestion() != nil {
+		badge = " " + styleAccentBlueBold.Render("[QUESTION]")
+	}
+
+	line := fmt.Sprintf("%s%s %s%s  %s",
 		marker,
 		icon,
 		titleStyle.Render(title),
+		badge,
 		styleTextSubtle.Render(elapsed),
 	)
 	if width > 0 {
@@ -145,7 +154,13 @@ func (m Model) renderTaskOutput(taskID int) string {
 	}
 
 	if status == TaskRunning {
-		b.WriteString("\n\n" + styleAccentBlueBold.Render("  ⟳ Running..."))
+		if task.GetPermission() != nil {
+			b.WriteString("\n\n" + styleAccentYellowBold.Render("  ⚠ Waiting for permission approval..."))
+		} else if task.GetQuestion() != nil {
+			b.WriteString("\n\n" + styleAccentBlueBold.Render("  ❓ Waiting for your answer..."))
+		} else {
+			b.WriteString("\n\n" + styleAccentBlueBold.Render("  ⟳ Running..."))
+		}
 	} else if status == TaskFailed {
 		b.WriteString("\n\n" + styleAccentRed.Render("  ✗ Failed: "+task.GetError()))
 	} else if status == TaskCompleted {
