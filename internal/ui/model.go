@@ -14,6 +14,7 @@ import (
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/git"
+	"github.com/andreujuanc/prr/internal/pipe"
 	"github.com/andreujuanc/prr/internal/state"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -175,6 +176,36 @@ type ActionsJobsFetchedMsg struct {
 // actionsTickMsg triggers a re-fetch of workflow runs for polling.
 type actionsTickMsg struct{}
 
+// flashDismissMsg is sent after the flash message timeout expires.
+type flashDismissMsg struct{}
+
+// FindingPublishedMsg is sent after a single finding is posted as a GitHub line comment.
+type FindingPublishedMsg struct {
+	Finding state.ReviewFinding
+	Comment *git.ReviewComment
+	Err     error
+}
+
+// FindingsBatchPublishedMsg is sent after all findings are posted as a GitHub Review.
+type FindingsBatchPublishedMsg struct {
+	Count int
+	Err   error
+}
+
+// PRCommentPostedMsg is sent after a finding is posted as a general PR comment.
+type PRCommentPostedMsg struct {
+	Finding state.ReviewFinding
+	Err     error
+}
+
+// PipeResultMsg is sent when an external pipe process completes.
+type PipeResultMsg struct {
+	Finding state.ReviewFinding
+	Target  pipe.Target
+	Output  []byte
+	Err     error
+}
+
 // logoTickMsg drives the logo color animation during loading.
 type logoTickMsg struct{}
 
@@ -282,6 +313,13 @@ type Model struct {
 	themeBeforePicker  string // theme ID before opening picker (for revert on Esc)
 	errorMsg           string // transient error shown as modal overlay
 
+	// Finding publish/pipe overlays (no background dimming)
+	confirmOverlay    *confirmModal // non-nil when confirm modal is active
+	actionMenuOverlay *actionMenu   // non-nil when action menu is active
+	pipeTargets       []pipe.Target // loaded from config
+	repoRoot          string        // git repo root (resolved once at init)
+	flashMsg          string        // brief status flash (auto-clears on next key)
+
 	// PR picker modal (shown when no PR number given on startup)
 	showPRPicker    bool             // PR picker visible
 	prPickerItems   []git.PRListItem // fetched open PRs
@@ -377,6 +415,8 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		showFilePanel:      true,
 		showAIPanel:        true,
 		customInstructions: config.LoadCustomInstructions(),
+		pipeTargets:        config.LoadPipeTargets(),
+		repoRoot:           resolveRepoRoot(),
 		parallelReviews:    parallelReviews,
 		reviewCursor:       -1,
 		showInlineFindings: true,
@@ -393,6 +433,15 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 	}
 
 	return m
+}
+
+// resolveRepoRoot returns the git repo root, falling back to "." on error.
+func resolveRepoRoot() string {
+	root, err := git.RepoRoot()
+	if err != nil {
+		return "."
+	}
+	return root
 }
 
 func (m Model) Init() tea.Cmd {
@@ -506,6 +555,60 @@ func createComment(prNumber, commitSHA, path, body string, line int, side string
 	return func() tea.Msg {
 		comment, err := git.CreateReviewComment(prNumber, commitSHA, path, body, line, side)
 		return CommentCreatedMsg{Comment: comment, Err: err}
+	}
+}
+
+// ── Finding publish/pipe commands ───────────────────────────────────────
+
+func publishFindingAsComment(prNumber, commitSHA string, f state.ReviewFinding) tea.Cmd {
+	return func() tea.Msg {
+		body := formatFindingAsMarkdown(f)
+		comment, err := git.CreateReviewComment(prNumber, commitSHA, f.File, body, f.Line, "RIGHT")
+		return FindingPublishedMsg{Finding: f, Comment: comment, Err: err}
+	}
+}
+
+func publishBatchReview(prNumber, commitSHA string, findings []state.ReviewFinding) tea.Cmd {
+	return func() tea.Msg {
+		comments := make([]git.ReviewFindingComment, 0, len(findings))
+		for _, f := range findings {
+			if f.File != "" && f.Line > 0 {
+				comments = append(comments, git.ReviewFindingComment{
+					Path: f.File,
+					Line: f.Line,
+					Body: formatFindingAsMarkdown(f),
+					Side: "RIGHT",
+				})
+			}
+		}
+		body := formatBatchReviewBody(findings)
+		err := git.SubmitReviewWithFindings(prNumber, commitSHA, body, comments)
+		return FindingsBatchPublishedMsg{Count: len(comments), Err: err}
+	}
+}
+
+func postFindingAsPRComment(prNumber string, f state.ReviewFinding) tea.Cmd {
+	return func() tea.Msg {
+		body := formatFindingAsMarkdown(f)
+		err := git.PostPRComment(prNumber, body)
+		return PRCommentPostedMsg{Finding: f, Err: err}
+	}
+}
+
+func executePipe(target pipe.Target, f state.ReviewFinding, repoRoot string) tea.Cmd {
+	return func() tea.Msg {
+		payload := pipe.Payload{
+			File:       f.File,
+			Line:       f.Line,
+			Severity:   f.Severity,
+			Category:   f.Category,
+			Title:      f.Title,
+			Detail:     f.Detail,
+			Suggestion: f.Suggestion,
+			RepoRoot:   repoRoot,
+		}
+		output, err := pipe.Execute(target, payload)
+		return PipeResultMsg{Finding: f, Target: target, Output: output, Err: err}
 	}
 }
 
@@ -798,6 +901,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case FindingPublishedMsg:
+		if msg.Err != nil {
+			cmds = append(cmds, m.setFlash(fmt.Sprintf("Error: %v", msg.Err)))
+		} else {
+			cmds = append(cmds, m.setFlash(fmt.Sprintf("Comment posted on %s:%d", msg.Finding.File, msg.Finding.Line)))
+			// Add to local comments state
+			if msg.Comment != nil {
+				m.comments[msg.Comment.Path] = append(m.comments[msg.Comment.Path], *msg.Comment)
+				if m.hasFileSelected() && m.selectedFile == msg.Comment.Path {
+					cmd = m.reloadDiff()
+					if cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case FindingsBatchPublishedMsg:
+		if msg.Err != nil {
+			return m, m.setFlash(fmt.Sprintf("Error submitting review: %v", msg.Err))
+		}
+		return m, m.setFlash(fmt.Sprintf("Review submitted with %d comments", msg.Count))
+
+	case PRCommentPostedMsg:
+		if msg.Err != nil {
+			return m, m.setFlash(fmt.Sprintf("Error posting comment: %v", msg.Err))
+		}
+		return m, m.setFlash(fmt.Sprintf("PR comment posted for %s:%d", msg.Finding.File, msg.Finding.Line))
+
+	case PipeResultMsg:
+		if msg.Err != nil {
+			return m, m.setFlash(fmt.Sprintf("Pipe \"%s\" failed: %v", msg.Target.Name, msg.Err))
+		}
+		output := strings.TrimSpace(string(msg.Output))
+		if output == "" {
+			return m, m.setFlash(fmt.Sprintf("Pipe \"%s\" completed", msg.Target.Name))
+		} else if len(output) < 200 {
+			return m, m.setFlash(fmt.Sprintf("Pipe \"%s\": %s", msg.Target.Name, output))
+		}
+		// Show output in error modal (scrollable)
+		m.errorMsg = fmt.Sprintf("Output from \"%s\":\n\n%s", msg.Target.Name, output)
+		return m, nil
+
+	case flashDismissMsg:
+		m.flashMsg = ""
+		return m, nil
+
 	case ChatRenderedMsg:
 		// For Review tab (0): cache the rendered content and always apply — content is global, not per-file
 		// For Chat tab (1): only apply if still on the same file
@@ -1019,6 +1170,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// ── Modal overlays intercept all keys when visible ──────
+		// Clear flash message on any key press
+		if m.flashMsg != "" {
+			m.flashMsg = ""
+		}
+		// Confirm modal intercepts all keys
+		if m.confirmOverlay != nil {
+			switch msg.String() {
+			case "esc", "q":
+				m.confirmOverlay = nil
+			case "enter":
+				cmd = m.executeConfirmAction()
+				m.confirmOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			}
+			return m, nil
+		}
+		// Action menu intercepts all keys
+		if m.actionMenuOverlay != nil {
+			switch msg.String() {
+			case "esc", "q":
+				m.actionMenuOverlay = nil
+			case "j", "down":
+				if m.actionMenuOverlay.cursor < len(m.actionMenuOverlay.items)-1 {
+					m.actionMenuOverlay.cursor++
+				}
+			case "k", "up":
+				if m.actionMenuOverlay.cursor > 0 {
+					m.actionMenuOverlay.cursor--
+				}
+			case "enter":
+				m.executeActionMenuItem(m.actionMenuOverlay.cursor)
+				m.actionMenuOverlay = nil
+			default:
+				// Direct key shortcuts (c, C, g, 1, 2, 3...)
+				if m.executeActionMenuByKey(msg.String()) {
+					m.actionMenuOverlay = nil
+				}
+			}
+			return m, nil
+		}
 		if m.showPRPicker {
 			if m.prPickerLoading {
 				// Still loading — only allow quit
@@ -1603,6 +1796,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					return m, tea.Batch(cmds...)
+				case "c":
+					// Publish selected finding as GitHub line comment
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						f := m.reviewFindings[m.reviewCursor]
+						m.confirmOverlay = &confirmModal{
+							action:  confirmPublishComment,
+							finding: &f,
+						}
+					}
+					return m, nil
+				case "C":
+					// Publish ALL findings as a GitHub Review (batch)
+					m.confirmOverlay = &confirmModal{
+						action:   confirmBatchReview,
+						findings: append([]state.ReviewFinding{}, m.reviewFindings...),
+					}
+					return m, nil
+				case "g":
+					// Post selected finding as general PR comment
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						f := m.reviewFindings[m.reviewCursor]
+						m.confirmOverlay = &confirmModal{
+							action:  confirmPRComment,
+							finding: &f,
+						}
+					}
+					return m, nil
+				case "|":
+					// Pipe selected finding to external process
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) && len(m.pipeTargets) > 0 {
+						f := m.reviewFindings[m.reviewCursor]
+						m.confirmOverlay = &confirmModal{
+							action:  confirmPipe,
+							finding: &f,
+							target:  &m.pipeTargets[0], // default to first pipe target
+						}
+					}
+					return m, nil
+				case "x":
+					// Open action menu for selected finding
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						f := m.reviewFindings[m.reviewCursor]
+						m.actionMenuOverlay = &actionMenu{
+							cursor:  0,
+							finding: f,
+							items:   m.buildActionMenuItems(),
+						}
+					}
+					return m, nil
 				}
 			}
 
@@ -2337,6 +2579,108 @@ func (m *Model) actionsRowCount() int {
 		}
 	}
 	return count
+}
+
+// ── Finding publish/pipe execution ──────────────────────────────────────
+
+const flashDismissDelay = 3 * time.Second
+
+// setFlash sets the flash message and returns a command that auto-dismisses it.
+func (m *Model) setFlash(msg string) tea.Cmd {
+	m.flashMsg = msg
+	return tea.Tick(flashDismissDelay, func(time.Time) tea.Msg {
+		return flashDismissMsg{}
+	})
+}
+
+// executeConfirmAction runs the confirmed action and returns a tea.Cmd.
+func (m *Model) executeConfirmAction() tea.Cmd {
+	if m.confirmOverlay == nil || m.pr == nil {
+		return nil
+	}
+	modal := m.confirmOverlay
+
+	switch modal.action {
+	case confirmPublishComment:
+		if modal.finding != nil {
+			return publishFindingAsComment(m.prNumber, m.pr.HeadRefOid, *modal.finding)
+		}
+	case confirmBatchReview:
+		if len(modal.findings) > 0 {
+			return publishBatchReview(m.prNumber, m.pr.HeadRefOid, modal.findings)
+		}
+	case confirmPRComment:
+		if modal.finding != nil {
+			return postFindingAsPRComment(m.prNumber, *modal.finding)
+		}
+	case confirmPipe:
+		if modal.finding != nil && modal.target != nil {
+			return executePipe(*modal.target, *modal.finding, m.repoRoot)
+		}
+	}
+	return nil
+}
+
+// executeActionMenuItem triggers the action at the given menu index.
+func (m *Model) executeActionMenuItem(idx int) {
+	if m.actionMenuOverlay == nil {
+		return
+	}
+	menu := m.actionMenuOverlay
+	f := menu.finding
+
+	switch {
+	case idx == 0: // Post as line comment
+		m.confirmOverlay = &confirmModal{action: confirmPublishComment, finding: &f}
+	case idx == 1: // Post ALL as review
+		m.confirmOverlay = &confirmModal{action: confirmBatchReview, findings: m.reviewFindings}
+	case idx == 2: // Post as PR comment
+		m.confirmOverlay = &confirmModal{action: confirmPRComment, finding: &f}
+	default:
+		// Pipe targets (idx-3 maps to pipeTargets index)
+		pipeIdx := idx - 3
+		if pipeIdx >= 0 && pipeIdx < len(m.pipeTargets) {
+			m.confirmOverlay = &confirmModal{
+				action:  confirmPipe,
+				finding: &f,
+				target:  &m.pipeTargets[pipeIdx],
+			}
+		}
+	}
+}
+
+// executeActionMenuByKey handles direct key shortcuts in the action menu.
+// Returns true if the key matched an action.
+func (m *Model) executeActionMenuByKey(key string) bool {
+	if m.actionMenuOverlay == nil {
+		return false
+	}
+	menu := m.actionMenuOverlay
+	f := menu.finding
+
+	switch key {
+	case "c":
+		m.confirmOverlay = &confirmModal{action: confirmPublishComment, finding: &f}
+	case "C":
+		m.confirmOverlay = &confirmModal{action: confirmBatchReview, findings: m.reviewFindings}
+	case "g":
+		m.confirmOverlay = &confirmModal{action: confirmPRComment, finding: &f}
+	default:
+		// Check numeric keys for pipe targets (1-indexed)
+		if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+			idx := int(key[0]-'1')
+			if idx < len(m.pipeTargets) {
+				m.confirmOverlay = &confirmModal{
+					action:  confirmPipe,
+					finding: &f,
+					target:  &m.pipeTargets[idx],
+				}
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // actionsResetPolling clears all GitHub Actions state. Call this at every
@@ -3572,6 +3916,17 @@ func (m Model) View() string {
 	if m.errorMsg != "" {
 		overlay := centerOverlay(m.renderErrorModal(), m.width, m.height)
 		return overlay
+	}
+	// Confirm/action overlays float at bottom (no background dimming)
+	if m.confirmOverlay != nil {
+		return bottomOverlay(base, m.renderConfirmModal(), m.width, m.height)
+	}
+	if m.actionMenuOverlay != nil {
+		return bottomOverlay(base, m.renderActionMenu(), m.width, m.height)
+	}
+	// Flash message: show briefly in the footer area
+	if m.flashMsg != "" {
+		return bottomOverlay(base, styleAccentGreen.Render(m.flashMsg), m.width, m.height)
 	}
 
 	return base

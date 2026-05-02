@@ -45,6 +45,17 @@ func FetchPR(prNumber string) (*PullRequest, error) {
 	return &pr, nil
 }
 
+// RepoRoot returns the absolute path to the root of the current git repository.
+func RepoRoot() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
+	}
+	return string(bytes.TrimSpace(stdout.Bytes())), nil
+}
+
 // currentRepo returns the owner and name of the current GitHub repository
 // by querying the gh CLI.
 func currentRepo() (owner, name string, err error) {
