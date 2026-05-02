@@ -110,7 +110,13 @@ func taskElapsed(t *Task) string {
 	if t.StartedAt.IsZero() {
 		return ""
 	}
-	d := time.Since(t.StartedAt)
+	end := t.GetFinishedAt()
+	var d time.Duration
+	if end.IsZero() {
+		d = time.Since(t.StartedAt)
+	} else {
+		d = end.Sub(t.StartedAt)
+	}
 	switch {
 	case d < time.Second:
 		return "<1s"

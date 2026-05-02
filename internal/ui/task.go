@@ -38,6 +38,7 @@ type Task struct {
 	mu         sync.Mutex
 	status     TaskStatus      // protected by mu
 	err        string          // error message if failed; protected by mu
+	finishedAt time.Time       // when task reached a terminal state; protected by mu
 	output     strings.Builder // accumulated session output
 	cancel     context.CancelFunc
 	permission *opencode.Permission // pending permission request (nil if none)
@@ -65,12 +66,22 @@ func (t *Task) GetError() string {
 	return t.err
 }
 
+// GetFinishedAt returns when the task reached a terminal state (thread-safe).
+func (t *Task) GetFinishedAt() time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.finishedAt
+}
+
 // setStatus sets status and optional error (thread-safe).
 func (t *Task) setStatus(s TaskStatus, errMsg string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.status = s
 	t.err = errMsg
+	if s == TaskCompleted || s == TaskFailed || s == TaskCancelled {
+		t.finishedAt = time.Now()
+	}
 }
 
 // GetPermission returns the pending permission request, if any (thread-safe).

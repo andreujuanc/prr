@@ -113,7 +113,6 @@ func (m *Model) renderConfirmModal() string {
 		b.WriteString(styleAccentBlueBold.Render("Fix with OpenCode?") + "\n\n")
 		b.WriteString(findingSummaryLine(f) + "\n")
 		b.WriteString(styleTextMuted.Render(fmt.Sprintf("  %s:%d", f.File, f.Line)) + "\n\n")
-		b.WriteString(styleTextMuted.Render("  Command: opencode run") + "\n\n")
 		b.WriteString(styleTextMuted.Render("[Enter] Run   [Esc] Cancel"))
 	}
 
