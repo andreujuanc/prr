@@ -28,11 +28,11 @@ func NewManager(dir string) *Manager {
 // Safe to call multiple times (idempotent).
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.server != nil && m.server.Status() == ServerConnected {
-		m.mu.Unlock()
 		return nil
 	}
-	m.mu.Unlock()
 
 	mgrCtx, cancel := context.WithCancel(ctx)
 
@@ -50,12 +50,10 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("connect event stream: %w", err)
 	}
 
-	m.mu.Lock()
 	m.server = server
 	m.stream = stream
 	m.ctx = mgrCtx
 	m.cancel = cancel
-	m.mu.Unlock()
 
 	return nil
 }
