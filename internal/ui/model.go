@@ -259,11 +259,13 @@ type Model struct {
 	diffCursor   int                            // cursor position within visible diff lines (for line selection)
 
 	// Navigable review findings
-	reviewFindings    []state.ReviewFinding // flat ordered list of findings (severity-sorted, matching render order)
-	reviewCursor      int                   // currently highlighted finding index (-1 = none)
-	pendingScrollLine int                   // line to scroll to after diff loads (0 = none)
-	cameFromFinding   bool                  // true when diff was opened via finding jump (Esc returns to review)
-	diffContent       string                // cached diff content for line scanning (set on StyledDiffMsg)
+	reviewFindings     []state.ReviewFinding // flat ordered list of findings (severity-sorted, matching render order)
+	reviewCursor       int                   // currently highlighted finding index (-1 = none)
+	pendingScrollLine  int                   // line to scroll to after diff loads (0 = none)
+	cameFromFinding    bool                  // true when diff was opened via finding jump (Esc returns to review)
+	diffContent        string                // cached diff content for line scanning (set on StyledDiffMsg)
+	rawDiffContent     string                // styled diff before comment/finding injection (for toggle re-render)
+	showInlineFindings bool                  // when true, findings are shown inline in the diff
 
 	// Panel visibility
 	showFilePanel bool
@@ -377,6 +379,7 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		customInstructions: config.LoadCustomInstructions(),
 		parallelReviews:    parallelReviews,
 		reviewCursor:       -1,
+		showInlineFindings: true,
 		useChroma:          useChroma,
 		blameCache:         make(map[string]map[int]git.BlameLine),
 	}
@@ -839,6 +842,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						fmt.Sprintf("  ── skipped from AI review (%s) ──", reason))
 					content = banner + "\n\n" + content
 				}
+				// Cache pre-findings content for toggle re-render
+				m.rawDiffContent = content
+				content = m.injectFindings(content, msg.FilePath)
 				m.diffContent = content // cache for line scanning
 				savedOffset := m.diffViewport.YOffset
 				savedCursor := m.diffCursor
@@ -1492,6 +1498,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if cmd != nil {
 						cmds = append(cmds, cmd)
 					}
+				}
+			case "F":
+				// Toggle inline findings display (only in file diff view)
+				if m.viewMode == viewModeFile && m.hasFileSelected() && m.rawDiffContent != "" {
+					m.showInlineFindings = !m.showInlineFindings
+					content := m.rawDiffContent
+					if m.showInlineFindings {
+						content = m.injectFindings(content, m.selectedFile)
+					}
+					m.diffContent = content
+					savedOffset := m.diffViewport.YOffset
+					savedCursor := m.diffCursor
+					m.setDiffContent(content)
+					m.diffViewport.SetYOffset(savedOffset)
+					m.diffCursor = savedCursor
+					return m, nil
 				}
 			case "j", "down":
 				m.moveDiffCursor(1)
@@ -2636,6 +2658,7 @@ func (m *Model) jumpToFinding(idx int) tea.Cmd {
 
 	// Set up pending scroll target
 	m.selectedFile = finding.File
+	m.viewMode = viewModeFile
 	m.pendingScrollLine = finding.Line
 	m.cameFromFinding = true
 
@@ -2769,6 +2792,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 			return nil // already showing overview
 		}
 		m.selectedFile = ""
+		m.rawDiffContent = ""
 		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
@@ -2778,6 +2802,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 
 	if m.fileTree.selectedIsActions() {
 		m.selectedFile = ""
+		m.rawDiffContent = ""
 		m.viewMode = viewModeActions
 		m.setDiffContent(m.renderActionsView())
 		m.diffViewport.GotoTop()
@@ -2810,6 +2835,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 
 	if m.fileTree.selectedIsOverview() {
 		m.selectedFile = ""
+		m.rawDiffContent = ""
 		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
@@ -2819,6 +2845,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 
 	if m.fileTree.selectedIsActions() {
 		m.selectedFile = ""
+		m.rawDiffContent = ""
 		m.viewMode = viewModeActions
 		m.setDiffContent(m.renderActionsView())
 		m.diffViewport.GotoTop()
@@ -3470,10 +3497,19 @@ func (m Model) View() string {
 	if m.viewMode == viewModeActions {
 		diffTitle = "ACTIONS"
 	} else if m.hasFileSelected() {
+		findingsCount := m.fileFindingsCount(m.selectedFile)
+		findingsSuffix := ""
+		if findingsCount > 0 {
+			if m.showInlineFindings {
+				findingsSuffix = fmt.Sprintf(" [%dF]", findingsCount)
+			} else {
+				findingsSuffix = fmt.Sprintf(" [%dF hidden]", findingsCount)
+			}
+		}
 		if m.focusedPane == PaneDiff && cursorLineNum > 0 {
-			diffTitle = fmt.Sprintf("DIFF (±%d) L%d", m.contextLines, cursorLineNum)
+			diffTitle = fmt.Sprintf("DIFF (±%d) L%d%s", m.contextLines, cursorLineNum, findingsSuffix)
 		} else {
-			diffTitle = fmt.Sprintf("DIFF (±%d)", m.contextLines)
+			diffTitle = fmt.Sprintf("DIFF (±%d)%s", m.contextLines, findingsSuffix)
 		}
 	}
 	if m.commenting {
