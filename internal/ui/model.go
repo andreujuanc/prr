@@ -221,9 +221,10 @@ var logoLines = [2]string{
 type viewMode int
 
 const (
-	viewModeOverview viewMode = iota // PR overview (default)
-	viewModeFile                     // file diff
-	viewModeActions                  // GitHub Actions status
+	viewModeOverview    viewMode = iota // PR overview (default)
+	viewModeFile                        // file diff
+	viewModeActions                     // GitHub Actions status
+	viewModeTaskOutput                  // background task output
 )
 
 type Model struct {
@@ -268,7 +269,7 @@ type Model struct {
 	aiReviewBatches     []AIReviewBatchInfo   // batch list for in-place rendering
 	aiReviewStatuses    []AIReviewBatchStatus // per-batch status
 	aiReviewPhase       string                // "batch" or "synthesis"
-	aiPanelTab          int                   // 0 = Review, 1 = Chat
+	aiPanelTab          int                   // 0 = Review, 1 = Tasks, 2 = Chat
 	aiReviewRendered    string                // cached rendered review markdown
 	aiReviewRenderWidth int                   // width used for cached render
 
@@ -319,6 +320,12 @@ type Model struct {
 	pipeTargets       []pipe.Target // loaded from config
 	repoRoot          string        // git repo root (resolved once at init)
 	flashMsg          string        // brief status flash (auto-clears on next key)
+
+	// Background tasks (Fix with OpenCode)
+	tasks           []*Task // all tasks (running, completed, failed, cancelled)
+	taskCursor      int     // selected task in Tasks tab
+	taskNextID      int     // auto-incrementing task ID
+	viewingTaskID   int     // task ID currently shown in diff pane (-1 = none)
 
 	// PR picker modal (shown when no PR number given on startup)
 	showPRPicker    bool             // PR picker visible
@@ -417,6 +424,7 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		customInstructions: config.LoadCustomInstructions(),
 		pipeTargets:        config.LoadPipeTargets(),
 		repoRoot:           resolveRepoRoot(),
+		viewingTaskID:      -1,
 		parallelReviews:    parallelReviews,
 		reviewCursor:       -1,
 		showInlineFindings: true,
@@ -949,9 +957,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flashMsg = ""
 		return m, nil
 
+	case TaskSpawnedMsg:
+		// Task started — nothing extra to do (already tracked in m.tasks)
+		return m, nil
+
+	case TaskOutputMsg:
+		// Streaming output from a background task
+		// If we're currently viewing this task's output, refresh the diff pane
+		if m.viewMode == viewModeTaskOutput && m.viewingTaskID == msg.ID {
+			content := m.renderTaskOutput(msg.ID)
+			m.setDiffContent(content)
+			// Auto-scroll to bottom
+			total := m.diffViewport.TotalLineCount()
+			vpH := m.diffViewport.Height
+			if total > vpH {
+				m.diffViewport.SetYOffset(total - vpH)
+			}
+		}
+		return m, nil
+
+	case TaskDoneMsg:
+		// Task finished — find it and update
+		for i, t := range m.tasks {
+			if t.ID == msg.ID {
+				// Auto-resolve the finding if task completed successfully
+				if t.Status == TaskCompleted {
+					if t.FindingIdx >= 0 && t.FindingIdx < len(m.reviewFindings) {
+						m.reviewFindings[t.FindingIdx].Resolved = true
+						// Re-render review if on Review tab
+						if m.aiPanelTab == 0 {
+							cmds = append(cmds, m.rerenderReviewWithCursor())
+						}
+					}
+				}
+				// Refresh diff pane if viewing this task
+				if m.viewMode == viewModeTaskOutput && m.viewingTaskID == msg.ID {
+					content := m.renderTaskOutput(msg.ID)
+					m.setDiffContent(content)
+				}
+				_ = i
+				break
+			}
+		}
+		return m, tea.Batch(cmds...)
+
 	case ChatRenderedMsg:
 		// For Review tab (0): cache the rendered content and always apply — content is global, not per-file
-		// For Chat tab (1): only apply if still on the same file
+		// For Chat tab (2): only apply if still on the same file
 		if msg.Tab == 0 {
 			m.aiReviewRendered = msg.Content
 			m.aiReviewRenderWidth = m.chatViewport.Width - 2
@@ -1448,7 +1500,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.focusedPane = PaneDiff
 					m.syncFocus()
 				}
-			} else if m.focusedPane == PaneChat && m.aiPanelTab == 1 {
+			} else if m.focusedPane == PaneChat && m.aiPanelTab == 2 {
 				// Send chat message only on Chat tab; on Review tab Enter is
 				// handled by the pane-specific finding navigation below.
 				cmd = m.sendChatMessage()
@@ -1526,7 +1578,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.syncLayout()
 		case "?":
-			if m.focusedPane != PaneChat || m.aiPanelTab != 1 {
+			if m.focusedPane != PaneChat || m.aiPanelTab != 2 {
 				m.showHelp = !m.showHelp
 			}
 		case "m":
@@ -1845,6 +1897,75 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					return m, nil
+				case " ":
+					// Toggle resolved status for selected finding
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						m.reviewFindings[m.reviewCursor].Resolved = !m.reviewFindings[m.reviewCursor].Resolved
+						cmds = append(cmds, m.rerenderReviewWithCursor())
+					}
+					return m, tea.Batch(cmds...)
+				case "f":
+					// Fix with OpenCode
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						if hasRunningTaskForFinding(m.tasks, m.reviewCursor) {
+							cmds = append(cmds, m.setFlash("Already running for this finding"))
+							return m, tea.Batch(cmds...)
+						}
+						f := m.reviewFindings[m.reviewCursor]
+						m.confirmOverlay = &confirmModal{
+							action:  confirmFixWithOpenCode,
+							finding: &f,
+						}
+					}
+					return m, tea.Batch(cmds...)
+				}
+			}
+
+			// Tasks tab navigation (j/k/Enter/d/x when tasks exist)
+			if m.aiPanelTab == 1 && len(m.tasks) > 0 {
+				switch km.String() {
+				case "j", "down":
+					if m.taskCursor < len(m.tasks)-1 {
+						m.taskCursor++
+					}
+					return m, nil
+				case "k", "up":
+					if m.taskCursor > 0 {
+						m.taskCursor--
+					}
+					return m, nil
+				case "enter":
+					// View task output in diff pane
+					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+						m.viewTaskOutput(m.tasks[m.taskCursor].ID)
+					}
+					return m, nil
+				case "d":
+					// Cancel running task
+					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+						t := m.tasks[m.taskCursor]
+						if t.Status == TaskRunning {
+							cancelTask(t)
+							cmds = append(cmds, m.setFlash("Task cancelled"))
+						}
+					}
+					return m, tea.Batch(cmds...)
+				case "x":
+					// Remove completed/failed/cancelled task
+					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+						t := m.tasks[m.taskCursor]
+						if t.Status != TaskRunning {
+							m.tasks = append(m.tasks[:m.taskCursor], m.tasks[m.taskCursor+1:]...)
+							if m.taskCursor >= len(m.tasks) && m.taskCursor > 0 {
+								m.taskCursor--
+							}
+							// If we were viewing this task, go back to overview
+							if m.viewMode == viewModeTaskOutput && m.viewingTaskID == t.ID {
+								m.viewMode = viewModeOverview
+							}
+						}
+					}
+					return m, nil
 				}
 			}
 
@@ -1855,14 +1976,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+k":
 				m.clearChat()
 			case "ctrl+tab":
-				// Toggle between Review and Chat sub-tabs (only if review exists)
-				if m.hasReview() {
-					m.aiPanelTab = 1 - m.aiPanelTab
+				// Cycle between Review, Tasks, and Chat sub-tabs
+				if m.hasReview() || len(m.tasks) > 0 {
+					maxTab := 2 // Review(0), Tasks(1), Chat(2)
+					m.aiPanelTab = (m.aiPanelTab + 1) % (maxTab + 1)
 					cmds = append(cmds, m.renderActiveAIView())
 				}
 			default:
 				// Only allow text input on the Chat tab, and not while AI is streaming
-				if m.aiPanelTab == 1 && !m.aiStreaming {
+				if m.aiPanelTab == 2 && !m.aiStreaming {
 					m.chatInput, cmd = m.chatInput.Update(msg)
 					cmds = append(cmds, cmd)
 				}
@@ -1888,7 +2010,7 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	}
 
 	// Auto-switch to Chat tab when sending a message
-	m.aiPanelTab = 1
+	m.aiPanelTab = 2
 
 	// Clear input
 	m.chatInput.Reset()
@@ -2204,22 +2326,47 @@ func (m Model) renderAIPanelTitle(maxWidth int) string {
 		return "CHAT " + m.spinner.View()
 	}
 
-	// If no review exists, just show "Chat" — no tabs needed
-	if !m.hasReview() {
+	// If no review exists and no tasks, just show "Chat" — no tabs needed
+	if !m.hasReview() && len(m.tasks) == 0 {
 		return styleAccentBlueBold.Render("Chat")
 	}
 
-	// Tab indicators: [Review] [Chat] — active tab is highlighted
-	reviewTab := "Review"
-	chatTab := "Chat"
-	if m.aiPanelTab == 0 {
-		reviewTab = styleAccentBlueBold.Render("Review")
-		chatTab = styleTextMuted.Render("Chat")
-	} else {
-		reviewTab = styleTextMuted.Render("Review")
-		chatTab = styleAccentBlueBold.Render("Chat")
+	// Tab indicators: [Review] [Tasks] [Chat] — active tab is highlighted
+	tabs := []struct {
+		label string
+		idx   int
+	}{
+		{"Review", 0},
+		{"Tasks", 1},
+		{"Chat", 2},
 	}
-	return reviewTab + styleTextSubtle.Render(" │ ") + chatTab
+
+	var parts []string
+	for _, t := range tabs {
+		// Skip Tasks tab if no tasks and no review (unlikely but safe)
+		if t.idx == 1 && len(m.tasks) == 0 && !m.hasReview() {
+			continue
+		}
+		label := t.label
+		// Add running task count indicator
+		if t.idx == 1 {
+			running := 0
+			for _, task := range m.tasks {
+				if task.Status == TaskRunning {
+					running++
+				}
+			}
+			if running > 0 {
+				label = fmt.Sprintf("Tasks(%d)", running)
+			}
+		}
+		if t.idx == m.aiPanelTab {
+			parts = append(parts, styleAccentBlueBold.Render(label))
+		} else {
+			parts = append(parts, styleTextMuted.Render(label))
+		}
+	}
+	return strings.Join(parts, styleTextSubtle.Render(" │ "))
 }
 
 // renderReviewProgress renders the AI panel title with a progress bar
@@ -2617,6 +2764,10 @@ func (m *Model) executeConfirmAction() tea.Cmd {
 		if modal.finding != nil && modal.target != nil {
 			return executePipe(*modal.target, *modal.finding, m.repoRoot)
 		}
+	case confirmFixWithOpenCode:
+		if modal.finding != nil {
+			return m.spawnFixTask(*modal.finding)
+		}
 	}
 	return nil
 }
@@ -2630,15 +2781,17 @@ func (m *Model) executeActionMenuItem(idx int) {
 	f := menu.finding
 
 	switch {
-	case idx == 0: // Post as line comment
+	case idx == 0: // Fix with OpenCode
+		m.confirmOverlay = &confirmModal{action: confirmFixWithOpenCode, finding: &f}
+	case idx == 1: // Post as line comment
 		m.confirmOverlay = &confirmModal{action: confirmPublishComment, finding: &f}
-	case idx == 1: // Post ALL as review
-		m.confirmOverlay = &confirmModal{action: confirmBatchReview, findings: m.reviewFindings}
-	case idx == 2: // Post as PR comment
+	case idx == 2: // Post ALL as review
+		m.confirmOverlay = &confirmModal{action: confirmBatchReview, findings: append([]state.ReviewFinding{}, m.reviewFindings...)}
+	case idx == 3: // Post as PR comment
 		m.confirmOverlay = &confirmModal{action: confirmPRComment, finding: &f}
 	default:
-		// Pipe targets (idx-3 maps to pipeTargets index)
-		pipeIdx := idx - 3
+		// Pipe targets (idx-4 maps to pipeTargets index)
+		pipeIdx := idx - 4
 		if pipeIdx >= 0 && pipeIdx < len(m.pipeTargets) {
 			m.confirmOverlay = &confirmModal{
 				action:  confirmPipe,
@@ -2659,10 +2812,12 @@ func (m *Model) executeActionMenuByKey(key string) bool {
 	f := menu.finding
 
 	switch key {
+	case "f":
+		m.confirmOverlay = &confirmModal{action: confirmFixWithOpenCode, finding: &f}
 	case "c":
 		m.confirmOverlay = &confirmModal{action: confirmPublishComment, finding: &f}
 	case "C":
-		m.confirmOverlay = &confirmModal{action: confirmBatchReview, findings: m.reviewFindings}
+		m.confirmOverlay = &confirmModal{action: confirmBatchReview, findings: append([]state.ReviewFinding{}, m.reviewFindings...)}
 	case "g":
 		m.confirmOverlay = &confirmModal{action: confirmPRComment, finding: &f}
 	default:
@@ -2681,6 +2836,40 @@ func (m *Model) executeActionMenuByKey(key string) bool {
 		return false
 	}
 	return true
+}
+
+// ── Task management ─────────────────────────────────────────────────────
+
+// spawnFixTask creates a new task for the given finding and launches it.
+// Returns a tea.Cmd that sets the flash message (actual spawning is async via program.Send).
+func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
+	task := &Task{
+		ID:         m.taskNextID,
+		Title:      taskTitle(f),
+		FindingIdx: m.reviewCursor,
+		Finding:    f,
+		Status:     TaskRunning,
+		StartedAt:  time.Now(),
+	}
+	m.taskNextID++
+	m.tasks = append(m.tasks, task)
+
+	// Auto-switch to Tasks tab
+	m.aiPanelTab = 1
+	m.taskCursor = len(m.tasks) - 1
+
+	// Launch the background process
+	go spawnOpenCodeTask(task, m.repoRoot, program)
+
+	return m.setFlash("Task started: " + task.Title)
+}
+
+// viewTaskOutput switches the diff pane to show a task's output.
+func (m *Model) viewTaskOutput(taskID int) {
+	m.viewingTaskID = taskID
+	m.viewMode = viewModeTaskOutput
+	content := m.renderTaskOutput(taskID)
+	m.setDiffContent(content)
 }
 
 // actionsResetPolling clears all GitHub Actions state. Call this at every
@@ -2766,7 +2955,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 		// Start streaming
 		m.aiStreaming = true
-		m.aiPanelTab = 1 // show Chat tab (batch list + synthesis stream)
+		m.aiPanelTab = 2 // show Chat tab (batch list + synthesis stream)
 		m.aiStreamBuffer = ""
 		m.aiChatHistoryCache = ""
 		m.updateChatViewWithStream()
@@ -2785,7 +2974,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Skip files excluded by content filter (binary, generated, large)
 	if reason, ok := m.skippedFiles[path]; ok {
-		m.aiPanelTab = 1
+		m.aiPanelTab = 2
 		m.chatViewport.SetContent(
 			styleTextMuted.Render(fmt.Sprintf("This file is excluded from AI review (%s).", reason)))
 		return nil
@@ -2798,7 +2987,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Skip files that are excluded from review (lock files, generated code, etc.)
 	if config.ShouldExcludeFromReview(path) {
-		m.aiPanelTab = 1 // show message in Chat tab
+		m.aiPanelTab = 2 // show message in Chat tab
 		m.chatViewport.SetContent(
 			styleTextMuted.Render("This file is excluded from AI review (lock file, generated code, or vendored dependency)."))
 		return nil
@@ -2832,7 +3021,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Start streaming on the Chat tab
 	m.aiStreaming = true
-	m.aiPanelTab = 1
+	m.aiPanelTab = 2
 	m.aiStreamBuffer = ""
 	m.aiChatHistoryCache = "" // invalidate so it's rebuilt on first tick
 	m.updateChatViewWithStream()
@@ -3222,8 +3411,12 @@ func (m *Model) renderActiveAIView() tea.Cmd {
 	if m.aiPanelTab == 0 && m.hasReview() {
 		return m.renderReviewForFile(m.selectedFile)
 	}
-	// No review or Chat tab selected — show chat
-	m.aiPanelTab = 1
+	if m.aiPanelTab == 1 {
+		// Tasks tab — rendered directly in View(), nothing to prepare
+		return nil
+	}
+	// Chat tab — show chat
+	m.aiPanelTab = 2
 	return m.renderChatForFile(m.selectedFile)
 }
 
@@ -3383,7 +3576,7 @@ func (m *Model) renderChatForFile(filePath string) tea.Cmd {
 				b.WriteString(renderMarkdown(msg.Content, width) + "\n\n")
 			}
 		}
-		return ChatRenderedMsg{FilePath: fp, Content: b.String(), Tab: 1}
+		return ChatRenderedMsg{FilePath: fp, Content: b.String(), Tab: 2}
 	}
 }
 
@@ -3840,6 +4033,8 @@ func (m Model) View() string {
 	diffBody, cursorLineNum := m.renderDiffWithCursor()
 	if m.viewMode == viewModeActions {
 		diffTitle = "ACTIONS"
+	} else if m.viewMode == viewModeTaskOutput {
+		diffTitle = "TASK OUTPUT"
 	} else if m.hasFileSelected() {
 		findingsCount := m.fileFindingsCount(m.selectedFile)
 		findingsSuffix := ""
@@ -3876,13 +4071,16 @@ func (m Model) View() string {
 	if m.showAIPanel {
 		cw := cols[2] - 2 // content width inside borders
 
-		// Build chat body — show input only on Chat tab
+		// Build chat body — depends on active tab
 		var chatBody string
-		if m.aiPanelTab == 1 {
+		switch m.aiPanelTab {
+		case 0: // Review tab
+			chatBody = m.chatViewport.View()
+		case 1: // Tasks tab
+			chatBody = m.renderTasksTab(cw)
+		case 2: // Chat tab
 			inputLabel := m.renderChatInputLabel(cw)
 			chatBody = m.chatViewport.View() + "\n" + inputLabel + "\n" + m.chatInput.View()
-		} else {
-			chatBody = m.chatViewport.View()
 		}
 
 		// Build title with tab indicators
@@ -4203,7 +4401,7 @@ func (m Model) viewFooter() string {
 				struct{ key, desc string }{"j/k", "findings"},
 				struct{ key, desc string }{"Enter", "jump"},
 			)
-		} else {
+		} else if m.aiPanelTab == 2 {
 			bindings = append(bindings,
 				struct{ key, desc string }{"Enter", "send"},
 			)

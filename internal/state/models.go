@@ -40,6 +40,7 @@ type ReviewFinding struct {
 	Title      string `json:"title"`
 	Detail     string `json:"detail"`
 	Suggestion string `json:"suggestion,omitempty"`
+	Resolved   bool   `json:"resolved,omitempty"` // user-toggled or auto-resolved by task completion
 }
 
 // SeverityRank returns a numeric rank for sorting findings by severity

@@ -40,11 +40,12 @@ On first run, prr creates `~/.config/prr/config.json`:
   "provider": "gemini",
   "api_key": "YOUR_API_KEY",
   "model": "gemini-2.5-pro",
-  "parallel_reviews": 3
+  "parallel_reviews": 3,
+  "pipes": []
 }
 ```
 
-Set your API key and you're ready to go.
+Set your API key and you're ready to go. The `pipes` array is optional — see [Pipe Targets](#pipe-targets) for configuration.
 
 ## Usage
 
@@ -59,6 +60,14 @@ prr --debug   # Enable debug logging
 **Three-pane layout** — file tree, diff viewer, and AI panel side by side.
 
 **AI-powered review** — Multi-pass batch review with structured findings. The AI reads diffs, uses tools (grep, git blame, read file), and produces a prioritized list of issues with severity ratings and a recommended verdict.
+
+**Inline findings** — AI review findings render as severity-colored boxes directly in the diff view, positioned below their target lines. Toggle with `F`. Findings are sorted by severity (critical first) and support file-level, right-side, and left-side placement.
+
+**GitHub Actions status** — The file tree shows an "Actions" entry with a live status dot (green/red/yellow). Select it to see workflow runs, jobs, and steps in the diff pane. Active runs poll every 15 seconds automatically.
+
+**Publish findings** — Post individual findings as GitHub line comments (`c`), submit all findings as a batch GitHub Review (`C`), or post as a general PR comment (`g`). Confirmation modals prevent accidental submissions.
+
+**Pipe to external tools** — Send findings to external processes (linters, ticket systems, Slack bots) configured in your config file. Pipe targets receive structured JSON, markdown, or plain text via stdin.
 
 **Review workflow** — Track file review status, navigate between unreviewed files, submit your review to GitHub with approve/comment/request-changes verdicts.
 
@@ -110,6 +119,7 @@ prr --debug   # Enable debug logging
 | `Space` | Toggle reviewed status |
 | `n` / `p` | Next / previous unreviewed |
 | `c` | Comment on line |
+| `F` | Toggle inline findings |
 
 ### Review Panel
 
@@ -117,6 +127,11 @@ prr --debug   # Enable debug logging
 |-----|--------|
 | `j` / `k` | Navigate findings |
 | `Enter` | Jump to finding in diff |
+| `c` | Post finding as line comment |
+| `C` | Submit all findings as GitHub Review |
+| `g` | Post finding as PR comment |
+| `\|` | Pipe finding to first configured target |
+| `x` | Open action menu (all publish/pipe options) |
 | `Tab` | Switch to Chat tab |
 | `Ctrl+S` | Submit review to GitHub |
 
@@ -166,6 +181,39 @@ Available models (switchable with `m`):
 | `gemini-3.1-pro-preview` | Yes (16K budget) |
 | `gemini-3.1-flash-lite-preview` | Yes (8K budget) |
 | `gemini-2.5-flash` | Yes (8K budget) |
+
+## Pipe Targets
+
+Configure external processes to receive findings via stdin. Add a `pipes` array to `~/.config/prr/config.json`:
+
+```json
+{
+  "provider": "gemini",
+  "api_key": "...",
+  "model": "gemini-2.5-pro",
+  "pipes": [
+    {
+      "name": "Create JIRA ticket",
+      "command": "jira-create",
+      "args": ["--project", "BACKEND"],
+      "format": "json"
+    },
+    {
+      "name": "Notify Slack",
+      "command": "slack-notify",
+      "args": ["--channel", "#code-review"],
+      "format": "markdown"
+    }
+  ]
+}
+```
+
+Supported formats:
+- `json` — structured payload with file, line, severity, category, title, detail, suggestion, repo_root
+- `markdown` — formatted heading, metadata, and detail sections
+- `text` — compact plain text summary
+
+Pipe targets appear in the action menu (`x`) and can be triggered directly with number keys (`1`, `2`, ...) when the menu is open.
 
 ## Files Excluded from AI Review
 

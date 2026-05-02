@@ -20,6 +20,7 @@ const (
 	confirmBatchReview                         // all findings → GitHub review
 	confirmPRComment                           // single finding → general PR comment
 	confirmPipe                                // pipe finding to external process
+	confirmFixWithOpenCode                     // fix finding with OpenCode agent
 )
 
 // confirmModal holds the state of a confirmation overlay.
@@ -48,6 +49,7 @@ type actionMenuItem struct {
 // Includes built-in actions + configured pipe targets.
 func (m *Model) buildActionMenuItems() []actionMenuItem {
 	items := []actionMenuItem{
+		{key: "f", label: "Fix with OpenCode"},
 		{key: "c", label: "Post as line comment on GitHub"},
 		{key: "C", label: "Post ALL findings as GitHub Review"},
 		{key: "g", label: "Post as PR comment"},
@@ -105,6 +107,14 @@ func (m *Model) renderConfirmModal() string {
 		b.WriteString(styleTextMuted.Render(fmt.Sprintf("  Command: %s %s", t.Command, strings.Join(t.Args, " "))) + "\n")
 		b.WriteString(findingSummaryLine(f) + "\n\n")
 		b.WriteString(styleTextMuted.Render("[Enter] Run   [Esc] Cancel"))
+
+	case confirmFixWithOpenCode:
+		f := modal.finding
+		b.WriteString(styleAccentBlueBold.Render("Fix with OpenCode?") + "\n\n")
+		b.WriteString(findingSummaryLine(f) + "\n")
+		b.WriteString(styleTextMuted.Render(fmt.Sprintf("  %s:%d", f.File, f.Line)) + "\n\n")
+		b.WriteString(styleTextMuted.Render("  Command: opencode run") + "\n\n")
+		b.WriteString(styleTextMuted.Render("[Enter] Run   [Esc] Cancel"))
 	}
 
 	return b.String()
@@ -130,7 +140,7 @@ func (m *Model) renderActionMenu() string {
 			labelStyle = styleTextPrimary
 		}
 		// Separator before pipe targets
-		if i == 3 && len(menu.items) > 3 {
+		if i == 4 && len(menu.items) > 4 {
 			b.WriteString(styleTextSubtle.Render("  ─────────────────────────────────") + "\n")
 		}
 		b.WriteString(fmt.Sprintf("%s%s  %s\n",

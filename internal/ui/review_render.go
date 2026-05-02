@@ -119,6 +119,7 @@ func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, s
 
 // renderFinding renders a single ReviewFinding as styled text.
 // When isSelected is true, the finding is highlighted with a cursor indicator.
+// Resolved findings are dimmed.
 func renderFinding(b *strings.Builder, f state.ReviewFinding, width int, isSelected bool) {
 	sevStyle := severityStyle(f.Severity)
 	catStyle := categoryStyle(f.Category)
@@ -129,12 +130,25 @@ func renderFinding(b *strings.Builder, f state.ReviewFinding, width int, isSelec
 		marker = styleAccentBlueBold.Render("▸ ")
 	}
 
+	// Resolved prefix
+	resolvedPrefix := ""
+	if f.Resolved {
+		resolvedPrefix = styleAccentGreen.Render("✓ ")
+	}
+
 	// Severity badge + category tag + title
 	badge := sevStyle.Render(fmt.Sprintf("[%s]", f.Severity))
 	cat := catStyle.Render(fmt.Sprintf("[%s]", f.Category))
-	title := styleTextPrimary.Bold(true).Render(f.Title)
+	titleStyle := styleTextPrimary.Bold(true)
+	if f.Resolved {
+		// Dim everything for resolved findings
+		badge = styleTextMuted.Render(fmt.Sprintf("[%s]", f.Severity))
+		cat = styleTextMuted.Render(fmt.Sprintf("[%s]", f.Category))
+		titleStyle = styleTextMuted
+	}
+	title := titleStyle.Render(f.Title)
 
-	line := fmt.Sprintf("%s%s %s %s", marker, badge, cat, title)
+	line := fmt.Sprintf("%s%s%s %s %s", marker, resolvedPrefix, badge, cat, title)
 	// Truncate to prevent wrapping inside bordered panel (Golden Rule 2)
 	if width > 0 {
 		line = truncateToWidth(line, width)
@@ -148,20 +162,23 @@ func renderFinding(b *strings.Builder, f state.ReviewFinding, width int, isSelec
 			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
 		}
 		fileLine := "  " + styleFileLine.Render(loc)
+		if f.Resolved {
+			fileLine = "  " + styleTextMuted.Render(loc)
+		}
 		if width > 0 {
 			fileLine = truncateToWidth(fileLine, width)
 		}
 		b.WriteString(fileLine + "\n")
 	}
 
-	// Detail — wrapped
-	if f.Detail != "" {
+	// Detail — wrapped (skip for resolved to save space)
+	if f.Detail != "" && !f.Resolved {
 		b.WriteString(wrapStyled(styleTextSecondary, "  "+f.Detail, width-2))
 		b.WriteString("\n")
 	}
 
-	// Suggestion — visually distinct
-	if f.Suggestion != "" {
+	// Suggestion — visually distinct (skip for resolved)
+	if f.Suggestion != "" && !f.Resolved {
 		b.WriteString(styleAccentGreen.Render("  > "))
 		b.WriteString(wrapStyled(styleTextSecondary, f.Suggestion, width-4))
 		b.WriteString("\n")
