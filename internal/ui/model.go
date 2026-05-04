@@ -3104,7 +3104,9 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 		// Clear the previous review so the streaming view takes precedence
 		if m.reviewState != nil {
-			m.reviewState.Review = nil
+			// Do NOT clear the review, otherwise subsequent reviews will fail to show
+			// the cached review data because the review is immediately set to nil
+			// m.reviewState.Review = nil
 		}
 
 		// Start streaming
