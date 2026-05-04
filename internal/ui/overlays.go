@@ -226,6 +226,7 @@ func (m Model) helpSections() []helpSection {
 				{"Ctrl+B", "Toggle file panel"},
 				{"a", "AI review (file or PR)"},
 				{"A", "Force re-review (no cache)"},
+				{"Ctrl+S", "Submit PR review to GitHub"},
 				{"m", "Switch model"},
 				{"T", "Switch theme"},
 				{"?", "Toggle this help"},
