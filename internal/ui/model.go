@@ -4577,7 +4577,7 @@ func (m Model) viewFooter() string {
 		)
 	} else {
 		bindings = append(bindings,
-			struct{ key, desc string }{"a", "review"},
+			struct{ key, desc string }{"a", "ai review"},
 		)
 	}
 
