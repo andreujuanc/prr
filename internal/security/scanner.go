@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
@@ -30,9 +31,13 @@ func RevalidatePrompt() string { return revalidatePrompt }
 // Kept generous since the cheap model handles large contexts fast.
 const aoiBatchMaxChars = 30000
 
+// aoiMaxConcurrency is the max number of AOI batches that run in parallel.
+// Capped to avoid hitting API rate limits on the provider.
+const aoiMaxConcurrency = 5
+
 // ScanAreasOfInterest runs the AOI pre-scan on all changed files using
 // a lightweight LLM. It batches files by directory (like the main review)
-// and returns a consolidated AOIReport.
+// and runs up to aoiMaxConcurrency batches in parallel.
 //
 // The onProgress callback is called with status updates for the UI.
 // The client should be configured with a cheap/fast model.
@@ -51,27 +56,63 @@ func ScanAreasOfInterest(
 		onProgress(fmt.Sprintf("scanning %d file(s) for security areas of interest...", countFiles(batches)))
 	}
 
-	var allResults []AOIScanResult
-
-	for i, batch := range batches {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		if onProgress != nil {
-			onProgress(fmt.Sprintf("AOI scan batch %d/%d (%s)...", i+1, len(batches), batch.label))
-		}
-
-		results, err := scanBatch(ctx, client, batch)
-		if err != nil {
-			log.Printf("AOI scan batch %d failed: %v", i+1, err)
-			continue // non-fatal: we still get results from other batches
-		}
-
-		allResults = append(allResults, results...)
+	// Run batches in parallel with bounded concurrency.
+	type batchResult struct {
+		index   int
+		results []AOIScanResult
+		err     error
 	}
 
-	report := buildReport(allResults)
+	resultsCh := make(chan batchResult, len(batches))
+	sem := make(chan struct{}, aoiMaxConcurrency)
+	var wg sync.WaitGroup
+
+	for i, batch := range batches {
+		wg.Add(1)
+		go func(i int, batch aoiBatch) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				resultsCh <- batchResult{index: i, err: ctx.Err()}
+				return
+			}
+
+			if onProgress != nil {
+				onProgress(fmt.Sprintf("AOI scan batch %d/%d (%s)...", i+1, len(batches), batch.label))
+			}
+
+			results, err := scanBatch(ctx, client, batch)
+			resultsCh <- batchResult{index: i, results: results, err: err}
+		}(i, batch)
+	}
+
+	// Close channel when all goroutines finish
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
+	// Collect results in order
+	allResults := make([][]AOIScanResult, len(batches))
+	for br := range resultsCh {
+		if br.err != nil {
+			log.Printf("AOI scan batch %d failed: %v", br.index+1, br.err)
+			continue // non-fatal: we still get results from other batches
+		}
+		allResults[br.index] = br.results
+	}
+
+	// Flatten in batch order
+	var flat []AOIScanResult
+	for _, r := range allResults {
+		flat = append(flat, r...)
+	}
+
+	report := buildReport(flat)
 	return report, nil
 }
 
