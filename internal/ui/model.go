@@ -733,8 +733,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
-		m.syncLayout()
-		return m, nil
+		cmds = append(cmds, m.syncLayoutWithRerender())
+		return m, tea.Batch(cmds...)
 
 	case PRFetchedMsg:
 		if msg.Err != nil {
@@ -1294,6 +1294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.aiStreamBuffer = ""
 				m.aiChatHistoryCache = ""
 				m.aiPanelTab = 0
+				m.syncLayout() // recalculate viewport height (no chat input on review tab)
 				cmd = m.renderActiveAIView()
 			} else {
 				// Regular chat — save response to chat history
@@ -1712,7 +1713,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd = m.syncFocus()
 				cmds = append(cmds, cmd)
 			}
-			m.syncLayout()
+			cmds = append(cmds, m.syncLayoutWithRerender())
 		case "ctrl+b":
 			m.showFilePanel = !m.showFilePanel
 			if !m.showFilePanel && m.focusedPane == PaneFileList {
@@ -1720,7 +1721,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd = m.syncFocus()
 				cmds = append(cmds, cmd)
 			}
-			m.syncLayout()
+			cmds = append(cmds, m.syncLayoutWithRerender())
 		case "?":
 			if m.focusedPane != PaneChat || m.aiPanelTab != 2 {
 				m.showHelp = !m.showHelp
@@ -1860,10 +1861,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				// If we came from a finding jump, return to the review panel
 				if m.cameFromFinding && m.showAIPanel {
-					m.cameFromFinding = false
-					m.focusedPane = PaneChat
-					m.aiPanelTab = 0
-					cmds = append(cmds, m.syncFocus())
+				m.cameFromFinding = false
+				m.focusedPane = PaneChat
+				m.aiPanelTab = 0
+				m.syncLayout()
+				cmds = append(cmds, m.syncFocus())
 					cmds = append(cmds, m.renderActiveAIView())
 					return m, tea.Batch(cmds...)
 				}
@@ -2122,11 +2124,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			case "ctrl+k":
 				m.clearChat()
-			case "ctrl+tab":
-				// Cycle between Review, Tasks, and Chat sub-tabs
-				if m.hasReview() || len(m.tasks) > 0 {
+			case "]":
+				// Cycle forward between Review, Tasks, and Chat sub-tabs
+				// (only when not typing in the chat input)
+				if m.aiPanelTab == 2 && !m.aiStreaming {
+					m.chatInput, cmd = m.chatInput.Update(msg)
+					cmds = append(cmds, cmd)
+				} else if m.hasReview() || len(m.tasks) > 0 {
 					maxTab := 2 // Review(0), Tasks(1), Chat(2)
 					m.aiPanelTab = (m.aiPanelTab + 1) % (maxTab + 1)
+					m.syncLayout()
+					cmds = append(cmds, m.renderActiveAIView())
+				}
+			case "[":
+				// Cycle backward between Review, Tasks, and Chat sub-tabs
+				if m.aiPanelTab == 2 && !m.aiStreaming {
+					m.chatInput, cmd = m.chatInput.Update(msg)
+					cmds = append(cmds, cmd)
+				} else if m.hasReview() || len(m.tasks) > 0 {
+					maxTab := 2 // Review(0), Tasks(1), Chat(2)
+					m.aiPanelTab = (m.aiPanelTab - 1 + maxTab + 1) % (maxTab + 1)
+					m.syncLayout()
 					cmds = append(cmds, m.renderActiveAIView())
 				}
 			default:
@@ -2158,6 +2176,7 @@ func (m *Model) sendChatMessage() tea.Cmd {
 
 	// Auto-switch to Chat tab when sending a message
 	m.aiPanelTab = 2
+	m.syncLayout()
 
 	// Clear input
 	m.chatInput.Reset()
@@ -2680,19 +2699,23 @@ func parseDiffLine(rendered string) diffLineInfo {
 }
 
 // injectComments inserts styled comment blocks after their target lines in the diff.
+// Comments at the same position are rendered as a single threaded block.
 func (m *Model) injectComments(styledDiff, filePath string) string {
 	fileComments, ok := m.comments[filePath]
 	if !ok || len(fileComments) == 0 {
 		return styledDiff
 	}
 
-	// Build map of "side:line" -> comments
+	// Build map of "side:line" -> comments (ordered by creation time)
 	type commentKey struct {
 		side string
 		line int
 	}
 	commentsByKey := make(map[commentKey][]git.ReviewComment)
 	for _, c := range fileComments {
+		if c.Line == 0 {
+			continue // skip comments without a resolved position
+		}
 		key := commentKey{side: c.Side, line: c.Line}
 		commentsByKey[key] = append(commentsByKey[key], c)
 	}
@@ -2700,10 +2723,19 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 	commentStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#F9E2AF")).
 		Bold(true)
+	replyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#A6ADC8")).
+		Bold(true)
 	bodyStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#CDD6F4"))
 	borderStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#585B70"))
+
+	// Cap comment body lines to viewport width
+	maxBodyWidth := m.diffViewport.Width - 6 // account for "  │ " prefix
+	if maxBodyWidth < 20 {
+		maxBodyWidth = 20
+	}
 
 	lines := strings.Split(styledDiff, "\n")
 	var result []string
@@ -2718,16 +2750,31 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 
 		key := commentKey{side: info.side, line: info.line}
 		if comments, ok := commentsByKey[key]; ok {
-			for _, c := range comments {
-				border := borderStyle.Render("  ┌─ ")
-				author := commentStyle.Render(c.Author)
-				result = append(result, border+author)
+			// Render all comments at this position as a single threaded block
+			border := borderStyle.Render("  ┌─ ")
+			author := commentStyle.Render(comments[0].Author)
+			result = append(result, border+author)
+			for _, bodyLine := range strings.Split(comments[0].Body, "\n") {
+				prefix := borderStyle.Render("  │ ")
+				if len(bodyLine) > maxBodyWidth {
+					bodyLine = bodyLine[:maxBodyWidth]
+				}
+				result = append(result, prefix+bodyStyle.Render(bodyLine))
+			}
+			// Render replies within the same block
+			for _, c := range comments[1:] {
+				separator := borderStyle.Render("  ├─ ")
+				rAuthor := replyStyle.Render(c.Author)
+				result = append(result, separator+rAuthor)
 				for _, bodyLine := range strings.Split(c.Body, "\n") {
 					prefix := borderStyle.Render("  │ ")
+					if len(bodyLine) > maxBodyWidth {
+						bodyLine = bodyLine[:maxBodyWidth]
+					}
 					result = append(result, prefix+bodyStyle.Render(bodyLine))
 				}
-				result = append(result, borderStyle.Render("  └───"))
 			}
+			result = append(result, borderStyle.Render("  └───"))
 		}
 	}
 
@@ -3037,6 +3084,7 @@ func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
 
 	// Auto-switch to Tasks tab
 	m.aiPanelTab = 1
+	m.syncLayout()
 	m.taskCursor = len(m.tasks) - 1
 
 	// Launch the background task via HTTP API
@@ -3139,6 +3187,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		// Start streaming
 		m.aiStreaming = true
 		m.aiPanelTab = 2 // show Chat tab (batch list + synthesis stream)
+		m.syncLayout()
 		m.aiStreamBuffer = ""
 		m.aiChatHistoryCache = ""
 		m.updateChatViewWithStream()
@@ -3158,6 +3207,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	// Skip files excluded by content filter (binary, generated, large)
 	if reason, ok := m.skippedFiles[path]; ok {
 		m.aiPanelTab = 2
+		m.syncLayout()
 		m.chatViewport.SetContent(
 			styleTextMuted.Render(fmt.Sprintf("This file is excluded from AI review (%s).", reason)))
 		return nil
@@ -3171,6 +3221,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	// Skip files that are excluded from review (lock files, generated code, etc.)
 	if config.ShouldExcludeFromReview(path) {
 		m.aiPanelTab = 2 // show message in Chat tab
+		m.syncLayout()
 		m.chatViewport.SetContent(
 			styleTextMuted.Render("This file is excluded from AI review (lock file, generated code, or vendored dependency)."))
 		return nil
@@ -3205,6 +3256,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	// Start streaming on the Chat tab
 	m.aiStreaming = true
 	m.aiPanelTab = 2
+	m.syncLayout()
 	m.aiStreamBuffer = ""
 	m.aiChatHistoryCache = "" // invalidate so it's rebuilt on first tick
 	m.updateChatViewWithStream()
@@ -3221,10 +3273,11 @@ func (m *Model) forceReReview() tea.Cmd {
 		return m.triggerAIReview()
 	}
 
-	// Clear per-file batch findings so nothing is cached
+	// Clear per-file batch findings and AOI results so nothing is cached
 	for _, fs := range m.reviewState.Files {
 		fs.BatchFindings = ""
 		fs.Purpose = ""
+		fs.AOIResults = nil
 	}
 	// Clear the PR-level review
 	m.reviewState.Review = nil
@@ -3591,16 +3644,21 @@ func (m *Model) renderActiveAIView() tea.Cmd {
 		m.updateChatViewWithStream()
 		return nil
 	}
-	if m.aiPanelTab == 0 && m.hasReview() {
-		return m.renderReviewForFile(m.selectedFile)
-	}
-	if m.aiPanelTab == 1 {
-		// Tasks tab — rendered directly in View(), nothing to prepare
+	switch m.aiPanelTab {
+	case 0: // Review tab
+		if m.hasReview() {
+			return m.renderReviewForFile(m.selectedFile)
+		}
+		// No review yet — show placeholder
+		placeholder := styleTextMuted.Render("  No review yet — press R to start a review")
+		m.chatViewport.SetContent(placeholder)
+		m.chatViewport.GotoTop()
 		return nil
+	case 1: // Tasks tab — rendered directly in View(), nothing to prepare
+		return nil
+	default: // Chat tab (2)
+		return m.renderChatForFile(m.selectedFile)
 	}
-	// Chat tab — show chat
-	m.aiPanelTab = 2
-	return m.renderChatForFile(m.selectedFile)
 }
 
 // renderReviewForFile renders the PR-level AI review in the Review tab.
@@ -3923,10 +3981,16 @@ func (m *Model) syncLayout() {
 	if cols[2] > 2 {
 		cw := cols[2] - 2
 		chatInputH := 3
-		// Chat body = viewport(chatVpH) + "\n" + separator(1) + "\n" + input(chatInputH)
-		// renderPane clips to contentH = ih - 2 (borders)
-		// So chatVpH + 1 + chatInputH = ih - 2 => chatVpH = ih - chatInputH - 3
-		chatVpH := ih - chatInputH - 3
+		var chatVpH int
+		if m.aiPanelTab == 2 {
+			// Chat tab: reserve space for separator(1) + "\n" + input(chatInputH) + "\n"
+			// renderPane clips to contentH = ih - 2 (borders)
+			// So chatVpH + 1 + 1 + chatInputH = ih - 2 => chatVpH = ih - chatInputH - 3
+			chatVpH = ih - chatInputH - 3
+		} else {
+			// Review/Tasks tabs: no chat input, viewport gets full height
+			chatVpH = ih - 2
+		}
 		if chatVpH < 1 {
 			chatVpH = 1
 		}
@@ -3938,6 +4002,41 @@ func (m *Model) syncLayout() {
 
 	// Comment input width matches diff pane
 	m.commentInput.SetWidth(cols[1] - 4)
+}
+
+// syncLayoutWithRerender calls syncLayout and returns commands to re-render
+// content if viewport widths changed (e.g. after toggling side panels).
+func (m *Model) syncLayoutWithRerender() tea.Cmd {
+	prevDiffW := m.diffViewport.Width
+	prevChatW := m.chatViewport.Width
+	m.syncLayout()
+
+	var cmds []tea.Cmd
+
+	// Re-render diff/overview content if diff viewport width changed
+	if m.diffViewport.Width != prevDiffW {
+		if m.viewMode == viewModeOverview {
+			m.setDiffContent(m.renderOverview())
+		} else if m.selectedFile != "" && m.pr != nil {
+			cmds = append(cmds, fetchStyledDiff(
+				m.pr.BaseRefName, m.pr.HeadRefName,
+				m.selectedFile, m.contextLines, true,
+				m.useChroma, m.diffViewport.Width))
+		}
+	}
+
+	// Re-render AI panel content if chat viewport width changed
+	if m.chatViewport.Width != prevChatW {
+		// Invalidate cached review render so it re-wraps at new width
+		m.aiReviewRendered = ""
+		m.aiReviewRenderWidth = 0
+		cmds = append(cmds, m.renderActiveAIView())
+	}
+
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) syncFocus() tea.Cmd {
