@@ -4015,13 +4015,27 @@ func (m *Model) syncLayoutWithRerender() tea.Cmd {
 
 	// Re-render diff/overview content if diff viewport width changed
 	if m.diffViewport.Width != prevDiffW {
-		if m.viewMode == viewModeOverview {
+		switch m.viewMode {
+		case viewModeOverview:
 			m.setDiffContent(m.renderOverview())
-		} else if m.selectedFile != "" && m.pr != nil {
-			cmds = append(cmds, fetchStyledDiff(
-				m.pr.BaseRefName, m.pr.HeadRefName,
-				m.selectedFile, m.contextLines, true,
-				m.useChroma, m.diffViewport.Width))
+		case viewModeActions:
+			m.setDiffContent(m.renderActionsView())
+		case viewModeTaskOutput:
+			content := m.renderTaskOutput(m.viewingTaskID)
+			m.setDiffContent(content)
+		case viewModeFile:
+			if m.selectedFile != "" && m.pr != nil {
+				// Immediately re-truncate existing content to the new width
+				// so the current frame looks correct while the async
+				// re-fetch is in flight.
+				if m.diffContent != "" {
+					m.setDiffContent(m.diffContent)
+				}
+				cmds = append(cmds, fetchStyledDiff(
+					m.pr.BaseRefName, m.pr.HeadRefName,
+					m.selectedFile, m.contextLines, true,
+					m.useChroma, m.diffViewport.Width))
+			}
 		}
 	}
 
@@ -4120,6 +4134,15 @@ func (m Model) columns() [3]int {
 		total = l + mid + r
 		if total > avail && l > 0 {
 			l = max(12, avail-mid-r)
+		}
+	}
+
+	// Final enforcement: ensure total never exceeds available width.
+	// Shrink mid (the diff pane) as a last resort.
+	if total := l + mid + r; total > avail {
+		mid = avail - l - r
+		if mid < 1 {
+			mid = 1
 		}
 	}
 	return [3]int{l, mid, r}
@@ -4521,8 +4544,8 @@ func (m Model) renderPane(title, content string, width, height int, focused bool
 		}
 		vis := ansi.StringWidth(line)
 		if vis > contentW {
-			// Truncate wide lines to fit
-			line = truncateToWidth(line, contentW)
+			// Truncate wide lines to fit using the ansi-aware truncator
+			line = ansi.Truncate(line, contentW, "")
 			vis = ansi.StringWidth(line)
 		}
 		if vis < contentW {

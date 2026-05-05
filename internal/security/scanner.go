@@ -111,11 +111,7 @@ func ScanAreasOfInterest(
 				return
 			}
 
-			if onProgress != nil {
-				onProgress(fmt.Sprintf("AOI scan batch %d/%d (%s)...", i+1, len(batches), batch.label))
-			}
-
-			results, err := scanBatch(ctx, client, batch)
+				results, err := scanBatch(ctx, client, batch)
 			resultsCh <- batchResult{index: i, results: results, err: err}
 		}(i, batch)
 	}
@@ -126,14 +122,19 @@ func ScanAreasOfInterest(
 		close(resultsCh)
 	}()
 
-	// Collect results in order
+	// Collect results in order of completion, report sequential progress
 	allResults := make([][]AOIScanResult, len(batches))
+	completed := 0
 	for br := range resultsCh {
+		completed++
 		if br.err != nil {
 			log.Printf("AOI scan batch %d failed: %v", br.index+1, br.err)
-			continue // non-fatal: we still get results from other batches
+		} else {
+			allResults[br.index] = br.results
 		}
-		allResults[br.index] = br.results
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("AOI scan %d/%d complete", completed, len(batches)))
+		}
 	}
 
 	// Flatten in batch order, then append cached results
