@@ -39,21 +39,51 @@ const aoiMaxConcurrency = 5
 // a lightweight LLM. It batches files by directory (like the main review)
 // and runs up to aoiMaxConcurrency batches in parallel.
 //
+// cachedResults maps file paths to previously cached AOIScanResult entries.
+// Files with cached results are skipped — only uncached files are sent to
+// the LLM. Pass nil to scan everything.
+//
 // The onProgress callback is called with status updates for the UI.
 // The client should be configured with a cheap/fast model.
 func ScanAreasOfInterest(
 	ctx context.Context,
 	client ai.Client,
 	rawDiffs map[string]string,
+	cachedResults map[string]*AOIScanResult,
 	onProgress func(status string),
 ) (*AOIReport, error) {
-	batches := buildAOIBatches(rawDiffs)
-	if len(batches) == 0 {
+	// Separate cached vs uncached files
+	uncachedDiffs := make(map[string]string)
+	var cachedAOIs []AOIScanResult
+
+	for filePath, diff := range rawDiffs {
+		if cached, ok := cachedResults[filePath]; ok && cached != nil {
+			cachedAOIs = append(cachedAOIs, *cached)
+		} else {
+			uncachedDiffs[filePath] = diff
+		}
+	}
+
+	if len(cachedAOIs) > 0 && onProgress != nil {
+		onProgress(fmt.Sprintf("using cached AOI results for %d file(s)", len(cachedAOIs)))
+	}
+
+	batches := buildAOIBatches(uncachedDiffs)
+	if len(batches) == 0 && len(cachedAOIs) == 0 {
 		return &AOIReport{OverallRisk: "none"}, nil
 	}
 
+	if len(batches) == 0 {
+		// All files were cached
+		if onProgress != nil {
+			onProgress("all AOI results from cache")
+		}
+		report := buildReport(cachedAOIs)
+		return report, nil
+	}
+
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("scanning %d file(s) for security areas of interest...", countFiles(batches)))
+		onProgress(fmt.Sprintf("scanning %d file(s) for security areas of interest (%d cached)...", countFiles(batches), len(cachedAOIs)))
 	}
 
 	// Run batches in parallel with bounded concurrency.
@@ -106,11 +136,12 @@ func ScanAreasOfInterest(
 		allResults[br.index] = br.results
 	}
 
-	// Flatten in batch order
+	// Flatten in batch order, then append cached results
 	var flat []AOIScanResult
 	for _, r := range allResults {
 		flat = append(flat, r...)
 	}
+	flat = append(flat, cachedAOIs...)
 
 	report := buildReport(flat)
 	return report, nil

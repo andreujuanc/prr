@@ -193,18 +193,47 @@ func streamMultiPassReview(
 				}
 			}
 
-			aoiReport, err := security.ScanAreasOfInterest(ctx, aoiClient, aoiDiffs, func(status string) {
+			// Build AOI cache from state — skip files whose diff hasn't changed
+			var aoiCache map[string]*security.AOIScanResult
+			if reviewState != nil {
+				aoiCache = make(map[string]*security.AOIScanResult)
+				for filePath := range aoiDiffs {
+					if fs, ok := reviewState.Files[filePath]; ok && fs.AOIResults != nil {
+						var cached security.AOIScanResult
+						if err := json.Unmarshal(fs.AOIResults, &cached); err == nil {
+							aoiCache[filePath] = &cached
+						}
+					}
+				}
+			}
+
+			aoiReport, err := security.ScanAreasOfInterest(ctx, aoiClient, aoiDiffs, aoiCache, func(status string) {
 				rr.AOIProgress(status, false, 0)
 			})
 			if err != nil {
 				log.Printf("AOI scan failed (non-fatal): %v", err)
 				rr.AOIProgress("security pre-scan failed (continuing without)", true, 0)
-			} else if aoiReport != nil && aoiReport.TotalAOIs > 0 {
-				securityDigest = aoiReport.SecurityDigest
-				rr.AOIProgress(
-					fmt.Sprintf("found %d areas of interest (risk: %s)", aoiReport.TotalAOIs, aoiReport.OverallRisk),
-					true, aoiReport.TotalAOIs,
-				)
+			} else if aoiReport != nil {
+				// Save new AOI results back to state for caching
+				if reviewState != nil {
+					for _, fileResult := range aoiReport.Files {
+						if fs, ok := reviewState.Files[fileResult.File]; ok {
+							if data, err := json.Marshal(fileResult); err == nil {
+								fs.AOIResults = data
+							}
+						}
+					}
+				}
+
+				if aoiReport.TotalAOIs > 0 {
+					securityDigest = aoiReport.SecurityDigest
+					rr.AOIProgress(
+						fmt.Sprintf("found %d areas of interest (risk: %s)", aoiReport.TotalAOIs, aoiReport.OverallRisk),
+						true, aoiReport.TotalAOIs,
+					)
+				} else {
+					rr.AOIProgress("no security areas of interest found", true, 0)
+				}
 			} else {
 				rr.AOIProgress("no security areas of interest found", true, 0)
 			}

@@ -469,7 +469,7 @@ func TestAOIModelComparison(t *testing.T) {
 			defer cancel()
 
 			start := time.Now()
-			report, err := security.ScanAreasOfInterest(ctx, client, diffs, func(status string) {
+			report, err := security.ScanAreasOfInterest(ctx, client, diffs, nil, func(status string) {
 				t.Logf("  [%s] %s", spec.name, status)
 			})
 			elapsed := time.Since(start)
@@ -654,7 +654,7 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	report, err := security.ScanAreasOfInterest(ctx, client, diffs, func(status string) {
+	report, err := security.ScanAreasOfInterest(ctx, client, diffs, nil, func(status string) {
 		t.Logf("[progress] %s", status)
 	})
 	elapsed := time.Since(start)
@@ -963,7 +963,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 				defer cancel()
 
 				start := time.Now()
-				report, err := security.ScanAreasOfInterest(ctx, client, tc.diffs, func(status string) {
+				report, err := security.ScanAreasOfInterest(ctx, client, tc.diffs, nil, func(status string) {
 					t.Logf("  [%s/%s] %s", spec.name, tc.label, status)
 				})
 				elapsed := time.Since(start)

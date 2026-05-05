@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"sync"
 )
 
@@ -95,11 +96,12 @@ type AIReview struct {
 
 // FileState holds the review status and chat history for a specific file
 type FileState struct {
-	Status        ReviewStatus `json:"status"`
-	DiffHash      string       `json:"diff_hash"`
-	Chat          []Message    `json:"chat,omitempty"`
-	Purpose       string       `json:"purpose,omitempty"`        // AI-generated description of what the file does
-	BatchFindings string       `json:"batch_findings,omitempty"` // cached findings from PR-level batch review
+	Status        ReviewStatus    `json:"status"`
+	DiffHash      string          `json:"diff_hash"`
+	Chat          []Message       `json:"chat,omitempty"`
+	Purpose       string          `json:"purpose,omitempty"`        // AI-generated description of what the file does
+	BatchFindings string          `json:"batch_findings,omitempty"` // cached findings from PR-level batch review
+	AOIResults    json.RawMessage `json:"aoi_results,omitempty"`    // cached AOI scan result (AOIScanResult JSON)
 }
 
 // State represents the persisted review state for a single pull request
