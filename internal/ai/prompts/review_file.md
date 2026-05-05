@@ -23,9 +23,36 @@ Before writing your review:
 
 Evaluate the changes against ALL of these dimensions. Only report findings where you see actual issues — skip dimensions that have nothing to say.
 
-1. **Design & Architecture** — Is this the right approach? Over-engineered or under-abstracted? Does it fit the codebase's patterns? Are responsibilities properly separated?
-2. **Correctness & Logic** — Bugs, edge cases, off-by-one errors, nil/null dereferences. Race conditions, deadlocks, unsafe concurrent access. Does it do what the PR description says?
-3. **Error Handling & Robustness** — Swallowed errors, missing error wrapping, unclear messages. Input validation at boundaries. Graceful degradation.
+1. **Design & Architecture** — Think like a maintainer who will own this code in 6 months.
+   - Abstraction level: over-engineered or under-abstracted?
+   - Responsibility separation: concerns mixed across layers?
+   - Codebase consistency: does it follow existing patterns? (use grep to check)
+   - Coupling: can this be tested in isolation?
+   Before flagging: verify the codebase doesn't already use the pattern you're criticizing.
+
+2. **Correctness & Logic** — Think like a user who will hit every edge case, AND like a product owner verifying business rules.
+   - Intent vs implementation: does the code do what its name/comments/PR description claims? Watch for **name-behavior mismatches** — a function called `sum` that subtracts, a variable called `maxRetries` used as a timeout. These actively mislead readers. Check all code paths including edge cases.
+   - Domain invariants: are business rules enforced? (e.g., "balance cannot go negative", "status transitions follow the state machine"). Look for operations that could violate domain constraints.
+   - Semantic correctness: code compiles and doesn't crash but produces WRONG results — inverted conditions, missing switch cases, wrong formula, integer division truncation, operator precedence.
+   - Implicit assumptions: assumes data is sorted, unique, non-empty, or within range without enforcement. Grep for where data originates and verify.
+   - Missing domain validations: operations allowed in wrong states, state transitions skipping required checks.
+   - Boundary conditions: empty, nil, zero, max, negative, Unicode
+   - Off-by-one: loop bounds, slice indices, pagination, ranges
+   - Nil/null safety: unchecked dereferences, map lookups without existence check
+   - Concurrency: races, deadlocks, goroutine leaks, unsafe map access
+   - State: inconsistent state after partial failure, stale caches
+   - Types: unchecked assertions, integer overflow, precision loss
+   For each bug: construct a concrete input that triggers it. If you can't, lower confidence.
+
+3. **Error Handling & Robustness** — Think like an operator debugging a production incident.
+   - Swallowed errors: `_` assignments, silent catch blocks
+   - Error wrapping: enough context to diagnose? Or bare `return err`?
+   - Error messages: would this help someone who hasn't read the code?
+   - Partial failure: is state consistent if step 3 of 5 fails? Resources cleaned up?
+   - Input validation: validated at the boundary before use?
+   - Panic safety: can this panic? Recovered in handlers/goroutines?
+   Before flagging: check if error is handled at a higher level (use grep).
+
 4. **Security (DEEP ANALYSIS REQUIRED)** — For ANY code that touches user input,
    databases, file system, network, auth, crypto, or exec:
    - Think like an attacker — can you construct a concrete exploit scenario?
@@ -40,22 +67,50 @@ Evaluate the changes against ALL of these dimensions. Only report findings where
    - Assess impact: critical (RCE, auth bypass), high (data access), medium (info disclosure), low (theoretical)
    
    **Before classifying as critical, check for mitigations:**
-   - Is the input sanitized/escaped before reaching the sink?
-   - Is there middleware, framework guard, or ORM parameterization?
-   - Is the vulnerable pattern only used with trusted/internal data?
+   sanitization, middleware, framework guards, ORM parameterization, trusted-only data.
    If mitigations exist, still report but note them and lower confidence.
 
-5. **Performance & Scalability** — Unnecessary allocations, O(n²) patterns, unbounded growth. Missing pagination, caching. Blocking operations on hot paths.
-6. **Testing** — Are tests added or updated for the changes? Do they cover edge cases and error paths? Are existing tests broken by the change?
-7. **Readability & Maintainability** — Naming, dead code, overly complex logic. Comments explain "why" not "what". Can a new team member understand this?
-8. **API & Contract Changes** — Breaking changes, backward compatibility. Missing validation, inconsistent naming. Documentation of public interfaces.
-9. **Cross-cutting Concerns** — Incomplete refactors (changed here, missed there). Inconsistent patterns across files. Missing updates to callers, configs, docs.
+5. **Performance & Scalability** — Think like a production system under 10x load.
+   - Algorithmic complexity: O(n²) in loops over growing collections, linear scans vs map lookups
+   - Memory: unbounded growth, missing pre-allocation, large allocs on hot paths
+   - I/O: sync I/O on hot paths, N+1 queries, missing connection pooling, missing timeouts
+   - Concurrency: goroutines per request without pooling, lock contention
+   Before flagging: verify it's a hot path, not one-time setup.
+   For each finding: describe the workload that triggers it.
+
+6. **Testing** — Think like QA trying to break this code.
+   - New behavior: are tests added? At least one happy-path + one error-path per new function
+   - Edge cases: boundaries tested? (empty, max, concurrent, timeout)
+   - Regression: if fixing a bug, is there a test that prevents recurrence?
+   - Quality: asserting the right thing? Not just "no error"? Not over-mocked?
+   - Breakage: did changes break existing tests? Were assertions weakened to pass?
+   For each gap: describe the specific test case that should exist.
+
+7. **Readability & Maintainability** — Think like a new team member reading this code.
+   - Naming: intent-conveying, consistent with codebase
+   - Complexity: understandable in one reading? >50 lines or >3 nesting levels = split
+   - Dead code: commented-out code, unused vars, unreachable branches
+   - Comments: explain WHY not WHAT, not stale/contradictory
+   - Magic values: should be named constants
+   Only flag issues that genuinely impede understanding. Skip style preferences.
+
+8. **API & Contract Changes** — Think like a consumer of this API.
+   - Breaking changes: renamed/removed public symbols, changed signatures
+   - Backward compatibility: do existing callers still work?
+   - Validation: new inputs validated? Error responses informative?
+   Use grep to find callers and verify compatibility.
+
+9. **Cross-cutting Concerns** — Think about consistency across the PR.
+   - Incomplete refactors: renamed here but not in callers?
+   - Inconsistent patterns: same problem solved differently in different files?
+   - Missing cascading updates: config/schema/API changed without corresponding updates?
+   Use git_diff to check other changed files.
 
 ## Severity Definitions
 
-- **critical**: Must fix before merge. RCE, auth bypass, SQL injection, data loss, SSRF to internal services.
-- **warning**: Should fix. XSS, privilege escalation, hardcoded secrets, design issues, error handling gaps, performance.
-- **info**: Consider. Open redirect, weak crypto, style, readability, minor improvements.
+- **critical**: Must fix. Data loss, crashes, security vulns, breaking API changes without migration.
+- **warning**: Should fix. Conditional bugs, design issues at scale, error handling gaps, perf on hot paths, missing critical tests.
+- **info**: Consider. Style, readability, cold-path perf, nice-to-have tests, docs.
 
 ## Output Format
 
