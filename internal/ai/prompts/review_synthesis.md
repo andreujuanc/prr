@@ -24,6 +24,11 @@ You have access to tools — use them to verify claims from Phase 1:
 2. **Deduplicate** — Group the same issue found in multiple files rather than repeating it.
 3. **Cross-file analysis** — Look for issues that only emerge when viewing multiple files together: incomplete refactors, inconsistent patterns, missing updates to callers.
 4. **Prioritize** — Lead with the most impactful findings. Don't bury critical issues under style nits.
+5. **Security deep-dive** — For any finding categorized as "security":
+   - Trace the data flow: is the input truly user-controlled?
+   - Check for existing mitigations (input validation, parameterized queries, framework protections)
+   - Assign a CWE ID if applicable
+   - Verify the vulnerability is in NEW code (changed in this PR), not pre-existing
 
 ## Quality Bar
 
@@ -47,7 +52,8 @@ You MUST return ONLY a JSON object matching this exact schema — no prose befor
       "line": 42,
       "title": "short title",
       "detail": "what's wrong and why it matters",
-      "suggestion": "concrete fix, code snippet preferred"
+      "suggestion": "concrete fix, code snippet preferred",
+      "cwe": "CWE-XXX (for security findings only, omit for non-security)"
     }
   ],
   "missing_tests": ["behaviors that should be tested but aren't"],

@@ -16,8 +16,8 @@ type Config struct {
 	Model           string        `json:"model"`
 	Theme           string        `json:"theme,omitempty"`            // UI theme ID (e.g. "catppuccin-mocha", "dracula")
 	ParallelReviews int           `json:"parallel_reviews,omitempty"` // number of concurrent batch reviews (default 3)
-	Pipes           []pipe.Target `json:"pipes,omitempty"`            // external process pipe targets
-	Debug           bool          `json:"-"`                          // set via --debug flag, not persisted
+	Pipes           []pipe.Target `json:"pipes,omitempty"`             // external process pipe targets
+	Debug           bool          `json:"-"`                           // set via --debug flag, not persisted
 }
 
 // DefaultConfigPath returns ~/.config/prr/config.json

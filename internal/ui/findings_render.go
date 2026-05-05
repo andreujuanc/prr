@@ -55,6 +55,21 @@ func renderInlineFinding(f state.ReviewFinding, width int, fs findingStyles) []s
 
 	// Top border with severity/category tag and title
 	header := fmt.Sprintf("[%s/%s] %s", f.Severity, f.Category, f.Title)
+	if f.CWE != "" {
+		header += fmt.Sprintf(" [%s]", f.CWE)
+	}
+	if f.Revalidation != nil {
+		switch f.Revalidation.Verdict {
+		case "true-positive":
+			header += " \u2718TP"
+		case "false-positive":
+			header += " ~FP"
+		case "fixed":
+			header += " \u2713Fixed"
+		case "uncertain":
+			header += " ??"
+		}
+	}
 	truncatedHeader := truncateToWidth(header, maxW-2)
 	headerRendered := titleStyle.Render(truncatedHeader)
 

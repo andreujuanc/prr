@@ -40,7 +40,18 @@ type ReviewFinding struct {
 	Title      string `json:"title"`
 	Detail     string `json:"detail"`
 	Suggestion string `json:"suggestion,omitempty"`
+	CWE        string `json:"cwe,omitempty"`      // e.g. "CWE-89" — populated for security findings
 	Resolved   bool   `json:"resolved,omitempty"` // user-toggled or auto-resolved by task completion
+
+	// Revalidation — populated by the security revalidation pass (Phase 4).
+	Revalidation *FindingRevalidation `json:"revalidation,omitempty"`
+}
+
+// FindingRevalidation holds the result of a security revalidation pass.
+type FindingRevalidation struct {
+	Verdict    string `json:"verdict"`    // "true-positive", "false-positive", "fixed", "uncertain"
+	Reasoning  string `json:"reasoning"`
+	Confidence string `json:"confidence"` // "high", "medium", "low"
 }
 
 // SeverityRank returns a numeric rank for sorting findings by severity
@@ -76,6 +87,10 @@ type AIReview struct {
 	// DiffSnapshot records the DiffHash of each file at the time the review
 	// was generated. Used to detect staleness when diffs change after a review.
 	DiffSnapshot map[string]string `json:"diff_snapshot,omitempty"`
+
+	// SecurityDigest is the AOI pre-scan summary injected into review prompts.
+	// Persisted so the TUI can display it even after the review is cached.
+	SecurityDigest string `json:"security_digest,omitempty"`
 }
 
 // FileState holds the review status and chat history for a specific file

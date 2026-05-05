@@ -24,7 +24,16 @@ Evaluate EVERY dimension. Report all findings, including ones you are uncertain 
 1. **Design & Architecture** — Is this the right approach? Over-engineered or under-abstracted? Does it fit the codebase's patterns? Are responsibilities properly separated?
 2. **Correctness & Logic** — Bugs, edge cases, off-by-one errors, nil/null dereferences. Race conditions, deadlocks, unsafe concurrent access.
 3. **Error Handling & Robustness** — Swallowed errors, missing error wrapping, unclear messages. Input validation at boundaries.
-4. **Security** — Injection, auth/authz gaps, secret exposure. Unsafe deserialization, path traversal.
+4. **Security (DEEP ANALYSIS REQUIRED)** — This dimension requires thorough analysis. Check ALL of the following:
+   - **Injection**: SQL injection (string concat in queries, raw SQL with interpolation), command injection (exec with user input), XSS (innerHTML, template rendering without escaping), LDAP injection, header injection
+   - **Authentication & Authorization**: Missing auth checks on endpoints, broken session management, JWT validation gaps, privilege escalation, IDOR (insecure direct object references), missing RBAC enforcement
+   - **Data Exposure**: Secrets in code (API keys, passwords, tokens), sensitive data in logs, verbose error messages leaking internals, PII exposure
+   - **Input Handling**: Missing validation at trust boundaries, type confusion, deserialization of untrusted data (YAML, pickle, JSON from external sources), ReDoS via user-controlled regex
+   - **Network Security**: SSRF (HTTP requests with user-controlled URLs), open redirects, DNS rebinding, missing TLS validation, CORS misconfiguration
+   - **File System**: Path traversal (../), symlink attacks, temp files with predictable names, unrestricted file upload
+   - **Cryptography**: Weak algorithms (MD5, SHA1 for security), hardcoded keys/IVs, non-constant-time comparison, insufficient randomness
+   - **Dependencies**: New dependencies with known vulnerabilities, security header changes (CSP, HSTS, CORS), rate limiting removal
+   For each security finding, include a CWE ID if applicable (e.g., CWE-89 for SQL injection).
 5. **Performance & Scalability** — Unnecessary allocations, O(n²) patterns, unbounded growth. Blocking operations on hot paths.
 6. **Testing** — Are tests added or updated? Do they cover edge cases? Are existing tests broken?
 7. **Readability & Maintainability** — Naming, dead code, overly complex logic. Comments explain "why" not "what".
@@ -54,6 +63,9 @@ severity levels:
 - critical: Must fix before merge (bugs, security, data loss)
 - warning: Should fix (design issues, error handling gaps, performance)
 - info: Consider (style, readability, minor improvements)
+
+For security findings, append the CWE ID when applicable, e.g.:
+- [severity: critical] [confidence: high] [Security] SQL injection via string concatenation in query builder (line 42) [CWE-89]
 
 Report EVERY potential issue — the synthesis pass will filter false positives.
 Return ONLY the JSON array — no other text before or after it.

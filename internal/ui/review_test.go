@@ -730,6 +730,10 @@ type testReporter struct {
 	tokens    []string
 }
 
+func (r *testReporter) AOIProgress(status string, done bool, aoiCount int) {
+	// test recorder — not checked in existing tests
+}
+
 func (r *testReporter) InitBatches(batches []AIReviewBatchInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1113,7 +1117,7 @@ func TestLive_StreamMultiPassReview(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := streamMultiPassReview(ctx, agent, samplePRMeta, rawDiffs, "", rs, 1, rr)
+	cmd := streamMultiPassReview(ctx, agent, nil, samplePRMeta, rawDiffs, "", rs, 1, rr, "", "", 3)
 	msg := cmd() // execute the tea.Cmd
 
 	done, ok := msg.(AIChatDoneMsg)

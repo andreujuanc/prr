@@ -12,8 +12,20 @@ Process:
 4. Check tests: are new behaviors covered? Are deleted/changed tests
    suspicious? Were tests weakened?
 5. Read existing review comments. Do not re-raise points already addressed.
-6. For security-sensitive changes (auth, input handling, crypto, file paths,
-   shell exec, deserialization), apply extra scrutiny.
+6. For security-sensitive changes, apply DEEP SCRUTINY. This means:
+   a. Trace data flow: where does user input enter? Where does it reach
+      a sensitive sink (SQL, exec, file path, HTTP redirect, HTML output)?
+   b. Check for mitigations at each hop (validation, sanitization,
+      parameterization, escaping).
+   c. Verify auth/authz: every new endpoint must have auth. Every data
+      access must verify the caller owns the resource (no IDOR).
+   d. Check secrets: no hardcoded keys, no tokens logged, no credentials
+      in error messages.
+   e. Check crypto: no weak algorithms (MD5/SHA1 for security), no
+      hardcoded IVs/keys, constant-time comparison for secrets.
+   f. Check dependencies: new imports of known-vulnerable packages,
+      changes to security headers (CSP, CORS, HSTS), rate limiting.
+   g. Assign a CWE ID to each security finding when applicable.
 7. Produce the structured JSON report. No prose outside the JSON.
 
 Quality bar:

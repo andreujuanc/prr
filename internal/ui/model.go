@@ -122,6 +122,13 @@ type AIReviewProgressMsg struct {
 // AIReviewSynthesisMsg signals the transition to synthesis phase.
 type AIReviewSynthesisMsg struct{}
 
+// AIReviewAOIMsg signals the AOI pre-scan phase with status updates.
+type AIReviewAOIMsg struct {
+	Status string // status text to display
+	Done   bool   // true when AOI scan is complete
+	AOIs   int    // number of AOIs found (set when Done=true)
+}
+
 // CommentsFetchedMsg is sent when PR review comments have been loaded.
 type CommentsFetchedMsg struct {
 	Comments []git.ReviewComment
@@ -260,13 +267,15 @@ type Model struct {
 	refreshOldOid string
 
 	// Diff context
-	contextLines int // number of context lines for git diff (-U<n>)
+	contextLines    int // number of context lines for git diff (-U<n>)
+	aoiContextLines int // context lines for AOI security pre-scan diffs (default 10)
 
 	// Files skipped from AI review (binary, generated, large)
 	skippedFiles map[string]git.SkipReason
 
 	// AI
 	aiClient            ai.Client
+	aoiClient           ai.Client // optional: lightweight model for AOI security pre-scan
 	aiModelName         string // model identifier for display (e.g. "gemini-2.5-pro")
 	aiStreaming         bool   // true while AI is generating
 	aiStreamBuffer      string // accumulated streamed response
@@ -366,7 +375,7 @@ type Model struct {
 
 // ── Constructor ─────────────────────────────────────────────────────────
 
-func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChroma bool) Model {
+func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallelReviews int, aoiContextLines int, useChroma bool) Model {
 	diffVp := viewport.New(0, 0)
 	diffVp.Style = lipgloss.NewStyle().Foreground(textPrimary)
 
@@ -429,8 +438,10 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		loading:            true,
 		loadingMsg:         "Fetching PR data...",
 		aiClient:           aiClient,
+		aoiClient:          aoiClient,
 		aiModelName:        modelName,
 		contextLines:       3,
+		aoiContextLines:    aoiContextLines,
 		comments:           make(map[string][]git.ReviewComment),
 		commentInput:       commentTa,
 		showFilePanel:      true,
@@ -1128,6 +1139,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiReviewBatches = msg.Batches
 		m.aiReviewStatuses = make([]AIReviewBatchStatus, len(msg.Batches))
 		m.aiReviewPhase = "batch"
+		m.updateChatViewWithStream()
+		return m, nil
+
+	case AIReviewAOIMsg:
+		m.aiReviewPhase = "aoi"
+		if msg.Done {
+			if msg.AOIs > 0 {
+				m.aiStreamBuffer += fmt.Sprintf("\n%s %s\n",
+					checkMark, msg.Status)
+			} else {
+				m.aiStreamBuffer += fmt.Sprintf("\n%s\n", msg.Status)
+			}
+		} else {
+			// Update in-progress status
+			m.aiStreamBuffer = msg.Status + "\n"
+		}
 		m.updateChatViewWithStream()
 		return m, nil
 
@@ -3120,7 +3147,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		m.aiCancelFn = cancel
 
-		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}))
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines))
 	}
 
 	// Single file mode
