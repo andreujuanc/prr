@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/state"
 
 	"github.com/charmbracelet/x/ansi"
@@ -18,6 +19,7 @@ type treeNode struct {
 	path       string // full path (e.g., "internal/ui/model.go"), empty for dirs
 	isDir      bool
 	isOverview bool // special PR overview item
+	isActions  bool // special GitHub Actions status item
 	children   []*treeNode
 	additions  int
 	deletions  int
@@ -33,8 +35,9 @@ type fileTree struct {
 	cursor       int
 	width        int
 	height       int
-	offset       int  // scroll offset
-	hideReviewed bool // when true, reviewed files are hidden
+	offset       int              // scroll offset
+	hideReviewed bool             // when true, reviewed files are hidden
+	actionStatus git.ActionStatus // aggregate actions status for sidebar icon
 }
 
 // flatEntry is a single visible row in the tree.
@@ -143,13 +146,18 @@ func (ft *fileTree) flatten() {
 		node:  &treeNode{name: "PR Overview", isOverview: true},
 		depth: 0,
 	})
+	// Insert Actions status as the second item
+	ft.flat = append(ft.flat, flatEntry{
+		node:  &treeNode{name: "Actions", isActions: true},
+		depth: 0,
+	})
 	ft.flattenNode(ft.root, -1) // root is invisible, children start at depth 0
 }
 
 func (ft *fileTree) flattenNode(node *treeNode, depth int) {
 	if depth >= 0 {
 		// Skip reviewed files when hideReviewed is on
-		if ft.hideReviewed && !node.isDir && !node.isOverview && node.status == state.StatusReviewed {
+		if ft.hideReviewed && !node.isDir && !node.isOverview && !node.isActions && node.status == state.StatusReviewed {
 			return
 		}
 		// Skip dirs that have no visible descendants
@@ -248,7 +256,8 @@ func (ft *fileTree) selectedPath() string {
 
 func (ft *fileTree) selectedIsDir() bool {
 	if ft.cursor >= 0 && ft.cursor < len(ft.flat) {
-		return ft.flat[ft.cursor].node.isDir && !ft.flat[ft.cursor].node.isOverview
+		n := ft.flat[ft.cursor].node
+		return n.isDir && !n.isOverview && !n.isActions
 	}
 	return false
 }
@@ -256,6 +265,13 @@ func (ft *fileTree) selectedIsDir() bool {
 func (ft *fileTree) selectedIsOverview() bool {
 	if ft.cursor >= 0 && ft.cursor < len(ft.flat) {
 		return ft.flat[ft.cursor].node.isOverview
+	}
+	return false
+}
+
+func (ft *fileTree) selectedIsActions() bool {
+	if ft.cursor >= 0 && ft.cursor < len(ft.flat) {
+		return ft.flat[ft.cursor].node.isActions
 	}
 	return false
 }
@@ -293,6 +309,25 @@ func (ft *fileTree) View() string {
 				line = icon + styleAccentBlueBold.Render(entry.node.name)
 			} else {
 				line = icon + styleAccentMauveBold.Render(entry.node.name)
+			}
+		} else if entry.node.isActions {
+			// Status dot colored by aggregate action status
+			var statusDot string
+			switch ft.actionStatus {
+			case git.ActionStatusPassed:
+				statusDot = ftIconReviewedSt.Render("●")
+			case git.ActionStatusFailed:
+				statusDot = ftIconModifiedSt.Render("●")
+			case git.ActionStatusInProgress:
+				statusDot = styleAccentYellow.Render("●")
+			default:
+				statusDot = styleTextMuted.Render("●")
+			}
+			icon := styleTextMuted.Render("⚙ ")
+			if isSelected {
+				line = icon + styleAccentBlueBold.Render(entry.node.name) + " " + statusDot
+			} else {
+				line = icon + styleTextSecondary.Render(entry.node.name) + " " + statusDot
 			}
 		} else if entry.node.isDir {
 			indent := strings.Repeat("  ", entry.depth)
@@ -348,8 +383,9 @@ func (ft *fileTree) View() string {
 		}
 
 		// Truncate to panel width to prevent wrapping (Golden Rule 2)
-		if ft.width > 0 && ansi.StringWidth(line) > ft.width {
-			line = truncateToWidth(line, ft.width)
+		maxW := ft.width - 1
+		if maxW > 0 && ansi.StringWidth(line) > maxW {
+			line = truncateToWidth(line, maxW)
 		}
 
 		lines = append(lines, line)
@@ -409,6 +445,8 @@ func (ft *fileTree) maxContentWidth() int {
 		w := 1 // left marker/space
 		if entry.node.isOverview {
 			w += 2 + len(entry.node.name) // "◆ " + name
+		} else if entry.node.isActions {
+			w += 2 + len(entry.node.name) + 2 // "⚙ " + name + " ●"
 		} else if entry.node.isDir {
 			w += entry.depth*2 + 2 + len(entry.node.name) + 1 // indent + icon + name + "/"
 		} else {

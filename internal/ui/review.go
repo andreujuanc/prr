@@ -12,6 +12,9 @@ import (
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
+	"github.com/andreujuanc/prr/internal/git"
+	"github.com/andreujuanc/prr/internal/project"
+	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/state"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,6 +24,8 @@ import (
 // loop. Production code uses teaReporter (wraps *tea.Program); tests can
 // supply a lightweight recording implementation.
 type ReviewReporter interface {
+	// AOIProgress reports status updates from the AOI pre-scan phase.
+	AOIProgress(status string, done bool, aoiCount int)
 	// InitBatches is called once at the start with the batch list.
 	InitBatches(batches []AIReviewBatchInfo)
 	// BatchProgress reports a status change for a single batch.
@@ -34,6 +39,9 @@ type ReviewReporter interface {
 // teaReporter adapts ReviewReporter to *tea.Program.
 type teaReporter struct{ p *tea.Program }
 
+func (r teaReporter) AOIProgress(status string, done bool, aoiCount int) {
+	r.p.Send(AIReviewAOIMsg{Status: status, Done: done, AOIs: aoiCount})
+}
 func (r teaReporter) InitBatches(batches []AIReviewBatchInfo) {
 	r.p.Send(AIReviewInitMsg{Batches: batches})
 }
@@ -134,6 +142,7 @@ type batchResult struct {
 }
 
 // streamMultiPassReview runs a multi-pass PR review:
+// Phase 0 (optional): AOI pre-scan — lightweight security triage with cheap model
 // Phase 1: Review each batch of files independently (skipping batches where all files have cached findings)
 //   - When parallelReviews > 1, batches are reviewed concurrently using a worker pool.
 //     In parallel mode, batch tokens are not streamed (would be garbled); instead,
@@ -144,17 +153,169 @@ type batchResult struct {
 //
 // Progress and tokens are sent to the UI via program.Send().
 // Returns an AIChatDoneMsg with Review data for persistence.
+//
+// If aoiClient is non-nil, the AOI pre-scan runs before Phase 1 and its
+// security digest is injected into both batch and synthesis prompts.
+// When aoiContextLines > 3, diffs are re-generated with more context for AOI.
 func streamMultiPassReview(
 	ctx context.Context,
 	client ai.Client,
+	aoiClient ai.Client,
 	prMeta string,
 	rawDiffs map[string]string,
 	customInstructions string,
 	reviewState *state.State,
 	parallelReviews int,
 	rr ReviewReporter,
+	base, head string, // git refs for re-diffing with more context
+	aoiContextLines int, // 0 or 3 = use rawDiffs as-is; >3 = re-diff for AOI
+	repoRoot string, // repository root for project context discovery
 ) tea.Cmd {
 	return func() tea.Msg {
+		// ── Phase 0: Project context + AOI pre-scan (parallel) ────
+		var securityDigest string
+
+		// Run project context discovery and AOI scan concurrently
+		type projectResult struct {
+			context string
+			err     error
+		}
+		projectCh := make(chan projectResult, 1)
+
+		// Start project context discovery in background
+		if repoRoot != "" {
+			go func() {
+				var cachedCtx, cachedHash string
+				if reviewState != nil {
+					cachedCtx, cachedHash = reviewState.GetProjectContext()
+				}
+
+				pctx, err := project.Discover(ctx, repoRoot, aoiClient, cachedHash, func(status string) {
+					log.Printf("Project context: %s", status)
+				})
+				if err != nil {
+					projectCh <- projectResult{err: err}
+					return
+				}
+				if pctx.FromCache {
+					projectCh <- projectResult{context: cachedCtx}
+					return
+				}
+				// Cache the new result
+				if reviewState != nil && pctx.Summary != "" {
+					reviewState.SetProjectContext(pctx.Summary, pctx.InputHash)
+				}
+				projectCh <- projectResult{context: pctx.Summary}
+			}()
+		} else {
+			projectCh <- projectResult{}
+		}
+
+		// AOI scan (runs concurrently with project context discovery)
+		if aoiClient != nil {
+			rr.AOIProgress("starting security pre-scan...", false, 0)
+
+			// Use diffs with more context for AOI if configured.
+			// More surrounding lines help the model understand data flow
+			// (e.g., where a variable is defined vs. where it's used).
+			aoiDiffs := rawDiffs
+			if aoiContextLines > 3 && base != "" && head != "" {
+				rr.AOIProgress(fmt.Sprintf("re-diffing with %d context lines...", aoiContextLines), false, 0)
+				aoiDiffs = make(map[string]string, len(rawDiffs))
+				for filePath := range rawDiffs {
+					d, err := git.GetRawDiffWithContext(base, head, filePath, aoiContextLines)
+					if err != nil {
+						log.Printf("AOI re-diff failed for %s (falling back to 3-line): %v", filePath, err)
+						aoiDiffs[filePath] = rawDiffs[filePath]
+					} else {
+						aoiDiffs[filePath] = d
+					}
+				}
+			}
+
+			// Build AOI cache from state — skip files whose diff hasn't changed
+			// and whose context lines match the current setting
+			var aoiCache map[string]*security.AOIScanResult
+			if reviewState != nil {
+				aoiCache = make(map[string]*security.AOIScanResult)
+				for filePath := range aoiDiffs {
+					raw, cachedCtxLines := reviewState.GetAOIResults(filePath)
+					if raw != nil && cachedCtxLines == aoiContextLines {
+						var cached security.AOIScanResult
+						if err := json.Unmarshal(raw, &cached); err == nil {
+							aoiCache[filePath] = &cached
+						}
+					} else if raw != nil && cachedCtxLines != aoiContextLines {
+						log.Printf("AOI cache miss for %s: context lines changed (%d -> %d)", filePath, cachedCtxLines, aoiContextLines)
+					}
+				}
+			}
+
+			aoiReport, err := security.ScanAreasOfInterest(ctx, aoiClient, aoiDiffs, aoiCache, func(status string) {
+				rr.AOIProgress(status, false, 0)
+			})
+			if err != nil {
+				log.Printf("AOI scan failed (non-fatal): %v", err)
+				rr.AOIProgress("security pre-scan failed (continuing without)", true, 0)
+			} else if aoiReport != nil {
+				// Save new AOI results back to state for caching
+				if reviewState != nil {
+					for _, fileResult := range aoiReport.Files {
+						filePath := fileResult.File
+						// Normalize: if exact path not in state, try path.Clean
+						if !reviewState.HasFile(filePath) {
+							cleaned := filepath.Clean(filePath)
+							if cleaned != filePath && reviewState.HasFile(cleaned) {
+								log.Printf("AOI path normalized: %q -> %q", filePath, cleaned)
+								filePath = cleaned
+							} else {
+								log.Printf("Warning: AOI returned file %q not found in state (skipping cache)", filePath)
+								continue
+							}
+						}
+						if data, err := json.Marshal(fileResult); err == nil {
+							reviewState.SetAOIResults(filePath, data, aoiContextLines)
+						} else {
+							log.Printf("Warning: failed to marshal AOI result for %s: %v", filePath, err)
+						}
+					}
+					if err := state.Save(reviewState); err != nil {
+						log.Printf("Warning: failed to persist AOI results: %v", err)
+					}
+				}
+
+				if aoiReport.TotalAOIs > 0 {
+					securityDigest = aoiReport.SecurityDigest
+					rr.AOIProgress(
+						fmt.Sprintf("found %d areas of interest (risk: %s)", aoiReport.TotalAOIs, aoiReport.OverallRisk),
+						true, aoiReport.TotalAOIs,
+					)
+				} else {
+					rr.AOIProgress("no security areas of interest found", true, 0)
+				}
+			} else {
+				rr.AOIProgress("no security areas of interest found", true, 0)
+			}
+		}
+
+		// Wait for project context discovery to complete
+		projResult := <-projectCh
+		if projResult.err != nil {
+			log.Printf("Project context discovery failed (non-fatal): %v", projResult.err)
+		}
+
+		// Build enhanced instructions: project context → security digest → user instructions
+		enhancedInstructions := ""
+		if projResult.context != "" {
+			enhancedInstructions = projResult.context + "\n\n"
+		}
+		enhancedInstructions += customInstructions
+		if securityDigest != "" {
+			enhancedInstructions += "\n\n" + securityDigest
+		}
+		enhancedInstructions = strings.TrimSpace(enhancedInstructions)
+
+		// ── Phase 1+2: Batch review + synthesis ───────────────────
 		batches := buildReviewBatches(rawDiffs)
 		if len(batches) == 0 {
 			return AIChatDoneMsg{Err: fmt.Errorf("no files to review")}
@@ -167,10 +328,20 @@ func streamMultiPassReview(
 		}
 		rr.InitBatches(batchInfos)
 
+		var result tea.Msg
 		if parallelReviews <= 1 {
-			return reviewBatchesSequential(ctx, client, prMeta, rawDiffs, customInstructions, reviewState, batches, rr)
+			result = reviewBatchesSequential(ctx, client, prMeta, rawDiffs, enhancedInstructions, reviewState, batches, rr)
+		} else {
+			result = reviewBatchesParallel(ctx, client, prMeta, rawDiffs, enhancedInstructions, reviewState, batches, parallelReviews, rr)
 		}
-		return reviewBatchesParallel(ctx, client, prMeta, rawDiffs, customInstructions, reviewState, batches, parallelReviews, rr)
+
+		// Attach security digest to the review for persistence
+		if doneMsg, ok := result.(AIChatDoneMsg); ok && doneMsg.Review != nil {
+			doneMsg.Review.SecurityDigest = securityDigest
+			return doneMsg
+		}
+
+		return result
 	}
 }
 
@@ -179,41 +350,23 @@ func isBatchCached(batch reviewBatch, reviewState *state.State) bool {
 	if reviewState == nil {
 		return false
 	}
-	for _, f := range batch.files {
-		fs, ok := reviewState.Files[f]
-		if !ok || fs.Purpose == "" {
-			log.Printf("Cache miss: file %q (exists=%v, purpose=%q)", f, ok, purposeSnippet(fs))
-			return false
+	if !reviewState.HasCachedBatch(batch.files) {
+		for _, f := range batch.files {
+			purpose, _ := reviewState.GetBatchFindings(f)
+			if purpose == "" {
+				log.Printf("Cache miss: file %q (purpose empty)", f)
+				break
+			}
 		}
+		return false
 	}
 	return true
-}
-
-// purposeSnippet returns a truncated purpose string for logging, or "" if fs is nil.
-func purposeSnippet(fs *state.FileState) string {
-	if fs == nil {
-		return ""
-	}
-	p := fs.Purpose
-	if len(p) > 40 {
-		p = p[:40] + "..."
-	}
-	return p
 }
 
 // collectCachedFindings reassembles per-file findings from cache for synthesis input.
 // Only includes files that have findings (skips clean files).
 func collectCachedFindings(batch reviewBatch, reviewState *state.State) (string, map[string]string) {
-	var sb strings.Builder
-	fileFindings := make(map[string]string)
-	for _, f := range batch.files {
-		fs := reviewState.Files[f]
-		if fs.BatchFindings != "" {
-			sb.WriteString(fmt.Sprintf("### %s\nPurpose: %s\n%s\n\n", f, fs.Purpose, fs.BatchFindings))
-			fileFindings[f] = fs.BatchFindings
-		}
-	}
-	return sb.String(), fileFindings
+	return reviewState.CollectCachedFindings(batch.files)
 }
 
 // buildBatchSystemPrompt constructs the system prompt for a batch review.
@@ -388,13 +541,7 @@ func persistBatchFindings(reviewState *state.State, batch reviewBatch, rawResult
 		log.Printf("Warning: batch %q returned unparseable result, using raw fallback", batch.label)
 		if reviewState != nil {
 			for _, f := range batch.files {
-				fs, ok := reviewState.Files[f]
-				if !ok {
-					fs = &state.FileState{Status: state.StatusUnreviewed}
-					reviewState.Files[f] = fs
-				}
-				fs.BatchFindings = rawResult
-				fs.Purpose = "unknown (parse failed)"
+				reviewState.SetBatchFindings(f, "unknown (parse failed)", rawResult)
 			}
 			// Only include in fileFindings once (keyed to first file)
 			if len(batch.files) > 0 {
@@ -416,17 +563,11 @@ func persistBatchFindings(reviewState *state.State, batch reviewBatch, rawResult
 			}
 			matchedFiles[entry.File] = true
 			if reviewState != nil {
-				fs, ok := reviewState.Files[entry.File]
-				if !ok {
-					fs = &state.FileState{Status: state.StatusUnreviewed}
-					reviewState.Files[entry.File] = fs
-				}
 				purpose := entry.Purpose
 				if purpose == "" {
 					purpose = "reviewed"
 				}
-				fs.Purpose = purpose
-				fs.BatchFindings = entry.Findings
+				reviewState.SetBatchFindings(entry.File, purpose, entry.Findings)
 			}
 			if entry.Findings != "" {
 				fileFindings[entry.File] = entry.Findings
@@ -441,13 +582,9 @@ func persistBatchFindings(reviewState *state.State, batch reviewBatch, rawResult
 		// Mark files that weren't in the parsed output (AI omitted them)
 		if reviewState != nil {
 			for _, f := range batch.files {
-				fs, ok := reviewState.Files[f]
-				if !ok {
-					fs = &state.FileState{Status: state.StatusUnreviewed}
-					reviewState.Files[f] = fs
-				}
-				if fs.Purpose == "" {
-					fs.Purpose = "reviewed (no details)"
+				purpose, _ := reviewState.GetBatchFindings(f)
+				if purpose == "" {
+					reviewState.SetBatchFindings(f, "reviewed (no details)", "")
 				}
 			}
 		}
@@ -476,6 +613,7 @@ func reviewBatchesSequential(
 ) tea.Msg {
 	var allFindings strings.Builder
 	allFileFindings := make(map[string]string)
+	allBatchesCached := true
 
 	for i, batch := range batches {
 		if ctx.Err() != nil {
@@ -496,6 +634,7 @@ func reviewBatchesSequential(
 			continue
 		}
 
+		allBatchesCached = false
 		rr.BatchProgress(i, BatchActive)
 
 		result, err := reviewBatchWithRetry(ctx, client, buildBatchSystemPrompt(prMeta, customInstructions), batch, nil)
@@ -524,6 +663,15 @@ func reviewBatchesSequential(
 			allFindings.WriteString(result)
 		}
 		allFindings.WriteString("\n\n---\n\n")
+	}
+
+	// If ALL batches used cached findings and we have a non-stale review, skip synthesis
+	if allBatchesCached && reviewState != nil && reviewState.Review != nil && !reviewState.IsReviewStale() {
+		log.Printf("All %d batches cached and review is current — skipping synthesis (sequential)", len(batches))
+		return AIChatDoneMsg{
+			Review:       reviewState.Review,
+			FileFindings: allFileFindings,
+		}
 	}
 
 	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, rr)
@@ -648,6 +796,15 @@ func reviewBatchesParallel(
 			allFindings.WriteString(res.result)
 		}
 		allFindings.WriteString("\n\n---\n\n")
+	}
+
+	// If ALL batches used cached findings and we have a non-stale review, skip synthesis
+	if len(uncachedIndices) == 0 && reviewState != nil && reviewState.Review != nil && !reviewState.IsReviewStale() {
+		log.Printf("All %d batches cached and review is current — skipping synthesis (parallel)", len(batches))
+		return AIChatDoneMsg{
+			Review:       reviewState.Review,
+			FileFindings: allFileFindings,
+		}
 	}
 
 	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, rr)

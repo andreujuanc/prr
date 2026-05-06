@@ -38,8 +38,15 @@ func (c *lruCache) get(key string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	if elem == nil {
+		return "", false
+	}
 	c.order.MoveToFront(elem)
-	return elem.Value.(*lruEntry).value, true
+	entry, ok := elem.Value.(*lruEntry)
+	if !ok || entry == nil {
+		return "", false
+	}
+	return entry.value, true
 }
 
 // set adds or updates a value in the cache. If the cache is at capacity,
@@ -49,9 +56,11 @@ func (c *lruCache) set(key, value string) {
 	defer c.mu.Unlock()
 
 	// Update existing entry
-	if elem, ok := c.items[key]; ok {
+	if elem, ok := c.items[key]; ok && elem != nil {
 		c.order.MoveToFront(elem)
-		elem.Value.(*lruEntry).value = value
+		if entry, ok := elem.Value.(*lruEntry); ok && entry != nil {
+			entry.value = value
+		}
 		return
 	}
 

@@ -226,6 +226,7 @@ func (m Model) helpSections() []helpSection {
 				{"Ctrl+B", "Toggle file panel"},
 				{"a", "AI review (file or PR)"},
 				{"A", "Force re-review (no cache)"},
+				{"Ctrl+S", "Submit PR review to GitHub"},
 				{"m", "Switch model"},
 				{"T", "Switch theme"},
 				{"?", "Toggle this help"},
@@ -264,7 +265,7 @@ func (m Model) helpSections() []helpSection {
 			title: "REVIEW",
 			bindings: []helpBinding{
 				{"Enter", "Jump to finding"},
-				{"Ctrl+Tab", "Switch sub-tab"},
+				{"[ / ]", "Switch sub-tab"},
 				{"Ctrl+S", "Submit review to GitHub"},
 			},
 		})
@@ -274,7 +275,7 @@ func (m Model) helpSections() []helpSection {
 			bindings: []helpBinding{
 				{"Enter", "Send message"},
 				{"Ctrl+K", "Clear chat"},
-				{"Ctrl+Tab", "Switch sub-tab"},
+				{"[ / ]", "Switch sub-tab"},
 			},
 		})
 	}

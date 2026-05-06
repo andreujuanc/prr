@@ -6,12 +6,15 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
+	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -74,6 +77,10 @@ func main() {
 	// Create AI client based on provider
 	aiClient := createAIClient(cfg)
 
+	// Create AOI client — uses the same provider but with a cheap/fast model
+	// for the security pre-scan. No tools needed (just diff analysis).
+	aoiClient := createAOIClient(cfg)
+
 	// Initialize hidden debug logger
 	if err := initLogger(); err != nil {
 		printError(fmt.Errorf("failed to initialize logger: %w", err))
@@ -83,15 +90,33 @@ func main() {
 	if prLabel == "" {
 		prLabel = "(picker)"
 	}
-	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s)", prLabel, cfg.Provider, cfg.Model)
+	aoiModelName := "disabled"
+	if aoiClient != nil {
+		aoiModelName = os.Getenv("PRR_AOI_MODEL")
+		if aoiModelName == "" {
+			aoiModelName = "gemini-2.5-flash-lite" // default
+		}
+	}
+	aoiProfile := security.GetAOIProfile(aoiModelName)
+	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s, aoi: %s, aoi_context: %d)", prLabel, cfg.Provider, cfg.Model, aoiModelName, aoiProfile.ContextLines)
 
-	model := ui.NewModel(prNumber, aiClient, cfg.ParallelReviews, useChroma)
+	model := ui.NewModel(prNumber, aiClient, aoiClient, cfg.ParallelReviews, aoiProfile.ContextLines, useChroma)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
+
+	// Ensure OpenCode server is killed on signals (SIGINT/SIGTERM).
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		ui.Shutdown()
+		os.Exit(1)
+	}()
 
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
 	}
+	ui.Shutdown()
 }
 
 // ── AI client factory ──────────────────────────────────────────────────
@@ -128,6 +153,52 @@ func createAIClient(cfg *config.Config) ai.Client {
 	}
 
 	return ai.NewAgent(provider, toolExec, opts...)
+}
+
+// createAOIClient creates a lightweight AI client for the security AOI pre-scan.
+// It uses the same provider credentials but with the cheapest available model
+// and no tools. The AOI scanner only needs to analyze diffs — no file reading or grep.
+// Override the model with PRR_AOI_MODEL env var (useful with the comparison test).
+func createAOIClient(cfg *config.Config) ai.Client {
+	// AOI model selection — use the cheapest available model for the provider.
+	// For Gemini, gemini-2.5-flash-lite is the cheapest option.
+	// Override with PRR_AOI_MODEL env var for testing different models.
+	var aoiModel string
+	if envModel := os.Getenv("PRR_AOI_MODEL"); envModel != "" {
+		aoiModel = envModel
+	} else {
+		switch cfg.Provider {
+		case "gemini":
+			aoiModel = "gemini-2.5-flash-lite"
+		case "anthropic":
+			aoiModel = "claude-haiku-3-5"
+		case "openai":
+			aoiModel = "gpt-4o-mini"
+		default:
+			return nil // unsupported provider, skip AOI
+		}
+	}
+
+	// Use benchmark-tuned settings from the model profile
+	aoiProfile := security.GetAOIProfile(aoiModel)
+
+	var provider ai.Provider
+	switch cfg.Provider {
+	case "gemini":
+		gp := &ai.GeminiProvider{
+			APIKey: cfg.APIKey,
+			Model:  aoiModel,
+		}
+		gp.ModelConfig.MaxOutputTokens = aoiProfile.MaxOutputTokens
+		gp.ModelConfig.Temperature = aoiProfile.Temperature
+		gp.ModelConfig.ThinkingBudget = aoiProfile.ThinkingBudget
+		provider = gp
+	default:
+		return nil
+	}
+
+	// AOI client has no tool executor — it only analyzes the diffs passed to it
+	return ai.NewAgent(provider, nil)
 }
 
 // ── Pre-flight checks ──────────────────────────────────────────────────

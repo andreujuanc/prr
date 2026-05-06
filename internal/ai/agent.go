@@ -39,6 +39,56 @@ func WithDebugLogger(w io.Writer) AgentOption {
 	}
 }
 
+// WithUsageTracker attaches a UsageTracker that accumulates token counts
+// across all ChatStream calls. Useful for cost estimation and benchmarking.
+func WithUsageTracker(tracker *UsageTracker) AgentOption {
+	return func(a *Agent) {
+		a.usageTracker = tracker
+	}
+}
+
+// UsageTracker accumulates token usage across multiple API calls.
+// It is safe for concurrent use.
+type UsageTracker struct {
+	mu           sync.Mutex
+	InputTokens  int
+	OutputTokens int
+	CacheHits    int
+	Calls        int // number of API calls
+}
+
+// Add records usage from a single API call.
+func (t *UsageTracker) Add(u TokenUsage) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.InputTokens += u.InputTokens
+	t.OutputTokens += u.OutputTokens
+	t.CacheHits += u.CacheHits
+	t.Calls++
+}
+
+// Snapshot returns a copy of the current accumulated usage.
+func (t *UsageTracker) Snapshot() UsageTracker {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return UsageTracker{
+		InputTokens:  t.InputTokens,
+		OutputTokens: t.OutputTokens,
+		CacheHits:    t.CacheHits,
+		Calls:        t.Calls,
+	}
+}
+
+// Reset zeroes all counters.
+func (t *UsageTracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.InputTokens = 0
+	t.OutputTokens = 0
+	t.CacheHits = 0
+	t.Calls = 0
+}
+
 // Agent wraps a Provider with a tool-calling loop.
 // It implements Client and ToolConfigurer for backward compatibility
 // with the existing UI and review code.
@@ -46,7 +96,8 @@ type Agent struct {
 	provider     Provider
 	toolExecutor *ToolExecutor
 	maxRounds    int
-	debugLog     *log.Logger // nil = no debug logging
+	debugLog     *log.Logger   // nil = no debug logging
+	usageTracker *UsageTracker // nil = don't track usage
 }
 
 // NewAgent creates an Agent that uses the given Provider for API calls
@@ -150,6 +201,9 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 					a.debugf("round %d: response done (blocks=%d, stop=%s, input_tokens=%d, output_tokens=%d)",
 						round+1, len(respContent), event.Response.StopReason,
 						event.Response.Usage.InputTokens, event.Response.Usage.OutputTokens)
+					if a.usageTracker != nil {
+						a.usageTracker.Add(event.Response.Usage)
+					}
 				}
 			case EventError:
 				a.debugf("round %d: stream error: %v", round+1, event.Err)

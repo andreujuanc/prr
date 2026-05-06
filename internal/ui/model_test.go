@@ -61,7 +61,7 @@ func testDiffs() map[string]string {
 // that would normally come from async messages (PRFetchedMsg, DiffHashedMsg).
 func newTestModel(t *testing.T) Model {
 	t.Helper()
-	m := NewModel("999", nil, 1, false)
+	m := NewModel("999", nil, nil, 1, 3, false)
 
 	// Simulate PRFetchedMsg
 	m.pr = testPR()
@@ -118,11 +118,11 @@ func assertPane(t *testing.T, m Model, expected Pane) {
 	}
 }
 
-// fileTreePaths returns all non-dir, non-overview paths in the visible flat list.
+// fileTreePaths returns all non-dir, non-overview, non-actions paths in the visible flat list.
 func fileTreePaths(m Model) []string {
 	var paths []string
 	for _, e := range m.fileTree.flat {
-		if !e.node.isDir && !e.node.isOverview {
+		if !e.node.isDir && !e.node.isOverview && !e.node.isActions {
 			paths = append(paths, e.node.path)
 		}
 	}
@@ -229,9 +229,9 @@ func TestFileNav_CursorBounds(t *testing.T) {
 func TestFileNav_SpaceToggleReviewed(t *testing.T) {
 	m := newTestModel(t)
 
-	// Move to a file (skip PR Overview and any dirs)
+	// Move to a file (skip PR Overview, Actions, and any dirs)
 	for i, e := range m.fileTree.flat {
-		if !e.node.isDir && !e.node.isOverview {
+		if !e.node.isDir && !e.node.isOverview && !e.node.isActions {
 			m.fileTree.cursor = i
 			break
 		}
@@ -266,13 +266,14 @@ func TestFileNav_SpaceToggleDiffPane(t *testing.T) {
 
 	// Select a file and switch to diff pane
 	for i, e := range m.fileTree.flat {
-		if !e.node.isDir && !e.node.isOverview {
+		if !e.node.isDir && !e.node.isOverview && !e.node.isActions {
 			m.fileTree.cursor = i
 			break
 		}
 	}
 	path := m.fileTree.selectedPath()
 	m.selectedFile = path
+	m.viewMode = viewModeFile
 	m.focusedPane = PaneDiff
 
 	fs := m.reviewState.Files[path]
@@ -329,7 +330,7 @@ func TestFileNav_NextUnreviewed_AllReviewed(t *testing.T) {
 		fs.Status = state.StatusReviewed
 	}
 	for _, e := range m.fileTree.flat {
-		if !e.node.isDir && !e.node.isOverview {
+		if !e.node.isDir && !e.node.isOverview && !e.node.isActions {
 			e.node.status = state.StatusReviewed
 		}
 	}
@@ -449,6 +450,7 @@ func TestScroll_DiffPane_GotoTopBottom(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneDiff
 	m.selectedFile = "cmd/main.go"
+	m.viewMode = viewModeFile
 
 	// Put some content in the viewport
 	longContent := ""
@@ -481,6 +483,7 @@ func TestScroll_DiffPane_HalfPage(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneDiff
 	m.selectedFile = "cmd/main.go"
+	m.viewMode = viewModeFile
 
 	longContent := ""
 	for i := 0; i < 200; i++ {
@@ -510,6 +513,7 @@ func TestScroll_DiffPane_JKMoveCursor(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneDiff
 	m.selectedFile = "cmd/main.go"
+	m.viewMode = viewModeFile
 	m.setDiffContent("+line1\n+line2\n+line3\n+line4\n+line5")
 	m.diffCursor = 0
 
@@ -694,6 +698,7 @@ func TestContextLines_Increase(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneDiff // must be in diff pane
 	m.selectedFile = "cmd/main.go"
+	m.viewMode = viewModeFile
 
 	initial := m.contextLines
 	m = key(m, '+')
@@ -706,6 +711,7 @@ func TestContextLines_Decrease(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneDiff
 	m.selectedFile = "cmd/main.go"
+	m.viewMode = viewModeFile
 	m.contextLines = 6
 
 	m = key(m, '-')
@@ -729,6 +735,7 @@ func TestContextLines_MaxCap(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneDiff
 	m.selectedFile = "cmd/main.go"
+	m.viewMode = viewModeFile
 	m.contextLines = 99
 
 	m = key(m, '+')
@@ -753,6 +760,7 @@ func TestContextLines_NoChangeFromFileList(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneFileList // wrong pane
 	m.selectedFile = "cmd/main.go"
+	m.viewMode = viewModeFile
 
 	initial := m.contextLines
 	m = key(m, '+')
@@ -811,7 +819,7 @@ func TestEnter_FileListSelectsFile(t *testing.T) {
 
 	// Move to a file node
 	for i, e := range m.fileTree.flat {
-		if !e.node.isDir && !e.node.isOverview {
+		if !e.node.isDir && !e.node.isOverview && !e.node.isActions {
 			m.fileTree.cursor = i
 			break
 		}
@@ -1201,9 +1209,12 @@ func TestFlow_NavigateToFileAndBack(t *testing.T) {
 	m := newTestModel(t)
 	assertPane(t, m, PaneFileList)
 
-	// Move down past PR Overview to a file
-	for i := 0; i < 5; i++ {
-		m = key(m, 'j')
+	// Move to a file node (skip PR Overview, Actions, and dirs)
+	for i, e := range m.fileTree.flat {
+		if !e.node.isDir && !e.node.isOverview && !e.node.isActions {
+			m.fileTree.cursor = i
+			break
+		}
 	}
 
 	// Enter to go to diff
@@ -1232,7 +1243,7 @@ func TestFlow_ToggleReviewedThenFilterThenJump(t *testing.T) {
 	// Find first file
 	var firstFileIdx int
 	for i, e := range m.fileTree.flat {
-		if !e.node.isDir && !e.node.isOverview {
+		if !e.node.isDir && !e.node.isOverview && !e.node.isActions {
 			firstFileIdx = i
 			break
 		}

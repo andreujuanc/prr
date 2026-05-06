@@ -35,6 +35,8 @@ func (s *State) SyncWithDiffs(currentDiffHashes map[string]string, prFiles map[s
 			fileState.Chat = nil
 			fileState.BatchFindings = ""
 			fileState.Purpose = ""
+			fileState.AOIResults = nil
+			fileState.AOIContextLines = 0
 			anyFileChanged = true
 		}
 	}

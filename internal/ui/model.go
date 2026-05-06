@@ -14,6 +14,8 @@ import (
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/git"
+	"github.com/andreujuanc/prr/internal/opencode"
+	"github.com/andreujuanc/prr/internal/pipe"
 	"github.com/andreujuanc/prr/internal/state"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -120,6 +122,13 @@ type AIReviewProgressMsg struct {
 // AIReviewSynthesisMsg signals the transition to synthesis phase.
 type AIReviewSynthesisMsg struct{}
 
+// AIReviewAOIMsg signals the AOI pre-scan phase with status updates.
+type AIReviewAOIMsg struct {
+	Status string // status text to display
+	Done   bool   // true when AOI scan is complete
+	AOIs   int    // number of AOIs found (set when Done=true)
+}
+
 // CommentsFetchedMsg is sent when PR review comments have been loaded.
 type CommentsFetchedMsg struct {
 	Comments []git.ReviewComment
@@ -159,6 +168,58 @@ type PRListFetchedMsg struct {
 	Err error
 }
 
+// ActionsFetchedMsg is sent when GitHub Actions workflow runs have been loaded.
+type ActionsFetchedMsg struct {
+	Runs []git.WorkflowRun
+	Err  error
+}
+
+// ActionsJobsFetchedMsg is sent when jobs for a workflow run have been loaded.
+type ActionsJobsFetchedMsg struct {
+	RunID int
+	Jobs  []git.WorkflowJob
+	Err   error
+}
+
+// actionsTickMsg triggers a re-fetch of workflow runs for polling.
+type actionsTickMsg struct{}
+
+// flashDismissMsg is sent after the flash message timeout expires.
+type flashDismissMsg struct{}
+
+// FindingPublishedMsg is sent after a single finding is posted as a GitHub line comment.
+type FindingPublishedMsg struct {
+	Finding state.ReviewFinding
+	Comment *git.ReviewComment
+	Err     error
+}
+
+// FindingsBatchPublishedMsg is sent after all findings are posted as a GitHub Review.
+type FindingsBatchPublishedMsg struct {
+	Count int
+	Err   error
+}
+
+// PRCommentPostedMsg is sent after a finding is posted as a general PR comment.
+type PRCommentPostedMsg struct {
+	Finding state.ReviewFinding
+	Err     error
+}
+
+// opencodeReadyMsg is sent after the OpenCode server has started,
+// so the task can be spawned.
+type opencodeReadyMsg struct {
+	finding state.ReviewFinding
+}
+
+// PipeResultMsg is sent when an external pipe process completes.
+type PipeResultMsg struct {
+	Finding state.ReviewFinding
+	Target  pipe.Target
+	Output  []byte
+	Err     error
+}
+
 // logoTickMsg drives the logo color animation during loading.
 type logoTickMsg struct{}
 
@@ -169,6 +230,16 @@ var logoLines = [2]string{
 }
 
 // ── Model ───────────────────────────────────────────────────────────────
+
+// viewMode tracks what the diff viewport is currently displaying.
+type viewMode int
+
+const (
+	viewModeOverview   viewMode = iota // PR overview (default)
+	viewModeFile                       // file diff
+	viewModeActions                    // GitHub Actions status
+	viewModeTaskOutput                 // background task output
+)
 
 type Model struct {
 	fileTree     fileTree
@@ -188,30 +259,33 @@ type Model struct {
 	reviewState  *state.State
 	loading      bool
 	loadingMsg   string
-	selectedFile string            // currently selected file path ("" = overview)
+	selectedFile string            // currently selected file path (meaningful only when viewMode == viewModeFile)
+	viewMode     viewMode          // what the diff pane is currently showing
 	rawDiffs     map[string]string // filePath -> raw diff (for AI context)
 
 	// Refresh tracking: when non-empty, PRFetchedMsg compares OIDs to skip no-op refreshes
 	refreshOldOid string
 
 	// Diff context
-	contextLines int // number of context lines for git diff (-U<n>)
+	contextLines    int // number of context lines for git diff (-U<n>)
+	aoiContextLines int // context lines for AOI security pre-scan diffs (default 10)
 
 	// Files skipped from AI review (binary, generated, large)
 	skippedFiles map[string]git.SkipReason
 
 	// AI
 	aiClient            ai.Client
-	aiModelName         string // model identifier for display (e.g. "gemini-2.5-pro")
-	aiStreaming         bool   // true while AI is generating
-	aiStreamBuffer      string // accumulated streamed response
-	aiStreamDirty       bool   // true when buffer has unflushed tokens
+	aoiClient           ai.Client // optional: lightweight model for AOI security pre-scan
+	aiModelName         string    // model identifier for display (e.g. "gemini-2.5-pro")
+	aiStreaming         bool      // true while AI is generating
+	aiStreamBuffer      string    // accumulated streamed response
+	aiStreamDirty       bool      // true when buffer has unflushed tokens
 	aiCancelFn          context.CancelFunc
 	aiChatHistoryCache  string                // pre-rendered markdown of completed messages (for streaming perf)
 	aiReviewBatches     []AIReviewBatchInfo   // batch list for in-place rendering
 	aiReviewStatuses    []AIReviewBatchStatus // per-batch status
 	aiReviewPhase       string                // "batch" or "synthesis"
-	aiPanelTab          int                   // 0 = Review, 1 = Chat
+	aiPanelTab          int                   // 0 = Review, 1 = Tasks, 2 = Chat
 	aiReviewRendered    string                // cached rendered review markdown
 	aiReviewRenderWidth int                   // width used for cached render
 
@@ -233,11 +307,13 @@ type Model struct {
 	diffCursor   int                            // cursor position within visible diff lines (for line selection)
 
 	// Navigable review findings
-	reviewFindings    []state.ReviewFinding // flat ordered list of findings (severity-sorted, matching render order)
-	reviewCursor      int                   // currently highlighted finding index (-1 = none)
-	pendingScrollLine int                   // line to scroll to after diff loads (0 = none)
-	cameFromFinding   bool                  // true when diff was opened via finding jump (Esc returns to review)
-	diffContent       string                // cached diff content for line scanning (set on StyledDiffMsg)
+	reviewFindings     []state.ReviewFinding // flat ordered list of findings (severity-sorted, matching render order)
+	reviewCursor       int                   // currently highlighted finding index (-1 = none)
+	pendingScrollLine  int                   // line to scroll to after diff loads (0 = none)
+	cameFromFinding    bool                  // true when diff was opened via finding jump (Esc returns to review)
+	diffContent        string                // cached diff content for line scanning (set on StyledDiffMsg)
+	rawDiffContent     string                // styled diff before comment/finding injection (for toggle re-render)
+	showInlineFindings bool                  // when true, findings are shown inline in the diff
 
 	// Panel visibility
 	showFilePanel bool
@@ -253,6 +329,24 @@ type Model struct {
 	themePickerCursor  int    // selected index in theme picker
 	themeBeforePicker  string // theme ID before opening picker (for revert on Esc)
 	errorMsg           string // transient error shown as modal overlay
+
+	// Finding publish/pipe overlays (no background dimming)
+	confirmOverlay    *confirmModal // non-nil when confirm modal is active
+	actionMenuOverlay *actionMenu   // non-nil when action menu is active
+	pipeTargets       []pipe.Target // loaded from config
+	repoRoot          string        // git repo root (resolved once at init)
+	flashMsg          string        // brief status flash (auto-clears on next key)
+
+	// Background tasks (Fix with OpenCode)
+	tasks         []*Task           // all tasks (running, completed, failed, cancelled)
+	taskCursor    int               // selected task in Tasks tab
+	taskNextID    int               // auto-incrementing task ID
+	viewingTaskID int               // task ID currently shown in diff pane (-1 = none)
+	opencodeMgr   *opencode.Manager // manages OpenCode server + SSE stream
+
+	// Permission/question overlays (from background tasks)
+	permissionOverlay *permissionModal // non-nil when permission approval needed
+	questionOverlay   *questionModal   // non-nil when question needs answering
 
 	// PR picker modal (shown when no PR number given on startup)
 	showPRPicker    bool             // PR picker visible
@@ -270,11 +364,18 @@ type Model struct {
 	// Git blame toggle
 	blameEnabled bool                             // whether blame overlay is active
 	blameCache   map[string]map[int]git.BlameLine // filePath -> lineNum -> blame info
+
+	// GitHub Actions
+	actionsRuns     []git.WorkflowRun         // workflow runs for the PR
+	actionsLoading  bool                      // true while fetching runs
+	actionsPolling  bool                      // true when auto-polling active runs
+	actionsExpanded map[int][]git.WorkflowJob // runID -> expanded jobs (nil = collapsed)
+	actionsCursor   int                       // cursor position in actions view
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────
 
-func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChroma bool) Model {
+func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallelReviews int, aoiContextLines int, useChroma bool) Model {
 	diffVp := viewport.New(0, 0)
 	diffVp.Style = lipgloss.NewStyle().Foreground(textPrimary)
 
@@ -324,6 +425,8 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		modelName = mi.ModelName()
 	}
 
+	repoRoot := resolveRepoRoot()
+
 	m := Model{
 		fileTree:           newFileTree(nil),
 		diffViewport:       diffVp,
@@ -335,15 +438,22 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		loading:            true,
 		loadingMsg:         "Fetching PR data...",
 		aiClient:           aiClient,
+		aoiClient:          aoiClient,
 		aiModelName:        modelName,
 		contextLines:       3,
+		aoiContextLines:    aoiContextLines,
 		comments:           make(map[string][]git.ReviewComment),
 		commentInput:       commentTa,
 		showFilePanel:      true,
 		showAIPanel:        true,
 		customInstructions: config.LoadCustomInstructions(),
+		pipeTargets:        config.LoadPipeTargets(),
+		repoRoot:           repoRoot,
+		opencodeMgr:        opencode.NewManager(repoRoot),
+		viewingTaskID:      -1,
 		parallelReviews:    parallelReviews,
 		reviewCursor:       -1,
+		showInlineFindings: true,
 		useChroma:          useChroma,
 		blameCache:         make(map[string]map[int]git.BlameLine),
 	}
@@ -356,7 +466,19 @@ func NewModel(prNumber string, aiClient ai.Client, parallelReviews int, useChrom
 		m.prPickerLoading = true
 	}
 
+	// Store manager ref for shutdown cleanup
+	opencodeMgrRef = m.opencodeMgr
+
 	return m
+}
+
+// resolveRepoRoot returns the git repo root, falling back to "." on error.
+func resolveRepoRoot() string {
+	root, err := git.RepoRoot()
+	if err != nil {
+		return "."
+	}
+	return root
 }
 
 func (m Model) Init() tea.Cmd {
@@ -473,6 +595,84 @@ func createComment(prNumber, commitSHA, path, body string, line int, side string
 	}
 }
 
+// ── Finding publish/pipe commands ───────────────────────────────────────
+
+func publishFindingAsComment(prNumber, commitSHA string, f state.ReviewFinding) tea.Cmd {
+	return func() tea.Msg {
+		body := formatFindingAsMarkdown(f)
+		comment, err := git.CreateReviewComment(prNumber, commitSHA, f.File, body, f.Line, "RIGHT")
+		return FindingPublishedMsg{Finding: f, Comment: comment, Err: err}
+	}
+}
+
+func publishBatchReview(prNumber, commitSHA string, findings []state.ReviewFinding) tea.Cmd {
+	return func() tea.Msg {
+		comments := make([]git.ReviewFindingComment, 0, len(findings))
+		for _, f := range findings {
+			if f.File != "" && f.Line > 0 {
+				comments = append(comments, git.ReviewFindingComment{
+					Path: f.File,
+					Line: f.Line,
+					Body: formatFindingAsMarkdown(f),
+					Side: "RIGHT",
+				})
+			}
+		}
+		body := formatBatchReviewBody(findings)
+		err := git.SubmitReviewWithFindings(prNumber, commitSHA, body, comments)
+		return FindingsBatchPublishedMsg{Count: len(comments), Err: err}
+	}
+}
+
+func postFindingAsPRComment(prNumber string, f state.ReviewFinding) tea.Cmd {
+	return func() tea.Msg {
+		body := formatFindingAsMarkdown(f)
+		err := git.PostPRComment(prNumber, body)
+		return PRCommentPostedMsg{Finding: f, Err: err}
+	}
+}
+
+func executePipe(target pipe.Target, f state.ReviewFinding, repoRoot string) tea.Cmd {
+	return func() tea.Msg {
+		payload := pipe.Payload{
+			File:       f.File,
+			Line:       f.Line,
+			Severity:   f.Severity,
+			Category:   f.Category,
+			Title:      f.Title,
+			Detail:     f.Detail,
+			Suggestion: f.Suggestion,
+			RepoRoot:   repoRoot,
+		}
+		output, err := pipe.Execute(target, payload)
+		return PipeResultMsg{Finding: f, Target: target, Output: output, Err: err}
+	}
+}
+
+// ── GitHub Actions commands ─────────────────────────────────────────────
+
+func fetchActions(headSHA string) tea.Cmd {
+	return func() tea.Msg {
+		runs, err := git.FetchWorkflowRuns(headSHA)
+		return ActionsFetchedMsg{Runs: runs, Err: err}
+	}
+}
+
+func fetchActionsJobs(runID int) tea.Cmd {
+	return func() tea.Msg {
+		jobs, err := git.FetchWorkflowJobs(runID)
+		return ActionsJobsFetchedMsg{RunID: runID, Jobs: jobs, Err: err}
+	}
+}
+
+const actionsPollInterval = 15 * time.Second
+
+func pollActionsTick() tea.Cmd {
+	return tea.Tick(actionsPollInterval, func(_ time.Time) tea.Msg {
+		return actionsTickMsg{}
+	})
+}
+
 // streamAIChat sends the conversation to the AI and streams tokens back via tea.Msg.
 func streamAIChat(client ai.Client, ctx context.Context, systemPrompt string, messages []ai.Message, p *tea.Program) tea.Cmd {
 	return func() tea.Msg {
@@ -491,6 +691,18 @@ var program *tea.Program
 
 func SetProgram(p *tea.Program) {
 	program = p
+}
+
+// opencodeMgrRef holds a reference to the active manager for shutdown.
+var opencodeMgrRef *opencode.Manager
+
+// Shutdown cleans up resources (stops the OpenCode server, etc.).
+// Call after the bubbletea program exits.
+func Shutdown() {
+	if opencodeMgrRef != nil {
+		opencodeMgrRef.Stop()
+		opencodeMgrRef = nil
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -521,8 +733,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
-		m.syncLayout()
-		return m, nil
+		cmds = append(cmds, m.syncLayoutWithRerender())
+		return m, tea.Batch(cmds...)
 
 	case PRFetchedMsg:
 		if msg.Err != nil {
@@ -550,6 +762,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			log.Printf("Refresh: PR has new commits (old=%s new=%s)",
 				m.refreshOldOid[:8], msg.PR.HeadRefOid[:8])
 			m.refreshOldOid = ""
+			m.actionsResetPolling()
 		}
 
 		m.pr = msg.PR
@@ -612,10 +825,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.populateFileList(m.reviewState)
 		m.selectedFile = ""
+		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		chatCmd := m.renderActiveAIView()
-		return m, tea.Batch(fetchComments(m.prNumber), chatCmd)
+		var actionsCmd tea.Cmd
+		if m.pr != nil && m.pr.HeadRefOid != "" {
+			m.actionsResetPolling()
+			m.actionsLoading = true
+			actionsCmd = fetchActions(m.pr.HeadRefOid)
+		}
+		return m, tea.Batch(fetchComments(m.prNumber), chatCmd, actionsCmd)
 
 	case CommentsFetchedMsg:
 		if msg.Err != nil {
@@ -628,6 +848,71 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case ActionsFetchedMsg:
+		m.actionsLoading = false
+		if msg.Err != nil {
+			log.Printf("Warning: failed to fetch actions: %v", msg.Err)
+			// On error, continue polling if we were polling (retry on next tick)
+			if m.actionsPolling {
+				return m, pollActionsTick()
+			}
+			return m, nil
+		}
+		m.actionsRuns = msg.Runs
+		m.fileTree.actionStatus = git.AggregateActionStatus(msg.Runs)
+		// Clamp cursor to new bounds
+		total := m.actionsRowCount()
+		if total == 0 {
+			m.actionsCursor = 0
+		} else if m.actionsCursor >= total {
+			m.actionsCursor = total - 1
+		}
+		// Prune expanded jobs for runs that no longer exist
+		if m.actionsExpanded != nil {
+			runIDs := make(map[int]bool, len(msg.Runs))
+			for _, r := range msg.Runs {
+				runIDs[r.ID] = true
+			}
+			for id := range m.actionsExpanded {
+				if !runIDs[id] {
+					delete(m.actionsExpanded, id)
+				}
+			}
+		}
+		// Re-render if currently viewing actions
+		if m.viewMode == viewModeActions {
+			m.setDiffContent(m.renderActionsView())
+		}
+		// Schedule next tick if any runs are still active
+		if git.HasActiveRuns(msg.Runs) {
+			m.actionsPolling = true
+			return m, pollActionsTick()
+		}
+		m.actionsPolling = false
+		return m, nil
+
+	case ActionsJobsFetchedMsg:
+		if msg.Err != nil {
+			log.Printf("Warning: failed to fetch jobs for run %d: %v", msg.RunID, msg.Err)
+			return m, nil
+		}
+		if m.actionsExpanded == nil {
+			m.actionsExpanded = make(map[int][]git.WorkflowJob)
+		}
+		m.actionsExpanded[msg.RunID] = msg.Jobs
+		// Re-render if currently viewing actions
+		if m.viewMode == viewModeActions {
+			m.setDiffContent(m.renderActionsView())
+		}
+		return m, nil
+
+	case actionsTickMsg:
+		if !m.actionsPolling || m.pr == nil {
+			return m, nil
+		}
+		// Only fetch — the ActionsFetchedMsg handler decides whether to schedule the next tick
+		return m, fetchActions(m.pr.HeadRefOid)
 
 	case BlameFetchedMsg:
 		if msg.Err != nil {
@@ -646,7 +931,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Add to local state
 			m.comments[msg.Comment.Path] = append(m.comments[msg.Comment.Path], *msg.Comment)
 			// Re-render the diff with the new comment
-			if m.selectedFile == msg.Comment.Path {
+			if m.hasFileSelected() && m.selectedFile == msg.Comment.Path {
 				cmd = m.reloadDiff()
 				if cmd != nil {
 					cmds = append(cmds, cmd)
@@ -665,9 +950,128 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case FindingPublishedMsg:
+		if msg.Err != nil {
+			cmds = append(cmds, m.setFlash(fmt.Sprintf("Error: %v", msg.Err)))
+		} else {
+			cmds = append(cmds, m.setFlash(fmt.Sprintf("Comment posted on %s:%d", msg.Finding.File, msg.Finding.Line)))
+			// Add to local comments state
+			if msg.Comment != nil {
+				m.comments[msg.Comment.Path] = append(m.comments[msg.Comment.Path], *msg.Comment)
+				if m.hasFileSelected() && m.selectedFile == msg.Comment.Path {
+					cmd = m.reloadDiff()
+					if cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case FindingsBatchPublishedMsg:
+		if msg.Err != nil {
+			return m, m.setFlash(fmt.Sprintf("Error submitting review: %v", msg.Err))
+		}
+		return m, m.setFlash(fmt.Sprintf("Review submitted with %d comments", msg.Count))
+
+	case PRCommentPostedMsg:
+		if msg.Err != nil {
+			return m, m.setFlash(fmt.Sprintf("Error posting comment: %v", msg.Err))
+		}
+		return m, m.setFlash(fmt.Sprintf("PR comment posted for %s:%d", msg.Finding.File, msg.Finding.Line))
+
+	case PipeResultMsg:
+		if msg.Err != nil {
+			return m, m.setFlash(fmt.Sprintf("Pipe \"%s\" failed: %v", msg.Target.Name, msg.Err))
+		}
+		output := strings.TrimSpace(string(msg.Output))
+		if output == "" {
+			return m, m.setFlash(fmt.Sprintf("Pipe \"%s\" completed", msg.Target.Name))
+		} else if len(output) < 200 {
+			return m, m.setFlash(fmt.Sprintf("Pipe \"%s\": %s", msg.Target.Name, output))
+		}
+		// Show output in error modal (scrollable)
+		m.errorMsg = fmt.Sprintf("Output from \"%s\":\n\n%s", msg.Target.Name, output)
+		return m, nil
+
+	case flashDismissMsg:
+		m.flashMsg = ""
+		return m, nil
+
+	case opencodeReadyMsg:
+		// Server is now running — spawn the task
+		return m, m.spawnFixTask(msg.finding)
+
+	case TaskSpawnedMsg:
+		// Task started — nothing extra to do (already tracked in m.tasks)
+		return m, nil
+
+	case TaskPermissionMsg:
+		// A task needs permission approval — show the modal
+		m.permissionOverlay = &permissionModal{
+			taskID:     msg.ID,
+			permission: msg.Permission,
+			cursor:     0, // default to Approve
+		}
+		return m, nil
+
+	case TaskQuestionMsg:
+		// A task needs the user to answer a question — show the modal
+		m.questionOverlay = &questionModal{
+			taskID:   msg.ID,
+			question: msg.Question,
+			cursor:   0,
+		}
+		return m, nil
+
+	case TaskOutputMsg:
+		// Streaming output from a background task
+		// If we're currently viewing this task's output, refresh the diff pane
+		if m.viewMode == viewModeTaskOutput && m.viewingTaskID == msg.ID {
+			content := m.renderTaskOutput(msg.ID)
+			m.setDiffContent(content)
+			// Auto-scroll to bottom
+			total := m.diffViewport.TotalLineCount()
+			vpH := m.diffViewport.Height
+			if total > vpH {
+				m.diffViewport.SetYOffset(total - vpH)
+			}
+		}
+		return m, nil
+
+	case TaskDoneMsg:
+		// Task finished — find it and update
+		for i, t := range m.tasks {
+			if t.ID == msg.ID {
+				// Auto-resolve the finding if task completed successfully
+				if t.GetStatus() == TaskCompleted {
+					if t.FindingIdx >= 0 && t.FindingIdx < len(m.reviewFindings) {
+						m.reviewFindings[t.FindingIdx].Resolved = true
+						// Re-render review if on Review tab
+						if m.aiPanelTab == 0 {
+							cmds = append(cmds, m.rerenderReviewWithCursor())
+						}
+					}
+				}
+				// Refresh diff pane if viewing this task
+				if m.viewMode == viewModeTaskOutput && m.viewingTaskID == msg.ID {
+					content := m.renderTaskOutput(msg.ID)
+					m.setDiffContent(content)
+				}
+				_ = i
+				break
+			}
+		}
+		// Stop the OpenCode server if no tasks are still running
+		if !hasAnyRunningTask(m.tasks) && m.opencodeMgr != nil {
+			mgr := m.opencodeMgr
+			go mgr.Stop()
+		}
+		return m, tea.Batch(cmds...)
+
 	case ChatRenderedMsg:
 		// For Review tab (0): cache the rendered content and always apply — content is global, not per-file
-		// For Chat tab (1): only apply if still on the same file
+		// For Chat tab (2): only apply if still on the same file
 		if msg.Tab == 0 {
 			m.aiReviewRendered = msg.Content
 			m.aiReviewRenderWidth = m.chatViewport.Width - 2
@@ -709,6 +1113,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						fmt.Sprintf("  ── skipped from AI review (%s) ──", reason))
 					content = banner + "\n\n" + content
 				}
+				// Cache pre-findings content for toggle re-render
+				m.rawDiffContent = content
+				content = m.injectFindings(content, msg.FilePath)
 				m.diffContent = content // cache for line scanning
 				savedOffset := m.diffViewport.YOffset
 				savedCursor := m.diffCursor
@@ -732,6 +1139,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiReviewBatches = msg.Batches
 		m.aiReviewStatuses = make([]AIReviewBatchStatus, len(msg.Batches))
 		m.aiReviewPhase = "batch"
+		m.updateChatViewWithStream()
+		return m, nil
+
+	case AIReviewAOIMsg:
+		m.aiReviewPhase = "aoi"
+		if msg.Done {
+			if msg.AOIs > 0 {
+				m.aiStreamBuffer += fmt.Sprintf("\n%s %s\n",
+					checkMark, msg.Status)
+			} else {
+				m.aiStreamBuffer += fmt.Sprintf("\n%s\n", msg.Status)
+			}
+		} else {
+			// Update in-progress status
+			m.aiStreamBuffer = msg.Status + "\n"
+		}
 		m.updateChatViewWithStream()
 		return m, nil
 
@@ -855,12 +1278,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Save per-file batch findings for caching
 			if msg.FileFindings != nil && m.reviewState != nil {
 				for path, findings := range msg.FileFindings {
-					fs, ok := m.reviewState.Files[path]
-					if !ok {
-						fs = &state.FileState{Status: state.StatusUnreviewed}
-						m.reviewState.Files[path] = fs
-					}
-					fs.BatchFindings = findings
+					m.reviewState.SetBatchFindings(path, "reviewed", findings)
 				}
 				if err := state.Save(m.reviewState); err != nil {
 					log.Printf("Warning: failed to save file findings: %v", err)
@@ -871,6 +1289,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.aiStreamBuffer = ""
 				m.aiChatHistoryCache = ""
 				m.aiPanelTab = 0
+				m.syncLayout() // recalculate viewport height (no chat input on review tab)
 				cmd = m.renderActiveAIView()
 			} else {
 				// Regular chat — save response to chat history
@@ -883,6 +1302,108 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// ── Modal overlays intercept all keys when visible ──────
+		// Clear flash message on any key press
+		if m.flashMsg != "" {
+			m.flashMsg = ""
+		}
+		// Permission overlay intercepts all keys
+		if m.permissionOverlay != nil {
+			switch msg.String() {
+			case "esc", "n":
+				cmd = m.denyPermission()
+				m.permissionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "y":
+				cmd = m.approvePermission()
+				m.permissionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "enter":
+				if m.permissionOverlay.cursor == 0 {
+					cmd = m.approvePermission()
+				} else {
+					cmd = m.denyPermission()
+				}
+				m.permissionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "h", "left":
+				m.permissionOverlay.cursor = 0
+			case "l", "right":
+				m.permissionOverlay.cursor = 1
+			case "tab":
+				m.permissionOverlay.cursor = (m.permissionOverlay.cursor + 1) % 2
+			}
+			return m, nil
+		}
+		// Question overlay intercepts all keys
+		if m.questionOverlay != nil {
+			switch msg.String() {
+			case "esc":
+				cmd = m.dismissQuestion()
+				m.questionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "enter":
+				cmd = m.selectQuestionOption()
+				m.questionOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			case "j", "down":
+				if m.questionOverlay.cursor < m.questionOverlay.optionCount()-1 {
+					m.questionOverlay.cursor++
+				}
+			case "k", "up":
+				if m.questionOverlay.cursor > 0 {
+					m.questionOverlay.cursor--
+				}
+			}
+			return m, nil
+		}
+		// Confirm modal intercepts all keys
+		if m.confirmOverlay != nil {
+			switch msg.String() {
+			case "esc", "q":
+				m.confirmOverlay = nil
+			case "enter":
+				cmd = m.executeConfirmAction()
+				m.confirmOverlay = nil
+				if cmd != nil {
+					return m, cmd
+				}
+			}
+			return m, nil
+		}
+		// Action menu intercepts all keys
+		if m.actionMenuOverlay != nil {
+			switch msg.String() {
+			case "esc", "q":
+				m.actionMenuOverlay = nil
+			case "j", "down":
+				if m.actionMenuOverlay.cursor < len(m.actionMenuOverlay.items)-1 {
+					m.actionMenuOverlay.cursor++
+				}
+			case "k", "up":
+				if m.actionMenuOverlay.cursor > 0 {
+					m.actionMenuOverlay.cursor--
+				}
+			case "enter":
+				m.executeActionMenuItem(m.actionMenuOverlay.cursor)
+				m.actionMenuOverlay = nil
+			default:
+				// Direct key shortcuts (c, C, g, 1, 2, 3...)
+				if m.executeActionMenuByKey(msg.String()) {
+					m.actionMenuOverlay = nil
+				}
+			}
+			return m, nil
+		}
 		if m.showPRPicker {
 			if m.prPickerLoading {
 				// Still loading — only allow quit
@@ -919,6 +1440,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.showPRPicker = false
 					m.loading = true
 					m.loadingMsg = "Fetching PR data..."
+					m.actionsResetPolling()
 					return m, tea.Batch(
 						fetchPR(m.prNumber),
 						m.spinner.Tick,
@@ -999,7 +1521,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if t.ID == m.themeBeforePicker {
 						SetTheme(t)
 						mdCache = newLRUCache(128)
-						if m.selectedFile != "" && m.pr != nil {
+						if m.hasFileSelected() && m.pr != nil {
 							cmd = m.reloadDiff()
 							if cmd != nil {
 								cmds = append(cmds, cmd)
@@ -1074,7 +1596,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.commentInput.Blur()
 				m.commentInput.Reset()
 				m.syncLayout()
-				if body != "" && m.pr != nil && m.selectedFile != "" {
+				if body != "" && m.pr != nil && m.hasFileSelected() {
 					cmd = createComment(
 						m.prNumber,
 						m.pr.HeadRefOid,
@@ -1118,7 +1640,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.focusedPane = PaneDiff
 					m.syncFocus()
 				}
-			} else if m.focusedPane == PaneChat && m.aiPanelTab == 1 {
+			} else if m.focusedPane == PaneChat && m.aiPanelTab == 2 {
 				// Send chat message only on Chat tab; on Review tab Enter is
 				// handled by the pane-specific finding navigation below.
 				cmd = m.sendChatMessage()
@@ -1129,7 +1651,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "+", "=":
 			// Increase diff context
-			if m.focusedPane == PaneDiff && m.selectedFile != "" {
+			if m.focusedPane == PaneDiff && m.hasFileSelected() {
 				m.contextLines += 3
 				if m.contextLines > 100 {
 					m.contextLines = 100
@@ -1141,7 +1663,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "-", "_":
 			// Decrease diff context
-			if m.focusedPane == PaneDiff && m.selectedFile != "" {
+			if m.focusedPane == PaneDiff && m.hasFileSelected() {
 				m.contextLines -= 3
 				if m.contextLines < 0 {
 					m.contextLines = 0
@@ -1186,7 +1708,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd = m.syncFocus()
 				cmds = append(cmds, cmd)
 			}
-			m.syncLayout()
+			cmds = append(cmds, m.syncLayoutWithRerender())
 		case "ctrl+b":
 			m.showFilePanel = !m.showFilePanel
 			if !m.showFilePanel && m.focusedPane == PaneFileList {
@@ -1194,9 +1716,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd = m.syncFocus()
 				cmds = append(cmds, cmd)
 			}
-			m.syncLayout()
+			cmds = append(cmds, m.syncLayoutWithRerender())
 		case "?":
-			if m.focusedPane != PaneChat || m.aiPanelTab != 1 {
+			if m.focusedPane != PaneChat || m.aiPanelTab != 2 {
 				m.showHelp = !m.showHelp
 			}
 		case "m":
@@ -1227,7 +1749,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "b":
-			if m.focusedPane == PaneDiff && m.selectedFile != "" {
+			if m.focusedPane == PaneDiff && m.hasFileSelected() {
 				m.blameEnabled = !m.blameEnabled
 				// Pre-fetch blame data for the current file if not cached
 				if m.blameEnabled && m.pr != nil {
@@ -1307,6 +1829,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case PaneDiff:
 		if km, ok := msg.(tea.KeyMsg); ok {
+			// Actions view has its own keybindings
+			if m.viewMode == viewModeActions {
+				switch km.String() {
+				case "j", "down":
+					m.moveActionsCursor(1)
+					m.setDiffContent(m.renderActionsView())
+					return m, nil
+				case "k", "up":
+					m.moveActionsCursor(-1)
+					m.setDiffContent(m.renderActionsView())
+					return m, nil
+				case "enter":
+					cmd = m.toggleActionsExpand()
+					return m, cmd
+				case "r":
+					if m.pr != nil && m.pr.HeadRefOid != "" {
+						m.actionsLoading = true
+						m.setDiffContent(m.renderActionsView())
+						return m, fetchActions(m.pr.HeadRefOid)
+					}
+					return m, nil
+				}
+			}
 			switch km.String() {
 			case "esc":
 				// If we came from a finding jump, return to the review panel
@@ -1314,12 +1859,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cameFromFinding = false
 					m.focusedPane = PaneChat
 					m.aiPanelTab = 0
+					m.syncLayout()
 					cmds = append(cmds, m.syncFocus())
 					cmds = append(cmds, m.renderActiveAIView())
 					return m, tea.Batch(cmds...)
 				}
 			case "c":
-				if m.selectedFile != "" && !m.commenting {
+				if m.hasFileSelected() && !m.commenting {
 					info := m.getDiffCursorInfo()
 					if info.line > 0 {
 						m.commentLine = info.line
@@ -1333,11 +1879,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case " ":
 				// Toggle reviewed status for current file
-				if m.selectedFile != "" {
+				if m.hasFileSelected() {
 					cmd = m.toggleReviewStatus()
 					if cmd != nil {
 						cmds = append(cmds, cmd)
 					}
+				}
+			case "F":
+				// Toggle inline findings display (only in file diff view)
+				if m.viewMode == viewModeFile && m.hasFileSelected() && m.rawDiffContent != "" {
+					m.showInlineFindings = !m.showInlineFindings
+					content := m.rawDiffContent
+					if m.showInlineFindings {
+						content = m.injectFindings(content, m.selectedFile)
+					}
+					m.diffContent = content
+					savedOffset := m.diffViewport.YOffset
+					savedCursor := m.diffCursor
+					m.setDiffContent(content)
+					m.diffViewport.SetYOffset(savedOffset)
+					m.diffCursor = savedCursor
+					return m, nil
 				}
 			case "j", "down":
 				m.moveDiffCursor(1)
@@ -1427,6 +1989,127 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					return m, tea.Batch(cmds...)
+				case "c":
+					// Publish selected finding as GitHub line comment
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						f := m.reviewFindings[m.reviewCursor]
+						m.confirmOverlay = &confirmModal{
+							action:  confirmPublishComment,
+							finding: &f,
+						}
+					}
+					return m, nil
+				case "C":
+					// Publish ALL findings as a GitHub Review (batch)
+					m.confirmOverlay = &confirmModal{
+						action:   confirmBatchReview,
+						findings: append([]state.ReviewFinding{}, m.reviewFindings...),
+					}
+					return m, nil
+				case "g":
+					// Post selected finding as general PR comment
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						f := m.reviewFindings[m.reviewCursor]
+						m.confirmOverlay = &confirmModal{
+							action:  confirmPRComment,
+							finding: &f,
+						}
+					}
+					return m, nil
+				case "|":
+					// Pipe selected finding to external process
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) && len(m.pipeTargets) > 0 {
+						f := m.reviewFindings[m.reviewCursor]
+						m.confirmOverlay = &confirmModal{
+							action:  confirmPipe,
+							finding: &f,
+							target:  &m.pipeTargets[0], // default to first pipe target
+						}
+					}
+					return m, nil
+				case "x":
+					// Open action menu for selected finding
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						f := m.reviewFindings[m.reviewCursor]
+						m.actionMenuOverlay = &actionMenu{
+							cursor:  0,
+							finding: f,
+							items:   m.buildActionMenuItems(),
+						}
+					}
+					return m, nil
+				case " ":
+					// Toggle resolved status for selected finding
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						m.reviewFindings[m.reviewCursor].Resolved = !m.reviewFindings[m.reviewCursor].Resolved
+						cmds = append(cmds, m.rerenderReviewWithCursor())
+					}
+					return m, tea.Batch(cmds...)
+				case "f":
+					// Fix with OpenCode
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						if hasRunningTaskForFinding(m.tasks, m.reviewCursor) {
+							cmds = append(cmds, m.setFlash("Already running for this finding"))
+							return m, tea.Batch(cmds...)
+						}
+						f := m.reviewFindings[m.reviewCursor]
+						m.confirmOverlay = &confirmModal{
+							action:  confirmFixWithOpenCode,
+							finding: &f,
+						}
+					}
+					return m, tea.Batch(cmds...)
+				}
+			}
+
+			// Tasks tab navigation (j/k/Enter/d/x when tasks exist)
+			if m.aiPanelTab == 1 && len(m.tasks) > 0 {
+				switch km.String() {
+				case "j", "down":
+					if m.taskCursor < len(m.tasks)-1 {
+						m.taskCursor++
+					}
+					return m, nil
+				case "k", "up":
+					if m.taskCursor > 0 {
+						m.taskCursor--
+					}
+					return m, nil
+				case "enter":
+					// View task output in diff pane
+					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+						m.viewTaskOutput(m.tasks[m.taskCursor].ID)
+					}
+					return m, nil
+				case "d":
+					// Cancel running task
+					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+						t := m.tasks[m.taskCursor]
+						if t.GetStatus() == TaskRunning {
+							cancelTask(t, m.opencodeMgr)
+							cmds = append(cmds, m.setFlash("Task cancelled"))
+						}
+					}
+					return m, tea.Batch(cmds...)
+				case "x":
+					// Remove completed/failed/cancelled task
+					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+						t := m.tasks[m.taskCursor]
+						if t.GetStatus() != TaskRunning {
+							m.tasks = append(m.tasks[:m.taskCursor], m.tasks[m.taskCursor+1:]...)
+							if m.taskCursor >= len(m.tasks) && m.taskCursor > 0 {
+								m.taskCursor--
+							}
+							// If we were viewing this task, go back to overview
+							if m.viewMode == viewModeTaskOutput && m.viewingTaskID == t.ID {
+								m.viewMode = viewModeOverview
+								m.viewingTaskID = -1
+								m.setDiffContent(m.renderOverview())
+								m.diffViewport.GotoTop()
+							}
+						}
+					}
+					return m, nil
 				}
 			}
 
@@ -1436,15 +2119,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			case "ctrl+k":
 				m.clearChat()
-			case "ctrl+tab":
-				// Toggle between Review and Chat sub-tabs (only if review exists)
-				if m.hasReview() {
-					m.aiPanelTab = 1 - m.aiPanelTab
+			case "]":
+				// Cycle forward between Review, Tasks, and Chat sub-tabs
+				// (only when not typing in the chat input)
+				if m.aiPanelTab == 2 && !m.aiStreaming {
+					m.chatInput, cmd = m.chatInput.Update(msg)
+					cmds = append(cmds, cmd)
+				} else if m.hasReview() || len(m.tasks) > 0 {
+					maxTab := 2 // Review(0), Tasks(1), Chat(2)
+					m.aiPanelTab = (m.aiPanelTab + 1) % (maxTab + 1)
+					m.syncLayout()
+					cmds = append(cmds, m.renderActiveAIView())
+				}
+			case "[":
+				// Cycle backward between Review, Tasks, and Chat sub-tabs
+				if m.aiPanelTab == 2 && !m.aiStreaming {
+					m.chatInput, cmd = m.chatInput.Update(msg)
+					cmds = append(cmds, cmd)
+				} else if m.hasReview() || len(m.tasks) > 0 {
+					maxTab := 2 // Review(0), Tasks(1), Chat(2)
+					m.aiPanelTab = (m.aiPanelTab - 1 + maxTab + 1) % (maxTab + 1)
+					m.syncLayout()
 					cmds = append(cmds, m.renderActiveAIView())
 				}
 			default:
 				// Only allow text input on the Chat tab, and not while AI is streaming
-				if m.aiPanelTab == 1 && !m.aiStreaming {
+				if m.aiPanelTab == 2 && !m.aiStreaming {
 					m.chatInput, cmd = m.chatInput.Update(msg)
 					cmds = append(cmds, cmd)
 				}
@@ -1470,7 +2170,8 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	}
 
 	// Auto-switch to Chat tab when sending a message
-	m.aiPanelTab = 1
+	m.aiPanelTab = 2
+	m.syncLayout()
 
 	// Clear input
 	m.chatInput.Reset()
@@ -1508,7 +2209,7 @@ func (m *Model) appendMessageToState(msg state.Message) {
 		return
 	}
 
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		// Global chat
 		m.reviewState.GlobalChat = append(m.reviewState.GlobalChat, msg)
 	} else {
@@ -1526,7 +2227,7 @@ func (m *Model) buildAIMessages() []state.Message {
 		return nil
 	}
 
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		return m.reviewState.GlobalChat
 	}
 
@@ -1547,7 +2248,7 @@ func (m *Model) getAIContext() (string, string) {
 		meta.WriteString(fmt.Sprintf("Base: %s → Head: %s\n\n", m.pr.BaseRefName, m.pr.HeadRefName))
 	}
 
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		// PR overview: file listing with stats — diffs are fetched via git_diff tool
 		paths := make([]string, 0, len(m.rawDiffs))
 		for p := range m.rawDiffs {
@@ -1584,7 +2285,7 @@ func (m *Model) withInstructions(prompt string) string {
 // getSystemPrompt returns the appropriate system prompt for the current context.
 // System prompts contain only instructions, never data.
 func (m *Model) getSystemPrompt() string {
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		return m.withInstructions(ai.ChatPrompt)
 	}
 	// Use ReviewFilePrompt for file-level chats — keeps the reviewer persona
@@ -1599,7 +2300,7 @@ func (m *Model) buildAIMessagesWithContext(messages []state.Message) []ai.Messag
 
 	// For file-level chats, check if diff context is already in the first message
 	// (from triggerAIReview). If not, inject it as a system-context user message.
-	needsContext := m.selectedFile != "" && len(messages) > 0
+	needsContext := m.hasFileSelected() && len(messages) > 0
 	if needsContext {
 		first := messages[0]
 		if first.Role == "user" && !strings.Contains(first.Content, "```diff") {
@@ -1669,7 +2370,7 @@ func (m *Model) clearChat() {
 		return
 	}
 
-	if m.selectedFile == "" {
+	if m.viewMode != viewModeFile {
 		m.reviewState.GlobalChat = nil
 	} else {
 		if fs, ok := m.reviewState.Files[m.selectedFile]; ok {
@@ -1689,7 +2390,7 @@ func (m *Model) clearChat() {
 func (m *Model) updateChatViewWithStream() {
 	// If a PR review is streaming but the user has navigated to a file,
 	// don't overwrite the file's chat panel with review stream content.
-	if m.aiReviewPhase != "" && m.selectedFile != "" {
+	if m.aiReviewPhase != "" && m.hasFileSelected() {
 		return
 	}
 
@@ -1786,22 +2487,56 @@ func (m Model) renderAIPanelTitle(maxWidth int) string {
 		return "CHAT " + m.spinner.View()
 	}
 
-	// If no review exists, just show "Chat" — no tabs needed
-	if !m.hasReview() {
+	// If no review exists and no tasks, just show "Chat" — no tabs needed
+	if !m.hasReview() && len(m.tasks) == 0 {
 		return styleAccentBlueBold.Render("Chat")
 	}
 
-	// Tab indicators: [Review] [Chat] — active tab is highlighted
-	reviewTab := "Review"
-	chatTab := "Chat"
-	if m.aiPanelTab == 0 {
-		reviewTab = styleAccentBlueBold.Render("Review")
-		chatTab = styleTextMuted.Render("Chat")
-	} else {
-		reviewTab = styleTextMuted.Render("Review")
-		chatTab = styleAccentBlueBold.Render("Chat")
+	// Tab indicators: [Review] [Tasks] [Chat] — active tab is highlighted
+	tabs := []struct {
+		label string
+		idx   int
+	}{
+		{"Review", 0},
+		{"Tasks", 1},
+		{"Chat", 2},
 	}
-	return reviewTab + styleTextSubtle.Render(" │ ") + chatTab
+
+	var parts []string
+	for _, t := range tabs {
+		// Skip Tasks tab if no tasks and no review (unlikely but safe)
+		if t.idx == 1 && len(m.tasks) == 0 && !m.hasReview() {
+			continue
+		}
+		label := t.label
+		// Add running task count indicator + server status
+		if t.idx == 1 {
+			running := 0
+			for _, task := range m.tasks {
+				if task.GetStatus() == TaskRunning {
+					running++
+				}
+			}
+			if running > 0 {
+				label = fmt.Sprintf("Tasks(%d)", running)
+			}
+			// Server status dot
+			if m.opencodeMgr != nil {
+				switch m.opencodeMgr.Status() {
+				case opencode.ServerConnected:
+					label += " " + styleAccentGreen.Render("●")
+				case opencode.ServerConnecting:
+					label += " " + styleAccentYellow.Render("●")
+				}
+			}
+		}
+		if t.idx == m.aiPanelTab {
+			parts = append(parts, styleAccentBlueBold.Render(label))
+		} else {
+			parts = append(parts, styleTextMuted.Render(label))
+		}
+	}
+	return strings.Join(parts, styleTextSubtle.Render(" │ "))
 }
 
 // renderReviewProgress renders the AI panel title with a progress bar
@@ -1959,19 +2694,23 @@ func parseDiffLine(rendered string) diffLineInfo {
 }
 
 // injectComments inserts styled comment blocks after their target lines in the diff.
+// Comments at the same position are rendered as a single threaded block.
 func (m *Model) injectComments(styledDiff, filePath string) string {
 	fileComments, ok := m.comments[filePath]
 	if !ok || len(fileComments) == 0 {
 		return styledDiff
 	}
 
-	// Build map of "side:line" -> comments
+	// Build map of "side:line" -> comments (ordered by creation time)
 	type commentKey struct {
 		side string
 		line int
 	}
 	commentsByKey := make(map[commentKey][]git.ReviewComment)
 	for _, c := range fileComments {
+		if c.Line == 0 {
+			continue // skip comments without a resolved position
+		}
 		key := commentKey{side: c.Side, line: c.Line}
 		commentsByKey[key] = append(commentsByKey[key], c)
 	}
@@ -1979,10 +2718,19 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 	commentStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#F9E2AF")).
 		Bold(true)
+	replyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#A6ADC8")).
+		Bold(true)
 	bodyStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#CDD6F4"))
 	borderStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#585B70"))
+
+	// Cap comment body lines to viewport width
+	maxBodyWidth := m.diffViewport.Width - 6 // account for "  │ " prefix
+	if maxBodyWidth < 20 {
+		maxBodyWidth = 20
+	}
 
 	lines := strings.Split(styledDiff, "\n")
 	var result []string
@@ -1997,16 +2745,31 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 
 		key := commentKey{side: info.side, line: info.line}
 		if comments, ok := commentsByKey[key]; ok {
-			for _, c := range comments {
-				border := borderStyle.Render("  ┌─ ")
-				author := commentStyle.Render(c.Author)
-				result = append(result, border+author)
+			// Render all comments at this position as a single threaded block
+			border := borderStyle.Render("  ┌─ ")
+			author := commentStyle.Render(comments[0].Author)
+			result = append(result, border+author)
+			for _, bodyLine := range strings.Split(comments[0].Body, "\n") {
+				prefix := borderStyle.Render("  │ ")
+				if len(bodyLine) > maxBodyWidth {
+					bodyLine = bodyLine[:maxBodyWidth]
+				}
+				result = append(result, prefix+bodyStyle.Render(bodyLine))
+			}
+			// Render replies within the same block
+			for _, c := range comments[1:] {
+				separator := borderStyle.Render("  ├─ ")
+				rAuthor := replyStyle.Render(c.Author)
+				result = append(result, separator+rAuthor)
 				for _, bodyLine := range strings.Split(c.Body, "\n") {
 					prefix := borderStyle.Render("  │ ")
+					if len(bodyLine) > maxBodyWidth {
+						bodyLine = bodyLine[:maxBodyWidth]
+					}
 					result = append(result, prefix+bodyStyle.Render(bodyLine))
 				}
-				result = append(result, borderStyle.Render("  └───"))
 			}
+			result = append(result, borderStyle.Render("  └───"))
 		}
 	}
 
@@ -2095,11 +2858,15 @@ func (m *Model) clampDiffCursor() {
 // line count (used for rendering), making the bottom of long diffs unreachable.
 func (m *Model) setDiffContent(content string) {
 	w := m.diffViewport.Width
-	if w > 0 {
+	if w > 1 {
+		// Truncate to w-1 to leave a 1-cell safety margin. This prevents
+		// characters with ambiguous terminal width (emoji, CJK, etc.) from
+		// visually overflowing the pane border.
+		maxW := w - 1
 		lines := strings.Split(content, "\n")
 		for i, line := range lines {
-			if ansi.StringWidth(line) > w {
-				lines[i] = ansi.Truncate(line, w, "")
+			if ansi.StringWidth(line) > maxW {
+				lines[i] = ansi.Truncate(line, maxW, "")
 			}
 		}
 		content = strings.Join(lines, "\n")
@@ -2150,6 +2917,239 @@ func (m *Model) moveDiffCursor(dir int) {
 
 // ── Data helpers ────────────────────────────────────────────────────────
 
+// ── Actions view helpers ────────────────────────────────────────────────
+
+// actionsRowCount returns the total number of navigable rows in the actions view.
+func (m *Model) actionsRowCount() int {
+	count := len(m.actionsRuns)
+	for _, run := range m.actionsRuns {
+		if jobs, ok := m.actionsExpanded[run.ID]; ok {
+			count += len(jobs)
+		}
+	}
+	return count
+}
+
+// ── Finding publish/pipe execution ──────────────────────────────────────
+
+const flashDismissDelay = 3 * time.Second
+
+// setFlash sets the flash message and returns a command that auto-dismisses it.
+func (m *Model) setFlash(msg string) tea.Cmd {
+	m.flashMsg = msg
+	return tea.Tick(flashDismissDelay, func(time.Time) tea.Msg {
+		return flashDismissMsg{}
+	})
+}
+
+// executeConfirmAction runs the confirmed action and returns a tea.Cmd.
+func (m *Model) executeConfirmAction() tea.Cmd {
+	if m.confirmOverlay == nil || m.pr == nil {
+		return nil
+	}
+	modal := m.confirmOverlay
+
+	switch modal.action {
+	case confirmPublishComment:
+		if modal.finding != nil {
+			return publishFindingAsComment(m.prNumber, m.pr.HeadRefOid, *modal.finding)
+		}
+	case confirmBatchReview:
+		if len(modal.findings) > 0 {
+			return publishBatchReview(m.prNumber, m.pr.HeadRefOid, modal.findings)
+		}
+	case confirmPRComment:
+		if modal.finding != nil {
+			return postFindingAsPRComment(m.prNumber, *modal.finding)
+		}
+	case confirmPipe:
+		if modal.finding != nil && modal.target != nil {
+			return executePipe(*modal.target, *modal.finding, m.repoRoot)
+		}
+	case confirmFixWithOpenCode:
+		if modal.finding != nil {
+			return m.spawnFixTask(*modal.finding)
+		}
+	}
+	return nil
+}
+
+// executeActionMenuItem triggers the action at the given menu index.
+func (m *Model) executeActionMenuItem(idx int) {
+	if m.actionMenuOverlay == nil {
+		return
+	}
+	menu := m.actionMenuOverlay
+	f := menu.finding
+
+	switch {
+	case idx == 0: // Fix with OpenCode
+		m.confirmOverlay = &confirmModal{action: confirmFixWithOpenCode, finding: &f}
+	case idx == 1: // Post as line comment
+		m.confirmOverlay = &confirmModal{action: confirmPublishComment, finding: &f}
+	case idx == 2: // Post ALL as review
+		m.confirmOverlay = &confirmModal{action: confirmBatchReview, findings: append([]state.ReviewFinding{}, m.reviewFindings...)}
+	case idx == 3: // Post as PR comment
+		m.confirmOverlay = &confirmModal{action: confirmPRComment, finding: &f}
+	default:
+		// Pipe targets (idx-4 maps to pipeTargets index)
+		pipeIdx := idx - 4
+		if pipeIdx >= 0 && pipeIdx < len(m.pipeTargets) {
+			m.confirmOverlay = &confirmModal{
+				action:  confirmPipe,
+				finding: &f,
+				target:  &m.pipeTargets[pipeIdx],
+			}
+		}
+	}
+}
+
+// executeActionMenuByKey handles direct key shortcuts in the action menu.
+// Returns true if the key matched an action.
+func (m *Model) executeActionMenuByKey(key string) bool {
+	if m.actionMenuOverlay == nil {
+		return false
+	}
+	menu := m.actionMenuOverlay
+	f := menu.finding
+
+	switch key {
+	case "f":
+		m.confirmOverlay = &confirmModal{action: confirmFixWithOpenCode, finding: &f}
+	case "c":
+		m.confirmOverlay = &confirmModal{action: confirmPublishComment, finding: &f}
+	case "C":
+		m.confirmOverlay = &confirmModal{action: confirmBatchReview, findings: append([]state.ReviewFinding{}, m.reviewFindings...)}
+	case "g":
+		m.confirmOverlay = &confirmModal{action: confirmPRComment, finding: &f}
+	default:
+		// Check numeric keys for pipe targets (1-indexed)
+		if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+			idx := int(key[0] - '1')
+			if idx < len(m.pipeTargets) {
+				m.confirmOverlay = &confirmModal{
+					action:  confirmPipe,
+					finding: &f,
+					target:  &m.pipeTargets[idx],
+				}
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// ── Task management ─────────────────────────────────────────────────────
+
+// spawnFixTask creates a new task for the given finding and launches it.
+// Returns a tea.Cmd that sets the flash message (actual spawning is async via program.Send).
+func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
+	if program == nil {
+		return m.setFlash("Error: program not initialized")
+	}
+	if m.opencodeMgr == nil {
+		return m.setFlash("Error: OpenCode manager not initialized")
+	}
+
+	// Ensure the server is started (lazy init on first task)
+	if m.opencodeMgr.Status() != opencode.ServerConnected {
+		mgr := m.opencodeMgr
+		go func() {
+			if err := mgr.Start(context.Background()); err != nil {
+				program.Send(TaskDoneMsg{ID: -1, Err: fmt.Errorf("server start: %v", err)})
+				return
+			}
+			// Retry the spawn now that server is up
+			program.Send(opencodeReadyMsg{finding: f})
+		}()
+		return m.setFlash("Starting OpenCode server...")
+	}
+
+	task := &Task{
+		ID:         m.taskNextID,
+		Title:      taskTitle(f),
+		FindingIdx: m.reviewCursor,
+		Finding:    f,
+		StartedAt:  time.Now(),
+	}
+	task.setStatus(TaskRunning, "")
+	m.taskNextID++
+	m.tasks = append(m.tasks, task)
+
+	// Auto-switch to Tasks tab
+	m.aiPanelTab = 1
+	m.syncLayout()
+	m.taskCursor = len(m.tasks) - 1
+
+	// Launch the background task via HTTP API
+	go spawnOpenCodeTask(task, m.opencodeMgr, program)
+
+	return m.setFlash("Task started: " + task.Title)
+}
+
+// viewTaskOutput switches the diff pane to show a task's output.
+func (m *Model) viewTaskOutput(taskID int) {
+	m.viewingTaskID = taskID
+	m.viewMode = viewModeTaskOutput
+	content := m.renderTaskOutput(taskID)
+	m.setDiffContent(content)
+}
+
+// actionsResetPolling clears all GitHub Actions state. Call this at every
+// PR transition point (picker, refresh) so stale ticks are discarded.
+func (m *Model) actionsResetPolling() {
+	m.actionsPolling = false
+	m.actionsRuns = nil
+	m.actionsLoading = false
+	m.actionsExpanded = nil
+	m.actionsCursor = 0
+}
+
+func (m *Model) moveActionsCursor(dir int) {
+	total := m.actionsRowCount()
+	if total == 0 {
+		return
+	}
+	m.actionsCursor += dir
+	if m.actionsCursor < 0 {
+		m.actionsCursor = 0
+	}
+	if m.actionsCursor >= total {
+		m.actionsCursor = total - 1
+	}
+}
+
+// toggleActionsExpand expands or collapses the run at the current actions cursor.
+func (m *Model) toggleActionsExpand() tea.Cmd {
+	if len(m.actionsRuns) == 0 {
+		return nil
+	}
+
+	// Map flat cursor to a run index
+	row := 0
+	for _, run := range m.actionsRuns {
+		if row == m.actionsCursor {
+			// This is a run row — toggle expansion
+			if m.actionsExpanded == nil {
+				m.actionsExpanded = make(map[int][]git.WorkflowJob)
+			}
+			if _, expanded := m.actionsExpanded[run.ID]; expanded {
+				delete(m.actionsExpanded, run.ID)
+				m.setDiffContent(m.renderActionsView())
+				return nil
+			}
+			// Fetch jobs for this run
+			return fetchActionsJobs(run.ID)
+		}
+		row++
+		if jobs, ok := m.actionsExpanded[run.ID]; ok {
+			row += len(jobs)
+		}
+	}
+	return nil
+}
+
 func (m *Model) triggerAIReview() tea.Cmd {
 	if m.aiClient == nil || program == nil || m.pr == nil {
 		return nil
@@ -2174,12 +3174,15 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 		// Clear the previous review so the streaming view takes precedence
 		if m.reviewState != nil {
-			m.reviewState.Review = nil
+			// Do NOT clear the review, otherwise subsequent reviews will fail to show
+			// the cached review data because the review is immediately set to nil
+			// m.reviewState.Review = nil
 		}
 
 		// Start streaming
 		m.aiStreaming = true
-		m.aiPanelTab = 1 // show Chat tab (batch list + synthesis stream)
+		m.aiPanelTab = 2 // show Chat tab (batch list + synthesis stream)
+		m.syncLayout()
 		m.aiStreamBuffer = ""
 		m.aiChatHistoryCache = ""
 		m.updateChatViewWithStream()
@@ -2188,7 +3191,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		m.aiCancelFn = cancel
 
-		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}))
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines, m.repoRoot))
 	}
 
 	// Single file mode
@@ -2198,7 +3201,8 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Skip files excluded by content filter (binary, generated, large)
 	if reason, ok := m.skippedFiles[path]; ok {
-		m.aiPanelTab = 1
+		m.aiPanelTab = 2
+		m.syncLayout()
 		m.chatViewport.SetContent(
 			styleTextMuted.Render(fmt.Sprintf("This file is excluded from AI review (%s).", reason)))
 		return nil
@@ -2211,7 +3215,8 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Skip files that are excluded from review (lock files, generated code, etc.)
 	if config.ShouldExcludeFromReview(path) {
-		m.aiPanelTab = 1 // show message in Chat tab
+		m.aiPanelTab = 2 // show message in Chat tab
+		m.syncLayout()
 		m.chatViewport.SetContent(
 			styleTextMuted.Render("This file is excluded from AI review (lock file, generated code, or vendored dependency)."))
 		return nil
@@ -2245,7 +3250,8 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Start streaming on the Chat tab
 	m.aiStreaming = true
-	m.aiPanelTab = 1
+	m.aiPanelTab = 2
+	m.syncLayout()
 	m.aiStreamBuffer = ""
 	m.aiChatHistoryCache = "" // invalidate so it's rebuilt on first tick
 	m.updateChatViewWithStream()
@@ -2262,13 +3268,8 @@ func (m *Model) forceReReview() tea.Cmd {
 		return m.triggerAIReview()
 	}
 
-	// Clear per-file batch findings so nothing is cached
-	for _, fs := range m.reviewState.Files {
-		fs.BatchFindings = ""
-		fs.Purpose = ""
-	}
-	// Clear the PR-level review
-	m.reviewState.Review = nil
+	// Clear all per-file caches and PR-level review (thread-safe)
+	m.reviewState.ClearAllCaches()
 	m.aiReviewRendered = ""
 	m.reviewFindings = nil
 	m.reviewCursor = -1
@@ -2328,7 +3329,7 @@ func (m *Model) jumpToUnreviewed(direction int) {
 			continue
 		}
 		entry := m.fileTree.flat[idx]
-		if entry.node.isDir {
+		if entry.node.isDir || entry.node.isOverview || entry.node.isActions {
 			continue
 		}
 		// Check if unreviewed
@@ -2415,6 +3416,7 @@ func (m *Model) jumpToFinding(idx int) tea.Cmd {
 
 	// Set up pending scroll target
 	m.selectedFile = finding.File
+	m.viewMode = viewModeFile
 	m.pendingScrollLine = finding.Line
 	m.cameFromFinding = true
 
@@ -2476,8 +3478,13 @@ func (m *Model) toggleReviewStatus() tea.Cmd {
 	return nil
 }
 
+// hasFileSelected returns true when the diff pane is showing an actual file diff.
+func (m *Model) hasFileSelected() bool {
+	return m.viewMode == viewModeFile && m.selectedFile != ""
+}
+
 func (m *Model) reloadDiff() tea.Cmd {
-	if m.selectedFile == "" || m.pr == nil {
+	if m.viewMode != viewModeFile || m.selectedFile == "" || m.pr == nil {
 		return nil
 	}
 	// Don't replace content with "Loading..." — keep current diff visible to avoid flicker
@@ -2539,14 +3546,26 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	}
 
 	if m.fileTree.selectedIsOverview() {
-		if m.selectedFile == "" {
+		if m.viewMode == viewModeOverview {
 			return nil // already showing overview
 		}
 		m.selectedFile = ""
+		m.rawDiffContent = ""
+		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
 		return m.renderActiveAIView()
+	}
+
+	if m.fileTree.selectedIsActions() {
+		m.selectedFile = ""
+		m.rawDiffContent = ""
+		m.viewMode = viewModeActions
+		m.setDiffContent(m.renderActionsView())
+		m.diffViewport.GotoTop()
+		m.diffCursor = 0
+		return nil
 	}
 
 	path := m.fileTree.selectedPath()
@@ -2555,6 +3574,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	}
 
 	m.selectedFile = path
+	m.viewMode = viewModeFile
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
@@ -2573,10 +3593,22 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 
 	if m.fileTree.selectedIsOverview() {
 		m.selectedFile = ""
+		m.rawDiffContent = ""
+		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
 		m.diffCursor = 0
 		return m.renderActiveAIView()
+	}
+
+	if m.fileTree.selectedIsActions() {
+		m.selectedFile = ""
+		m.rawDiffContent = ""
+		m.viewMode = viewModeActions
+		m.setDiffContent(m.renderActionsView())
+		m.diffViewport.GotoTop()
+		m.diffCursor = 0
+		return nil
 	}
 
 	path := m.fileTree.selectedPath()
@@ -2585,6 +3617,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 	}
 
 	m.selectedFile = path
+	m.viewMode = viewModeFile
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
@@ -2596,16 +3629,25 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 func (m *Model) renderActiveAIView() tea.Cmd {
 	// If a PR review is currently streaming and we're on the overview,
 	// show the live stream instead of static content.
-	if m.aiReviewPhase != "" && m.selectedFile == "" {
+	if m.aiReviewPhase != "" && m.viewMode != viewModeFile {
 		m.updateChatViewWithStream()
 		return nil
 	}
-	if m.aiPanelTab == 0 && m.hasReview() {
-		return m.renderReviewForFile(m.selectedFile)
+	switch m.aiPanelTab {
+	case 0: // Review tab
+		if m.hasReview() {
+			return m.renderReviewForFile(m.selectedFile)
+		}
+		// No review yet — show placeholder
+		placeholder := styleTextMuted.Render("  No review yet — press R to start a review")
+		m.chatViewport.SetContent(placeholder)
+		m.chatViewport.GotoTop()
+		return nil
+	case 1: // Tasks tab — rendered directly in View(), nothing to prepare
+		return nil
+	default: // Chat tab (2)
+		return m.renderChatForFile(m.selectedFile)
 	}
-	// No review or Chat tab selected — show chat
-	m.aiPanelTab = 1
-	return m.renderChatForFile(m.selectedFile)
 }
 
 // renderReviewForFile renders the PR-level AI review in the Review tab.
@@ -2764,7 +3806,7 @@ func (m *Model) renderChatForFile(filePath string) tea.Cmd {
 				b.WriteString(renderMarkdown(msg.Content, width) + "\n\n")
 			}
 		}
-		return ChatRenderedMsg{FilePath: fp, Content: b.String(), Tab: 1}
+		return ChatRenderedMsg{FilePath: fp, Content: b.String(), Tab: 2}
 	}
 }
 
@@ -2928,10 +3970,16 @@ func (m *Model) syncLayout() {
 	if cols[2] > 2 {
 		cw := cols[2] - 2
 		chatInputH := 3
-		// Chat body = viewport(chatVpH) + "\n" + separator(1) + "\n" + input(chatInputH)
-		// renderPane clips to contentH = ih - 2 (borders)
-		// So chatVpH + 1 + chatInputH = ih - 2 => chatVpH = ih - chatInputH - 3
-		chatVpH := ih - chatInputH - 3
+		var chatVpH int
+		if m.aiPanelTab == 2 {
+			// Chat tab: reserve space for separator(1) + "\n" + input(chatInputH) + "\n"
+			// renderPane clips to contentH = ih - 2 (borders)
+			// So chatVpH + 1 + 1 + chatInputH = ih - 2 => chatVpH = ih - chatInputH - 3
+			chatVpH = ih - chatInputH - 3
+		} else {
+			// Review/Tasks tabs: no chat input, viewport gets full height
+			chatVpH = ih - 2
+		}
 		if chatVpH < 1 {
 			chatVpH = 1
 		}
@@ -2943,6 +3991,55 @@ func (m *Model) syncLayout() {
 
 	// Comment input width matches diff pane
 	m.commentInput.SetWidth(cols[1] - 4)
+}
+
+// syncLayoutWithRerender calls syncLayout and returns commands to re-render
+// content if viewport widths changed (e.g. after toggling side panels).
+func (m *Model) syncLayoutWithRerender() tea.Cmd {
+	prevDiffW := m.diffViewport.Width
+	prevChatW := m.chatViewport.Width
+	m.syncLayout()
+
+	var cmds []tea.Cmd
+
+	// Re-render diff/overview content if diff viewport width changed
+	if m.diffViewport.Width != prevDiffW {
+		switch m.viewMode {
+		case viewModeOverview:
+			m.setDiffContent(m.renderOverview())
+		case viewModeActions:
+			m.setDiffContent(m.renderActionsView())
+		case viewModeTaskOutput:
+			content := m.renderTaskOutput(m.viewingTaskID)
+			m.setDiffContent(content)
+		case viewModeFile:
+			if m.selectedFile != "" && m.pr != nil {
+				// Immediately re-truncate existing content to the new width
+				// so the current frame looks correct while the async
+				// re-fetch is in flight.
+				if m.diffContent != "" {
+					m.setDiffContent(m.diffContent)
+				}
+				cmds = append(cmds, fetchStyledDiff(
+					m.pr.BaseRefName, m.pr.HeadRefName,
+					m.selectedFile, m.contextLines, true,
+					m.useChroma, m.diffViewport.Width))
+			}
+		}
+	}
+
+	// Re-render AI panel content if chat viewport width changed
+	if m.chatViewport.Width != prevChatW {
+		// Invalidate cached review render so it re-wraps at new width
+		m.aiReviewRendered = ""
+		m.aiReviewRenderWidth = 0
+		cmds = append(cmds, m.renderActiveAIView())
+	}
+
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) syncFocus() tea.Cmd {
@@ -3028,6 +4125,15 @@ func (m Model) columns() [3]int {
 			l = max(12, avail-mid-r)
 		}
 	}
+
+	// Final enforcement: ensure total never exceeds available width.
+	// Shrink mid (the diff pane) as a last resort.
+	if total := l + mid + r; total > avail {
+		mid = avail - l - r
+		if mid < 1 {
+			mid = 1
+		}
+	}
 	return [3]int{l, mid, r}
 }
 
@@ -3047,7 +4153,7 @@ func (m Model) contentHeight() int {
 // to avoid a redundant View()+Split call in the main View().
 func (m Model) renderDiffWithCursor() (string, int) {
 	raw := m.diffViewport.View()
-	if m.focusedPane != PaneDiff || m.selectedFile == "" {
+	if m.focusedPane != PaneDiff || !m.hasFileSelected() {
 		return raw, 0
 	}
 
@@ -3219,11 +4325,24 @@ func (m Model) View() string {
 
 	diffTitle := "OVERVIEW"
 	diffBody, cursorLineNum := m.renderDiffWithCursor()
-	if m.selectedFile != "" {
+	if m.viewMode == viewModeActions {
+		diffTitle = "ACTIONS"
+	} else if m.viewMode == viewModeTaskOutput {
+		diffTitle = "TASK OUTPUT"
+	} else if m.hasFileSelected() {
+		findingsCount := m.fileFindingsCount(m.selectedFile)
+		findingsSuffix := ""
+		if findingsCount > 0 {
+			if m.showInlineFindings {
+				findingsSuffix = fmt.Sprintf(" [%dF]", findingsCount)
+			} else {
+				findingsSuffix = fmt.Sprintf(" [%dF hidden]", findingsCount)
+			}
+		}
 		if m.focusedPane == PaneDiff && cursorLineNum > 0 {
-			diffTitle = fmt.Sprintf("DIFF (±%d) L%d", m.contextLines, cursorLineNum)
+			diffTitle = fmt.Sprintf("DIFF (±%d) L%d%s", m.contextLines, cursorLineNum, findingsSuffix)
 		} else {
-			diffTitle = fmt.Sprintf("DIFF (±%d)", m.contextLines)
+			diffTitle = fmt.Sprintf("DIFF (±%d)%s", m.contextLines, findingsSuffix)
 		}
 	}
 	if m.commenting {
@@ -3246,13 +4365,16 @@ func (m Model) View() string {
 	if m.showAIPanel {
 		cw := cols[2] - 2 // content width inside borders
 
-		// Build chat body — show input only on Chat tab
+		// Build chat body — depends on active tab
 		var chatBody string
-		if m.aiPanelTab == 1 {
+		switch m.aiPanelTab {
+		case 0: // Review tab
+			chatBody = m.chatViewport.View()
+		case 1: // Tasks tab
+			chatBody = m.renderTasksTab(cw)
+		case 2: // Chat tab
 			inputLabel := m.renderChatInputLabel(cw)
 			chatBody = m.chatViewport.View() + "\n" + inputLabel + "\n" + m.chatInput.View()
-		} else {
-			chatBody = m.chatViewport.View()
 		}
 
 		// Build title with tab indicators
@@ -3286,6 +4408,24 @@ func (m Model) View() string {
 	if m.errorMsg != "" {
 		overlay := centerOverlay(m.renderErrorModal(), m.width, m.height)
 		return overlay
+	}
+	// Confirm/action overlays float at bottom (no background dimming)
+	// Permission/question overlays take priority
+	if m.permissionOverlay != nil {
+		return bottomOverlay(base, m.renderPermissionModal(), m.width, m.height)
+	}
+	if m.questionOverlay != nil {
+		return bottomOverlay(base, m.renderQuestionModal(), m.width, m.height)
+	}
+	if m.confirmOverlay != nil {
+		return bottomOverlay(base, m.renderConfirmModal(), m.width, m.height)
+	}
+	if m.actionMenuOverlay != nil {
+		return bottomOverlay(base, m.renderActionMenu(), m.width, m.height)
+	}
+	// Flash message: show briefly in the footer area
+	if m.flashMsg != "" {
+		return bottomOverlay(base, styleAccentGreen.Render(m.flashMsg), m.width, m.height)
 	}
 
 	return base
@@ -3393,8 +4533,8 @@ func (m Model) renderPane(title, content string, width, height int, focused bool
 		}
 		vis := ansi.StringWidth(line)
 		if vis > contentW {
-			// Truncate wide lines to fit
-			line = truncateToWidth(line, contentW)
+			// Truncate wide lines to fit using the ansi-aware truncator
+			line = ansi.Truncate(line, contentW, "")
 			vis = ansi.StringWidth(line)
 		}
 		if vis < contentW {
@@ -3562,7 +4702,7 @@ func (m Model) viewFooter() string {
 				struct{ key, desc string }{"j/k", "findings"},
 				struct{ key, desc string }{"Enter", "jump"},
 			)
-		} else {
+		} else if m.aiPanelTab == 2 {
 			bindings = append(bindings,
 				struct{ key, desc string }{"Enter", "send"},
 			)
@@ -3575,7 +4715,7 @@ func (m Model) viewFooter() string {
 		)
 	} else {
 		bindings = append(bindings,
-			struct{ key, desc string }{"a", "review"},
+			struct{ key, desc string }{"a", "ai review"},
 		)
 	}
 

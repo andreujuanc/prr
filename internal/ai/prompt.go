@@ -72,7 +72,8 @@ You MUST return ONLY a JSON object matching this exact schema — no prose befor
       "line": 42,
       "title": "short title",
       "detail": "what's wrong and why it matters",
-      "suggestion": "concrete fix, code snippet preferred"
+      "suggestion": "concrete fix, code snippet preferred",
+      "cwe": "CWE-XXX (for security findings only, omit for non-security)"
     }
   ],
   "missing_tests": ["behaviors that should be tested but aren't"],
