@@ -188,6 +188,54 @@ func (ft *fileTree) hasVisibleDescendants(node *treeNode) bool {
 	return false
 }
 
+// folderStatus computes the aggregate review status for a directory node
+// by examining all descendant files (recursively).
+//
+// Returns StatusReviewed if every file is reviewed, StatusModified if any
+// file has been modified since its last review, and StatusUnreviewed otherwise.
+// Returns StatusUnreviewed for empty directories (no file descendants).
+func folderStatus(node *treeNode) state.ReviewStatus {
+	if !node.isDir {
+		return node.status
+	}
+
+	hasFiles := false
+	allReviewed := true
+	hasModified := false
+
+	var walk func(n *treeNode)
+	walk = func(n *treeNode) {
+		for _, child := range n.children {
+			if child.isDir {
+				walk(child)
+			} else {
+				hasFiles = true
+				switch child.status {
+				case state.StatusReviewed:
+					// ok
+				case state.StatusModified:
+					allReviewed = false
+					hasModified = true
+				default:
+					allReviewed = false
+				}
+			}
+		}
+	}
+	walk(node)
+
+	if !hasFiles {
+		return state.StatusUnreviewed
+	}
+	if allReviewed {
+		return state.StatusReviewed
+	}
+	if hasModified {
+		return state.StatusModified
+	}
+	return state.StatusUnreviewed
+}
+
 // ── Navigation ──────────────────────────────────────────────────────────
 
 func (ft *fileTree) toggleHideReviewed() {
@@ -336,13 +384,25 @@ func (ft *fileTree) View() string {
 				icon = "▾ "
 			}
 			name := entry.node.name + "/"
+
+			// Folder status indicator
+			var statusIcon string
+			switch folderStatus(entry.node) {
+			case state.StatusReviewed:
+				statusIcon = " " + ftIconReviewedSt.Render("✓")
+			case state.StatusModified:
+				statusIcon = " " + ftIconModifiedSt.Render("⟳")
+			default:
+				statusIcon = ""
+			}
+
 			if isSelected {
-				line = indent + styleAccentBlue.Render(icon) + styleAccentBlueBold.Render(name)
+				line = indent + styleAccentBlue.Render(icon) + styleAccentBlueBold.Render(name) + statusIcon
 			} else {
 				if entry.node.expanded {
-					line = indent + styleAccentBlue.Render(icon) + ftDimDirName.Render(name)
+					line = indent + styleAccentBlue.Render(icon) + ftDimDirName.Render(name) + statusIcon
 				} else {
-					line = indent + styleAccentBlue.Render(icon) + ftDirNameStyle.Render(name)
+					line = indent + styleAccentBlue.Render(icon) + ftDirNameStyle.Render(name) + statusIcon
 				}
 			}
 		} else {

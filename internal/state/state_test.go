@@ -137,6 +137,24 @@ func TestSyncWithDiffs(t *testing.T) {
 	}
 }
 
+func TestLoadInvalidPRNumber(t *testing.T) {
+	invalidNumbers := []string{"abc", "12a", "", "12/34", "../etc", "1 2"}
+	for _, pr := range invalidNumbers {
+		_, err := Load(pr)
+		if err == nil {
+			t.Errorf("Load(%q) should return error for invalid PR number", pr)
+		}
+	}
+}
+
+func TestSaveInvalidPRNumber(t *testing.T) {
+	s := NewState("not-a-number")
+	err := Save(s)
+	if err == nil {
+		t.Error("Save with invalid PR number should return error")
+	}
+}
+
 func TestSyncWithDiffsNoChanges(t *testing.T) {
 	state := NewState("test_123")
 	state.GlobalChat = []Message{{Role: "user", Content: "Global"}}

@@ -2735,6 +2735,34 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 	lines := strings.Split(styledDiff, "\n")
 	var result []string
 
+	// renderCommentBlock appends a threaded comment block to result.
+	renderCommentBlock := func(comments []git.ReviewComment) {
+		border := borderStyle.Render("  ┌─ ")
+		author := commentStyle.Render(comments[0].Author)
+		result = append(result, border+author)
+		for _, bodyLine := range strings.Split(comments[0].Body, "\n") {
+			prefix := borderStyle.Render("  │ ")
+			if len(bodyLine) > maxBodyWidth {
+				bodyLine = bodyLine[:maxBodyWidth]
+			}
+			result = append(result, prefix+bodyStyle.Render(bodyLine))
+		}
+		// Render replies within the same block
+		for _, c := range comments[1:] {
+			separator := borderStyle.Render("  ├─ ")
+			rAuthor := replyStyle.Render(c.Author)
+			result = append(result, separator+rAuthor)
+			for _, bodyLine := range strings.Split(c.Body, "\n") {
+				prefix := borderStyle.Render("  │ ")
+				if len(bodyLine) > maxBodyWidth {
+					bodyLine = bodyLine[:maxBodyWidth]
+				}
+				result = append(result, prefix+bodyStyle.Render(bodyLine))
+			}
+		}
+		result = append(result, borderStyle.Render("  └───"))
+	}
+
 	for _, line := range lines {
 		result = append(result, line)
 
@@ -2743,33 +2771,20 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 			continue
 		}
 
+		// Check the primary side for this line
 		key := commentKey{side: info.side, line: info.line}
 		if comments, ok := commentsByKey[key]; ok {
-			// Render all comments at this position as a single threaded block
-			border := borderStyle.Render("  ┌─ ")
-			author := commentStyle.Render(comments[0].Author)
-			result = append(result, border+author)
-			for _, bodyLine := range strings.Split(comments[0].Body, "\n") {
-				prefix := borderStyle.Render("  │ ")
-				if len(bodyLine) > maxBodyWidth {
-					bodyLine = bodyLine[:maxBodyWidth]
-				}
-				result = append(result, prefix+bodyStyle.Render(bodyLine))
+			renderCommentBlock(comments)
+		}
+
+		// For context lines (both old and new numbers present), also check
+		// the LEFT side — a reviewer may comment on the old-file view of an
+		// unchanged line.
+		if info.leftLine > 0 && info.rightLine > 0 {
+			leftKey := commentKey{side: "LEFT", line: info.leftLine}
+			if comments, ok := commentsByKey[leftKey]; ok {
+				renderCommentBlock(comments)
 			}
-			// Render replies within the same block
-			for _, c := range comments[1:] {
-				separator := borderStyle.Render("  ├─ ")
-				rAuthor := replyStyle.Render(c.Author)
-				result = append(result, separator+rAuthor)
-				for _, bodyLine := range strings.Split(c.Body, "\n") {
-					prefix := borderStyle.Render("  │ ")
-					if len(bodyLine) > maxBodyWidth {
-						bodyLine = bodyLine[:maxBodyWidth]
-					}
-					result = append(result, prefix+bodyStyle.Render(bodyLine))
-				}
-			}
-			result = append(result, borderStyle.Render("  └───"))
 		}
 	}
 

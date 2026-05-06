@@ -2,4 +2,6 @@
 .env
 plans/
 plan/
+coverage.out
+coverage.html
 

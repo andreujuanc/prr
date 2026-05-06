@@ -1,6 +1,9 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -70,5 +73,86 @@ func TestGetModelConfig_Unknown(t *testing.T) {
 	}
 	if cfg.Temperature != 0.2 {
 		t.Errorf("fallback Temperature = %f, want 0.2", cfg.Temperature)
+	}
+}
+
+func TestLoadModels_UserOverrideMerges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Write a user override file with a custom model and an override for an existing one
+	dir := filepath.Join(home, ".config", "prr")
+	os.MkdirAll(dir, 0755)
+
+	overrides := map[string]ModelConfig{
+		"my-custom-model": {MaxOutputTokens: 1024, Temperature: 0.5, ThinkingBudget: 0},
+		"gemini-2.5-flash": {MaxOutputTokens: 99999, Temperature: 0.9, ThinkingBudget: 0},
+	}
+	data, _ := json.MarshalIndent(overrides, "", "  ")
+	os.WriteFile(filepath.Join(dir, "models.json"), data, 0644)
+
+	models, err := LoadModels()
+	if err != nil {
+		t.Fatalf("LoadModels() error: %v", err)
+	}
+
+	// User's custom model should be present
+	custom, ok := models["my-custom-model"]
+	if !ok {
+		t.Fatal("custom model not found after merge")
+	}
+	if custom.MaxOutputTokens != 1024 {
+		t.Errorf("custom MaxOutputTokens = %d, want 1024", custom.MaxOutputTokens)
+	}
+
+	// User override should win over embedded default
+	flash := models["gemini-2.5-flash"]
+	if flash.MaxOutputTokens != 99999 {
+		t.Errorf("overridden MaxOutputTokens = %d, want 99999", flash.MaxOutputTokens)
+	}
+
+	// Non-overridden embedded models should still be present
+	if _, ok := models["gemini-3.1-pro-preview"]; !ok {
+		t.Error("embedded model gemini-3.1-pro-preview should still exist")
+	}
+}
+
+func TestLoadModels_CorruptUserFileFallsBackToDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := filepath.Join(home, ".config", "prr")
+	os.MkdirAll(dir, 0755)
+	os.WriteFile(filepath.Join(dir, "models.json"), []byte("{corrupt json"), 0644)
+
+	models, err := LoadModels()
+	if err != nil {
+		t.Fatalf("LoadModels() error: %v", err)
+	}
+
+	// Should fall back to embedded defaults
+	if _, ok := models["gemini-2.5-flash"]; !ok {
+		t.Error("expected embedded defaults when user file is corrupt")
+	}
+}
+
+func TestLoadModels_CreatesUserFileWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	models, err := LoadModels()
+	if err != nil {
+		t.Fatalf("LoadModels() error: %v", err)
+	}
+
+	// Should return embedded defaults
+	if _, ok := models["gemini-2.5-flash"]; !ok {
+		t.Error("expected embedded defaults")
+	}
+
+	// File should have been created
+	path := filepath.Join(home, ".config", "prr", "models.json")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Error("expected models.json to be created")
 	}
 }
