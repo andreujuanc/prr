@@ -52,7 +52,7 @@ type ReviewFinding struct {
 
 // FindingRevalidation holds the result of a security revalidation pass.
 type FindingRevalidation struct {
-	Verdict    string `json:"verdict"`    // "true-positive", "false-positive", "fixed", "uncertain"
+	Verdict    string `json:"verdict"` // "true-positive", "false-positive", "fixed", "uncertain"
 	Reasoning  string `json:"reasoning"`
 	Confidence string `json:"confidence"` // "high", "medium", "low"
 }
@@ -98,13 +98,13 @@ type AIReview struct {
 
 // FileState holds the review status and chat history for a specific file
 type FileState struct {
-	Status           ReviewStatus    `json:"status"`
-	DiffHash         string          `json:"diff_hash"`
-	Chat             []Message       `json:"chat,omitempty"`
-	Purpose          string          `json:"purpose,omitempty"`           // AI-generated description of what the file does
-	BatchFindings    string          `json:"batch_findings,omitempty"`    // cached findings from PR-level batch review
-	AOIResults       json.RawMessage `json:"aoi_results,omitempty"`      // cached AOI scan result (AOIScanResult JSON)
-	AOIContextLines  int             `json:"aoi_context_lines,omitempty"` // context lines used when AOI was generated
+	Status          ReviewStatus    `json:"status"`
+	DiffHash        string          `json:"diff_hash"`
+	Chat            []Message       `json:"chat,omitempty"`
+	Purpose         string          `json:"purpose,omitempty"`           // AI-generated description of what the file does
+	BatchFindings   string          `json:"batch_findings,omitempty"`    // cached findings from PR-level batch review
+	AOIResults      json.RawMessage `json:"aoi_results,omitempty"`       // cached AOI scan result (AOIScanResult JSON)
+	AOIContextLines int             `json:"aoi_context_lines,omitempty"` // context lines used when AOI was generated
 }
 
 // State represents the persisted review state for a single pull request

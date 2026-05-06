@@ -34,8 +34,8 @@ func TestParseAOIResult(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name: "wrapped in markdown fences",
-			input: "```json\n" + `[{"file":"a.go","risk_level":"none","risk_summary":"clean","areas_of_interest":[]}]` + "\n```",
+			name:    "wrapped in markdown fences",
+			input:   "```json\n" + `[{"file":"a.go","risk_level":"none","risk_summary":"clean","areas_of_interest":[]}]` + "\n```",
 			wantLen: 1,
 		},
 		{
@@ -125,8 +125,8 @@ func TestParseRevalidationResult(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "wrapped in fences",
-			input: "```json\n" + `[{"finding_index":0,"verdict":"fixed","reasoning":"patched","confidence":"medium"}]` + "\n```",
+			name:    "wrapped in fences",
+			input:   "```json\n" + `[{"finding_index":0,"verdict":"fixed","reasoning":"patched","confidence":"medium"}]` + "\n```",
 			wantLen: 1,
 		},
 	}
@@ -153,8 +153,8 @@ func TestParseRevalidationResult(t *testing.T) {
 func TestBuildReport(t *testing.T) {
 	results := []AOIScanResult{
 		{
-			File:      "auth.go",
-			RiskLevel: "critical",
+			File:        "auth.go",
+			RiskLevel:   "critical",
 			RiskSummary: "Authentication handler with SQL injection",
 			AreasOfInterest: []AreaOfInterest{
 				{File: "auth.go", Line: 10, Category: "sql", Snippet: "db.Query(q)", Reasoning: "raw SQL", Confidence: "high"},
@@ -168,8 +168,8 @@ func TestBuildReport(t *testing.T) {
 			AreasOfInterest: nil,
 		},
 		{
-			File:      "api.go",
-			RiskLevel: "high",
+			File:        "api.go",
+			RiskLevel:   "high",
 			RiskSummary: "API endpoint with SSRF potential",
 			AreasOfInterest: []AreaOfInterest{
 				{File: "api.go", Line: 5, Category: "network", Snippet: "http.Get(url)", Reasoning: "SSRF", Confidence: "high"},
@@ -225,11 +225,11 @@ func TestBuildReport_NoAOIs(t *testing.T) {
 
 func TestBuildAOIBatches(t *testing.T) {
 	rawDiffs := map[string]string{
-		"internal/auth/handler.go": "diff content for handler",
+		"internal/auth/handler.go":    "diff content for handler",
 		"internal/auth/middleware.go": "diff content for middleware",
-		"main.go": "diff content for main",
-		"go.sum":  "should be excluded",
-		"vendor/lib/lib.go": "should be excluded",
+		"main.go":                     "diff content for main",
+		"go.sum":                      "should be excluded",
+		"vendor/lib/lib.go":           "should be excluded",
 	}
 
 	batches := buildAOIBatches(rawDiffs)

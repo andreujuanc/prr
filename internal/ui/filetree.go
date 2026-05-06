@@ -30,14 +30,14 @@ type treeNode struct {
 
 // fileTree is a navigable file tree component.
 type fileTree struct {
-	root           *treeNode
-	flat           []flatEntry // flattened visible entries for navigation
-	cursor         int
-	width          int
-	height         int
-	offset         int          // scroll offset
-	hideReviewed   bool         // when true, reviewed files are hidden
-	actionStatus   git.ActionStatus // aggregate actions status for sidebar icon
+	root         *treeNode
+	flat         []flatEntry // flattened visible entries for navigation
+	cursor       int
+	width        int
+	height       int
+	offset       int              // scroll offset
+	hideReviewed bool             // when true, reviewed files are hidden
+	actionStatus git.ActionStatus // aggregate actions status for sidebar icon
 }
 
 // flatEntry is a single visible row in the tree.

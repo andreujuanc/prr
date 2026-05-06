@@ -16,11 +16,11 @@ import (
 type confirmAction int
 
 const (
-	confirmPublishComment confirmAction = iota // single finding → line comment
-	confirmBatchReview                         // all findings → GitHub review
-	confirmPRComment                           // single finding → general PR comment
-	confirmPipe                                // pipe finding to external process
-	confirmFixWithOpenCode                     // fix finding with OpenCode agent
+	confirmPublishComment  confirmAction = iota // single finding → line comment
+	confirmBatchReview                          // all findings → GitHub review
+	confirmPRComment                            // single finding → general PR comment
+	confirmPipe                                 // pipe finding to external process
+	confirmFixWithOpenCode                      // fix finding with OpenCode agent
 )
 
 // confirmModal holds the state of a confirmation overlay.

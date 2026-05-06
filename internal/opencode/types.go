@@ -90,13 +90,13 @@ type CacheUsage struct {
 
 // Part represents a message part (text or tool call).
 type Part struct {
-	ID        string    `json:"id"`
-	MessageID string    `json:"messageID"`
-	SessionID string    `json:"sessionID"`
-	Type      string    `json:"type"` // "text", "tool", "step-finish"
-	Text      string    `json:"text,omitempty"`
-	Tool      string    `json:"tool,omitempty"`
-	CallID    string    `json:"callID,omitempty"`
+	ID        string     `json:"id"`
+	MessageID string     `json:"messageID"`
+	SessionID string     `json:"sessionID"`
+	Type      string     `json:"type"` // "text", "tool", "step-finish"
+	Text      string     `json:"text,omitempty"`
+	Tool      string     `json:"tool,omitempty"`
+	CallID    string     `json:"callID,omitempty"`
 	State     *ToolState `json:"state,omitempty"`
 	Time      *PartTime  `json:"time,omitempty"`
 }

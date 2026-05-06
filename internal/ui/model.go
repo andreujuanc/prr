@@ -235,10 +235,10 @@ var logoLines = [2]string{
 type viewMode int
 
 const (
-	viewModeOverview    viewMode = iota // PR overview (default)
-	viewModeFile                        // file diff
-	viewModeActions                     // GitHub Actions status
-	viewModeTaskOutput                  // background task output
+	viewModeOverview   viewMode = iota // PR overview (default)
+	viewModeFile                       // file diff
+	viewModeActions                    // GitHub Actions status
+	viewModeTaskOutput                 // background task output
 )
 
 type Model struct {
@@ -276,10 +276,10 @@ type Model struct {
 	// AI
 	aiClient            ai.Client
 	aoiClient           ai.Client // optional: lightweight model for AOI security pre-scan
-	aiModelName         string // model identifier for display (e.g. "gemini-2.5-pro")
-	aiStreaming         bool   // true while AI is generating
-	aiStreamBuffer      string // accumulated streamed response
-	aiStreamDirty       bool   // true when buffer has unflushed tokens
+	aiModelName         string    // model identifier for display (e.g. "gemini-2.5-pro")
+	aiStreaming         bool      // true while AI is generating
+	aiStreamBuffer      string    // accumulated streamed response
+	aiStreamDirty       bool      // true when buffer has unflushed tokens
 	aiCancelFn          context.CancelFunc
 	aiChatHistoryCache  string                // pre-rendered markdown of completed messages (for streaming perf)
 	aiReviewBatches     []AIReviewBatchInfo   // batch list for in-place rendering
@@ -338,11 +338,11 @@ type Model struct {
 	flashMsg          string        // brief status flash (auto-clears on next key)
 
 	// Background tasks (Fix with OpenCode)
-	tasks           []*Task // all tasks (running, completed, failed, cancelled)
-	taskCursor      int     // selected task in Tasks tab
-	taskNextID      int     // auto-incrementing task ID
-	viewingTaskID   int     // task ID currently shown in diff pane (-1 = none)
-	opencodeMgr     *opencode.Manager // manages OpenCode server + SSE stream
+	tasks         []*Task           // all tasks (running, completed, failed, cancelled)
+	taskCursor    int               // selected task in Tasks tab
+	taskNextID    int               // auto-incrementing task ID
+	viewingTaskID int               // task ID currently shown in diff pane (-1 = none)
+	opencodeMgr   *opencode.Manager // manages OpenCode server + SSE stream
 
 	// Permission/question overlays (from background tasks)
 	permissionOverlay *permissionModal // non-nil when permission approval needed
@@ -366,11 +366,11 @@ type Model struct {
 	blameCache   map[string]map[int]git.BlameLine // filePath -> lineNum -> blame info
 
 	// GitHub Actions
-	actionsRuns     []git.WorkflowRun          // workflow runs for the PR
-	actionsLoading  bool                       // true while fetching runs
-	actionsPolling  bool                       // true when auto-polling active runs
-	actionsExpanded map[int][]git.WorkflowJob  // runID -> expanded jobs (nil = collapsed)
-	actionsCursor   int                        // cursor position in actions view
+	actionsRuns     []git.WorkflowRun         // workflow runs for the PR
+	actionsLoading  bool                      // true while fetching runs
+	actionsPolling  bool                      // true when auto-polling active runs
+	actionsExpanded map[int][]git.WorkflowJob // runID -> expanded jobs (nil = collapsed)
+	actionsCursor   int                       // cursor position in actions view
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────
@@ -1856,11 +1856,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				// If we came from a finding jump, return to the review panel
 				if m.cameFromFinding && m.showAIPanel {
-				m.cameFromFinding = false
-				m.focusedPane = PaneChat
-				m.aiPanelTab = 0
-				m.syncLayout()
-				cmds = append(cmds, m.syncFocus())
+					m.cameFromFinding = false
+					m.focusedPane = PaneChat
+					m.aiPanelTab = 0
+					m.syncLayout()
+					cmds = append(cmds, m.syncFocus())
 					cmds = append(cmds, m.renderActiveAIView())
 					return m, tea.Batch(cmds...)
 				}
@@ -2081,35 +2081,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.viewTaskOutput(m.tasks[m.taskCursor].ID)
 					}
 					return m, nil
-			case "d":
-				// Cancel running task
-				if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
-					t := m.tasks[m.taskCursor]
-					if t.GetStatus() == TaskRunning {
-						cancelTask(t, m.opencodeMgr)
-						cmds = append(cmds, m.setFlash("Task cancelled"))
-					}
-				}
-				return m, tea.Batch(cmds...)
-			case "x":
-				// Remove completed/failed/cancelled task
-				if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
-					t := m.tasks[m.taskCursor]
-					if t.GetStatus() != TaskRunning {
-						m.tasks = append(m.tasks[:m.taskCursor], m.tasks[m.taskCursor+1:]...)
-						if m.taskCursor >= len(m.tasks) && m.taskCursor > 0 {
-							m.taskCursor--
-						}
-						// If we were viewing this task, go back to overview
-						if m.viewMode == viewModeTaskOutput && m.viewingTaskID == t.ID {
-							m.viewMode = viewModeOverview
-							m.viewingTaskID = -1
-							m.setDiffContent(m.renderOverview())
-							m.diffViewport.GotoTop()
+				case "d":
+					// Cancel running task
+					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+						t := m.tasks[m.taskCursor]
+						if t.GetStatus() == TaskRunning {
+							cancelTask(t, m.opencodeMgr)
+							cmds = append(cmds, m.setFlash("Task cancelled"))
 						}
 					}
-				}
-				return m, nil
+					return m, tea.Batch(cmds...)
+				case "x":
+					// Remove completed/failed/cancelled task
+					if m.taskCursor >= 0 && m.taskCursor < len(m.tasks) {
+						t := m.tasks[m.taskCursor]
+						if t.GetStatus() != TaskRunning {
+							m.tasks = append(m.tasks[:m.taskCursor], m.tasks[m.taskCursor+1:]...)
+							if m.taskCursor >= len(m.tasks) && m.taskCursor > 0 {
+								m.taskCursor--
+							}
+							// If we were viewing this task, go back to overview
+							if m.viewMode == viewModeTaskOutput && m.viewingTaskID == t.ID {
+								m.viewMode = viewModeOverview
+								m.viewingTaskID = -1
+								m.setDiffContent(m.renderOverview())
+								m.diffViewport.GotoTop()
+							}
+						}
+					}
+					return m, nil
 				}
 			}
 
@@ -3025,7 +3025,7 @@ func (m *Model) executeActionMenuByKey(key string) bool {
 	default:
 		// Check numeric keys for pipe targets (1-indexed)
 		if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
-			idx := int(key[0]-'1')
+			idx := int(key[0] - '1')
 			if idx < len(m.pipeTargets) {
 				m.confirmOverlay = &confirmModal{
 					action:  confirmPipe,

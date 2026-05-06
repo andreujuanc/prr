@@ -9,28 +9,28 @@ import (
 
 // ReviewComment represents a line-level review comment on a PR.
 type ReviewComment struct {
-	ID           int    `json:"id"`
-	InReplyToID  int    `json:"in_reply_to_id"` // non-zero for threaded replies
-	Path         string `json:"path"`
-	Line         int    `json:"line"` // line number in the diff (new file side)
-	Side         string `json:"side"` // "LEFT" or "RIGHT"
-	Body         string `json:"body"`
-	Author       string `json:"-"` // populated from user.login
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID          int    `json:"id"`
+	InReplyToID int    `json:"in_reply_to_id"` // non-zero for threaded replies
+	Path        string `json:"path"`
+	Line        int    `json:"line"` // line number in the diff (new file side)
+	Side        string `json:"side"` // "LEFT" or "RIGHT"
+	Body        string `json:"body"`
+	Author      string `json:"-"` // populated from user.login
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 // ghCommentResponse mirrors the JSON from GitHub's API for unmarshalling.
 type ghCommentResponse struct {
-	ID           int    `json:"id"`
-	InReplyToID  int    `json:"in_reply_to_id"`
-	Path         string `json:"path"`
-	Line         int    `json:"line"`
-	Side         string `json:"side"`
-	Body         string `json:"body"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
-	User         struct {
+	ID          int    `json:"id"`
+	InReplyToID int    `json:"in_reply_to_id"`
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
+	Side        string `json:"side"`
+	Body        string `json:"body"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	User        struct {
 		Login string `json:"login"`
 	} `json:"user"`
 }

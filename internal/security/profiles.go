@@ -35,7 +35,7 @@ type AOIModelProfile struct {
 var aoiProfiles = map[string]AOIModelProfile{
 	"gemini-2.5-flash-lite": {
 		Model:           "gemini-2.5-flash-lite",
-		ContextLines:    3,    // U10 hurts recall and increases FP
+		ContextLines:    3, // U10 hurts recall and increases FP
 		Temperature:     0.1,
 		ThinkingBudget:  0,
 		MaxOutputTokens: 8192,

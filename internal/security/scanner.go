@@ -2,8 +2,8 @@ package security
 
 import (
 	"context"
-	"encoding/json"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -111,7 +111,7 @@ func ScanAreasOfInterest(
 				return
 			}
 
-				results, err := scanBatch(ctx, client, batch)
+			results, err := scanBatch(ctx, client, batch)
 			resultsCh <- batchResult{index: i, results: results, err: err}
 		}(i, batch)
 	}

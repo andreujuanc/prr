@@ -482,9 +482,9 @@ func TestAOIModelComparison(t *testing.T) {
 				err:           err,
 				mustFindTotal: mustFindCount,
 				niceFindTotal: niceFindCount,
-				inputTokens:  usage.InputTokens,
-				outputTokens: usage.OutputTokens,
-				cost:         estimateCost(spec.model, usage.InputTokens, usage.OutputTokens),
+				inputTokens:   usage.InputTokens,
+				outputTokens:  usage.OutputTokens,
+				cost:          estimateCost(spec.model, usage.InputTokens, usage.OutputTokens),
 			}
 
 			if err != nil {
