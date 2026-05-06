@@ -1278,12 +1278,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Save per-file batch findings for caching
 			if msg.FileFindings != nil && m.reviewState != nil {
 				for path, findings := range msg.FileFindings {
-					fs, ok := m.reviewState.Files[path]
-					if !ok {
-						fs = &state.FileState{Status: state.StatusUnreviewed}
-						m.reviewState.Files[path] = fs
-					}
-					fs.BatchFindings = findings
+					m.reviewState.SetBatchFindings(path, "reviewed", findings)
 				}
 				if err := state.Save(m.reviewState); err != nil {
 					log.Printf("Warning: failed to save file findings: %v", err)
@@ -3196,7 +3191,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		m.aiCancelFn = cancel
 
-		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines))
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines, m.repoRoot))
 	}
 
 	// Single file mode
@@ -3273,14 +3268,8 @@ func (m *Model) forceReReview() tea.Cmd {
 		return m.triggerAIReview()
 	}
 
-	// Clear per-file batch findings and AOI results so nothing is cached
-	for _, fs := range m.reviewState.Files {
-		fs.BatchFindings = ""
-		fs.Purpose = ""
-		fs.AOIResults = nil
-	}
-	// Clear the PR-level review
-	m.reviewState.Review = nil
+	// Clear all per-file caches and PR-level review (thread-safe)
+	m.reviewState.ClearAllCaches()
 	m.aiReviewRendered = ""
 	m.reviewFindings = nil
 	m.reviewCursor = -1

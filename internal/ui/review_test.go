@@ -1117,7 +1117,7 @@ func TestLive_StreamMultiPassReview(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := streamMultiPassReview(ctx, agent, nil, samplePRMeta, rawDiffs, "", rs, 1, rr, "", "", 3)
+	cmd := streamMultiPassReview(ctx, agent, nil, samplePRMeta, rawDiffs, "", rs, 1, rr, "", "", 3, "")
 	msg := cmd() // execute the tea.Cmd
 
 	done, ok := msg.(AIChatDoneMsg)
