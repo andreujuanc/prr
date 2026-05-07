@@ -45,8 +45,6 @@ type AreaOfInterest struct {
 type AOIScanResult struct {
 	File            string           `json:"file"`
 	AreasOfInterest []AreaOfInterest `json:"areas_of_interest"`
-	RiskLevel       string           `json:"risk_level"`   // "critical", "high", "medium", "low", "none"
-	RiskSummary     string           `json:"risk_summary"`
 
 	// Areas is the new-format field name. During parsing, if "areas" is present
 	// in the JSON it takes precedence over "areas_of_interest".
@@ -65,10 +63,8 @@ func (r *AOIScanResult) NormalizeAOIs() {
 // AOIReport is the complete result of scanning all changed files.
 type AOIReport struct {
 	Files          []AOIScanResult `json:"files"`
-	OverallRisk    string          `json:"overall_risk"` // highest risk across all files
 	TotalAOIs      int             `json:"total_aois"`
-	HighRiskFiles  []string        `json:"high_risk_files"` // files rated critical or high
-	SecurityDigest string          `json:"-"`               // formatted text for injection into review prompts
+	SecurityDigest string          `json:"-"` // formatted text for injection into review prompts
 }
 
 // Revalidation holds the result of a security revalidation pass on a finding.
@@ -84,7 +80,6 @@ type SecuritySummary struct {
 	TotalFindings    int            `json:"total_findings"`
 	BySeverity       map[string]int `json:"by_severity"`       // critical/high/medium/low counts
 	ByCWE            map[string]int `json:"by_cwe,omitempty"`  // CWE-ID -> count
-	HighRiskFiles    []string       `json:"high_risk_files"`   // files with critical/high findings
 	AOIsCovered      int            `json:"aois_covered"`      // how many AOIs led to findings
 	AOIsTotal        int            `json:"aois_total"`        // total AOIs identified
 	RevalidatedCount int            `json:"revalidated_count"` // findings that were revalidated

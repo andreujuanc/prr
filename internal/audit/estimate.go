@@ -2,8 +2,8 @@ package audit
 
 import (
 	"fmt"
-	"strings"
 
+	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/review"
 )
 
@@ -31,23 +31,17 @@ const (
 	avgOutputTokensPerCall   = 1500
 )
 
-// DefaultPricing returns pricing for common models.
+// DefaultPricing returns pricing for a model, looking up from the known models registry.
 func DefaultPricing(modelName string) ModelPricing {
-	name := strings.ToLower(modelName)
-	switch {
-	case strings.Contains(name, "gemini-3.1-pro"):
-		return ModelPricing{InputPerMTok: 2.50, OutputPerMTok: 15.00, ModelName: modelName}
-	case strings.Contains(name, "gemini-2.5-pro"):
-		return ModelPricing{InputPerMTok: 1.25, OutputPerMTok: 10.00, ModelName: modelName}
-	case strings.Contains(name, "gemini-3.1-flash-lite"):
-		return ModelPricing{InputPerMTok: 0.02, OutputPerMTok: 0.10, ModelName: modelName}
-	case strings.Contains(name, "gemini-2.5-flash-lite"):
-		return ModelPricing{InputPerMTok: 0.02, OutputPerMTok: 0.10, ModelName: modelName}
-	case strings.Contains(name, "gemini-2.5-flash"):
-		return ModelPricing{InputPerMTok: 0.15, OutputPerMTok: 3.50, ModelName: modelName}
-	default:
-		return ModelPricing{InputPerMTok: 2.50, OutputPerMTok: 10.00, ModelName: modelName}
+	if m, ok := config.GetKnownModel(modelName); ok {
+		return ModelPricing{
+			InputPerMTok:  m.InputPricePer1M,
+			OutputPerMTok: m.OutputPricePer1M,
+			ModelName:     modelName,
+		}
 	}
+	// Fallback for unknown models — assume expensive to avoid underestimating
+	return ModelPricing{InputPerMTok: 2.50, OutputPerMTok: 10.00, ModelName: modelName}
 }
 
 // EstimateCost projects Phase 3 costs from routing results.

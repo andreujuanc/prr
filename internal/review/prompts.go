@@ -36,8 +36,7 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string,
 
 	// Project context
 	if projectContext != "" {
-		sb.WriteString("\n\n## Project Context\n\n")
-		sb.WriteString(projectContext)
+		appendProjectContext(&sb, projectContext)
 	}
 
 	// AOI details
@@ -80,8 +79,7 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, ca
 
 	// Project context
 	if projectContext != "" {
-		sb.WriteString("\n\n## Project Context\n\n")
-		sb.WriteString(projectContext)
+		appendProjectContext(&sb, projectContext)
 	}
 
 	// AOI list
@@ -190,4 +188,16 @@ func relevantDimensionsFromGroup(aois []security.AreaOfInterest) []string {
 		}
 	}
 	return result
+}
+
+// appendProjectContext writes the project context section, avoiding a
+// duplicate "## Project Context" header if the value already includes one.
+func appendProjectContext(sb *strings.Builder, pc string) {
+	if strings.HasPrefix(strings.TrimSpace(pc), "## Project Context") {
+		sb.WriteString("\n\n")
+		sb.WriteString(pc)
+	} else {
+		sb.WriteString("\n\n## Project Context\n\n")
+		sb.WriteString(pc)
+	}
 }

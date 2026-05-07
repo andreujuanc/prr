@@ -687,14 +687,13 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 
 	usage := tracker.Snapshot()
 	cost := estimateCost(model, usage.InputTokens, usage.OutputTokens)
-	t.Logf("\nModel: %s | Time: %.1fs | Total AOIs: %d | Overall risk: %s | Tokens: %d in + %d out | Cost: $%.4f\n",
-		model, elapsed.Seconds(), report.TotalAOIs, report.OverallRisk,
+	t.Logf("\nModel: %s | Time: %.1fs | Total AOIs: %d | Tokens: %d in + %d out | Cost: $%.4f\n",
+		model, elapsed.Seconds(), report.TotalAOIs,
 		usage.InputTokens, usage.OutputTokens, cost)
 
 	// Print each file's AOIs
 	for _, fileResult := range report.Files {
-		t.Logf("── %s (risk: %s) ──", fileResult.File, fileResult.RiskLevel)
-		t.Logf("   Summary: %s", fileResult.RiskSummary)
+		t.Logf("── %s ──", fileResult.File)
 
 		if len(fileResult.AreasOfInterest) == 0 {
 			t.Logf("   (no AOIs)")

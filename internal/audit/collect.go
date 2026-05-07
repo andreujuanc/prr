@@ -36,9 +36,9 @@ func CollectFiles(repoRoot string, excludePatterns, includePatterns []string) ([
 	return result, nil
 }
 
-// listTrackedFiles returns all git-tracked files relative to the repo root.
+// listTrackedFiles returns all git-tracked and untracked (non-ignored) files relative to the repo root.
 func listTrackedFiles(repoRoot string) ([]string, error) {
-	cmd := exec.Command("git", "ls-files", "--cached", "--exclude-standard")
+	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard")
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {

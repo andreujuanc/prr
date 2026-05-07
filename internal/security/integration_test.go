@@ -60,8 +60,7 @@ func TestScanAreasOfInterest_AllCached(t *testing.T) {
 
 	cached := map[string]*AOIScanResult{
 		"a.go": {
-			File:      "a.go",
-			RiskLevel: "low",
+			File: "a.go",
 		},
 	}
 	rawDiffs := map[string]string{"a.go": "diff content"}
@@ -89,8 +88,8 @@ func TestScanAreasOfInterest_EmptyDiffs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if report.OverallRisk != "none" {
-		t.Errorf("OverallRisk = %q, want %q", report.OverallRisk, "none")
+	if report.TotalAOIs != 0 {
+		t.Errorf("TotalAOIs = %d, want %d", report.TotalAOIs, 0)
 	}
 }
 
@@ -124,14 +123,13 @@ func TestScanAreasOfInterest_ClientError(t *testing.T) {
 		"handler.go": "some diff",
 	}
 
-	// Should not return an error — individual batch failures are logged, not propagated
+	// When all batches fail, an error should be returned
 	report, err := ScanAreasOfInterest(ctx, client, rawDiffs, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error when all batches fail, got nil")
 	}
-	// Report should still be built (with 0 results from the failed batch)
-	if report == nil {
-		t.Fatal("report should not be nil even on batch failure")
+	if report != nil {
+		t.Fatal("report should be nil when all batches fail")
 	}
 }
 

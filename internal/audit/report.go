@@ -109,14 +109,8 @@ func ExportMarkdown(result *Result, path string) error {
 		}
 	}
 
-	// Cross-cutting observations
-	if len(result.CrossCuttingObservations) > 0 {
-		b.WriteString("## Cross-cutting Observations\n")
-		for _, obs := range result.CrossCuttingObservations {
-			fmt.Fprintf(&b, "- %s\n", obs)
-		}
-		b.WriteString("\n")
-	}
+	// Cross-cutting observations are used as input to Phase 4 synthesis
+	// but not included in the report — the synthesis output covers them.
 
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

@@ -98,7 +98,11 @@ func main() {
 
 	// Create AOI client — uses the same provider but with a cheap/fast model
 	// for the security pre-scan. No tools needed (just diff analysis).
-	aoiClient := createAOIClient(cfg)
+	aoiClient, aoiErr := createAOIClient(cfg)
+	if aoiErr != nil {
+		// AOI is optional for PR review mode — just log and continue without it
+		log.Printf("AOI client not available: %v", aoiErr)
+	}
 
 	// Initialize hidden debug logger
 	if err := initLogger(); err != nil {
@@ -166,6 +170,10 @@ func runAudit(debug bool, args []string) {
 			noSynth = true
 		} else if arg == "--quiet" || arg == "-q" {
 			quiet = true
+		} else if arg == "--debug" {
+			opts.Debug = true
+		} else if strings.HasPrefix(arg, "--file=") {
+			opts.DebugFile = strings.TrimPrefix(arg, "--file=")
 		} else if arg == "--help" || arg == "-h" {
 			printAuditUsage()
 			os.Exit(0)
@@ -222,21 +230,53 @@ func runAudit(debug bool, args []string) {
 	}
 
 	// ── Interactive model selection ─────────────────────────────────────
-	selection, err := audit.PromptModels(cfg)
-	if err != nil {
-		printError(err)
-		os.Exit(1)
+	// Allow env vars to skip the interactive prompt
+	envReview := os.Getenv("PRR_REVIEW_MODEL")
+	envAOI := os.Getenv("PRR_AOI_MODEL")
+	var selection *audit.ModelSelection
+	if envReview != "" && envAOI != "" {
+		selection = &audit.ModelSelection{
+			ReviewModel: envReview,
+			AOIModel:    envAOI,
+		}
+	} else {
+		var selErr error
+		selection, selErr = audit.PromptModels(cfg)
+		if selErr != nil {
+			printError(selErr)
+			os.Exit(1)
+		}
 	}
 
 	// Apply selections to config for client creation
 	cfg.Model = selection.ReviewModel
 	cfg.AOIModel = selection.AOIModel
 
+	// Validate models are known and match the configured provider
+	if rm, ok := config.GetKnownModel(selection.ReviewModel); !ok {
+		printError(fmt.Errorf("unknown review model %q — run without PRR_REVIEW_MODEL to see available models", selection.ReviewModel))
+		os.Exit(1)
+	} else if rm.Provider != cfg.Provider {
+		printError(fmt.Errorf("review model %q belongs to provider %q but configured provider is %q", selection.ReviewModel, rm.Provider, cfg.Provider))
+		os.Exit(1)
+	}
+	if am, ok := config.GetKnownModel(selection.AOIModel); !ok {
+		printError(fmt.Errorf("unknown AOI model %q — run without PRR_AOI_MODEL to see available models", selection.AOIModel))
+		os.Exit(1)
+	} else if am.Provider != cfg.Provider {
+		printError(fmt.Errorf("AOI model %q belongs to provider %q but configured provider is %q", selection.AOIModel, am.Provider, cfg.Provider))
+		os.Exit(1)
+	}
+
 	// Create AI clients
 	reviewClient := createAIClient(cfg)
-	aoiClient := createAOIClient(cfg)
-	if aoiClient == nil {
-		printError(fmt.Errorf("AOI client not available — audit mode requires an AOI model"))
+	// In audit mode, restrict review tools to code inspection only
+	if agent, ok := reviewClient.(*ai.Agent); ok {
+		ai.WithToolFilter([]string{"read_file", "grep", "list_dir", "glob"})(agent)
+	}
+	aoiClient, aoiErr := createAOIClient(cfg)
+	if aoiErr != nil {
+		printError(fmt.Errorf("AOI client not available — audit mode requires an AOI model: %w", aoiErr))
 		os.Exit(1)
 	}
 
@@ -259,30 +299,24 @@ func runAudit(debug bool, args []string) {
 	// Load previous findings for comparison
 	previousFindings, _ := audit.LoadSnapshot(repoRoot)
 
-	// Run audit with progress UI
+	// Run audit with progress UI (or plain mode in debug)
 	ctx := context.Background()
-	result, synthesis, err := audit.RunWithUI(ctx, reviewClient, aoiClient, opts,
-		selection.ReviewModel, selection.AOIModel, noSynth)
+	var result *audit.Result
+	var synthesis *audit.SynthesisResult
+	if opts.Debug {
+		// In debug mode, skip Bubble Tea UI — run directly with simple progress to stderr
+		result, synthesis, err = audit.RunPlain(ctx, reviewClient, aoiClient, opts,
+			selection.ReviewModel, selection.AOIModel, noSynth)
+	} else {
+		result, synthesis, err = audit.RunWithUI(ctx, reviewClient, aoiClient, opts,
+			selection.ReviewModel, selection.AOIModel, noSynth)
+	}
 	if err != nil {
 		printError(err)
 		os.Exit(1)
 	}
 
-	// Show cost estimate
-	if result.Routing != nil {
-		pricing := audit.DefaultPricing(selection.ReviewModel)
-		estimate := audit.EstimateCost(result.Routing, opts.MaxReviews, pricing)
-		fmt.Fprintf(os.Stderr, "  %s %s\n", dimStyle.Render("[cost]"), info.Render(estimate.FormatEstimate()))
-	}
-	fmt.Fprintln(os.Stderr)
-
 	if !quiet {
-		// Comparison with previous audit
-		if previousFindings != nil {
-			comparison := audit.CompareFindings(result.Findings, previousFindings)
-			fmt.Fprintf(os.Stderr, "  %s %s\n\n", dimStyle.Render("[vs last audit]"), info.Render(comparison.FormatComparison()))
-		}
-
 		if len(result.Findings) == 0 {
 			fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render("No issues found."))
 		} else {
@@ -352,15 +386,34 @@ func runAudit(debug bool, args []string) {
 			}
 		}
 
-		// Print cross-cutting observations
-		if len(result.CrossCuttingObservations) > 0 {
-			fmt.Fprintf(os.Stderr, "  %s\n\n", header.Render("Cross-cutting Observations"))
-			for _, obs := range result.CrossCuttingObservations {
-				fmt.Fprintf(os.Stderr, "  • %s\n", info.Render(obs))
-			}
-			fmt.Fprintln(os.Stderr)
+		// Comparison with previous audit
+		if previousFindings != nil {
+			comparison := audit.CompareFindings(result.Findings, previousFindings)
+			fmt.Fprintf(os.Stderr, "  %s %s\n", dimStyle.Render("[vs last audit]"), info.Render(comparison.FormatComparison()))
 		}
+
+		// Cross-cutting observations are used as input to Phase 4 synthesis
+		// but not displayed directly — the synthesis output covers them.
 	}
+
+	// Show actual token usage and cost
+	{
+		u := result.Usage
+		total := u.Total()
+		aoiPricing := audit.DefaultPricing(selection.AOIModel)
+		reviewPricing := audit.DefaultPricing(selection.ReviewModel)
+
+		aoiCost := float64(u.AOI.InputTokens)/1_000_000*aoiPricing.InputPerMTok +
+			float64(u.AOI.OutputTokens)/1_000_000*aoiPricing.OutputPerMTok
+		reviewCost := float64(u.Review.InputTokens+u.Recheck.InputTokens+u.Synth.InputTokens)/1_000_000*reviewPricing.InputPerMTok +
+			float64(u.Review.OutputTokens+u.Recheck.OutputTokens+u.Synth.OutputTokens)/1_000_000*reviewPricing.OutputPerMTok
+		totalCost := aoiCost + reviewCost
+
+		costLine := fmt.Sprintf("Tokens: %dk in / %dk out | AOI: $%.4f | Review: $%.4f | Total: $%.4f",
+			total.InputTokens/1000, total.OutputTokens/1000, aoiCost, reviewCost, totalCost)
+		fmt.Fprintf(os.Stderr, "  %s %s\n", dimStyle.Render("[cost]"), info.Render(costLine))
+	}
+	fmt.Fprintln(os.Stderr)
 
 	// Save snapshot for future comparisons
 	if err := audit.SaveSnapshot(repoRoot, result.Findings); err != nil {
@@ -396,6 +449,8 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "    --no-cache           Ignore cached results, re-audit everything\n")
 	fmt.Fprintf(os.Stderr, "    --no-synthesis       Skip Phase 4 executive summary synthesis\n")
 	fmt.Fprintf(os.Stderr, "    --quiet, -q          Suppress terminal output (use with --output)\n")
+	fmt.Fprintf(os.Stderr, "    --debug              Print all LLM prompts and responses to stderr\n")
+	fmt.Fprintf(os.Stderr, "    --file=<path>        Restrict audit to a single file (relative to repo root)\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available dimensions:"))
 	fmt.Fprintf(os.Stderr, "    authentication, authorization, input-validation, data-integrity,\n")
@@ -405,7 +460,14 @@ func printAuditUsage() {
 }
 
 func createAIClient(cfg *config.Config) ai.Client {
-	toolExec := &ai.ToolExecutor{}
+	if cfg.APIKey == "" || cfg.APIKey == "YOUR_API_KEY" {
+		printError(fmt.Errorf("no API key configured. Set PRR_API_KEY or update api_key in your config file"))
+		os.Exit(1)
+	}
+
+	toolExec := &ai.ToolExecutor{
+		HeadRef: "HEAD",
+	}
 
 	// Load per-model tuning (maxOutputTokens, temperature, thinkingBudget)
 	models, err := config.LoadModels()
@@ -443,7 +505,7 @@ func createAIClient(cfg *config.Config) ai.Client {
 // and no tools. The AOI scanner only needs to analyze diffs — no file reading or grep.
 // createAOIClient creates the cheap LLM client for AOI pre-scanning.
 // Priority: PRR_AOI_MODEL env var > config aoi_model > provider default.
-func createAOIClient(cfg *config.Config) ai.Client {
+func createAOIClient(cfg *config.Config) (ai.Client, error) {
 	var aoiModel string
 	if envModel := os.Getenv("PRR_AOI_MODEL"); envModel != "" {
 		aoiModel = envModel
@@ -458,7 +520,7 @@ func createAOIClient(cfg *config.Config) ai.Client {
 		case "openai":
 			aoiModel = "gpt-4o-mini"
 		default:
-			return nil // unsupported provider, skip AOI
+			return nil, fmt.Errorf("unsupported provider %q for AOI scanning", cfg.Provider)
 		}
 	}
 
@@ -469,6 +531,10 @@ func createAOIClient(cfg *config.Config) ai.Client {
 	}
 	if envKey := os.Getenv("PRR_AOI_API_KEY"); envKey != "" {
 		aoiAPIKey = envKey
+	}
+
+	if aoiAPIKey == "" || aoiAPIKey == "YOUR_API_KEY" {
+		return nil, fmt.Errorf("no API key configured for AOI model (%s). Set PRR_AOI_API_KEY, or configure aoi_api_key / api_key in your config", aoiModel)
 	}
 
 	// Use benchmark-tuned settings from the model profile
@@ -486,11 +552,11 @@ func createAOIClient(cfg *config.Config) ai.Client {
 		gp.ModelConfig.ThinkingBudget = aoiProfile.ThinkingBudget
 		provider = gp
 	default:
-		return nil
+		return nil, fmt.Errorf("unsupported provider %q for AOI scanning", cfg.Provider)
 	}
 
 	// AOI client has no tool executor — it only analyzes the diffs passed to it
-	return ai.NewAgent(provider, nil)
+	return ai.NewAgent(provider, nil), nil
 }
 
 // ── Pre-flight checks ──────────────────────────────────────────────────

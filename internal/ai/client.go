@@ -48,3 +48,11 @@ type ModelSwitcher interface {
 	// provided tuning parameters. Returns an error if the model is invalid.
 	SwitchModel(modelID string, maxOutputTokens int, temperature float64, thinkingBudget int) error
 }
+
+// UsageReporter is optionally implemented by clients that track token usage.
+type UsageReporter interface {
+	// Usage returns the accumulated token usage since last reset.
+	Usage() TokenUsage
+	// ResetUsage zeroes the usage counters.
+	ResetUsage()
+}

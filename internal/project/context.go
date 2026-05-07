@@ -222,6 +222,7 @@ func gatherInputs(repoRoot string) (*discoveredInputs, error) {
 		if info, err := os.Stat(dirPath); err == nil && info.IsDir() {
 			_ = filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
+					log.Printf("Warning: error walking %s: %v", path, err)
 					return nil
 				}
 				if info.IsDir() {

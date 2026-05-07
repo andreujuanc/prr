@@ -20,7 +20,6 @@ func BuildSecuritySummary(
 
 	if aoiReport != nil {
 		summary.AOIsTotal = aoiReport.TotalAOIs
-		summary.HighRiskFiles = aoiReport.HighRiskFiles
 	}
 
 	for _, f := range findings {
@@ -103,11 +102,7 @@ func FormatSecuritySummary(s *SecuritySummary) string {
 
 	// AOI coverage
 	if s.AOIsTotal > 0 {
-		sb.WriteString(fmt.Sprintf("AOI coverage: %d areas scanned", s.AOIsTotal))
-		if len(s.HighRiskFiles) > 0 {
-			sb.WriteString(fmt.Sprintf(", %d high-risk files", len(s.HighRiskFiles)))
-		}
-		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("AOI coverage: %d areas scanned\n", s.AOIsTotal))
 	}
 
 	return sb.String()

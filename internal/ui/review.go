@@ -14,6 +14,7 @@ import (
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/project"
+	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/state"
 
@@ -53,6 +54,29 @@ func (r teaReporter) SynthesisStarted() {
 }
 func (r teaReporter) Token(token string) {
 	r.p.Send(AIChatDeltaMsg{Token: token})
+}
+
+// offsetReporter wraps a ReviewReporter and adds an offset to batch indices.
+// Used when fallback directory batches are displayed after AOI review calls.
+type offsetReporter struct {
+	rr     ReviewReporter
+	offset int
+}
+
+func (o *offsetReporter) AOIProgress(status string, done bool, aoiCount int) {
+	o.rr.AOIProgress(status, done, aoiCount)
+}
+func (o *offsetReporter) InitBatches(batches []AIReviewBatchInfo) {
+	// Skip — batches were already initialized by the caller
+}
+func (o *offsetReporter) BatchProgress(batch int, status AIReviewBatchStatus) {
+	o.rr.BatchProgress(batch+o.offset, status)
+}
+func (o *offsetReporter) SynthesisStarted() {
+	o.rr.SynthesisStarted()
+}
+func (o *offsetReporter) Token(token string) {
+	o.rr.Token(token)
 }
 
 // reviewBatch represents a group of related files to review together.
@@ -174,6 +198,7 @@ func streamMultiPassReview(
 	return func() tea.Msg {
 		// ── Phase 0: Project context + AOI pre-scan (parallel) ────
 		var securityDigest string
+		var aoiScanResults []security.AOIScanResult // retained for AOI-driven routing
 
 		// Run project context discovery and AOI scan concurrently
 		type projectResult struct {
@@ -216,8 +241,6 @@ func streamMultiPassReview(
 			rr.AOIProgress("starting security pre-scan...", false, 0)
 
 			// Use diffs with more context for AOI if configured.
-			// More surrounding lines help the model understand data flow
-			// (e.g., where a variable is defined vs. where it's used).
 			aoiDiffs := rawDiffs
 			if aoiContextLines > 3 && base != "" && head != "" {
 				rr.AOIProgress(fmt.Sprintf("re-diffing with %d context lines...", aoiContextLines), false, 0)
@@ -233,8 +256,7 @@ func streamMultiPassReview(
 				}
 			}
 
-			// Build AOI cache from state — skip files whose diff hasn't changed
-			// and whose context lines match the current setting
+			// Build AOI cache from state
 			var aoiCache map[string]*security.AOIScanResult
 			if reviewState != nil {
 				aoiCache = make(map[string]*security.AOIScanResult)
@@ -262,7 +284,6 @@ func streamMultiPassReview(
 				if reviewState != nil {
 					for _, fileResult := range aoiReport.Files {
 						filePath := fileResult.File
-						// Normalize: if exact path not in state, try path.Clean
 						if !reviewState.HasFile(filePath) {
 							cleaned := filepath.Clean(filePath)
 							if cleaned != filePath && reviewState.HasFile(cleaned) {
@@ -286,8 +307,9 @@ func streamMultiPassReview(
 
 				if aoiReport.TotalAOIs > 0 {
 					securityDigest = aoiReport.SecurityDigest
+					aoiScanResults = aoiReport.Files
 					rr.AOIProgress(
-						fmt.Sprintf("found %d areas of interest (risk: %s)", aoiReport.TotalAOIs, aoiReport.OverallRisk),
+						fmt.Sprintf("found %d areas of interest", aoiReport.TotalAOIs),
 						true, aoiReport.TotalAOIs,
 					)
 				} else {
@@ -304,10 +326,12 @@ func streamMultiPassReview(
 			log.Printf("Project context discovery failed (non-fatal): %v", projResult.err)
 		}
 
+		projectContext := projResult.context
+
 		// Build enhanced instructions: project context → security digest → user instructions
 		enhancedInstructions := ""
-		if projResult.context != "" {
-			enhancedInstructions = projResult.context + "\n\n"
+		if projectContext != "" {
+			enhancedInstructions = projectContext + "\n\n"
 		}
 		enhancedInstructions += customInstructions
 		if securityDigest != "" {
@@ -315,32 +339,191 @@ func streamMultiPassReview(
 		}
 		enhancedInstructions = strings.TrimSpace(enhancedInstructions)
 
-		// ── Phase 1+2: Batch review + synthesis ───────────────────
-		batches := buildReviewBatches(rawDiffs)
-		if len(batches) == 0 {
+		// ── Phase 1: AOI-driven review + fallback batches ─────────
+
+		// Route AOIs into review calls (individual + grouped)
+		routeResult := review.RouteAOIs(aoiScanResults, nil, 10)
+
+		// Identify files covered by AOI review calls
+		aoiCoveredFiles := make(map[string]bool)
+		var reviewCalls []review.ReviewCall
+		if routeResult != nil && routeResult.TotalAOIs > 0 {
+			reviewCalls = routeResult.PrioritizedCalls(0)
+			for _, call := range reviewCalls {
+				for _, f := range call.Files {
+					aoiCoveredFiles[f] = true
+				}
+			}
+			log.Printf("AOI routing: %s", routeResult.FormatSummary())
+		}
+
+		// Build fallback batches for files WITHOUT AOIs
+		fallbackDiffs := make(map[string]string)
+		for fp, diff := range rawDiffs {
+			if !aoiCoveredFiles[fp] && !config.ShouldExcludeFromReview(fp) {
+				fallbackDiffs[fp] = diff
+			}
+		}
+		fallbackBatches := buildReviewBatches(fallbackDiffs)
+
+		// Total "batches" = AOI review calls + fallback directory batches
+		totalCalls := len(reviewCalls) + len(fallbackBatches)
+		if totalCalls == 0 {
 			return AIChatDoneMsg{Err: fmt.Errorf("no files to review")}
 		}
 
-		// Initialize the batch list in the UI
-		batchInfos := make([]AIReviewBatchInfo, len(batches))
-		for i, b := range batches {
-			batchInfos[i] = AIReviewBatchInfo{Label: b.label, NumFiles: len(b.files)}
+		// Initialize the batch list in the UI — AOI calls first, then fallback batches
+		batchInfos := make([]AIReviewBatchInfo, 0, totalCalls)
+		for _, call := range reviewCalls {
+			label := call.Category
+			if call.Subcategory != "" {
+				label += "/" + call.Subcategory
+			}
+			if call.Type == "individual" {
+				label += " [critical]"
+			}
+			batchInfos = append(batchInfos, AIReviewBatchInfo{
+				Label:    label,
+				NumFiles: len(call.Files),
+			})
+		}
+		for _, b := range fallbackBatches {
+			batchInfos = append(batchInfos, AIReviewBatchInfo{
+				Label:    b.label,
+				NumFiles: len(b.files),
+			})
 		}
 		rr.InitBatches(batchInfos)
 
-		var result tea.Msg
-		if parallelReviews <= 1 {
-			result = reviewBatchesSequential(ctx, client, prMeta, rawDiffs, enhancedInstructions, reviewState, batches, rr)
-		} else {
-			result = reviewBatchesParallel(ctx, client, prMeta, rawDiffs, enhancedInstructions, reviewState, batches, parallelReviews, rr)
+		// ── Phase 1a: Run AOI-driven review calls concurrently ────
+		var allFindings strings.Builder
+		allFileFindings := make(map[string]string)
+		var deepFindings []state.DeepFinding
+
+		if len(reviewCalls) > 0 {
+			maxConc := parallelReviews
+			if maxConc <= 0 {
+				maxConc = 5
+			}
+
+			execResult, execErr := review.RunReviewCalls(ctx, client, reviewCalls, review.ExecuteOptions{
+				Mode:               review.ModePR,
+				ProjectContext:     projectContext,
+				CustomInstructions: enhancedInstructions,
+				MaxConcurrency:     maxConc,
+				OnProgress: func(completed, total int, cached bool, callErr error) {
+					// Map progress back to batch indices
+					idx := completed - 1
+					if idx < 0 || idx >= len(reviewCalls) {
+						return
+					}
+					if callErr != nil {
+						rr.BatchProgress(idx, BatchFailed)
+					} else {
+						rr.BatchProgress(idx, BatchDone)
+					}
+				},
+			})
+			if execErr != nil {
+				return AIChatDoneMsg{Err: fmt.Errorf("AOI review: %w", execErr)}
+			}
+
+			deepFindings = execResult.Findings
+
+			// Build synthesis input from structured findings
+			for _, f := range execResult.Findings {
+				allFindings.WriteString(fmt.Sprintf("### %s: %s\n", f.Severity, f.Title))
+				allFindings.WriteString(fmt.Sprintf("**File:** %s:%s\n", f.File, f.Lines))
+				allFindings.WriteString(fmt.Sprintf("**Category:** %s/%s\n", f.Category, f.Subcategory))
+				allFindings.WriteString(fmt.Sprintf("**Description:** %s\n", f.Description))
+				if f.Trigger != "" {
+					allFindings.WriteString(fmt.Sprintf("**Trigger:** %s\n", f.Trigger))
+				}
+				if f.Suggestion != "" {
+					allFindings.WriteString(fmt.Sprintf("**Suggestion:** %s\n", f.Suggestion))
+				}
+				allFindings.WriteString("\n---\n\n")
+
+				// Index by file for per-file findings
+				entry := fmt.Sprintf("[%s] %s: %s", f.Severity, f.Title, f.Description)
+				if existing, ok := allFileFindings[f.File]; ok {
+					allFileFindings[f.File] = existing + "\n\n" + entry
+				} else {
+					allFileFindings[f.File] = entry
+				}
+			}
+
+			// Mark all AOI call batches as done (for any that didn't get progress)
+			for i := range reviewCalls {
+				rr.BatchProgress(i, BatchDone)
+			}
 		}
 
-		// Attach security digest to the review for persistence
-		if doneMsg, ok := result.(AIChatDoneMsg); ok && doneMsg.Review != nil {
-			doneMsg.Review.SecurityDigest = securityDigest
+		aoiCallOffset := len(reviewCalls)
+
+		// ── Phase 1b: Run fallback directory batches ──────────────
+		if len(fallbackBatches) > 0 {
+			// Adjust batch indices to account for AOI calls
+			fbReporter := &offsetReporter{rr: rr, offset: aoiCallOffset}
+
+			// Run batches without synthesis — synthesis happens once combining all findings
+			fbResult := runBatchesOnly(ctx, client, prMeta, fallbackDiffs, enhancedInstructions, reviewState, fallbackBatches, fbReporter, false)
+
+			// Extract findings from fallback result
+			if doneMsg, ok := fbResult.(AIChatDoneMsg); ok {
+				if doneMsg.Err != nil {
+					return doneMsg
+				}
+				// Merge fallback file findings
+				for f, findings := range doneMsg.FileFindings {
+					allFileFindings[f] = findings
+				}
+				// Append fallback review findings
+				if doneMsg.Review != nil {
+					allFindings.WriteString(doneMsg.Review.Findings)
+				}
+			}
+		}
+
+		// ── Phase 1c: Recheck — deduplicate and filter findings ──
+		if len(deepFindings) > 0 {
+			log.Printf("Recheck: %d findings to validate", len(deepFindings))
+			recheckResult, recheckErr := review.RecheckFindings(ctx, client, deepFindings, review.RecheckOptions{
+				Mode:           review.ModePR,
+				ProjectContext: projectContext,
+			})
+			if recheckErr != nil {
+				log.Printf("Recheck failed (non-fatal): %v — keeping all findings", recheckErr)
+			} else {
+				log.Printf("Recheck: kept %d, dismissed %d, consolidated %d, modified %d",
+					len(recheckResult.Findings), recheckResult.DismissedCount,
+					recheckResult.ConsolidatedCount, recheckResult.ModifiedCount)
+				deepFindings = recheckResult.Findings
+
+				// Rebuild synthesis input from rechecked findings
+				allFindings.Reset()
+				for _, f := range deepFindings {
+					allFindings.WriteString(fmt.Sprintf("### %s: %s\n", f.Severity, f.Title))
+					allFindings.WriteString(fmt.Sprintf("**File:** %s:%s\n", f.File, f.Lines))
+					allFindings.WriteString(fmt.Sprintf("**Category:** %s/%s\n", f.Category, f.Subcategory))
+					allFindings.WriteString(fmt.Sprintf("**Description:** %s\n", f.Description))
+					if f.Trigger != "" {
+						allFindings.WriteString(fmt.Sprintf("**Trigger:** %s\n", f.Trigger))
+					}
+					if f.Suggestion != "" {
+						allFindings.WriteString(fmt.Sprintf("**Suggestion:** %s\n", f.Suggestion))
+					}
+					allFindings.WriteString("\n---\n\n")
+				}
+			}
+		}
+
+		// ── Phase 2: Synthesis ────────────────────────────────────
+		result := runSynthesis(ctx, client, prMeta, rawDiffs, enhancedInstructions, allFindings.String(), allFileFindings, nil, rr)
+		if doneMsg, ok := result.(AIChatDoneMsg); ok {
+			doneMsg.DeepFindings = deepFindings
 			return doneMsg
 		}
-
 		return result
 	}
 }
@@ -611,6 +794,22 @@ func reviewBatchesSequential(
 	batches []reviewBatch,
 	rr ReviewReporter,
 ) tea.Msg {
+	return runBatchesOnly(ctx, client, prMeta, rawDiffs, customInstructions, reviewState, batches, rr, true)
+}
+
+// runBatchesOnly reviews batches one at a time with token streaming.
+// If synthesize is true, runs synthesis after all batches; otherwise returns findings only.
+func runBatchesOnly(
+	ctx context.Context,
+	client ai.Client,
+	prMeta string,
+	rawDiffs map[string]string,
+	customInstructions string,
+	reviewState *state.State,
+	batches []reviewBatch,
+	rr ReviewReporter,
+	synthesize bool,
+) tea.Msg {
 	var allFindings strings.Builder
 	allFileFindings := make(map[string]string)
 	allBatchesCached := true
@@ -674,12 +873,19 @@ func reviewBatchesSequential(
 		}
 	}
 
+	if !synthesize {
+		return AIChatDoneMsg{
+			Review: &state.AIReview{
+				Findings: allFindings.String(),
+			},
+			FileFindings: allFileFindings,
+		}
+	}
+
 	return runSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings.String(), allFileFindings, batches, rr)
 }
 
 // reviewBatchesParallel reviews batches concurrently using a worker pool.
-// Tokens are NOT streamed (would be garbled from multiple workers).
-// Instead, progress is reported as completed/active/total counts.
 func reviewBatchesParallel(
 	ctx context.Context,
 	client ai.Client,

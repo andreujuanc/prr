@@ -52,6 +52,12 @@ var ReviewGroupedPrompt string
 //go:embed prompts/audit_synthesis.md
 var AuditSynthesisPrompt string
 
+// RecheckPrompt is the system prompt for the finding recheck/deduplication phase.
+// It instructs the LLM to filter, deduplicate, consolidate, and correct findings.
+//
+//go:embed prompts/recheck.md
+var RecheckPrompt string
+
 // ReviewPRPrompt is the system prompt for single-pass PR review.
 // Combines the embedded review instructions with structured JSON output
 // requirements and tool workflow guidance.

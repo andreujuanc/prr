@@ -260,9 +260,7 @@ func TestParseRevalidationResult(t *testing.T) {
 func TestBuildReport(t *testing.T) {
 	results := []AOIScanResult{
 		{
-			File:        "auth.go",
-			RiskLevel:   "critical",
-			RiskSummary: "Authentication handler with SQL injection",
+			File: "auth.go",
 			AreasOfInterest: []AreaOfInterest{
 				{File: "auth.go", Line: 10, Category: "sql", Snippet: "db.Query(q)", Reasoning: "raw SQL", Confidence: "high"},
 				{File: "auth.go", Line: 20, Category: "auth", Snippet: "if admin", Reasoning: "auth check", Confidence: "medium"},
@@ -270,14 +268,10 @@ func TestBuildReport(t *testing.T) {
 		},
 		{
 			File:            "util.go",
-			RiskLevel:       "none",
-			RiskSummary:     "Utility functions, no security concerns",
 			AreasOfInterest: nil,
 		},
 		{
-			File:        "api.go",
-			RiskLevel:   "high",
-			RiskSummary: "API endpoint with SSRF potential",
+			File: "api.go",
 			AreasOfInterest: []AreaOfInterest{
 				{File: "api.go", Line: 5, Category: "network", Snippet: "http.Get(url)", Reasoning: "SSRF", Confidence: "high"},
 			},
@@ -286,14 +280,8 @@ func TestBuildReport(t *testing.T) {
 
 	report := buildReport(results)
 
-	if report.OverallRisk != "critical" {
-		t.Errorf("overall risk = %q, want %q", report.OverallRisk, "critical")
-	}
 	if report.TotalAOIs != 3 {
 		t.Errorf("total AOIs = %d, want %d", report.TotalAOIs, 3)
-	}
-	if len(report.HighRiskFiles) != 2 {
-		t.Errorf("high risk files = %d, want %d", len(report.HighRiskFiles), 2)
 	}
 	if report.SecurityDigest == "" {
 		t.Error("security digest should not be empty")
@@ -304,24 +292,18 @@ func TestBuildReport(t *testing.T) {
 	if !containsStr(digest, "3 Areas of Interest") {
 		t.Error("digest should mention total AOIs")
 	}
-	if !containsStr(digest, "critical") {
-		t.Error("digest should mention critical risk")
-	}
 	if !containsStr(digest, "auth.go") {
-		t.Error("digest should mention high-risk file auth.go")
+		t.Error("digest should mention file auth.go")
 	}
 }
 
 func TestBuildReport_NoAOIs(t *testing.T) {
 	results := []AOIScanResult{
-		{File: "clean.go", RiskLevel: "none", AreasOfInterest: nil},
+		{File: "clean.go", AreasOfInterest: nil},
 	}
 
 	report := buildReport(results)
 
-	if report.OverallRisk != "none" {
-		t.Errorf("overall risk = %q, want %q", report.OverallRisk, "none")
-	}
 	if report.TotalAOIs != 0 {
 		t.Errorf("total AOIs = %d, want %d", report.TotalAOIs, 0)
 	}
@@ -360,8 +342,7 @@ func TestBuildAOIBatches(t *testing.T) {
 func TestFormatDigest_ContainsCategories(t *testing.T) {
 	results := []AOIScanResult{
 		{
-			File:      "a.go",
-			RiskLevel: "high",
+			File: "a.go",
 			AreasOfInterest: []AreaOfInterest{
 				{File: "a.go", Line: 1, Category: "sql", Snippet: "q", Reasoning: "raw", Confidence: "high"},
 				{File: "a.go", Line: 2, Category: "sql", Snippet: "q2", Reasoning: "raw2", Confidence: "medium"},

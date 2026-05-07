@@ -82,6 +82,8 @@ type AIChatDoneMsg struct {
 	// FileFindings maps file paths to their batch findings for caching.
 	// Set by multi-pass review so individual file findings can be persisted.
 	FileFindings map[string]string
+	// DeepFindings from AOI-driven review calls (structured findings with severity, category, etc.)
+	DeepFindings []state.DeepFinding
 }
 
 // aiStreamTickMsg triggers a batched render of accumulated AI tokens.
@@ -288,6 +290,7 @@ type Model struct {
 	aiReviewBatches     []AIReviewBatchInfo   // batch list for in-place rendering
 	aiReviewStatuses    []AIReviewBatchStatus // per-batch status
 	aiReviewPhase       string                // "batch" or "synthesis"
+	deepFindings        []state.DeepFinding   // structured findings from AOI-driven review
 	aiPanelTab          int                   // 0 = Review, 1 = Tasks, 2 = Chat
 	aiReviewRendered    string                // cached rendered review markdown
 	aiReviewRenderWidth int                   // width used for cached render
@@ -1306,6 +1309,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if err := state.Save(m.reviewState); err != nil {
 					log.Printf("Warning: failed to save file findings: %v", err)
+				}
+			}
+			// Store deep findings from AOI-driven review
+			if len(msg.DeepFindings) > 0 {
+				m.deepFindings = msg.DeepFindings
+				if msg.Review != nil {
+					msg.Review.DeepFindings = msg.DeepFindings
 				}
 			}
 			if msg.Review != nil {

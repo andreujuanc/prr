@@ -9,9 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
-	"sync"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/project"
@@ -42,6 +39,12 @@ type Options struct {
 
 	// AOIContextLines is the number of context lines for AOI generation.
 	AOIContextLines int
+
+	// Debug enables verbose output of all LLM prompts and responses.
+	Debug bool
+
+	// DebugFile restricts the audit to a single file (path relative to repo root).
+	DebugFile string
 }
 
 // Result holds the output of an audit run.
@@ -75,10 +78,36 @@ type Result struct {
 
 	// Routing is the Phase 3 routing result (for summary display).
 	Routing *review.RouteResult
+
+	// TokenUsage tracks actual token consumption per phase.
+	Usage PhaseUsage
+}
+
+// PhaseUsage holds per-phase token usage for cost reporting.
+type PhaseUsage struct {
+	AOI      ai.TokenUsage // Phase 2: AOI pre-scan
+	Review   ai.TokenUsage // Phase 3: deep review
+	Recheck  ai.TokenUsage // Phase 3b: recheck/dedup
+	Synth    ai.TokenUsage // Phase 4: synthesis
+}
+
+// Total returns aggregate token usage across all phases.
+func (u PhaseUsage) Total() ai.TokenUsage {
+	return ai.TokenUsage{
+		InputTokens:  u.AOI.InputTokens + u.Review.InputTokens + u.Recheck.InputTokens + u.Synth.InputTokens,
+		OutputTokens: u.AOI.OutputTokens + u.Review.OutputTokens + u.Recheck.OutputTokens + u.Synth.OutputTokens,
+		CacheHits:    u.AOI.CacheHits + u.Review.CacheHits + u.Recheck.CacheHits + u.Synth.CacheHits,
+	}
 }
 
 // OnProgress is called with status updates during the audit.
 type OnProgress func(phase string, message string)
+
+// AuditFile holds a file path and its content for auditing.
+type AuditFile struct {
+	Path    string
+	Content string
+}
 
 // Run executes the full audit pipeline (Phases 0-3).
 // Phase 4 (synthesis) is handled separately by the caller.
@@ -93,6 +122,18 @@ func Run(
 		onProgress = func(_, _ string) {}
 	}
 
+	dbg := NewDebugWriter(opts.Debug)
+
+	// Usage tracking: snapshot and reset between phases
+	snapshotUsage := func(client ai.Client) ai.TokenUsage {
+		if ur, ok := client.(ai.UsageReporter); ok {
+			u := ur.Usage()
+			ur.ResetUsage()
+			return u
+		}
+		return ai.TokenUsage{}
+	}
+
 	// Load or create audit state
 	auditState, err := state.Load("audit")
 	if err != nil {
@@ -105,21 +146,61 @@ func Run(
 
 	// ── Phase 0: Project Context Discovery ──────────────────────────────
 
+	dbg.Phase("PHASE 0: Project Context Discovery")
 	onProgress("phase0", "Discovering project context...")
 	projectContext, err := runPhase0(ctx, aoiClient, opts.RepoRoot, auditState, onProgress)
 	if err != nil {
 		log.Printf("Phase 0 (project context) failed: %v", err)
 		// Non-fatal — continue without project context
 	}
+	dbg.Section("Project Context Result")
+	if projectContext != "" {
+		dbg.Text("%s", projectContext)
+	} else {
+		dbg.Text("(no project context discovered)")
+	}
 
 	// ── Phase 1: File Collection ────────────────────────────────────────
 
+	dbg.Phase("PHASE 1: File Collection")
 	onProgress("phase1", "Collecting files...")
-	files, err := CollectFiles(opts.RepoRoot, opts.ExcludePatterns, opts.IncludePatterns)
+	filePaths, err := CollectFiles(opts.RepoRoot, opts.ExcludePatterns, opts.IncludePatterns)
 	if err != nil {
 		return nil, fmt.Errorf("phase 1 file collection: %w", err)
 	}
+
+	// Apply --file filter
+	if opts.DebugFile != "" {
+		var filtered []string
+		for _, f := range filePaths {
+			if f == opts.DebugFile {
+				filtered = append(filtered, f)
+				break
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, fmt.Errorf("--file %q not found in collected files (%d files scanned)", opts.DebugFile, len(filePaths))
+		}
+		dbg.Text("Filtered to single file: %s", opts.DebugFile)
+		filePaths = filtered
+	}
+
+	// Load file contents
+	files := make([]AuditFile, 0, len(filePaths))
+	for _, fp := range filePaths {
+		absPath := filepath.Join(opts.RepoRoot, fp)
+		content, readErr := os.ReadFile(absPath)
+		if readErr != nil {
+			log.Printf("Warning: skipping %s: %v", fp, readErr)
+			continue
+		}
+		files = append(files, AuditFile{Path: fp, Content: string(content)})
+	}
+
 	onProgress("phase1", fmt.Sprintf("Phase 1 complete: %d files to audit", len(files)))
+	for _, f := range files {
+		dbg.Text("  %s (%d bytes)", f.Path, len(f.Content))
+	}
 
 	if len(files) == 0 {
 		return &Result{}, nil
@@ -127,21 +208,51 @@ func Run(
 
 	// ── Phase 2: AOI Generation ─────────────────────────────────────────
 
+	dbg.Phase("PHASE 2: AOI Pre-scan")
 	onProgress("phase2", fmt.Sprintf("Scanning %d files for areas of interest...", len(files)))
-	aoiResults, err := runPhase2(ctx, aoiClient, opts, auditState, files, onProgress)
+
+	// Build AOI debug hook
+	var aoiDebugHook security.AOIDebugHook
+	if dbg.Enabled() {
+		aoiDebugHook = func(batchFiles []string, systemPrompt string, userMessage string, response string) {
+			dbg.Section(fmt.Sprintf("AOI Scan: %v", batchFiles))
+			dbg.Prompt(systemPrompt, userMessage)
+			dbg.Response(response)
+			dbg.Separator()
+		}
+	}
+
+	aoiResults, err := runPhase2(ctx, aoiClient, opts, auditState, files, onProgress, aoiDebugHook)
 	if err != nil {
 		return nil, fmt.Errorf("phase 2 AOI generation: %w", err)
+	}
+
+	// Debug: show parsed AOIs
+	if dbg.Enabled() {
+		dbg.Section("Parsed AOIs")
+		totalAOIs := 0
+		for _, r := range aoiResults {
+			for _, aoi := range r.AreasOfInterest {
+				totalAOIs++
+				dbg.Text("  %s:%d [%s] %s/%s — %s",
+					aoi.File, aoi.Line, aoi.Urgency, aoi.Category, aoi.Subcategory, aoi.Concern)
+			}
+		}
+		dbg.Text("\n  Total: %d AOIs", totalAOIs)
 	}
 
 	// Save state after Phase 2
 	if err := state.Save(auditState); err != nil {
 		log.Printf("Warning: failed to save audit state after Phase 2: %v", err)
 	}
+	aoiUsage := snapshotUsage(aoiClient)
 
 	// ── Phase 3: Deep Review (routing + execution) ──────────────────────
 
+	dbg.Phase("PHASE 3: Deep Review")
 	routing := review.RouteAOIs(aoiResults, opts.Focus, 10)
 	onProgress("phase3", routing.FormatSummary())
+	dbg.Text("Routing: %s", routing.FormatSummary())
 
 	result := &Result{
 		FilesScanned:         len(files),
@@ -158,8 +269,31 @@ func Run(
 	calls := routing.PrioritizedCalls(opts.MaxReviews)
 	onProgress("phase3", fmt.Sprintf("Executing %d review calls...", len(calls)))
 
+	// Build Phase 3 debug hook
+	var phase3DebugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string)
+	var phase3ToolHook func(callIndex int, toolName string, args string, status string, duration string)
+	if dbg.Enabled() {
+		phase3DebugHook = func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string) {
+			label := call.Category
+			if call.Subcategory != "" {
+				label += "/" + call.Subcategory
+			}
+			dbg.Section(fmt.Sprintf("Review Call %d [%s]: %s (%v)", index+1, call.Type, label, call.Files))
+			dbg.Prompt(systemPrompt, userMsg)
+			dbg.Response(response)
+			dbg.Separator()
+		}
+		phase3ToolHook = func(callIndex int, toolName string, args string, status string, duration string) {
+			if status == "start" {
+				dbg.Text("  [call %d] tool: %s(%s)", callIndex+1, toolName, args)
+			} else {
+				dbg.Text("  [call %d] tool done: %s → %s (%s)", callIndex+1, toolName, status, duration)
+			}
+		}
+	}
+
 	findings, dismissals, crossCutting, err := runPhase3(
-		ctx, reviewClient, opts, auditState, projectContext, calls, onProgress,
+		ctx, reviewClient, opts, auditState, projectContext, calls, onProgress, phase3DebugHook, phase3ToolHook,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("phase 3 deep review: %w", err)
@@ -169,6 +303,42 @@ func Run(
 	if err := state.Save(auditState); err != nil {
 		log.Printf("Warning: failed to save audit state after Phase 3: %v", err)
 	}
+	reviewUsage := snapshotUsage(reviewClient)
+
+	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
+	dbg.Phase("PHASE 3b: Recheck")
+	if len(findings) > 0 {
+		onProgress("recheck", fmt.Sprintf("Rechecking %d findings...", len(findings)))
+
+		// Build recheck debug hook
+		var recheckDebugHook func(systemPrompt string, userMsg string, response string)
+		if dbg.Enabled() {
+			recheckDebugHook = func(systemPrompt string, userMsg string, response string) {
+				dbg.Section("Recheck LLM Call")
+				dbg.Prompt(systemPrompt, userMsg)
+				dbg.Response(response)
+				dbg.Separator()
+			}
+		}
+
+		recheckResult, recheckErr := review.RecheckFindings(ctx, reviewClient, findings, review.RecheckOptions{
+			Mode:           review.ModeAudit,
+			ProjectContext: projectContext,
+			OnLLMCall:      recheckDebugHook,
+		})
+		if recheckErr != nil {
+			log.Printf("Recheck failed (non-fatal): %v — keeping all findings", recheckErr)
+			onProgress("recheck", "Recheck failed, keeping all findings")
+		} else {
+			onProgress("recheck", fmt.Sprintf(
+				"Recheck complete: kept %d, dismissed %d, consolidated %d, modified %d",
+				len(recheckResult.Findings), recheckResult.DismissedCount,
+				recheckResult.ConsolidatedCount, recheckResult.ModifiedCount,
+			))
+			findings = recheckResult.Findings
+		}
+	}
+	recheckUsage := snapshotUsage(reviewClient)
 
 	result.Findings = findings
 	result.Dismissals = dismissals
@@ -176,6 +346,11 @@ func Run(
 	result.ReviewCalls = len(calls)
 	result.IndividualReviews = len(routing.Individual)
 	result.GroupedReviews = len(routing.Grouped)
+	result.Usage = PhaseUsage{
+		AOI:     aoiUsage,
+		Review:  reviewUsage,
+		Recheck: recheckUsage,
+	}
 
 	return result, nil
 }
@@ -214,22 +389,17 @@ func runPhase2(
 	aoiClient ai.Client,
 	opts Options,
 	auditState *state.State,
-	files []string,
+	files []AuditFile,
 	onProgress OnProgress,
+	debugHook security.AOIDebugHook,
 ) ([]security.AOIScanResult, error) {
 	// Read file contents and build "diffs" (for audit mode, the full file content)
 	fileContents := make(map[string]string)
 	cachedResults := make(map[string]*security.AOIScanResult)
 
-	for _, filePath := range files {
-		absPath := filepath.Join(opts.RepoRoot, filePath)
-		content, err := os.ReadFile(absPath)
-		if err != nil {
-			log.Printf("Warning: skipping %s: %v", filePath, err)
-			continue
-		}
-
-		contentStr := string(content)
+	for _, f := range files {
+		filePath := f.Path
+		contentStr := f.Content
 
 		// Check cache: if file content hash matches, reuse cached AOI results
 		contentHash := hashContent(contentStr)
@@ -264,9 +434,9 @@ func runPhase2(
 	}
 
 	// Run AOI scan on uncached files
-	report, err := security.ScanAreasOfInterest(ctx, aoiClient, fileContents, cachedResults, func(status string) {
+	report, err := security.ScanAreasOfInterestDebug(ctx, aoiClient, fileContents, cachedResults, func(status string) {
 		onProgress("phase2", status)
-	})
+	}, debugHook, true)
 	if err != nil {
 		return nil, err
 	}
@@ -295,112 +465,46 @@ func runPhase3(
 	projectContext string,
 	calls []review.ReviewCall,
 	onProgress OnProgress,
+	debugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string),
+	toolHook func(callIndex int, toolName string, args string, status string, duration string),
 ) (findings []state.DeepFinding, dismissals int, crossCutting []string, err error) {
-	type callResult struct {
-		index    int
-		result   *state.DeepReviewResult
-		err      error
-		fromCache bool
-	}
-
-	resultsCh := make(chan callResult, len(calls))
-	sem := make(chan struct{}, phase3MaxConcurrency)
-	var wg sync.WaitGroup
-
-	for i, call := range calls {
-		wg.Add(1)
-		go func(i int, call review.ReviewCall) {
-			defer wg.Done()
-
-			// Check cache
-			cacheKey := computeCacheKey(call, opts)
-			if !opts.NoCache {
-				if cached := auditState.GetDeepReview(cacheKey); cached != nil {
-					resultsCh <- callResult{index: i, result: cached, fromCache: true}
-					return
-				}
-			}
-
-			// Acquire semaphore
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				resultsCh <- callResult{index: i, err: ctx.Err()}
-				return
-			}
-
-			// Build prompt and execute
-			var systemPrompt string
-			if call.Type == "individual" {
-				systemPrompt = review.BuildIndividualPrompt(
-					review.ModeAudit, projectContext, "", call.AOIs[0],
-				)
-			} else {
-				systemPrompt = review.BuildGroupedPrompt(
-					review.ModeAudit, projectContext, "", call,
-				)
-			}
-
-			messages := []ai.Message{
-				{Role: "user", Content: "Investigate the area(s) of interest described in the system prompt. Use tools to verify."},
-			}
-
-			// Phase 3 review client has tools
-			raw, callErr := reviewClient.ChatStream(ctx, systemPrompt, messages, nil)
+	execOpts := review.ExecuteOptions{
+		Mode:               review.ModeAudit,
+		ProjectContext:     projectContext,
+		FocusDimensions:    opts.Focus,
+		MaxConcurrency:     phase3MaxConcurrency,
+		NoCache:            opts.NoCache,
+		OnLLMCall:          debugHook,
+		OnToolCall:         toolHook,
+		OnProgress: func(completed, total int, cached bool, callErr error) {
 			if callErr != nil {
-				resultsCh <- callResult{index: i, err: callErr}
+				onProgress("phase3", fmt.Sprintf("Review %d/%d failed: %v", completed, total, callErr))
 				return
 			}
-
-			result := parseDeepReviewResult(call, raw)
-			result.CacheKey = cacheKey
-
-			// Cache the result
-			auditState.SetDeepReview(cacheKey, result)
-
-			resultsCh <- callResult{index: i, result: result}
-		}(i, call)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultsCh)
-	}()
-
-	// Collect results
-	completed := 0
-	cachedCount := 0
-	for cr := range resultsCh {
-		completed++
-		if cr.fromCache {
-			cachedCount++
-		}
-		if cr.err != nil {
-			log.Printf("Phase 3 call %d failed: %v", cr.index+1, cr.err)
-			onProgress("phase3", fmt.Sprintf("Review %d/%d failed: %v", completed, len(calls), cr.err))
-			continue
-		}
-		if cr.result != nil {
-			findings = append(findings, cr.result.Findings...)
-			dismissals += len(cr.result.Dismissals)
-			if cr.result.CrossCutting != "" {
-				crossCutting = append(crossCutting, cr.result.CrossCutting)
+			cacheTag := ""
+			if cached {
+				cacheTag = " (cached)"
 			}
-		}
-		cacheTag := ""
-		if cr.fromCache {
-			cacheTag = " (cached)"
-		}
-		onProgress("phase3", fmt.Sprintf("Review %d/%d complete%s", completed, len(calls), cacheTag))
+			onProgress("phase3", fmt.Sprintf("Review %d/%d complete%s", completed, total, cacheTag))
+		},
 	}
 
-	// Sort findings by severity
-	sort.Slice(findings, func(i, j int) bool {
-		return severityRank(findings[i].Severity) < severityRank(findings[j].Severity)
-	})
+	// Wire up caching to audit state
+	if auditState != nil {
+		execOpts.CacheGet = func(key string) *state.DeepReviewResult {
+			return auditState.GetDeepReview(key)
+		}
+		execOpts.CacheSet = func(key string, result *state.DeepReviewResult) {
+			auditState.SetDeepReview(key, result)
+		}
+	}
 
-	return findings, dismissals, crossCutting, nil
+	execResult, execErr := review.RunReviewCalls(ctx, reviewClient, calls, execOpts)
+	if execErr != nil {
+		return nil, 0, nil, execErr
+	}
+
+	return execResult.Findings, execResult.Dismissals, execResult.CrossCutting, nil
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -414,152 +518,5 @@ func ensureFileState(s *state.State, path, contentHash string) {
 	s.SetBatchFindings(path, "", "") // ensure FileState exists
 	if fs, ok := s.Files[path]; ok {
 		fs.DiffHash = contentHash
-	}
-}
-
-func computeCacheKey(call review.ReviewCall, opts Options) string {
-	if call.Type == "individual" {
-		// For individual: hash file content + AOI. We use AOI serialization
-		// which includes file path, so we don't need to separately hash file content.
-		return review.IndividualCacheKey("", call.AOIs[0], opts.Focus)
-	}
-	return review.GroupedCacheKey(call.AOIs, opts.Focus)
-}
-
-func parseDeepReviewResult(call review.ReviewCall, raw string) *state.DeepReviewResult {
-	result := &state.DeepReviewResult{
-		Type:        call.Type,
-		Category:    call.Category,
-		Subcategory: call.Subcategory,
-		RawOutput:   json.RawMessage(raw),
-	}
-
-	// Try to parse as JSON — the LLM should return structured output
-	s := strings.TrimSpace(raw)
-
-	// Strip markdown fences
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
-	}
-
-	// Find JSON start
-	jsonStart := strings.IndexAny(s, "{[")
-	if jsonStart == -1 {
-		log.Printf("Phase 3: no JSON found in response for %s/%s", call.Category, call.Subcategory)
-		return result
-	}
-	s = s[jsonStart:]
-
-	if call.Type == "individual" {
-		var parsed struct {
-			AOIID              string `json:"aoi_id"`
-			Status             string `json:"status"`
-			File               string `json:"file"`
-			Lines              string `json:"lines"`
-			Severity           string `json:"severity"`
-			Category           string `json:"category"`
-			Subcategory        string `json:"subcategory"`
-			Dimension          string `json:"dimension"`
-			Title              string `json:"title"`
-			Description        string `json:"description"`
-			Trigger            string `json:"trigger"`
-			Suggestion         string `json:"suggestion"`
-			DismissedRationale string `json:"dismissed_rationale"`
-		}
-		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
-			log.Printf("Phase 3: failed to parse individual response: %v", err)
-			return result
-		}
-		if parsed.Status == "finding" {
-			result.Findings = append(result.Findings, state.DeepFinding{
-				AOIID:       parsed.AOIID,
-				File:        parsed.File,
-				Lines:       parsed.Lines,
-				Severity:    parsed.Severity,
-				Category:    parsed.Category,
-				Subcategory: parsed.Subcategory,
-				Dimension:   parsed.Dimension,
-				Title:       parsed.Title,
-				Description: parsed.Description,
-				Trigger:     parsed.Trigger,
-				Suggestion:  parsed.Suggestion,
-			})
-		} else {
-			result.Dismissals = append(result.Dismissals, state.DeepDismissal{
-				AOIID:     parsed.AOIID,
-				Rationale: parsed.DismissedRationale,
-			})
-		}
-	} else {
-		// Grouped response
-		var parsed struct {
-			Subcategory  string `json:"subcategory"`
-			CrossCutting string `json:"cross_cutting"`
-			Results      []struct {
-				AOIID              string `json:"aoi_id"`
-				Status             string `json:"status"`
-				File               string `json:"file"`
-				Lines              string `json:"lines"`
-				Severity           string `json:"severity"`
-				Category           string `json:"category"`
-				Subcategory        string `json:"subcategory"`
-				Dimension          string `json:"dimension"`
-				Title              string `json:"title"`
-				Description        string `json:"description"`
-				Trigger            string `json:"trigger"`
-				Suggestion         string `json:"suggestion"`
-				DismissedRationale string `json:"dismissed_rationale"`
-			} `json:"results"`
-		}
-		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
-			log.Printf("Phase 3: failed to parse grouped response: %v", err)
-			return result
-		}
-		result.CrossCutting = parsed.CrossCutting
-		for _, r := range parsed.Results {
-			if r.Status == "finding" {
-				result.Findings = append(result.Findings, state.DeepFinding{
-					AOIID:       r.AOIID,
-					File:        r.File,
-					Lines:       r.Lines,
-					Severity:    r.Severity,
-					Category:    r.Category,
-					Subcategory: r.Subcategory,
-					Dimension:   r.Dimension,
-					Title:       r.Title,
-					Description: r.Description,
-					Trigger:     r.Trigger,
-					Suggestion:  r.Suggestion,
-				})
-			} else {
-				result.Dismissals = append(result.Dismissals, state.DeepDismissal{
-					AOIID:     r.AOIID,
-					Rationale: r.DismissedRationale,
-				})
-			}
-		}
-	}
-
-	return result
-}
-
-func severityRank(s string) int {
-	switch s {
-	case "critical":
-		return 0
-	case "high":
-		return 1
-	case "medium":
-		return 2
-	case "low":
-		return 3
-	default:
-		return 4
 	}
 }

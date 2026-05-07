@@ -94,6 +94,9 @@ type AIReview struct {
 	// SecurityDigest is the AOI pre-scan summary injected into review prompts.
 	// Persisted so the TUI can display it even after the review is cached.
 	SecurityDigest string `json:"security_digest,omitempty"`
+
+	// DeepFindings from AOI-driven review calls (structured findings with severity, category, etc.)
+	DeepFindings []DeepFinding `json:"deep_findings,omitempty"`
 }
 
 // FileState holds the review status and chat history for a specific file
@@ -151,6 +154,7 @@ type DeepReviewResult struct {
 
 // DeepFinding is a confirmed issue from Phase 3 review.
 type DeepFinding struct {
+	FindingID   string `json:"finding_id,omitempty"` // assigned before recheck (e.g. "F-001")
 	AOIID       string `json:"aoi_id"`
 	File        string `json:"file"`
 	Lines       string `json:"lines"`
@@ -160,6 +164,7 @@ type DeepFinding struct {
 	Dimension   string `json:"dimension"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	Evidence    string `json:"evidence,omitempty"` // what was verified and found (tool-backed)
 	Trigger     string `json:"trigger"`
 	Suggestion  string `json:"suggestion,omitempty"`
 }
@@ -167,6 +172,7 @@ type DeepFinding struct {
 // DeepDismissal is a dismissed AOI from Phase 3 review.
 type DeepDismissal struct {
 	AOIID     string `json:"aoi_id"`
+	Evidence  string `json:"evidence,omitempty"`
 	Rationale string `json:"rationale"`
 }
 
@@ -244,6 +250,8 @@ func (s *State) ClearAllCaches() {
 	}
 	s.Review = nil
 	s.DeepReviews = nil
+	s.ProjectContext = ""
+	s.ProjectContextHash = ""
 }
 
 // HasCachedBatch reports whether all files in the given paths have cached findings.

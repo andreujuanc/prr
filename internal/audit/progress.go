@@ -127,6 +127,7 @@ func NewProgressUI(
 			{name: "phase1", label: "File Collection", status: "waiting"},
 			{name: "phase2", label: "AOI Pre-scan", status: "waiting"},
 			{name: "phase3", label: "Deep Review", status: "waiting"},
+			{name: "recheck", label: "Recheck", status: "waiting"},
 			{name: "phase4", label: "Synthesis", status: "waiting"},
 		},
 	}
@@ -166,6 +167,11 @@ func (m *ProgressUI) runAudit() tea.Cmd {
 				err = nil
 			} else {
 				m.updateProgress("phase4", "Synthesis complete")
+			}
+			// Track synthesis usage
+			if ur, ok := m.reviewClient.(ai.UsageReporter); ok {
+				result.Usage.Synth = ur.Usage()
+				ur.ResetUsage()
 			}
 		}
 

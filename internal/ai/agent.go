@@ -47,6 +47,17 @@ func WithUsageTracker(tracker *UsageTracker) AgentOption {
 	}
 }
 
+// WithToolFilter restricts the agent to only the named tools.
+// Tools not in the list are omitted from the API request and cannot be called.
+func WithToolFilter(names []string) AgentOption {
+	return func(a *Agent) {
+		a.toolFilter = make(map[string]bool, len(names))
+		for _, n := range names {
+			a.toolFilter[n] = true
+		}
+	}
+}
+
 // UsageTracker accumulates token usage across multiple API calls.
 // It is safe for concurrent use.
 type UsageTracker struct {
@@ -98,6 +109,7 @@ type Agent struct {
 	maxRounds    int
 	debugLog     *log.Logger   // nil = no debug logging
 	usageTracker *UsageTracker // nil = don't track usage
+	toolFilter   map[string]bool // nil = all tools; non-nil = only named tools
 }
 
 // NewAgent creates an Agent that uses the given Provider for API calls
@@ -107,11 +119,27 @@ func NewAgent(provider Provider, toolExec *ToolExecutor, opts ...AgentOption) *A
 		provider:     provider,
 		toolExecutor: toolExec,
 		maxRounds:    defaultMaxRounds,
+		usageTracker: &UsageTracker{}, // always track usage
 	}
 	for _, o := range opts {
 		o(a)
 	}
 	return a
+}
+
+// Usage returns accumulated token usage. Implements UsageReporter.
+func (a *Agent) Usage() TokenUsage {
+	s := a.usageTracker.Snapshot()
+	return TokenUsage{
+		InputTokens:  s.InputTokens,
+		OutputTokens: s.OutputTokens,
+		CacheHits:    s.CacheHits,
+	}
+}
+
+// ResetUsage zeroes the usage counters. Implements UsageReporter.
+func (a *Agent) ResetUsage() {
+	a.usageTracker.Reset()
 }
 
 // ChatStream implements Client. It runs the iterative tool-calling loop:
@@ -147,7 +175,16 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 	// Get tool definitions if executor is configured
 	var tools []ToolDef
 	if a.toolExecutor != nil {
-		tools = CanonicalToolDefs()
+		all := CanonicalToolDefs()
+		if a.toolFilter != nil {
+			for _, t := range all {
+				if a.toolFilter[t.Name] {
+					tools = append(tools, t)
+				}
+			}
+		} else {
+			tools = all
+		}
 	}
 
 	// Determine if provider supports prompt caching

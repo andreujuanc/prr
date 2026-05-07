@@ -267,6 +267,9 @@ func modelPickerItemAt(sections []pickerSection, cursor int) (section int, item 
 		offset += len(s.items)
 	}
 	// Shouldn't happen, clamp to last
+	if len(sections) == 0 {
+		return 0, 0
+	}
 	last := sections[len(sections)-1]
 	return len(sections) - 1, len(last.items) - 1
 }

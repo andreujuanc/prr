@@ -21,13 +21,32 @@ var aoiScanPrompt string
 //go:embed prompts/revalidate.md
 var revalidatePrompt string
 
-// AOIScanPrompt returns the AOI scan system prompt with dimensions composed in.
-func AOIScanPrompt() string { return buildAOIScanPrompt() }
+// AOIScanPrompt returns the AOI scan system prompt for PR review mode.
+func AOIScanPrompt() string { return buildAOIScanPrompt(false) }
+
+// AOIAuditPrompt returns the AOI scan system prompt for full-project audit mode.
+func AOIAuditPrompt() string { return buildAOIScanPrompt(true) }
+
+const prModeRules = `1. ONLY flag code in the DIFF (added or modified lines, the + lines).
+2. Do NOT flag pre-existing code that was not changed.
+3. Use the CONTEXT lines (unchanged lines around the diff hunks) to understand
+   data flow — trace where variables originate and how they reach sinks.
+   The diff may include extra context lines beyond the standard 3 to help you
+   see the full picture. Use them.`
+
+const auditModeRules = `1. Scan ALL code in the file — this is a full-project audit, not a diff review.
+2. Flag any code location that could contain a bug, vulnerability, or design flaw.
+3. Use the full file context to understand data flow, variable origins, and sinks.`
 
 // buildAOIScanPrompt composes the AOI scan prompt template with all dimension
 // partials injected at the {DIMENSIONS} placeholder.
-func buildAOIScanPrompt() string {
-	return strings.Replace(aoiScanPrompt, "{DIMENSIONS}", ai.AllDimensions(), 1)
+func buildAOIScanPrompt(auditMode bool) string {
+	prompt := strings.Replace(aoiScanPrompt, "{DIMENSIONS}", ai.AllDimensions(), 1)
+	rules := prModeRules
+	if auditMode {
+		rules = auditModeRules
+	}
+	return strings.Replace(prompt, "{MODE_RULES}", rules, 1)
 }
 
 // RevalidatePrompt returns the embedded revalidation system prompt.
@@ -58,6 +77,22 @@ func ScanAreasOfInterest(
 	cachedResults map[string]*AOIScanResult,
 	onProgress func(status string),
 ) (*AOIReport, error) {
+	return ScanAreasOfInterestDebug(ctx, client, rawDiffs, cachedResults, onProgress, nil, false)
+}
+
+// AOIDebugHook is called for each LLM call in the AOI scanner with the prompt, input, and response.
+type AOIDebugHook func(files []string, systemPrompt string, userMessage string, response string)
+
+// ScanAreasOfInterestDebug is like ScanAreasOfInterest but with an optional debug hook.
+func ScanAreasOfInterestDebug(
+	ctx context.Context,
+	client ai.Client,
+	rawDiffs map[string]string,
+	cachedResults map[string]*AOIScanResult,
+	onProgress func(status string),
+	debugHook AOIDebugHook,
+	auditMode bool,
+) (*AOIReport, error) {
 	// Separate cached vs uncached files
 	uncachedDiffs := make(map[string]string)
 	var cachedAOIs []AOIScanResult
@@ -75,8 +110,9 @@ func ScanAreasOfInterest(
 	}
 
 	batches := buildAOIBatches(uncachedDiffs)
+	log.Printf("[aoi-debug] built %d batches from %d uncached files", len(batches), len(uncachedDiffs))
 	if len(batches) == 0 && len(cachedAOIs) == 0 {
-		return &AOIReport{OverallRisk: "none"}, nil
+		return &AOIReport{}, nil
 	}
 
 	if len(batches) == 0 {
@@ -117,7 +153,7 @@ func ScanAreasOfInterest(
 				return
 			}
 
-			results, err := scanBatch(ctx, client, batch)
+			results, err := scanBatch(ctx, client, batch, debugHook, auditMode)
 			resultsCh <- batchResult{index: i, results: results, err: err}
 		}(i, batch)
 	}
@@ -131,16 +167,32 @@ func ScanAreasOfInterest(
 	// Collect results in order of completion, report sequential progress
 	allResults := make([][]AOIScanResult, len(batches))
 	completed := 0
+	var batchErrors []string
 	for br := range resultsCh {
 		completed++
 		if br.err != nil {
-			log.Printf("AOI scan batch %d failed: %v", br.index+1, br.err)
+			errMsg := fmt.Sprintf("AOI scan batch %d/%d failed: %v", br.index+1, len(batches), br.err)
+			log.Printf("%s", errMsg)
+			batchErrors = append(batchErrors, errMsg)
+			if onProgress != nil {
+				onProgress(errMsg)
+			}
 		} else {
 			allResults[br.index] = br.results
 		}
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("AOI scan %d/%d complete", completed, len(batches)))
 		}
+	}
+
+	// If all batches failed, return an error so the caller knows no scanning occurred
+	if len(batchErrors) == len(batches) {
+		return nil, fmt.Errorf("all %d AOI scan batch(es) failed:\n  %s", len(batches), strings.Join(batchErrors, "\n  "))
+	}
+
+	// Log partial failures as a warning
+	if len(batchErrors) > 0 {
+		log.Printf("WARNING: %d/%d AOI scan batches failed", len(batchErrors), len(batches))
 	}
 
 	// Flatten in batch order, then append cached results
@@ -278,21 +330,47 @@ func countFiles(batches []aoiBatch) int {
 }
 
 // scanBatch sends a single batch of diffs to the AOI scanner.
-func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch) ([]AOIScanResult, error) {
+func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
+	systemPrompt := buildAOIScanPrompt(auditMode)
+	userMsg := fmt.Sprintf(
+		"Scan these %d file(s) for areas of interest:\n\n%s",
+		len(batch.files), batch.diffs,
+	)
+
 	messages := []ai.Message{
-		{Role: "user", Content: fmt.Sprintf(
-			"Scan these %d file(s) for areas of interest:\n\n%s",
-			len(batch.files), batch.diffs,
-		)},
+		{Role: "user", Content: userMsg},
 	}
 
-	systemPrompt := buildAOIScanPrompt()
+	log.Printf("[aoi-debug] calling LLM for batch %q (%d files, %d chars)", batch.label, len(batch.files), len(userMsg))
+
 	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return parseAOIResult(result)
+	log.Printf("[aoi-debug] LLM response length: %d chars", len(result))
+
+	// Debug hook
+	if debugHook != nil {
+		debugHook(batch.files, systemPrompt, userMsg, result)
+	}
+
+	if strings.TrimSpace(result) == "" {
+		return nil, fmt.Errorf("LLM returned empty response for batch %q (%d files)", batch.label, len(batch.files))
+	}
+
+	parsed, parseErr := parseAOIResult(result)
+	if parseErr != nil {
+		// Log a truncated snippet of the raw response to aid debugging
+		snippet := result
+		if len(snippet) > 200 {
+			snippet = snippet[:200] + "..."
+		}
+		return nil, fmt.Errorf("%w (raw response: %s)", parseErr, snippet)
+	}
+
+	log.Printf("[aoi-debug] parsed %d file results", len(parsed))
+	return parsed, nil
 }
 
 // ── Parsing ────────────────────────────────────────────────────────────
@@ -407,31 +485,11 @@ func parseRevalidationResult(raw string) ([]Revalidation, error) {
 
 func buildReport(results []AOIScanResult) *AOIReport {
 	report := &AOIReport{
-		Files:       results,
-		OverallRisk: "none",
+		Files: results,
 	}
 
-	riskRank := map[string]int{
-		"critical": 4,
-		"high":     3,
-		"medium":   2,
-		"low":      1,
-		"none":     0,
-	}
-
-	maxRisk := 0
 	for _, r := range results {
 		report.TotalAOIs += len(r.AreasOfInterest)
-
-		rank := riskRank[r.RiskLevel]
-		if rank > maxRisk {
-			maxRisk = rank
-			report.OverallRisk = r.RiskLevel
-		}
-
-		if r.RiskLevel == "critical" || r.RiskLevel == "high" {
-			report.HighRiskFiles = append(report.HighRiskFiles, r.File)
-		}
 	}
 
 	report.SecurityDigest = formatDigest(report)
@@ -446,15 +504,6 @@ func formatDigest(report *AOIReport) string {
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("## Pre-Scan: %d Areas of Interest Found\n\n", report.TotalAOIs))
-	sb.WriteString(fmt.Sprintf("Overall risk level: **%s**\n\n", report.OverallRisk))
-
-	if len(report.HighRiskFiles) > 0 {
-		sb.WriteString("High-risk files requiring extra scrutiny:\n")
-		for _, f := range report.HighRiskFiles {
-			sb.WriteString(fmt.Sprintf("- %s\n", f))
-		}
-		sb.WriteString("\n")
-	}
 
 	// Group AOIs by category (or category/subcategory) for a compact view
 	catCounts := make(map[string]int)
@@ -490,7 +539,7 @@ func formatDigest(report *AOIReport) string {
 		if len(r.AreasOfInterest) == 0 {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("**%s** (risk: %s)\n", r.File, r.RiskLevel))
+		sb.WriteString(fmt.Sprintf("**%s**\n", r.File))
 		for _, aoi := range r.AreasOfInterest {
 			lineRange := fmt.Sprintf("L%d", aoi.Line)
 			if aoi.EndLine > 0 && aoi.EndLine != aoi.Line {
