@@ -6,8 +6,8 @@ import (
 
 func TestDimensionsLoaded(t *testing.T) {
 	slugs := AllDimensionSlugs()
-	if len(slugs) != 18 {
-		t.Errorf("expected 18 dimensions, got %d: %v", len(slugs), slugs)
+	if len(slugs) != 19 {
+		t.Errorf("expected 19 dimensions, got %d: %v", len(slugs), slugs)
 	}
 
 	// Spot-check a few

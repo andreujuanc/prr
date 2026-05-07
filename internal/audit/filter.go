@@ -22,29 +22,6 @@ import (
 //
 // This list adds audit-specific exclusions:
 var auditExcludePatterns = []string{
-	// Test files
-	"*_test.go",
-	"*.test.ts",
-	"*.test.js",
-	"*.test.tsx",
-	"*.test.jsx",
-	"*.spec.ts",
-	"*.spec.js",
-	"*.spec.tsx",
-	"*.spec.jsx",
-	"*_test.py",
-	"test_*.py",
-	"*Test.java",
-	"*_spec.rb",
-
-	// Test infrastructure
-	"testdata/**",
-	"__tests__/**",
-	"__mocks__/**",
-	"fixtures/**",
-	"test_helpers/**",
-	"conftest.py",
-
 	// More generated code
 	"*.generated.*",
 	"*.d.ts",

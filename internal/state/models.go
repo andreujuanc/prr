@@ -108,6 +108,7 @@ type FileState struct {
 	BatchFindings   string          `json:"batch_findings,omitempty"`    // cached findings from PR-level batch review
 	AOIResults      json.RawMessage `json:"aoi_results,omitempty"`       // cached AOI scan result (AOIScanResult JSON)
 	AOIContextLines int             `json:"aoi_context_lines,omitempty"` // context lines used when AOI was generated
+	FileType        string          `json:"file_type,omitempty"`         // cached file classification (e.g. "handler", "test")
 }
 
 // State represents the persisted review state for a single pull request
@@ -214,6 +215,28 @@ func (s *State) GetAOIResults(path string) (json.RawMessage, int) {
 	return nil, 0
 }
 
+// SetFileType stores the classification type for a file.
+func (s *State) SetFileType(path, fileType string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fs, ok := s.Files[path]
+	if !ok {
+		fs = &FileState{Status: StatusUnreviewed}
+		s.Files[path] = fs
+	}
+	fs.FileType = fileType
+}
+
+// GetFileType returns the cached classification type for a file, or empty string.
+func (s *State) GetFileType(path string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fs, ok := s.Files[path]; ok {
+		return fs.FileType
+	}
+	return ""
+}
+
 // SetBatchFindings stores the batch review purpose and findings for a file.
 func (s *State) SetBatchFindings(path, purpose, findings string) {
 	s.mu.Lock()
@@ -247,6 +270,7 @@ func (s *State) ClearAllCaches() {
 		fs.Purpose = ""
 		fs.AOIResults = nil
 		fs.AOIContextLines = 0
+		fs.FileType = ""
 	}
 	s.Review = nil
 	s.DeepReviews = nil

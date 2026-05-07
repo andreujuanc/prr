@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -41,7 +40,19 @@ const auditModeRules = `1. Scan ALL code in the file — this is a full-project 
 // buildAOIScanPrompt composes the AOI scan prompt template with all dimension
 // partials injected at the {DIMENSIONS} placeholder.
 func buildAOIScanPrompt(auditMode bool) string {
-	prompt := strings.Replace(aoiScanPrompt, "{DIMENSIONS}", ai.AllDimensions(), 1)
+	return buildAOIScanPromptWithDimensions(auditMode, nil)
+}
+
+// buildAOIScanPromptWithDimensions composes the AOI scan prompt with specific
+// dimensions. If dims is nil or empty, all dimensions are included.
+func buildAOIScanPromptWithDimensions(auditMode bool, dims []string) string {
+	var dimensionContent string
+	if len(dims) > 0 {
+		dimensionContent = ai.GetDimensions(dims)
+	} else {
+		dimensionContent = ai.AllDimensions()
+	}
+	prompt := strings.Replace(aoiScanPrompt, "{DIMENSIONS}", dimensionContent, 1)
 	rules := prModeRules
 	if auditMode {
 		rules = auditModeRules
@@ -61,8 +72,9 @@ const aoiBatchMaxChars = 30000
 const aoiMaxConcurrency = 5
 
 // ScanAreasOfInterest runs the AOI pre-scan on all changed files using
-// a lightweight LLM. It batches files by directory (like the main review)
-// and runs up to aoiMaxConcurrency batches in parallel.
+// a lightweight LLM. It batches files by dimension set (or all together
+// if no classifications are provided) and runs up to aoiMaxConcurrency
+// batches in parallel.
 //
 // cachedResults maps file paths to previously cached AOIScanResult entries.
 // Files with cached results are skipped — only uncached files are sent to
@@ -93,6 +105,23 @@ func ScanAreasOfInterestDebug(
 	debugHook AOIDebugHook,
 	auditMode bool,
 ) (*AOIReport, error) {
+	return ScanAreasOfInterestClassified(ctx, client, rawDiffs, cachedResults, nil, onProgress, debugHook, auditMode)
+}
+
+// ScanAreasOfInterestClassified is like ScanAreasOfInterestDebug but with
+// per-file dimension filtering. fileDimensions maps file paths to their
+// dimension slugs. Files not in the map get all dimensions. If fileDimensions
+// is nil, all files get all dimensions.
+func ScanAreasOfInterestClassified(
+	ctx context.Context,
+	client ai.Client,
+	rawDiffs map[string]string,
+	cachedResults map[string]*AOIScanResult,
+	fileDimensions map[string][]string,
+	onProgress func(status string),
+	debugHook AOIDebugHook,
+	auditMode bool,
+) (*AOIReport, error) {
 	// Separate cached vs uncached files
 	uncachedDiffs := make(map[string]string)
 	var cachedAOIs []AOIScanResult
@@ -109,7 +138,7 @@ func ScanAreasOfInterestDebug(
 		onProgress(fmt.Sprintf("using cached AOI results for %d file(s)", len(cachedAOIs)))
 	}
 
-	batches := buildAOIBatches(uncachedDiffs)
+	batches := buildAOIBatchesClassified(uncachedDiffs, fileDimensions)
 	log.Printf("[aoi-debug] built %d batches from %d uncached files", len(batches), len(uncachedDiffs))
 	if len(batches) == 0 && len(cachedAOIs) == 0 {
 		return &AOIReport{}, nil
@@ -258,62 +287,95 @@ type FindingForRevalidation struct {
 // ── AOI batch logic ────────────────────────────────────────────────────
 
 type aoiBatch struct {
-	label string
-	files []string
-	diffs string
+	label      string
+	files      []string
+	diffs      string
+	dimensions []string // dimension slugs for this batch (nil = all)
 }
 
 func buildAOIBatches(rawDiffs map[string]string) []aoiBatch {
-	// Group by directory, skip excluded files
-	dirFiles := make(map[string][]string)
-	for p := range rawDiffs {
+	return buildAOIBatchesClassified(rawDiffs, nil)
+}
+
+// dimensionKey returns a stable string key for a set of dimension slugs.
+// Used to group files with the same dimensions into the same batch.
+func dimensionKey(dims []string) string {
+	if len(dims) == 0 {
+		return "_all_"
+	}
+	sorted := make([]string, len(dims))
+	copy(sorted, dims)
+	sort.Strings(sorted)
+	return strings.Join(sorted, ",")
+}
+
+func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[string][]string) []aoiBatch {
+	// Group by dimension set, skip excluded files
+	type fileEntry struct {
+		path string
+		diff string
+	}
+	groups := make(map[string][]fileEntry)
+	groupDims := make(map[string][]string)
+
+	for p, diff := range rawDiffs {
 		if config.ShouldExcludeFromReview(p) {
 			continue
 		}
-		dir := filepath.Dir(p)
-		if dir == "." {
-			dir = "root"
+		var dims []string
+		if fileDimensions != nil {
+			dims = fileDimensions[p]
 		}
-		dirFiles[dir] = append(dirFiles[dir], p)
+		key := dimensionKey(dims)
+		groups[key] = append(groups[key], fileEntry{path: p, diff: diff})
+		if _, ok := groupDims[key]; !ok {
+			groupDims[key] = dims
+		}
 	}
 
-	dirs := make([]string, 0, len(dirFiles))
-	for d := range dirFiles {
-		dirs = append(dirs, d)
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
 	}
-	sort.Strings(dirs)
+	sort.Strings(keys)
 
 	var batches []aoiBatch
-	for _, dir := range dirs {
-		files := dirFiles[dir]
-		sort.Strings(files)
+	for _, key := range keys {
+		entries := groups[key]
+		dims := groupDims[key]
+
+		// Sort files within group for determinism
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].path < entries[j].path
+		})
 
 		var curFiles []string
 		var curDiff strings.Builder
 
-		for _, f := range files {
-			diff := rawDiffs[f]
-			entry := fmt.Sprintf("=== %s ===\n%s\n\n", f, diff)
+		for _, e := range entries {
+			entry := fmt.Sprintf("=== %s ===\n%s\n\n", e.path, e.diff)
 
 			if curDiff.Len() > 0 && curDiff.Len()+len(entry) > aoiBatchMaxChars {
 				batches = append(batches, aoiBatch{
-					label: dir,
-					files: curFiles,
-					diffs: curDiff.String(),
+					label:      key,
+					files:      curFiles,
+					diffs:      curDiff.String(),
+					dimensions: dims,
 				})
 				curFiles = nil
 				curDiff.Reset()
 			}
 
 			curDiff.WriteString(entry)
-			curFiles = append(curFiles, f)
+			curFiles = append(curFiles, e.path)
 		}
 
 		if len(curFiles) > 0 {
 			batches = append(batches, aoiBatch{
-				label: dir,
-				files: curFiles,
-				diffs: curDiff.String(),
+				label:      key,
+				files:      curFiles,
+				diffs:      curDiff.String(),
+				dimensions: dims,
 			})
 		}
 	}
@@ -331,7 +393,7 @@ func countFiles(batches []aoiBatch) int {
 
 // scanBatch sends a single batch of diffs to the AOI scanner.
 func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
-	systemPrompt := buildAOIScanPrompt(auditMode)
+	systemPrompt := buildAOIScanPromptWithDimensions(auditMode, batch.dimensions)
 	userMsg := fmt.Sprintf(
 		"Scan these %d file(s) for areas of interest:\n\n%s",
 		len(batch.files), batch.diffs,

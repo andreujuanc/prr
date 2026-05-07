@@ -45,6 +45,15 @@ type Options struct {
 
 	// DebugFile restricts the audit to a single file (path relative to repo root).
 	DebugFile string
+
+	// ConfirmFileCount is called when the collected file count exceeds
+	// LargeFileThreshold. It receives the count and should return true to
+	// proceed or false to abort. When nil the audit always proceeds.
+	ConfirmFileCount func(count int) bool
+
+	// LargeFileThreshold is the file count above which ConfirmFileCount
+	// is invoked. Defaults to 200 when zero.
+	LargeFileThreshold int
 }
 
 // Result holds the output of an audit run.
@@ -85,10 +94,10 @@ type Result struct {
 
 // PhaseUsage holds per-phase token usage for cost reporting.
 type PhaseUsage struct {
-	AOI      ai.TokenUsage // Phase 2: AOI pre-scan
-	Review   ai.TokenUsage // Phase 3: deep review
-	Recheck  ai.TokenUsage // Phase 3b: recheck/dedup
-	Synth    ai.TokenUsage // Phase 4: synthesis
+	AOI     ai.TokenUsage // Phase 2: AOI pre-scan
+	Review  ai.TokenUsage // Phase 3: deep review
+	Recheck ai.TokenUsage // Phase 3b: recheck/dedup
+	Synth   ai.TokenUsage // Phase 4: synthesis
 }
 
 // Total returns aggregate token usage across all phases.
@@ -169,6 +178,17 @@ func Run(
 		return nil, fmt.Errorf("phase 1 file collection: %w", err)
 	}
 
+	// Guard against unexpectedly large file sets
+	threshold := opts.LargeFileThreshold
+	if threshold <= 0 {
+		threshold = 200
+	}
+	if len(filePaths) > threshold && opts.ConfirmFileCount != nil {
+		if !opts.ConfirmFileCount(len(filePaths)) {
+			return nil, fmt.Errorf("audit aborted: %d files collected (threshold %d)", len(filePaths), threshold)
+		}
+	}
+
 	// Apply --file filter
 	if opts.DebugFile != "" {
 		var filtered []string
@@ -206,6 +226,36 @@ func Run(
 		return &Result{}, nil
 	}
 
+	// ── Phase 1b: File Classification ───────────────────────────────────
+
+	dbg.Phase("PHASE 1b: File Classification")
+	onProgress("phase1b", fmt.Sprintf("Classifying %d file(s)...", len(files)))
+
+	classifications, err := runPhase1b(ctx, aoiClient, opts, auditState, files, onProgress)
+	if err != nil {
+		log.Printf("Phase 1b (classification) failed: %v — all files will use all dimensions", err)
+		classifications = make(map[string]FileType, len(files))
+		for _, f := range files {
+			classifications[f.Path] = FileTypeUnknown
+		}
+	}
+
+	if dbg.Enabled() {
+		dbg.Section("File Classifications")
+		typeCounts := make(map[FileType]int)
+		for _, ft := range classifications {
+			typeCounts[ft]++
+		}
+		for ft, count := range typeCounts {
+			dbg.Text("  %s: %d file(s)", ft, count)
+		}
+	}
+
+	// Save state after Phase 1b
+	if err := state.Save(auditState); err != nil {
+		log.Printf("Warning: failed to save audit state after Phase 1b: %v", err)
+	}
+
 	// ── Phase 2: AOI Generation ─────────────────────────────────────────
 
 	dbg.Phase("PHASE 2: AOI Pre-scan")
@@ -222,7 +272,7 @@ func Run(
 		}
 	}
 
-	aoiResults, err := runPhase2(ctx, aoiClient, opts, auditState, files, onProgress, aoiDebugHook)
+	aoiResults, err := runPhase2(ctx, aoiClient, opts, auditState, files, classifications, onProgress, aoiDebugHook)
 	if err != nil {
 		return nil, fmt.Errorf("phase 2 AOI generation: %w", err)
 	}
@@ -382,6 +432,42 @@ func runPhase0(
 	return result.Summary, nil
 }
 
+// ── Phase 1b: File Classification ────────────────────────────────────────
+
+func runPhase1b(
+	ctx context.Context,
+	client ai.Client,
+	opts Options,
+	auditState *state.State,
+	files []AuditFile,
+	onProgress OnProgress,
+) (map[string]FileType, error) {
+	// Build cached types from state
+	cachedTypes := make(map[string]FileType)
+	if !opts.NoCache {
+		for _, f := range files {
+			contentHash := hashContent(f.Content)
+			if fs, ok := auditState.Files[f.Path]; ok && fs.DiffHash == contentHash && fs.FileType != "" {
+				cachedTypes[f.Path] = FileType(fs.FileType)
+			}
+		}
+	}
+
+	result, err := ClassifyFiles(ctx, client, files, cachedTypes, func(status string) {
+		onProgress("phase1b", status)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache results
+	for path, ft := range result {
+		auditState.SetFileType(path, string(ft))
+	}
+
+	return result, nil
+}
+
 // ── Phase 2: AOI Generation ─────────────────────────────────────────────
 
 func runPhase2(
@@ -390,6 +476,7 @@ func runPhase2(
 	opts Options,
 	auditState *state.State,
 	files []AuditFile,
+	classifications map[string]FileType,
 	onProgress OnProgress,
 	debugHook security.AOIDebugHook,
 ) ([]security.AOIScanResult, error) {
@@ -433,8 +520,15 @@ func runPhase2(
 		return results, nil
 	}
 
+	// Build per-file dimension map from classifications
+	fileDimensions := make(map[string][]string, len(fileContents))
+	for path := range fileContents {
+		ft := classifications[path]
+		fileDimensions[path] = DimensionsForType(ft)
+	}
+
 	// Run AOI scan on uncached files
-	report, err := security.ScanAreasOfInterestDebug(ctx, aoiClient, fileContents, cachedResults, func(status string) {
+	report, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, fileContents, cachedResults, fileDimensions, func(status string) {
 		onProgress("phase2", status)
 	}, debugHook, true)
 	if err != nil {
@@ -469,13 +563,13 @@ func runPhase3(
 	toolHook func(callIndex int, toolName string, args string, status string, duration string),
 ) (findings []state.DeepFinding, dismissals int, crossCutting []string, err error) {
 	execOpts := review.ExecuteOptions{
-		Mode:               review.ModeAudit,
-		ProjectContext:     projectContext,
-		FocusDimensions:    opts.Focus,
-		MaxConcurrency:     phase3MaxConcurrency,
-		NoCache:            opts.NoCache,
-		OnLLMCall:          debugHook,
-		OnToolCall:         toolHook,
+		Mode:            review.ModeAudit,
+		ProjectContext:  projectContext,
+		FocusDimensions: opts.Focus,
+		MaxConcurrency:  phase3MaxConcurrency,
+		NoCache:         opts.NoCache,
+		OnLLMCall:       debugHook,
+		OnToolCall:      toolHook,
 		OnProgress: func(completed, total int, cached bool, callErr error) {
 			if callErr != nil {
 				onProgress("phase3", fmt.Sprintf("Review %d/%d failed: %v", completed, total, callErr))

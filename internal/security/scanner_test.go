@@ -339,6 +339,160 @@ func TestBuildAOIBatches(t *testing.T) {
 	}
 }
 
+func TestDimensionKey(t *testing.T) {
+	tests := []struct {
+		name string
+		dims []string
+		want string
+	}{
+		{"nil dims", nil, "_all_"},
+		{"empty dims", []string{}, "_all_"},
+		{"single dim", []string{"testing"}, "testing"},
+		{"multiple dims sorted", []string{"a", "b", "c"}, "a,b,c"},
+		{"multiple dims unsorted", []string{"c", "a", "b"}, "a,b,c"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dimensionKey(tt.dims)
+			if got != tt.want {
+				t.Errorf("dimensionKey(%v) = %q, want %q", tt.dims, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildAOIBatchesClassified_GroupsByDimensions(t *testing.T) {
+	rawDiffs := map[string]string{
+		"handler.go":      "handler code",
+		"handler_test.go": "test code",
+		"repo.go":         "repo code",
+	}
+
+	fileDimensions := map[string][]string{
+		"handler.go":      {"input-validation", "error-handling"},
+		"handler_test.go": {"testing", "correctness"},
+		"repo.go":         {"input-validation", "error-handling"}, // same as handler.go
+	}
+
+	batches := buildAOIBatchesClassified(rawDiffs, fileDimensions)
+
+	// handler.go and repo.go share dimensions, so they should be in the same batch
+	// handler_test.go has different dimensions, so it should be in a separate batch
+	if len(batches) != 2 {
+		t.Fatalf("got %d batches, want 2", len(batches))
+	}
+
+	// Find which batch has the test file
+	var testBatch, handlerBatch *aoiBatch
+	for i := range batches {
+		for _, f := range batches[i].files {
+			if f == "handler_test.go" {
+				testBatch = &batches[i]
+			}
+			if f == "handler.go" {
+				handlerBatch = &batches[i]
+			}
+		}
+	}
+
+	if testBatch == nil {
+		t.Fatal("test file batch not found")
+	}
+	if handlerBatch == nil {
+		t.Fatal("handler file batch not found")
+	}
+
+	if len(testBatch.files) != 1 {
+		t.Errorf("test batch has %d files, want 1", len(testBatch.files))
+	}
+	if len(handlerBatch.files) != 2 {
+		t.Errorf("handler batch has %d files, want 2 (handler.go + repo.go)", len(handlerBatch.files))
+	}
+
+	// Verify dimensions are attached to batches
+	if len(testBatch.dimensions) != 2 {
+		t.Errorf("test batch has %d dimensions, want 2", len(testBatch.dimensions))
+	}
+	if len(handlerBatch.dimensions) != 2 {
+		t.Errorf("handler batch has %d dimensions, want 2", len(handlerBatch.dimensions))
+	}
+}
+
+func TestBuildAOIBatchesClassified_NilDimensions(t *testing.T) {
+	rawDiffs := map[string]string{
+		"a.go": "code a",
+		"b.go": "code b",
+	}
+
+	// nil fileDimensions — all files should end up in same batch (all dims)
+	batches := buildAOIBatchesClassified(rawDiffs, nil)
+
+	if len(batches) != 1 {
+		t.Fatalf("got %d batches, want 1", len(batches))
+	}
+	if len(batches[0].files) != 2 {
+		t.Errorf("batch has %d files, want 2", len(batches[0].files))
+	}
+	if batches[0].dimensions != nil {
+		t.Errorf("batch dimensions should be nil, got %v", batches[0].dimensions)
+	}
+}
+
+func TestBuildAOIBatchesClassified_ExcludesFiles(t *testing.T) {
+	rawDiffs := map[string]string{
+		"main.go": "code",
+		"go.sum":  "lock file",
+	}
+
+	batches := buildAOIBatchesClassified(rawDiffs, nil)
+
+	totalFiles := 0
+	for _, b := range batches {
+		for _, f := range b.files {
+			if f == "go.sum" {
+				t.Error("go.sum should be excluded")
+			}
+			totalFiles++
+		}
+	}
+	if totalFiles != 1 {
+		t.Errorf("got %d files, want 1", totalFiles)
+	}
+}
+
+func TestBuildAOIScanPromptWithDimensions(t *testing.T) {
+	// With specific dimensions — prompt should contain those dimensions only
+	prompt := buildAOIScanPromptWithDimensions(true, []string{"testing"})
+	if !containsSubstring(prompt, "TESTING") {
+		t.Error("prompt should contain TESTING dimension")
+	}
+	// Should NOT contain unrelated dimensions
+	if containsSubstring(prompt, "CRYPTOGRAPHY") {
+		t.Error("prompt should not contain CRYPTOGRAPHY when only testing is specified")
+	}
+
+	// With nil dimensions — prompt should contain all dimensions
+	promptAll := buildAOIScanPromptWithDimensions(true, nil)
+	if !containsSubstring(promptAll, "TESTING") {
+		t.Error("prompt with nil dims should contain TESTING")
+	}
+	if !containsSubstring(promptAll, "CRYPTOGRAPHY") {
+		t.Error("prompt with nil dims should contain CRYPTOGRAPHY")
+	}
+
+	// Audit mode rules
+	if !containsSubstring(prompt, "full-project audit") {
+		t.Error("audit mode prompt should contain audit rules")
+	}
+
+	// PR mode rules
+	promptPR := buildAOIScanPromptWithDimensions(false, []string{"testing"})
+	if !containsSubstring(promptPR, "DIFF") {
+		t.Error("PR mode prompt should contain diff rules")
+	}
+}
+
 func TestFormatDigest_ContainsCategories(t *testing.T) {
 	results := []AOIScanResult{
 		{

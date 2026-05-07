@@ -17,17 +17,17 @@ func TestShouldExcludeFromAudit(t *testing.T) {
 		{"node_modules/react/index.js", true},
 		{"foo.pb.go", true},
 
-		// Audit-specific: test files
-		{"internal/auth/handler_test.go", true},
-		{"src/utils.test.ts", true},
-		{"src/utils.spec.js", true},
-		{"src/Component.test.tsx", true},
-		{"tests/test_auth.py", true},
+		// Test files are NO LONGER excluded — they are classified and audited
+		{"internal/auth/handler_test.go", false},
+		{"src/utils.test.ts", false},
+		{"src/utils.spec.js", false},
+		{"src/Component.test.tsx", false},
+		{"tests/test_auth.py", false},
 
-		// Audit-specific: test infrastructure
-		{"testdata/fixtures/input.json", true},
-		{"src/__tests__/utils.js", true},
-		{"src/__mocks__/api.js", true},
+		// Test infrastructure is NO LONGER excluded — classified and audited
+		{"testdata/fixtures/input.json", false},
+		{"src/__tests__/utils.js", false},
+		{"src/__mocks__/api.js", false},
 
 		// Audit-specific: generated
 		{"types.d.ts", true},
