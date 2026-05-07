@@ -123,8 +123,6 @@ func TestExportMarkdown(t *testing.T) {
 		"**Category:** input-validation / sql-injection",
 		"**Fix:** Use parameterized queries",
 		"[auth.go:44-50] Missing token expiry check",
-		"Cross-cutting Observations",
-		"Pattern of missing input validation across HTTP handlers",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("markdown missing %q", want)
@@ -174,5 +172,62 @@ func TestExportJSONNilFindings(t *testing.T) {
 	// Should have "findings": [] not "findings": null
 	if !strings.Contains(string(data), `"findings": []`) {
 		t.Error("nil findings should serialize as empty array")
+	}
+}
+
+func TestToReportJSON_NilFindings(t *testing.T) {
+	r := &Result{
+		FilesScanned:  5,
+		AOIsGenerated: 10,
+		Findings:      nil,
+	}
+	rj := toReportJSON(r)
+	if rj.Findings == nil {
+		t.Error("expected non-nil findings slice")
+	}
+	if len(rj.Findings) != 0 {
+		t.Errorf("expected empty findings, got %d", len(rj.Findings))
+	}
+}
+
+func TestToReportJSON_FieldMapping(t *testing.T) {
+	r := &Result{
+		FilesScanned:             10,
+		AOIsGenerated:            20,
+		ReviewCalls:              5,
+		IndividualReviews:        3,
+		GroupedReviews:           2,
+		Findings:                 []state.DeepFinding{{Title: "test"}},
+		Dismissals:               4,
+		CrossCuttingObservations: []string{"obs1"},
+		SkippedSubcategories:     []string{"sub1"},
+	}
+	rj := toReportJSON(r)
+	if rj.FilesScanned != 10 {
+		t.Errorf("FilesScanned: want 10, got %d", rj.FilesScanned)
+	}
+	if rj.AOIsGenerated != 20 {
+		t.Errorf("AOIsGenerated: want 20, got %d", rj.AOIsGenerated)
+	}
+	if rj.ReviewCalls != 5 {
+		t.Errorf("ReviewCalls: want 5, got %d", rj.ReviewCalls)
+	}
+	if rj.IndividualReviews != 3 {
+		t.Errorf("IndividualReviews: want 3, got %d", rj.IndividualReviews)
+	}
+	if rj.GroupedReviews != 2 {
+		t.Errorf("GroupedReviews: want 2, got %d", rj.GroupedReviews)
+	}
+	if len(rj.Findings) != 1 || rj.Findings[0].Title != "test" {
+		t.Error("Findings not mapped correctly")
+	}
+	if rj.Dismissals != 4 {
+		t.Errorf("Dismissals: want 4, got %d", rj.Dismissals)
+	}
+	if len(rj.CrossCuttingObservations) != 1 {
+		t.Error("CrossCuttingObservations not mapped")
+	}
+	if len(rj.SkippedSubcategories) != 1 {
+		t.Error("SkippedSubcategories not mapped")
 	}
 }

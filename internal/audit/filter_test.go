@@ -139,3 +139,42 @@ func TestCustomExclusions(t *testing.T) {
 		t.Error("should not exclude source code")
 	}
 }
+
+func TestMatchesAuditPatterns_Comments(t *testing.T) {
+	patterns := []string{"# this is a comment", "", "*.log"}
+	if matchesAuditPatterns("foo.go", patterns) {
+		t.Error("should not match non-log file")
+	}
+	if !matchesAuditPatterns("app.log", patterns) {
+		t.Error("should match .log file")
+	}
+}
+
+func TestMatchesAuditPatterns_DirectoryGlob(t *testing.T) {
+	patterns := []string{"vendor/**"}
+	if !matchesAuditPatterns("vendor/lib/foo.go", patterns) {
+		t.Error("should match vendor subdirectory")
+	}
+	if matchesAuditPatterns("src/vendor.go", patterns) {
+		t.Error("should not match file named vendor.go")
+	}
+}
+
+func TestMatchesAuditPatterns_NestedDirectoryGlob(t *testing.T) {
+	patterns := []string{"__tests__/**"}
+	if !matchesAuditPatterns("src/__tests__/foo.test.js", patterns) {
+		t.Error("should match nested __tests__ directory")
+	}
+	if matchesAuditPatterns("src/main.go", patterns) {
+		t.Error("should not match unrelated path")
+	}
+}
+
+func TestMatchesAuditPatterns_Empty(t *testing.T) {
+	if matchesAuditPatterns("foo.go", nil) {
+		t.Error("nil patterns should match nothing")
+	}
+	if matchesAuditPatterns("foo.go", []string{}) {
+		t.Error("empty patterns should match nothing")
+	}
+}
