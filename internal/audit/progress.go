@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -269,6 +270,10 @@ func (m *ProgressUI) View() string {
 	// Header
 	b.WriteString("\n")
 	b.WriteString(pTitle.Render("  prr audit"))
+	repoName := filepath.Base(m.opts.RepoRoot)
+	if repoName != "" && repoName != "." {
+		b.WriteString(pSubtle.Render("  " + repoName))
+	}
 	b.WriteString(pSubtle.Render(fmt.Sprintf("  %s", m.elapsed.Truncate(100*time.Millisecond))))
 	b.WriteString("\n")
 
