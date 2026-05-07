@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
@@ -479,7 +480,9 @@ func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallel
 	}
 
 	// Store manager ref for shutdown cleanup
+	opencodeMgrLock.Lock()
 	opencodeMgrRef = m.opencodeMgr
+	opencodeMgrLock.Unlock()
 
 	return m
 }
@@ -706,14 +709,21 @@ func SetProgram(p *tea.Program) {
 }
 
 // opencodeMgrRef holds a reference to the active manager for shutdown.
-var opencodeMgrRef *opencode.Manager
+var (
+	opencodeMgrRef  *opencode.Manager
+	opencodeMgrLock sync.Mutex
+)
 
 // Shutdown cleans up resources (stops the OpenCode server, etc.).
 // Call after the bubbletea program exits.
 func Shutdown() {
-	if opencodeMgrRef != nil {
-		opencodeMgrRef.Stop()
-		opencodeMgrRef = nil
+	opencodeMgrLock.Lock()
+	mgr := opencodeMgrRef
+	opencodeMgrRef = nil
+	opencodeMgrLock.Unlock()
+
+	if mgr != nil {
+		mgr.Stop()
 	}
 }
 
@@ -1077,7 +1087,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Stop the OpenCode server if no tasks are still running
 		if !hasAnyRunningTask(m.tasks) && m.opencodeMgr != nil {
 			mgr := m.opencodeMgr
-			go mgr.Stop()
+			go func() {
+				mgr.Stop()
+			}()
 		}
 		return m, tea.Batch(cmds...)
 
@@ -3078,6 +3090,21 @@ func (m *Model) executeActionMenuByKey(key string) bool {
 
 // ── Task management ─────────────────────────────────────────────────────
 
+// maxConcurrentTasks limits the number of simultaneously running tasks
+// to prevent unbounded goroutine spawning.
+const maxConcurrentTasks = 5
+
+// countRunningTasks returns the number of currently running tasks.
+func countRunningTasks(tasks []*Task) int {
+	n := 0
+	for _, t := range tasks {
+		if t.GetStatus() == TaskRunning {
+			n++
+		}
+	}
+	return n
+}
+
 // spawnFixTask creates a new task for the given finding and launches it.
 // Returns a tea.Cmd that sets the flash message (actual spawning is async via program.Send).
 func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
@@ -3086,6 +3113,9 @@ func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
 	}
 	if m.opencodeMgr == nil {
 		return m.setFlash("Error: OpenCode manager not initialized")
+	}
+	if countRunningTasks(m.tasks) >= maxConcurrentTasks {
+		return m.setFlash(fmt.Sprintf("Too many running tasks (max %d) — wait for one to finish", maxConcurrentTasks))
 	}
 
 	// Ensure the server is started (lazy init on first task)

@@ -195,6 +195,7 @@ func (m *Model) switchModel(modelID string) string {
 		cfg.Model = modelID
 		if err := config.Save(cfg); err != nil {
 			log.Printf("Warning: failed to persist model selection: %v", err)
+			m.flashMsg = "Warning: model changed but could not save to config"
 		}
 	}
 
@@ -226,6 +227,7 @@ func (m *Model) switchAOIModel(modelID string) string {
 		cfg.AOIModel = modelID
 		if err := config.Save(cfg); err != nil {
 			log.Printf("Warning: failed to persist AOI model selection: %v", err)
+			m.flashMsg = "Warning: AOI model changed but could not save to config"
 		}
 	}
 
@@ -462,7 +464,7 @@ func (m Model) renderErrorModal() string {
 	var b strings.Builder
 	b.WriteString(styleAccentRed.Bold(true).Render("  ERROR"))
 	b.WriteString("\n\n")
-	b.WriteString(styleTextPrimary.Render("  " + strings.ReplaceAll(m.errorMsg, "\n", "\n  ")))
+	b.WriteString(styleTextPrimary.Render("  " + strings.ReplaceAll(ansi.Strip(m.errorMsg), "\n", "\n  ")))
 	b.WriteString("\n\n")
 	b.WriteString(styleTextMuted.Render("  Press any key to dismiss"))
 	return b.String()

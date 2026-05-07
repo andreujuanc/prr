@@ -316,6 +316,10 @@ func runAudit(debug bool, args []string) {
 				}
 				fmt.Fprintln(os.Stderr)
 			}
+
+			// Visual charts
+			fmt.Fprint(os.Stderr, audit.RenderSeverityBar(result.Findings))
+			fmt.Fprint(os.Stderr, audit.RenderCategoryChart(result.Findings))
 		}
 
 		// Print synthesis
@@ -651,10 +655,18 @@ func installDeltaDeb() error {
 
 	fmt.Fprintf(os.Stderr, "\n  Fetching latest release...\n")
 
+	// Create a secure temporary directory for the download to prevent
+	// symlink/race attacks in the shared /tmp directory.
+	tmpDir, err := os.MkdirTemp("", "prr-delta-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
 	// Get download URL for the matching .deb asset
 	pattern := fmt.Sprintf("git-delta_*_%s.deb", debArch)
 	cmd := exec.Command("gh", "release", "download", "--repo", "dandavison/delta",
-		"--pattern", pattern, "--dir", os.TempDir())
+		"--pattern", pattern, "--dir", tmpDir)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 
@@ -662,20 +674,20 @@ func installDeltaDeb() error {
 		return fmt.Errorf("failed to download delta .deb: %v\n  Install manually: https://github.com/dandavison/delta/releases", err)
 	}
 
-	// Find the downloaded file
-	entries, err := os.ReadDir(os.TempDir())
+	// Find the downloaded file in our isolated temp directory
+	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		return fmt.Errorf("failed to read temp dir: %v", err)
 	}
 	var debFile string
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "git-delta_") && strings.HasSuffix(e.Name(), "_"+debArch+".deb") {
-			debFile = filepath.Join(os.TempDir(), e.Name())
+			debFile = filepath.Join(tmpDir, e.Name())
 			break
 		}
 	}
 	if debFile == "" {
-		return fmt.Errorf("downloaded .deb not found in %s", os.TempDir())
+		return fmt.Errorf("downloaded .deb not found in %s", tmpDir)
 	}
 
 	fmt.Fprintf(os.Stderr, "  Installing %s...\n\n", dim.Render(filepath.Base(debFile)))
@@ -692,11 +704,8 @@ func installDeltaDeb() error {
 	dpkg.Stdin = os.Stdin
 
 	if err := dpkg.Run(); err != nil {
-		os.Remove(debFile)
 		return fmt.Errorf("failed to install delta: %v\n  Try manually: sudo dpkg -i %s", err, debFile)
 	}
-
-	os.Remove(debFile)
 
 	if _, err := exec.LookPath("delta"); err != nil {
 		return fmt.Errorf("delta was installed but not found in PATH\n  Try restarting your shell")
@@ -793,18 +802,26 @@ func ensureSSHHostKeys() {
 	// Ensure ~/.ssh exists
 	home, err := os.UserHomeDir()
 	if err != nil {
+		log.Printf("SSH known_hosts: failed to get home dir: %v", err)
 		return
 	}
 	sshDir := filepath.Join(home, ".ssh")
-	os.MkdirAll(sshDir, 0700)
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		log.Printf("SSH known_hosts: failed to create %s: %v", sshDir, err)
+		return
+	}
 
 	knownHosts := filepath.Join(sshDir, "known_hosts")
 	f, err := os.OpenFile(knownHosts, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
+		log.Printf("SSH known_hosts: failed to open %s: %v", knownHosts, err)
 		return
 	}
 	defer f.Close()
-	f.Write(keys)
+	if _, err := f.Write(keys); err != nil {
+		log.Printf("SSH known_hosts: failed to write to %s: %v", knownHosts, err)
+		return
+	}
 
 	fmt.Fprintf(os.Stderr, "  %s %s added to %s\n\n", info.Render("done:"), host, knownHosts)
 }

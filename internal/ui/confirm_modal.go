@@ -104,7 +104,16 @@ func (m *Model) renderConfirmModal() string {
 		f := modal.finding
 		t := modal.target
 		b.WriteString(styleAccentBlueBold.Render(fmt.Sprintf("Pipe to \"%s\"?", t.Name)) + "\n\n")
-		b.WriteString(styleTextMuted.Render(fmt.Sprintf("  Command: %s %s", t.Command, strings.Join(t.Args, " "))) + "\n")
+		// Show the full command so users can verify what will be executed
+		cmdLine := t.Command
+		if len(t.Args) > 0 {
+			cmdLine += " " + strings.Join(t.Args, " ")
+		}
+		b.WriteString(styleTextMuted.Render(fmt.Sprintf("  Command: %s", cmdLine)) + "\n")
+		// Warn if the command is an absolute path or looks unusual
+		if strings.Contains(t.Command, "/") || strings.Contains(t.Command, "\\") {
+			b.WriteString(styleAccentYellow.Render("  \u26a0 Command uses an absolute path — verify it is trusted") + "\n")
+		}
 		b.WriteString(findingSummaryLine(f) + "\n\n")
 		b.WriteString(styleTextMuted.Render("[Enter] Run   [Esc] Cancel"))
 

@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -448,13 +449,17 @@ func hashInputs(inputs *discoveredInputs) string {
 }
 
 // readFileCapped reads a file up to maxBytes, returning its content.
+// Uses io.LimitReader to avoid loading entire large files into memory.
 func readFileCapped(path string, maxBytes int) (string, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	if len(data) > maxBytes {
-		data = data[:maxBytes]
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)))
+	if err != nil {
+		return "", err
 	}
 	return string(data), nil
 }
@@ -482,6 +487,10 @@ var skipDirs = map[string]bool{
 	".vscode":      true,
 }
 
+// maxEntriesPerDir caps the number of entries processed per directory to avoid
+// excessive memory usage in directories with very large numbers of files.
+const maxEntriesPerDir = 500
+
 func buildDirTreeRecursive(b *strings.Builder, dir, prefix string, depth, maxDepth int) {
 	if depth > maxDepth {
 		return
@@ -494,7 +503,12 @@ func buildDirTreeRecursive(b *strings.Builder, dir, prefix string, depth, maxDep
 
 	// Filter and sort: directories first, then files
 	var dirs, files []os.DirEntry
+	totalKept := 0
 	for _, e := range entries {
+		if totalKept >= maxEntriesPerDir {
+			b.WriteString(prefix + fmt.Sprintf("... (%d more entries)\n", len(entries)-totalKept))
+			break
+		}
 		name := e.Name()
 		if strings.HasPrefix(name, ".") && depth == 0 && !e.IsDir() {
 			continue // skip hidden files at root (but allow hidden dirs like .github)
@@ -507,6 +521,7 @@ func buildDirTreeRecursive(b *strings.Builder, dir, prefix string, depth, maxDep
 		} else {
 			files = append(files, e)
 		}
+		totalKept++
 	}
 
 	// Print directories
