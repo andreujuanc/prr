@@ -14,6 +14,8 @@ type Config struct {
 	Provider        string        `json:"provider"` // "gemini", "anthropic", "openai"
 	APIKey          string        `json:"api_key"`
 	Model           string        `json:"model"`
+	AOIModel        string        `json:"aoi_model,omitempty"`        // model for AOI pre-scan (default: cheapest for provider)
+	AOIAPIKey       string        `json:"aoi_api_key,omitempty"`      // separate API key for AOI model (default: same as api_key)
 	Theme           string        `json:"theme,omitempty"`            // UI theme ID (e.g. "catppuccin-mocha", "dracula")
 	ParallelReviews int           `json:"parallel_reviews,omitempty"` // number of concurrent batch reviews (default 3)
 	Pipes           []pipe.Target `json:"pipes,omitempty"`            // external process pipe targets
@@ -76,6 +78,14 @@ func Load() (*Config, error) {
 		cfg.ParallelReviews = 3
 	}
 
+	// Validate model names against known models
+	if !IsKnownModel(cfg.Model) {
+		return nil, fmt.Errorf("config: unknown model %q — run `prr audit --help` to see available models or check docs", cfg.Model)
+	}
+	if cfg.AOIModel != "" && !IsKnownModel(cfg.AOIModel) {
+		return nil, fmt.Errorf("config: unknown aoi_model %q — must be a known model ID", cfg.AOIModel)
+	}
+
 	return &cfg, nil
 }
 
@@ -118,6 +128,12 @@ func Save(cfg *Config) error {
 	existing["provider"] = cfg.Provider
 	existing["api_key"] = cfg.APIKey
 	existing["model"] = cfg.Model
+	if cfg.AOIModel != "" {
+		existing["aoi_model"] = cfg.AOIModel
+	}
+	if cfg.AOIAPIKey != "" {
+		existing["aoi_api_key"] = cfg.AOIAPIKey
+	}
 	if cfg.Theme != "" {
 		existing["theme"] = cfg.Theme
 	}

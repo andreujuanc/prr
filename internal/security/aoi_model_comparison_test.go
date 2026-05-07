@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/security"
 )
 
@@ -218,26 +219,26 @@ func securityTestDiffs() (map[string]string, []groundTruthAOI) {
 
 	groundTruth := []groundTruthAOI{
 		// handler.go
-		{file: "internal/api/handler.go", lineRange: [2]int{15, 22}, category: "sql", importance: "must-find", desc: "SQL injection via string concatenation"},
-		{file: "internal/api/handler.go", lineRange: [2]int{14, 26}, category: "user-input", importance: "nice-to-find", desc: "User input from URL query parameter (q)"},
-		{file: "internal/api/handler.go", lineRange: [2]int{25, 26}, category: "xss", importance: "must-find", desc: "XSS via fmt.Fprintf with user input"},
-		{file: "internal/api/handler.go", lineRange: [2]int{30, 38}, category: "exec", importance: "must-find", desc: "Command injection via exec.Command with user input"},
-		{file: "internal/api/handler.go", lineRange: [2]int{42, 45}, category: "auth", importance: "must-find", desc: "Admin endpoint without authentication"},
-		{file: "internal/api/handler.go", lineRange: [2]int{49, 57}, category: "xss", importance: "nice-to-find", desc: "Server-side template injection"},
+		{file: "internal/api/handler.go", lineRange: [2]int{15, 22}, category: "input-validation", importance: "must-find", desc: "SQL injection via string concatenation"},
+		{file: "internal/api/handler.go", lineRange: [2]int{14, 26}, category: "input-validation", importance: "nice-to-find", desc: "User input from URL query parameter (q)"},
+		{file: "internal/api/handler.go", lineRange: [2]int{25, 26}, category: "input-validation", importance: "must-find", desc: "XSS via fmt.Fprintf with user input"},
+		{file: "internal/api/handler.go", lineRange: [2]int{30, 38}, category: "input-validation", importance: "must-find", desc: "Command injection via exec.Command with user input"},
+		{file: "internal/api/handler.go", lineRange: [2]int{42, 45}, category: "authorization", importance: "must-find", desc: "Admin endpoint without authentication"},
+		{file: "internal/api/handler.go", lineRange: [2]int{49, 57}, category: "input-validation", importance: "nice-to-find", desc: "Server-side template injection"},
 
 		// redirect.go
-		{file: "internal/api/redirect.go", lineRange: [2]int{11, 14}, category: "redirect", importance: "must-find", desc: "Open redirect with user-controlled URL"},
-		{file: "internal/api/redirect.go", lineRange: [2]int{18, 28}, category: "file-access", importance: "must-find", desc: "Path traversal via user-controlled file path"},
+		{file: "internal/api/redirect.go", lineRange: [2]int{11, 14}, category: "input-validation", importance: "must-find", desc: "Open redirect with user-controlled URL"},
+		{file: "internal/api/redirect.go", lineRange: [2]int{18, 28}, category: "input-validation", importance: "must-find", desc: "Path traversal via user-controlled file path"},
 
 		// token.go
-		{file: "internal/auth/token.go", lineRange: [2]int{11, 11}, category: "secrets", importance: "must-find", desc: "Hardcoded secret key in source"},
-		{file: "internal/auth/token.go", lineRange: [2]int{15, 17}, category: "crypto", importance: "must-find", desc: "MD5 used for password hashing"},
-		{file: "internal/auth/token.go", lineRange: [2]int{22, 24}, category: "crypto", importance: "nice-to-find", desc: "Predictable token generation (no crypto/rand)"},
-		{file: "internal/auth/token.go", lineRange: [2]int{29, 30}, category: "secrets", importance: "must-find", desc: "Token logged in plaintext"},
-		{file: "internal/auth/token.go", lineRange: [2]int{32, 33}, category: "crypto", importance: "nice-to-find", desc: "Non-constant-time string comparison for secrets"},
+		{file: "internal/auth/token.go", lineRange: [2]int{11, 11}, category: "configuration", importance: "must-find", desc: "Hardcoded secret key in source"},
+		{file: "internal/auth/token.go", lineRange: [2]int{15, 17}, category: "cryptography", importance: "must-find", desc: "MD5 used for password hashing"},
+		{file: "internal/auth/token.go", lineRange: [2]int{22, 24}, category: "cryptography", importance: "nice-to-find", desc: "Predictable token generation (no crypto/rand)"},
+		{file: "internal/auth/token.go", lineRange: [2]int{29, 30}, category: "data-integrity", importance: "must-find", desc: "Token logged in plaintext"},
+		{file: "internal/auth/token.go", lineRange: [2]int{32, 33}, category: "cryptography", importance: "nice-to-find", desc: "Non-constant-time string comparison for secrets"},
 
 		// settings.go
-		{file: "internal/config/settings.go", lineRange: [2]int{9, 11}, category: "network", importance: "must-find", desc: "SSRF via http.Get with user-controlled URL"},
+		{file: "internal/config/settings.go", lineRange: [2]int{9, 11}, category: "external-io", importance: "must-find", desc: "SSRF via http.Get with user-controlled URL"},
 
 		// helpers.go — SHOULD have no findings (clean file)
 	}
@@ -265,7 +266,6 @@ type modelSpec struct {
 //	cheapest      gemini-2.5-flash-lite
 //	cheap         gemini-2.5-flash
 //	new-cheap     gemini-3.1-flash-lite-preview
-//	new-flash     gemini-3-flash-preview
 //	baseline      gemini-3.1-pro-preview      (latest, most capable)
 func defaultModels() []modelSpec {
 	return []modelSpec{
@@ -304,21 +304,6 @@ func defaultModels() []modelSpec {
 			model:       "gemini-3.1-flash-lite-preview",
 			temperature: 0.1,
 			maxOutput:   8192,
-		},
-
-		// ── New flash: gemini-3-flash-preview ────────────────────────
-		{
-			name:        "3-flash-preview (temp=0.1)",
-			model:       "gemini-3-flash-preview",
-			temperature: 0.1,
-			maxOutput:   8192,
-		},
-		{
-			name:           "3-flash-preview (thinking=2k)",
-			model:          "gemini-3-flash-preview",
-			thinkingBudget: 2048,
-			temperature:    0.1,
-			maxOutput:      8192,
 		},
 
 		// ── Expensive baseline: gemini-3.1-pro-preview ──────────────
@@ -368,7 +353,6 @@ var geminiPricing = map[string]modelPricing{
 	"gemini-2.5-flash-lite":         {0.10, 0.40},
 	"gemini-2.5-flash":              {0.30, 2.50},
 	"gemini-3.1-flash-lite-preview": {0.25, 1.50},
-	"gemini-3-flash-preview":        {0.50, 3.00},
 	"gemini-2.5-pro":                {1.25, 10.00}, // ≤200k prompt
 	"gemini-3.1-pro-preview":        {2.00, 12.00}, // ≤200k prompt
 }
@@ -623,6 +607,44 @@ func TestAOIModelComparison(t *testing.T) {
 	}
 
 	t.Log("═══════════════════════════════════════════════════════════════════════════════════════════")
+
+	// ── Export benchmark results to ~/.config/prr/benchmark.json ──────
+	benchmarks := &config.BenchmarkResults{
+		Version:   1,
+		Timestamp: time.Now(),
+	}
+	for _, r := range results {
+		if r.err != nil {
+			continue
+		}
+		totalGT := r.mustFindTotal + r.niceFindTotal
+		recallPct := float64(0)
+		if totalGT > 0 {
+			recallPct = float64(r.mustFindHits+r.niceFindHits) / float64(totalGT) * 100
+		}
+		mustFindPct := float64(0)
+		if r.mustFindTotal > 0 {
+			mustFindPct = float64(r.mustFindHits) / float64(r.mustFindTotal) * 100
+		}
+		benchmarks.Models = append(benchmarks.Models, config.ModelBenchmark{
+			ModelID:        r.spec.model,
+			ConfigName:     r.spec.name,
+			Temperature:    r.spec.temperature,
+			ThinkingBudget: r.spec.thinkingBudget,
+			RecallPct:      recallPct,
+			MustFindPct:    mustFindPct,
+			LatencyMs:      int(r.duration.Milliseconds()),
+			CostPerScan:    r.cost,
+			TotalAOIs:      r.totalAOIs,
+			FalseAlarms:    r.falseAlarms,
+		})
+	}
+	if err := config.SaveBenchmarkResults(benchmarks); err != nil {
+		t.Logf("  WARNING: failed to save benchmark results: %v", err)
+	} else {
+		p, _ := config.BenchmarkPath()
+		t.Logf("  Benchmark results saved to %s", p)
+	}
 }
 
 // TestAOIModelComparison_DetailedOutput runs a single model and prints
@@ -927,7 +949,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 	if models == nil {
 		models = []modelSpec{
 			{name: "2.5-flash-lite", model: "gemini-2.5-flash-lite", temperature: 0.1, maxOutput: 8192},
-			{name: "3-flash-preview", model: "gemini-3-flash-preview", temperature: 0.1, maxOutput: 8192},
+			{name: "3.1-flash-lite-preview", model: "gemini-3.1-flash-lite-preview", temperature: 0.1, maxOutput: 8192},
 		}
 	}
 

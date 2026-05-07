@@ -15,8 +15,8 @@ type AOIModelProfile struct {
 	// (source → sink), but too much noise hurts weaker models.
 	//
 	// Benchmark results (TestAOIContextLineComparison):
-	//   gemini-2.5-flash-lite:  U3=6/6 FP:1  vs U10=5/6 FP:4  → U3 wins
-	//   gemini-3-flash-preview: U3=6/6 FP:0  vs U10=6/6 FP:1  → U10 fine
+	//   gemini-2.5-flash-lite:      U3=6/6 FP:1  vs U10=5/6 FP:4  → U3 wins
+	//   gemini-3.1-flash-lite-preview: small model, same concern as flash-lite
 	ContextLines int
 
 	// Temperature for generation. Lower = more deterministic.
@@ -50,13 +50,6 @@ var aoiProfiles = map[string]AOIModelProfile{
 	"gemini-3.1-flash-lite-preview": {
 		Model:           "gemini-3.1-flash-lite-preview",
 		ContextLines:    3, // small model, same concern as flash-lite
-		Temperature:     0.1,
-		ThinkingBudget:  0,
-		MaxOutputTokens: 8192,
-	},
-	"gemini-3-flash-preview": {
-		Model:           "gemini-3-flash-preview",
-		ContextLines:    10,
 		Temperature:     0.1,
 		ThinkingBudget:  0,
 		MaxOutputTokens: 8192,

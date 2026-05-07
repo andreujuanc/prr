@@ -117,6 +117,57 @@ type State struct {
 	Files              map[string]*FileState `json:"files"`
 	ProjectContext     string                `json:"project_context,omitempty"`      // cached project briefing
 	ProjectContextHash string                `json:"project_context_hash,omitempty"` // hash of inputs used to generate it
+
+	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
+	// review inputs (file content + AOI content + focus dimensions for individual;
+	// all AOI content + focus dimensions for grouped).
+	DeepReviews map[string]*DeepReviewResult `json:"deep_reviews,omitempty"`
+}
+
+// DeepReviewResult stores the cached output of a Phase 3 review call.
+type DeepReviewResult struct {
+	// Type is "individual" or "grouped".
+	Type string `json:"type"`
+
+	// CacheKey is the hash used to look up this result.
+	CacheKey string `json:"cache_key"`
+
+	// Category and Subcategory identify the concern area.
+	Category    string `json:"category"`
+	Subcategory string `json:"subcategory,omitempty"`
+
+	// RawOutput is the LLM's JSON response (unparsed for flexibility).
+	RawOutput json.RawMessage `json:"raw_output"`
+
+	// Findings extracted from the LLM output.
+	Findings []DeepFinding `json:"findings,omitempty"`
+
+	// Dismissals extracted from the LLM output.
+	Dismissals []DeepDismissal `json:"dismissals,omitempty"`
+
+	// CrossCutting observation (grouped reviews only).
+	CrossCutting string `json:"cross_cutting,omitempty"`
+}
+
+// DeepFinding is a confirmed issue from Phase 3 review.
+type DeepFinding struct {
+	AOIID       string `json:"aoi_id"`
+	File        string `json:"file"`
+	Lines       string `json:"lines"`
+	Severity    string `json:"severity"` // "critical", "high", "medium", "low"
+	Category    string `json:"category"`
+	Subcategory string `json:"subcategory,omitempty"`
+	Dimension   string `json:"dimension"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Trigger     string `json:"trigger"`
+	Suggestion  string `json:"suggestion,omitempty"`
+}
+
+// DeepDismissal is a dismissed AOI from Phase 3 review.
+type DeepDismissal struct {
+	AOIID     string `json:"aoi_id"`
+	Rationale string `json:"rationale"`
 }
 
 // NewState initializes a new empty state object for a PR
@@ -192,6 +243,7 @@ func (s *State) ClearAllCaches() {
 		fs.AOIContextLines = 0
 	}
 	s.Review = nil
+	s.DeepReviews = nil
 }
 
 // HasCachedBatch reports whether all files in the given paths have cached findings.
@@ -244,4 +296,32 @@ func (s *State) GetProjectContext() (summary, inputHash string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ProjectContext, s.ProjectContextHash
+}
+
+// SetDeepReview stores a Phase 3 deep review result by cache key.
+func (s *State) SetDeepReview(key string, result *DeepReviewResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.DeepReviews == nil {
+		s.DeepReviews = make(map[string]*DeepReviewResult)
+	}
+	result.CacheKey = key
+	s.DeepReviews[key] = result
+}
+
+// GetDeepReview returns a cached Phase 3 result by key, or nil.
+func (s *State) GetDeepReview(key string) *DeepReviewResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.DeepReviews == nil {
+		return nil
+	}
+	return s.DeepReviews[key]
+}
+
+// ClearDeepReviews removes all cached Phase 3 results.
+func (s *State) ClearDeepReviews() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DeepReviews = nil
 }

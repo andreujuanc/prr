@@ -10,18 +10,19 @@ import (
 
 const stateDir = ".git/pr-tui"
 
-var validPRNumber = regexp.MustCompile(`^\d+$`)
+var validStateKey = regexp.MustCompile(`^[\w-]+$`)
 
-// getStateFilePath returns the path to the state file for a given PR number.
+// getStateFilePath returns the path to the state file for a given key.
+// The key can be a PR number (e.g., "42") or a special identifier (e.g., "audit").
 // It creates the parent directory if it doesn't exist.
-func getStateFilePath(prNumber string) (string, error) {
-	if !validPRNumber.MatchString(prNumber) {
-		return "", fmt.Errorf("invalid PR number: %q", prNumber)
+func getStateFilePath(key string) (string, error) {
+	if !validStateKey.MatchString(key) {
+		return "", fmt.Errorf("invalid state key: %q", key)
 	}
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create state directory: %w", err)
 	}
-	return filepath.Join(stateDir, fmt.Sprintf("%s.json", prNumber)), nil
+	return filepath.Join(stateDir, fmt.Sprintf("%s.json", key)), nil
 }
 
 // Load reads the state for a given PR number from disk.

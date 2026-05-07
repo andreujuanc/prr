@@ -34,6 +34,24 @@ var ReviewSynthesisPrompt string
 //go:embed prompts/chat.md
 var ChatPrompt string
 
+// ReviewIndividualPrompt is the base system prompt for individual AOI deep review.
+// Composed with mode preamble, project context, AOI details, and dimensions at runtime.
+//
+//go:embed prompts/review_individual.md
+var ReviewIndividualPrompt string
+
+// ReviewGroupedPrompt is the base system prompt for grouped subcategory review.
+// Composed with mode preamble, project context, AOI list, and dimensions at runtime.
+//
+//go:embed prompts/review_grouped.md
+var ReviewGroupedPrompt string
+
+// AuditSynthesisPrompt is the system prompt for Phase 4 audit synthesis.
+// It instructs the LLM to produce a structured executive summary from findings.
+//
+//go:embed prompts/audit_synthesis.md
+var AuditSynthesisPrompt string
+
 // ReviewPRPrompt is the system prompt for single-pass PR review.
 // Combines the embedded review instructions with structured JSON output
 // requirements and tool workflow guidance.

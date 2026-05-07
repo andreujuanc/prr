@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "timestamp": "2026-05-07T14:11:56Z",
+  "models": [
+    {
+      "model_id": "gemini-2.5-flash-lite",
+      "config_name": "2.5-flash-lite (temp=0.1)",
+      "temperature": 0.1,
+      "recall_pct": 50.0,
+      "must_find_pct": 50.0,
+      "latency_ms": 19080,
+      "cost_per_scan": 0.0057,
+      "total_aois": 16,
+      "false_alarms": 9
+    },
+    {
+      "model_id": "gemini-2.5-flash-lite",
+      "config_name": "2.5-flash-lite (temp=0.3)",
+      "temperature": 0.3,
+      "recall_pct": 64.3,
+      "must_find_pct": 60.0,
+      "latency_ms": 24113,
+      "cost_per_scan": 0.0058,
+      "total_aois": 16,
+      "false_alarms": 7
+    },
+    {
+      "model_id": "gemini-2.5-flash",
+      "config_name": "2.5-flash (no thinking)",
+      "temperature": 0.1,
+      "recall_pct": 64.3,
+      "must_find_pct": 70.0,
+      "latency_ms": 13123,
+      "cost_per_scan": 0.0225,
+      "total_aois": 20,
+      "false_alarms": 11
+    },
+    {
+      "model_id": "gemini-2.5-flash",
+      "config_name": "2.5-flash (thinking=2k)",
+      "temperature": 0.1,
+      "thinking_budget": 2048,
+      "recall_pct": 85.7,
+      "must_find_pct": 90.0,
+      "latency_ms": 11521,
+      "cost_per_scan": 0.0219,
+      "total_aois": 19,
+      "false_alarms": 7
+    },
+    {
+      "model_id": "gemini-3.1-flash-lite-preview",
+      "config_name": "3.1-flash-lite-preview (temp=0.1)",
+      "temperature": 0.1,
+      "recall_pct": 85.7,
+      "must_find_pct": 80.0,
+      "latency_ms": 3146,
+      "cost_per_scan": 0.0153,
+      "total_aois": 16,
+      "false_alarms": 4
+    },
+    {
+      "model_id": "gemini-3.1-pro-preview",
+      "config_name": "3.1-pro-preview (baseline)",
+      "temperature": 0.1,
+      "recall_pct": 100.0,
+      "must_find_pct": 100.0,
+      "latency_ms": 51583,
+      "cost_per_scan": 0.1346,
+      "total_aois": 23,
+      "false_alarms": 9
+    }
+  ]
+}

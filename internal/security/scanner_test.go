@@ -92,6 +92,113 @@ func TestParseAOIResult(t *testing.T) {
 	}
 }
 
+func TestParseAOIResult_NewFormat(t *testing.T) {
+	input := `[
+		{
+			"file": "internal/billing/charge.go",
+			"risk_level": "high",
+			"risk_summary": "Financial calculations with floating point",
+			"areas": [
+				{
+					"id": "charge-go-float-currency",
+					"line": 45,
+					"end_line": 78,
+					"category": "financial",
+					"subcategory": "money-arithmetic",
+					"urgency": "individual",
+					"concern": "Currency conversion with floating point arithmetic",
+					"context": "Multiplies amounts by exchange rates using float64",
+					"dimensions": ["correctness", "financial"]
+				},
+				{
+					"id": "charge-go-error-swallow",
+					"line": 88,
+					"end_line": 91,
+					"category": "error-handling",
+					"subcategory": "swallowed-errors",
+					"urgency": "grouped",
+					"concern": "Error from validateAmount() assigned to _",
+					"context": "Validation error silently ignored before creating charge",
+					"dimensions": ["error-handling"]
+				}
+			]
+		}
+	]`
+
+	results, err := parseAOIResult(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+
+	r := results[0]
+	// Areas should be normalized into AreasOfInterest
+	if len(r.AreasOfInterest) != 2 {
+		t.Fatalf("got %d AOIs, want 2", len(r.AreasOfInterest))
+	}
+	if len(r.Areas) != 0 {
+		t.Errorf("Areas should be nil after normalization, got %d", len(r.Areas))
+	}
+
+	aoi := r.AreasOfInterest[0]
+	if aoi.ID != "charge-go-float-currency" {
+		t.Errorf("got ID %q, want %q", aoi.ID, "charge-go-float-currency")
+	}
+	if aoi.Category != "financial" {
+		t.Errorf("got Category %q, want %q", aoi.Category, "financial")
+	}
+	if aoi.Subcategory != "money-arithmetic" {
+		t.Errorf("got Subcategory %q, want %q", aoi.Subcategory, "money-arithmetic")
+	}
+	if aoi.Urgency != "individual" {
+		t.Errorf("got Urgency %q, want %q", aoi.Urgency, "individual")
+	}
+	if aoi.Concern != "Currency conversion with floating point arithmetic" {
+		t.Errorf("got Concern %q", aoi.Concern)
+	}
+	if len(aoi.Dimensions) != 2 {
+		t.Errorf("got %d dimensions, want 2", len(aoi.Dimensions))
+	}
+}
+
+func TestParseAOIResult_LegacyFormatStillWorks(t *testing.T) {
+	// Ensure old cached data still deserializes correctly
+	input := `[{
+		"file": "main.go",
+		"risk_level": "high",
+		"risk_summary": "risky",
+		"areas_of_interest": [{
+			"file": "main.go",
+			"line": 42,
+			"category": "sql",
+			"snippet": "db.Query(s)",
+			"reasoning": "raw SQL",
+			"confidence": "high"
+		}]
+	}]`
+
+	results, err := parseAOIResult(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results[0].AreasOfInterest) != 1 {
+		t.Fatalf("got %d AOIs, want 1", len(results[0].AreasOfInterest))
+	}
+
+	aoi := results[0].AreasOfInterest[0]
+	if aoi.Category != "sql" {
+		t.Errorf("got Category %q, want %q", aoi.Category, "sql")
+	}
+	if aoi.Snippet != "db.Query(s)" {
+		t.Errorf("got Snippet %q, want %q", aoi.Snippet, "db.Query(s)")
+	}
+	if aoi.Reasoning != "raw SQL" {
+		t.Errorf("got Reasoning %q, want %q", aoi.Reasoning, "raw SQL")
+	}
+}
+
 func TestParseRevalidationResult(t *testing.T) {
 	tests := []struct {
 		name    string

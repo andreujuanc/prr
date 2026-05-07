@@ -21,8 +21,14 @@ var aoiScanPrompt string
 //go:embed prompts/revalidate.md
 var revalidatePrompt string
 
-// AOIScanPrompt returns the embedded AOI scan system prompt.
-func AOIScanPrompt() string { return aoiScanPrompt }
+// AOIScanPrompt returns the AOI scan system prompt with dimensions composed in.
+func AOIScanPrompt() string { return buildAOIScanPrompt() }
+
+// buildAOIScanPrompt composes the AOI scan prompt template with all dimension
+// partials injected at the {DIMENSIONS} placeholder.
+func buildAOIScanPrompt() string {
+	return strings.Replace(aoiScanPrompt, "{DIMENSIONS}", ai.AllDimensions(), 1)
+}
 
 // RevalidatePrompt returns the embedded revalidation system prompt.
 func RevalidatePrompt() string { return revalidatePrompt }
@@ -83,7 +89,7 @@ func ScanAreasOfInterest(
 	}
 
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("scanning %d file(s) for security areas of interest (%d cached)...", countFiles(batches), len(cachedAOIs)))
+		onProgress(fmt.Sprintf("scanning %d file(s) for areas of interest (%d cached)...", countFiles(batches), len(cachedAOIs)))
 	}
 
 	// Run batches in parallel with bounded concurrency.
@@ -275,12 +281,13 @@ func countFiles(batches []aoiBatch) int {
 func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch) ([]AOIScanResult, error) {
 	messages := []ai.Message{
 		{Role: "user", Content: fmt.Sprintf(
-			"Scan these %d file(s) for security areas of interest:\n\n%s",
+			"Scan these %d file(s) for areas of interest:\n\n%s",
 			len(batch.files), batch.diffs,
 		)},
 	}
 
-	result, err := client.ChatStream(ctx, aoiScanPrompt, messages, nil)
+	systemPrompt := buildAOIScanPrompt()
+	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +337,17 @@ func parseAOIResult(raw string) ([]AOIScanResult, error) {
 	s = sanitizeJSON(s)
 	if err := json.Unmarshal([]byte(s), &results); err != nil {
 		return nil, fmt.Errorf("parse AOI JSON: %w", err)
+	}
+
+	// Normalize: merge Areas into AreasOfInterest for backward compat,
+	// and propagate the parent file path into each AOI.
+	for i := range results {
+		results[i].NormalizeAOIs()
+		for j := range results[i].AreasOfInterest {
+			if results[i].AreasOfInterest[j].File == "" {
+				results[i].AreasOfInterest[j].File = results[i].File
+			}
+		}
 	}
 
 	return results, nil
@@ -427,7 +445,7 @@ func formatDigest(report *AOIReport) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("## Security Pre-Scan: %d Areas of Interest Found\n\n", report.TotalAOIs))
+	sb.WriteString(fmt.Sprintf("## Pre-Scan: %d Areas of Interest Found\n\n", report.TotalAOIs))
 	sb.WriteString(fmt.Sprintf("Overall risk level: **%s**\n\n", report.OverallRisk))
 
 	if len(report.HighRiskFiles) > 0 {
@@ -438,11 +456,15 @@ func formatDigest(report *AOIReport) string {
 		sb.WriteString("\n")
 	}
 
-	// Group AOIs by category for a compact view
+	// Group AOIs by category (or category/subcategory) for a compact view
 	catCounts := make(map[string]int)
 	for _, r := range report.Files {
 		for _, aoi := range r.AreasOfInterest {
-			catCounts[aoi.Category]++
+			key := aoi.Category
+			if aoi.Subcategory != "" {
+				key = aoi.Category + "/" + aoi.Subcategory
+			}
+			catCounts[key]++
 		}
 	}
 
@@ -474,8 +496,30 @@ func formatDigest(report *AOIReport) string {
 			if aoi.EndLine > 0 && aoi.EndLine != aoi.Line {
 				lineRange = fmt.Sprintf("L%d-%d", aoi.Line, aoi.EndLine)
 			}
-			sb.WriteString(fmt.Sprintf("  - [%s] %s (%s): %s\n",
-				aoi.Category, lineRange, aoi.Confidence, aoi.Reasoning))
+
+			// Format depends on whether this is new-format (with subcategory) or legacy
+			cat := aoi.Category
+			if aoi.Subcategory != "" {
+				cat = aoi.Category + "/" + aoi.Subcategory
+			}
+
+			desc := aoi.Reasoning // legacy
+			if aoi.Concern != "" {
+				desc = aoi.Concern // new format
+			}
+
+			urgencyTag := ""
+			if aoi.Urgency == "individual" {
+				urgencyTag = " [!!]"
+			}
+
+			confTag := ""
+			if aoi.Confidence != "" {
+				confTag = fmt.Sprintf(" (%s)", aoi.Confidence)
+			}
+
+			sb.WriteString(fmt.Sprintf("  - [%s] %s%s%s: %s\n",
+				cat, lineRange, confTag, urgencyTag, desc))
 		}
 		sb.WriteString("\n")
 	}

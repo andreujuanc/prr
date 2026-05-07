@@ -277,6 +277,8 @@ type Model struct {
 	aiClient            ai.Client
 	aoiClient           ai.Client // optional: lightweight model for AOI security pre-scan
 	aiModelName         string    // model identifier for display (e.g. "gemini-2.5-pro")
+	aoiModelName        string    // AOI model identifier for display
+	aiProvider          string    // provider name (gemini, anthropic, openai)
 	aiStreaming         bool      // true while AI is generating
 	aiStreamBuffer      string    // accumulated streamed response
 	aiStreamDirty       bool      // true when buffer has unflushed tokens
@@ -323,6 +325,7 @@ type Model struct {
 	showHelp           bool   // help modal visible
 	showModelPicker    bool   // model picker visible
 	modelPickerCursor  int    // selected index in model picker
+	modelPickerSection int    // 0 = review models, 1 = AOI models
 	showSubmitReview   bool   // submit review confirmation visible
 	submitReviewCursor int    // 0 = Submit, 1 = Cancel
 	showThemePicker    bool   // theme picker visible
@@ -375,7 +378,7 @@ type Model struct {
 
 // ── Constructor ─────────────────────────────────────────────────────────
 
-func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallelReviews int, aoiContextLines int, useChroma bool) Model {
+func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallelReviews int, aoiContextLines int, useChroma bool, provider string) Model {
 	diffVp := viewport.New(0, 0)
 	diffVp.Style = lipgloss.NewStyle().Foreground(textPrimary)
 
@@ -425,6 +428,13 @@ func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallel
 		modelName = mi.ModelName()
 	}
 
+	var aoiModelDisplayName string
+	if aoiClient != nil {
+		if mi, ok := aoiClient.(ai.ModelInfo); ok {
+			aoiModelDisplayName = mi.ModelName()
+		}
+	}
+
 	repoRoot := resolveRepoRoot()
 
 	m := Model{
@@ -440,6 +450,8 @@ func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallel
 		aiClient:           aiClient,
 		aoiClient:          aoiClient,
 		aiModelName:        modelName,
+		aoiModelName:       aoiModelDisplayName,
+		aiProvider:         provider,
 		contextLines:       3,
 		aoiContextLines:    aoiContextLines,
 		comments:           make(map[string][]git.ReviewComment),
@@ -1466,12 +1478,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.showModelPicker {
-			models := availableModels()
+			sections := m.modelPickerSections()
+			total := modelPickerTotalItems(sections)
 			switch msg.String() {
 			case "esc", "q":
 				m.showModelPicker = false
 			case "j", "down":
-				if m.modelPickerCursor < len(models)-1 {
+				if m.modelPickerCursor < total-1 {
 					m.modelPickerCursor++
 				}
 			case "k", "up":
@@ -1479,8 +1492,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelPickerCursor--
 				}
 			case "enter":
-				selected := models[m.modelPickerCursor]
-				m.switchModel(selected.id)
+				si, ii := modelPickerItemAt(sections, m.modelPickerCursor)
+				selected := sections[si].items[ii]
+				if si == 0 {
+					m.switchModel(selected.id)
+				} else {
+					m.switchAOIModel(selected.id)
+				}
 				m.showModelPicker = false
 			}
 			return m, nil
@@ -1725,12 +1743,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focusedPane != PaneChat && !m.aiStreaming {
 				m.showModelPicker = true
 				// Pre-select current model
-				models := availableModels()
+				sections := m.modelPickerSections()
 				m.modelPickerCursor = 0
-				for i, mod := range models {
-					if mod.id == m.aiModelName {
-						m.modelPickerCursor = i
-						break
+				idx := 0
+				for _, section := range sections {
+					for _, mod := range section.items {
+						if mod.id == m.aiModelName || mod.id == m.aoiModelName {
+							m.modelPickerCursor = idx
+						}
+						idx++
 					}
 				}
 			}

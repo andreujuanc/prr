@@ -138,20 +138,31 @@ func TestSyncWithDiffs(t *testing.T) {
 }
 
 func TestLoadInvalidPRNumber(t *testing.T) {
-	invalidNumbers := []string{"abc", "12a", "", "12/34", "../etc", "1 2"}
-	for _, pr := range invalidNumbers {
-		_, err := Load(pr)
+	invalidKeys := []string{"", "12/34", "../etc", "1 2", "a b", "foo;bar", "a\nb"}
+	for _, key := range invalidKeys {
+		_, err := Load(key)
 		if err == nil {
-			t.Errorf("Load(%q) should return error for invalid PR number", pr)
+			t.Errorf("Load(%q) should return error for invalid state key", key)
+		}
+	}
+}
+
+func TestLoadValidStateKeys(t *testing.T) {
+	// These should all be valid state keys (not just PR numbers)
+	validKeys := []string{"42", "audit", "abc", "my-audit", "test_123"}
+	for _, key := range validKeys {
+		_, err := Load(key)
+		if err != nil {
+			t.Errorf("Load(%q) should succeed for valid state key, got: %v", key, err)
 		}
 	}
 }
 
 func TestSaveInvalidPRNumber(t *testing.T) {
-	s := NewState("not-a-number")
+	s := NewState("foo/bar")
 	err := Save(s)
 	if err == nil {
-		t.Error("Save with invalid PR number should return error")
+		t.Error("Save with invalid state key should return error")
 	}
 }
 

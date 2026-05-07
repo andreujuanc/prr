@@ -148,8 +148,20 @@ func Discover(ctx context.Context, repoRoot string, client ai.Client, cachedHash
 
 	var summary string
 
-	if totalDocSize >= 200 {
-		// We have enough docs — synthesize directly without LLM
+	if totalDocSize >= 200 && client != nil {
+		// We have docs — use LLM to produce a concise summary
+		onProgress("Summarizing project context...")
+		summary, err = summarizeWithLLM(ctx, client, inputs)
+		if err != nil {
+			// Non-fatal — fall back to raw synthesis
+			log.Printf("Project context summarization failed: %v", err)
+			summary = synthesizeFromDocs(inputs)
+		} else {
+			log.Printf("Project context: summarized from %d doc files (%d bytes), %d manifests",
+				len(inputs.docs), totalDocSize, len(inputs.manifests))
+		}
+	} else if totalDocSize >= 200 {
+		// Docs available but no LLM client — raw synthesis
 		onProgress("Building project context from documentation...")
 		summary = synthesizeFromDocs(inputs)
 		log.Printf("Project context: built from %d doc files (%d bytes), %d manifests",
@@ -289,20 +301,88 @@ func synthesizeFromDocs(inputs *discoveredInputs) string {
 	return b.String()
 }
 
+// summarizeWithLLM uses a cheap LLM to compress rich documentation into a concise
+// project briefing. Used when docs are plentiful but we need to keep the context
+// compact for injection into review prompts.
+func summarizeWithLLM(ctx context.Context, client ai.Client, inputs *discoveredInputs) (string, error) {
+	var prompt strings.Builder
+
+	prompt.WriteString("Summarize this project into a concise briefing (MAX 200 words, ~800 tokens). ")
+	prompt.WriteString("Cover these points in a dense paragraph — no bullet points, no headers:\n")
+	prompt.WriteString("1. What it IS (type of software)\n")
+	prompt.WriteString("2. What DOMAIN it serves\n")
+	prompt.WriteString("3. Key technologies and frameworks\n")
+	prompt.WriteString("4. Architecture style\n")
+	prompt.WriteString("5. Key components/modules\n\n")
+	prompt.WriteString("Be factual and dense. Every sentence should convey information. ")
+	prompt.WriteString("Do NOT include setup instructions, contribution guidelines, or license info. ")
+	prompt.WriteString("Do NOT pad with filler phrases like \"This project is a comprehensive...\" — just state facts.\n\n")
+
+	// Add docs
+	if len(inputs.docs) > 0 {
+		totalBytes := 0
+		keys := sortedKeys(inputs.docs)
+		for _, name := range keys {
+			content := inputs.docs[name]
+			if totalBytes+len(content) > maxTotalDocBytes {
+				remaining := maxTotalDocBytes - totalBytes
+				if remaining > 200 {
+					content = content[:remaining]
+				} else {
+					continue
+				}
+			}
+			prompt.WriteString(fmt.Sprintf("=== %s ===\n%s\n\n", name, strings.TrimSpace(content)))
+			totalBytes += len(content)
+		}
+	}
+
+	// Add manifests
+	if len(inputs.manifests) > 0 {
+		for name, content := range inputs.manifests {
+			prompt.WriteString(fmt.Sprintf("=== %s ===\n%s\n\n", name, strings.TrimSpace(content)))
+		}
+	}
+
+	// Add dir tree
+	if inputs.dirTree != "" {
+		prompt.WriteString("=== Directory Structure ===\n")
+		prompt.WriteString(inputs.dirTree)
+		prompt.WriteString("\n\n")
+	}
+
+	systemPrompt := "You are a technical writer producing ultra-concise project briefings. " +
+		"Your output will be injected into LLM prompts as context, so every token matters. " +
+		"Be maximally dense and factual. No filler, no fluff, no markdown formatting. " +
+		"Output ONLY the briefing paragraph — nothing else."
+
+	messages := []ai.Message{
+		{Role: "user", Content: prompt.String()},
+	}
+
+	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
+	if err != nil {
+		return "", fmt.Errorf("LLM summarization: %w", err)
+	}
+
+	return fmt.Sprintf("## Project Context\n\n%s\n", strings.TrimSpace(result)), nil
+}
+
 // inferWithLLM uses a cheap LLM to generate a project briefing from thin inputs.
 func inferWithLLM(ctx context.Context, client ai.Client, inputs *discoveredInputs) (string, error) {
 	// Build the prompt with all available signals
 	var prompt strings.Builder
 
 	prompt.WriteString("Based on the following information about a software project, ")
-	prompt.WriteString("write a concise project briefing (max 300 words) that covers:\n")
+	prompt.WriteString("write a concise project briefing (MAX 200 words, ~800 tokens) that covers:\n")
 	prompt.WriteString("1. What the project IS (CLI tool, web API, frontend app, library, database, etc.)\n")
 	prompt.WriteString("2. What DOMAIN it serves (fintech, healthcare, developer tools, social media, etc.)\n")
 	prompt.WriteString("3. Key TECHNOLOGIES and frameworks used\n")
 	prompt.WriteString("4. ARCHITECTURE style (monolith, microservices, serverless, etc.)\n")
 	prompt.WriteString("5. Target USERS/consumers of this software\n\n")
-	prompt.WriteString("Be factual. Only state what you can directly infer. Say \"unclear\" for anything you can't determine.\n")
-	prompt.WriteString("Format as a brief paragraph, not bullet points.\n\n")
+	prompt.WriteString("Be factual and dense. Every sentence should convey information. ")
+	prompt.WriteString("No bullet points, no headers, no filler phrases. ")
+	prompt.WriteString("Say \"unclear\" for anything you can't determine.\n\n")
 
 	// Add any docs we have (even if thin)
 	if len(inputs.docs) > 0 {

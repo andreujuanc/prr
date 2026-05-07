@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -13,7 +14,9 @@ import (
 	"syscall"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/audit"
 	"github.com/andreujuanc/prr/internal/config"
+	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/ui"
 
@@ -29,12 +32,23 @@ func main() {
 	// Force truecolor early so styled error output works too
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
-	// Parse flags
+	// Parse global flags — but pass through flags after "audit" subcommand
 	debug := false
 	useChroma := false
 	args := os.Args[1:]
 	var positional []string
+	seenSubcommand := false
 	for _, arg := range args {
+		// Once we see a subcommand, pass all remaining args through
+		if !seenSubcommand && arg == "audit" {
+			seenSubcommand = true
+			positional = append(positional, arg)
+			continue
+		}
+		if seenSubcommand {
+			positional = append(positional, arg)
+			continue
+		}
 		if arg == "--debug" {
 			debug = true
 		} else if arg == "--chroma" {
@@ -52,6 +66,11 @@ func main() {
 
 	var prNumber string
 	if len(positional) >= 1 {
+		// Check for "audit" subcommand
+		if positional[0] == "audit" {
+			runAudit(debug, positional[1:])
+			return
+		}
 		prNumber = positional[0]
 	}
 
@@ -93,6 +112,9 @@ func main() {
 	aoiModelName := "disabled"
 	if aoiClient != nil {
 		aoiModelName = os.Getenv("PRR_AOI_MODEL")
+		if aoiModelName == "" && cfg.AOIModel != "" {
+			aoiModelName = cfg.AOIModel
+		}
 		if aoiModelName == "" {
 			aoiModelName = "gemini-2.5-flash-lite" // default
 		}
@@ -100,7 +122,7 @@ func main() {
 	aoiProfile := security.GetAOIProfile(aoiModelName)
 	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s, aoi: %s, aoi_context: %d)", prLabel, cfg.Provider, cfg.Model, aoiModelName, aoiProfile.ContextLines)
 
-	model := ui.NewModel(prNumber, aiClient, aoiClient, cfg.ParallelReviews, aoiProfile.ContextLines, useChroma)
+	model := ui.NewModel(prNumber, aiClient, aoiClient, cfg.ParallelReviews, aoiProfile.ContextLines, useChroma, cfg.Provider)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
 
@@ -119,7 +141,264 @@ func main() {
 	ui.Shutdown()
 }
 
-// ── AI client factory ──────────────────────────────────────────────────
+// ── Audit mode ─────────────────────────────────────────────────────────
+
+func runAudit(debug bool, args []string) {
+	// Parse audit-specific flags
+	var opts audit.Options
+	var focusStr, excludeStr, includeStr, outputPath string
+	noSynth := false
+	quiet := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--focus=") {
+			focusStr = strings.TrimPrefix(arg, "--focus=")
+		} else if strings.HasPrefix(arg, "--exclude=") {
+			excludeStr = strings.TrimPrefix(arg, "--exclude=")
+		} else if strings.HasPrefix(arg, "--include=") {
+			includeStr = strings.TrimPrefix(arg, "--include=")
+		} else if strings.HasPrefix(arg, "--max-reviews=") {
+			fmt.Sscanf(strings.TrimPrefix(arg, "--max-reviews="), "%d", &opts.MaxReviews)
+		} else if strings.HasPrefix(arg, "--output=") {
+			outputPath = strings.TrimPrefix(arg, "--output=")
+		} else if arg == "--no-cache" {
+			opts.NoCache = true
+		} else if arg == "--no-synthesis" {
+			noSynth = true
+		} else if arg == "--quiet" || arg == "-q" {
+			quiet = true
+		} else if arg == "--help" || arg == "-h" {
+			printAuditUsage()
+			os.Exit(0)
+		} else {
+			printError(fmt.Errorf("unknown audit flag: %s", arg))
+			os.Exit(1)
+		}
+	}
+
+	if focusStr != "" {
+		opts.Focus = strings.Split(focusStr, ",")
+	}
+	if excludeStr != "" {
+		opts.ExcludePatterns = strings.Split(excludeStr, ",")
+	}
+	if includeStr != "" {
+		opts.IncludePatterns = strings.Split(includeStr, ",")
+	}
+
+	// Must be in a git repo
+	if err := runSilent("git", "rev-parse", "--git-dir"); err != nil {
+		printError(fmt.Errorf("not a git repository"))
+		os.Exit(1)
+	}
+
+	repoRoot, err := git.RepoRoot()
+	if err != nil {
+		printError(fmt.Errorf("finding repo root: %w", err))
+		os.Exit(1)
+	}
+	opts.RepoRoot = repoRoot
+
+	// Load .prr/audit-exclude if it exists
+	excludeFile := filepath.Join(repoRoot, ".prr", "audit-exclude")
+	filePatterns, err := audit.LoadExcludeFile(excludeFile)
+	if err != nil {
+		printError(fmt.Errorf("loading %s: %w", excludeFile, err))
+		os.Exit(1)
+	}
+	opts.ExcludePatterns = append(opts.ExcludePatterns, filePatterns...)
+
+	// Load config
+	cfg, err := config.Load()
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+	cfg.Debug = debug
+
+	// Initialize logger
+	if err := initLogger(); err != nil {
+		printError(fmt.Errorf("failed to initialize logger: %w", err))
+		os.Exit(1)
+	}
+
+	// ── Interactive model selection ─────────────────────────────────────
+	selection, err := audit.PromptModels(cfg)
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+
+	// Apply selections to config for client creation
+	cfg.Model = selection.ReviewModel
+	cfg.AOIModel = selection.AOIModel
+
+	// Create AI clients
+	reviewClient := createAIClient(cfg)
+	aoiClient := createAOIClient(cfg)
+	if aoiClient == nil {
+		printError(fmt.Errorf("AOI client not available — audit mode requires an AOI model"))
+		os.Exit(1)
+	}
+
+	// Get AOI profile for context lines
+	aoiProfile := security.GetAOIProfile(selection.AOIModel)
+	opts.AOIContextLines = aoiProfile.ContextLines
+
+	log.Printf("Starting audit (provider: %s, model: %s, aoi: %s, focus: %v)",
+		cfg.Provider, selection.ReviewModel, selection.AOIModel, opts.Focus)
+
+	// Styled output helpers
+	header := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	sevCritical := lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true)
+	sevHigh := lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true)
+	sevMedium := lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF"))
+	sevLow := lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
+
+	// Load previous findings for comparison
+	previousFindings, _ := audit.LoadSnapshot(repoRoot)
+
+	// Run audit with progress UI
+	ctx := context.Background()
+	result, synthesis, err := audit.RunWithUI(ctx, reviewClient, aoiClient, opts,
+		selection.ReviewModel, selection.AOIModel, noSynth)
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+
+	// Show cost estimate
+	if result.Routing != nil {
+		pricing := audit.DefaultPricing(selection.ReviewModel)
+		estimate := audit.EstimateCost(result.Routing, opts.MaxReviews, pricing)
+		fmt.Fprintf(os.Stderr, "  %s %s\n", dimStyle.Render("[cost]"), info.Render(estimate.FormatEstimate()))
+	}
+	fmt.Fprintln(os.Stderr)
+
+	if !quiet {
+		// Comparison with previous audit
+		if previousFindings != nil {
+			comparison := audit.CompareFindings(result.Findings, previousFindings)
+			fmt.Fprintf(os.Stderr, "  %s %s\n\n", dimStyle.Render("[vs last audit]"), info.Render(comparison.FormatComparison()))
+		}
+
+		if len(result.Findings) == 0 {
+			fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render("No issues found."))
+		} else {
+			// Print findings sorted by severity
+			for _, f := range result.Findings {
+				var sevStyle lipgloss.Style
+				switch f.Severity {
+				case "critical":
+					sevStyle = sevCritical
+				case "high":
+					sevStyle = sevHigh
+				case "medium":
+					sevStyle = sevMedium
+				default:
+					sevStyle = sevLow
+				}
+
+				fmt.Fprintf(os.Stderr, "  %s %s\n",
+					sevStyle.Render("["+f.Severity+"]"),
+					info.Render(f.Title))
+				fmt.Fprintf(os.Stderr, "    %s:%s (%s/%s)\n",
+					f.File, f.Lines, f.Category, f.Subcategory)
+				if f.Description != "" {
+					fmt.Fprintf(os.Stderr, "    %s\n", dimStyle.Render(f.Description))
+				}
+				if f.Trigger != "" {
+					fmt.Fprintf(os.Stderr, "    Trigger: %s\n", dimStyle.Render(f.Trigger))
+				}
+				if f.Suggestion != "" {
+					fmt.Fprintf(os.Stderr, "    Fix: %s\n", dimStyle.Render(f.Suggestion))
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+		}
+
+		// Print synthesis
+		if synthesis != nil && synthesis.ExecutiveSummary != "" {
+			fmt.Fprintf(os.Stderr, "  %s\n\n", header.Render("Executive Summary"))
+			fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render(synthesis.ExecutiveSummary))
+
+			if len(synthesis.TopRisks) > 0 {
+				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Top Risks"))
+				for i, risk := range synthesis.TopRisks {
+					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, info.Render(risk))
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+
+			if len(synthesis.SystemicPatterns) > 0 {
+				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Systemic Patterns"))
+				for _, p := range synthesis.SystemicPatterns {
+					fmt.Fprintf(os.Stderr, "  • %s\n", info.Render(p))
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+
+			if len(synthesis.Recommendations) > 0 {
+				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Recommendations"))
+				for i, rec := range synthesis.Recommendations {
+					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, info.Render(rec))
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+		}
+
+		// Print cross-cutting observations
+		if len(result.CrossCuttingObservations) > 0 {
+			fmt.Fprintf(os.Stderr, "  %s\n\n", header.Render("Cross-cutting Observations"))
+			for _, obs := range result.CrossCuttingObservations {
+				fmt.Fprintf(os.Stderr, "  • %s\n", info.Render(obs))
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+	}
+
+	// Save snapshot for future comparisons
+	if err := audit.SaveSnapshot(repoRoot, result.Findings); err != nil {
+		log.Printf("Warning: failed to save audit snapshot: %v", err)
+	}
+
+	// Export report if requested
+	if outputPath != "" {
+		if err := audit.Export(result, outputPath); err != nil {
+			printError(fmt.Errorf("exporting report: %w", err))
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "  Report saved to %s\n\n", info.Render(outputPath))
+	}
+}
+
+func printAuditUsage() {
+	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+
+	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
+		logo.Render("prr audit"),
+		dim.Render(version),
+		dim.Render("— full-project code audit"))
+	fmt.Fprintf(os.Stderr, "  %s  prr audit [flags]\n\n",
+		dim.Render("Usage:"))
+	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Flags:"))
+	fmt.Fprintf(os.Stderr, "    --focus=<dims>       Comma-separated dimensions to focus on (default: all)\n")
+	fmt.Fprintf(os.Stderr, "    --exclude=<globs>    Additional exclude patterns (comma-separated)\n")
+	fmt.Fprintf(os.Stderr, "    --include=<globs>    Force-include patterns (override exclusions)\n")
+	fmt.Fprintf(os.Stderr, "    --max-reviews=<n>    Cap Phase 3 review calls\n")
+	fmt.Fprintf(os.Stderr, "    --output=<path>      Export report (.json or .md)\n")
+	fmt.Fprintf(os.Stderr, "    --no-cache           Ignore cached results, re-audit everything\n")
+	fmt.Fprintf(os.Stderr, "    --no-synthesis       Skip Phase 4 executive summary synthesis\n")
+	fmt.Fprintf(os.Stderr, "    --quiet, -q          Suppress terminal output (use with --output)\n")
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available dimensions:"))
+	fmt.Fprintf(os.Stderr, "    authentication, authorization, input-validation, data-integrity,\n")
+	fmt.Fprintf(os.Stderr, "    cryptography, error-handling, concurrency, external-io, financial,\n")
+	fmt.Fprintf(os.Stderr, "    configuration, api-design, resource-management, testing, correctness,\n")
+	fmt.Fprintf(os.Stderr, "    design, performance, readability, cross-cutting\n\n")
+}
 
 func createAIClient(cfg *config.Config) ai.Client {
 	toolExec := &ai.ToolExecutor{}
@@ -158,14 +437,14 @@ func createAIClient(cfg *config.Config) ai.Client {
 // createAOIClient creates a lightweight AI client for the security AOI pre-scan.
 // It uses the same provider credentials but with the cheapest available model
 // and no tools. The AOI scanner only needs to analyze diffs — no file reading or grep.
-// Override the model with PRR_AOI_MODEL env var (useful with the comparison test).
+// createAOIClient creates the cheap LLM client for AOI pre-scanning.
+// Priority: PRR_AOI_MODEL env var > config aoi_model > provider default.
 func createAOIClient(cfg *config.Config) ai.Client {
-	// AOI model selection — use the cheapest available model for the provider.
-	// For Gemini, gemini-2.5-flash-lite is the cheapest option.
-	// Override with PRR_AOI_MODEL env var for testing different models.
 	var aoiModel string
 	if envModel := os.Getenv("PRR_AOI_MODEL"); envModel != "" {
 		aoiModel = envModel
+	} else if cfg.AOIModel != "" {
+		aoiModel = cfg.AOIModel
 	} else {
 		switch cfg.Provider {
 		case "gemini":
@@ -179,6 +458,15 @@ func createAOIClient(cfg *config.Config) ai.Client {
 		}
 	}
 
+	// API key: PRR_AOI_API_KEY env > config aoi_api_key > config api_key
+	aoiAPIKey := cfg.APIKey
+	if cfg.AOIAPIKey != "" {
+		aoiAPIKey = cfg.AOIAPIKey
+	}
+	if envKey := os.Getenv("PRR_AOI_API_KEY"); envKey != "" {
+		aoiAPIKey = envKey
+	}
+
 	// Use benchmark-tuned settings from the model profile
 	aoiProfile := security.GetAOIProfile(aoiModel)
 
@@ -186,7 +474,7 @@ func createAOIClient(cfg *config.Config) ai.Client {
 	switch cfg.Provider {
 	case "gemini":
 		gp := &ai.GeminiProvider{
-			APIKey: cfg.APIKey,
+			APIKey: aoiAPIKey,
 			Model:  aoiModel,
 		}
 		gp.ModelConfig.MaxOutputTokens = aoiProfile.MaxOutputTokens
@@ -538,11 +826,15 @@ func printUsage() {
 		logo.Render("prr"),
 		dim.Render(version),
 		dim.Render("— review PRs in your terminal"))
-	fmt.Fprintf(os.Stderr, "  %s  prr [pr_number]\n\n",
+	fmt.Fprintf(os.Stderr, "  %s  prr [pr_number]\n",
 		dim.Render("Usage:"))
-	fmt.Fprintf(os.Stderr, "  %s  prr 42       Review PR #42\n",
+	fmt.Fprintf(os.Stderr, "  %s  prr audit [flags]\n\n",
+		dim.Render("      "))
+	fmt.Fprintf(os.Stderr, "  %s  prr 42        Review PR #42\n",
 		dim.Render(""))
-	fmt.Fprintf(os.Stderr, "  %s  prr          Pick from open PRs\n",
+	fmt.Fprintf(os.Stderr, "  %s  prr           Pick from open PRs\n",
+		dim.Render(""))
+	fmt.Fprintf(os.Stderr, "  %s  prr audit     Full-project code audit\n",
 		dim.Render(""))
 	fmt.Fprintf(os.Stderr, "  %s  prr --chroma  Use experimental chroma renderer (no delta needed)\n\n",
 		dim.Render(""))

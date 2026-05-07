@@ -183,6 +183,59 @@ func TestLoad_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestLoad_UnknownModel(t *testing.T) {
+	home := setTestHome(t)
+	writeTestConfig(t, home, map[string]interface{}{
+		"provider": "gemini",
+		"api_key":  "key",
+		"model":    "made-up-model",
+	})
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for unknown model")
+	}
+	if !strings.Contains(err.Error(), "unknown model") {
+		t.Errorf("expected 'unknown model' message, got: %v", err)
+	}
+}
+
+func TestLoad_UnknownAOIModel(t *testing.T) {
+	home := setTestHome(t)
+	writeTestConfig(t, home, map[string]interface{}{
+		"provider":  "gemini",
+		"api_key":   "key",
+		"model":     "gemini-2.5-flash",
+		"aoi_model": "fake-aoi-model",
+	})
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for unknown aoi_model")
+	}
+	if !strings.Contains(err.Error(), "unknown aoi_model") {
+		t.Errorf("expected 'unknown aoi_model' message, got: %v", err)
+	}
+}
+
+func TestLoad_ValidAOIModel(t *testing.T) {
+	home := setTestHome(t)
+	writeTestConfig(t, home, map[string]interface{}{
+		"provider":  "gemini",
+		"api_key":   "key",
+		"model":     "gemini-2.5-flash",
+		"aoi_model": "gemini-2.5-flash-lite",
+	})
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.AOIModel != "gemini-2.5-flash-lite" {
+		t.Errorf("AOIModel = %q, want %q", cfg.AOIModel, "gemini-2.5-flash-lite")
+	}
+}
+
 func TestLoad_ParallelReviewsPreserved(t *testing.T) {
 	home := setTestHome(t)
 	writeTestConfig(t, home, map[string]interface{}{
