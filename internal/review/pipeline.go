@@ -204,6 +204,83 @@ func (p *progressReporter) SynthesisStarted() {
 }
 func (p *progressReporter) Token(token string) {}
 
+// ── Shared pipeline steps ────────────────────────────────────────────────
+
+// DiscoverProjectContext runs project context discovery with state caching.
+// Both the audit and review pipelines use this to get a project summary.
+func DiscoverProjectContext(
+	ctx context.Context,
+	client ai.Client,
+	repoRoot string,
+	reviewState *state.State,
+	onProgress func(string),
+) (string, error) {
+	if onProgress == nil {
+		onProgress = func(string) {}
+	}
+
+	var cachedCtx, cachedHash string
+	if reviewState != nil {
+		cachedCtx, cachedHash = reviewState.GetProjectContext()
+	}
+
+	result, err := project.Discover(ctx, repoRoot, client, cachedHash, onProgress)
+	if err != nil {
+		return cachedCtx, err
+	}
+
+	if result.FromCache {
+		return cachedCtx, nil
+	}
+
+	// Cache the new context
+	if reviewState != nil && result.Summary != "" {
+		reviewState.SetProjectContext(result.Summary, result.InputHash)
+	}
+	return result.Summary, nil
+}
+
+// RunRecheck validates and deduplicates deep findings. On failure, returns
+// the original findings unchanged (non-fatal). The returned bool indicates
+// whether the findings were modified by the recheck.
+func RunRecheck(
+	ctx context.Context,
+	client ai.Client,
+	findings []state.DeepFinding,
+	mode Mode,
+	projectContext string,
+	onProgress func(string),
+	debugHook func(systemPrompt, userMsg, response string),
+) ([]state.DeepFinding, bool) {
+	if len(findings) == 0 {
+		return findings, false
+	}
+
+	if onProgress == nil {
+		onProgress = func(string) {}
+	}
+
+	onProgress(fmt.Sprintf("Rechecking %d findings...", len(findings)))
+
+	recheckResult, recheckErr := RecheckFindings(ctx, client, findings, RecheckOptions{
+		Mode:           mode,
+		ProjectContext: projectContext,
+		OnLLMCall:      debugHook,
+	})
+	if recheckErr != nil {
+		log.Printf("Recheck failed (non-fatal): %v — keeping all findings", recheckErr)
+		onProgress("Recheck failed, keeping all findings")
+		return findings, false
+	}
+
+	msg := fmt.Sprintf("Recheck complete: kept %d, dismissed %d, consolidated %d, modified %d",
+		len(recheckResult.Findings), recheckResult.DismissedCount,
+		recheckResult.ConsolidatedCount, recheckResult.ModifiedCount)
+	log.Printf("Recheck: %s", msg)
+	onProgress(msg)
+	return recheckResult.Findings, true
+}
+
 // ── Core review pipeline ────────────────────────────────────────────────
 
 // CoreOptions configures the shared review pipeline core (used by both TUI and CLI).
@@ -249,24 +326,13 @@ func RunReviewCore(
 	// Project context discovery
 	var projectContext string
 	if opts.RepoRoot != "" {
-		var cachedCtx, cachedHash string
-		if reviewState != nil {
-			cachedCtx, cachedHash = reviewState.GetProjectContext()
-		}
-
-		pctx, err := project.Discover(ctx, opts.RepoRoot, aoiClient, cachedHash, func(status string) {
+		pctx, err := DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, reviewState, func(status string) {
 			rr.AOIProgress("Project context: "+status, false, 0)
 		})
 		if err != nil {
 			log.Printf("Project context discovery failed (non-fatal): %v", err)
-		} else if pctx.FromCache {
-			projectContext = cachedCtx
-		} else {
-			if reviewState != nil && pctx.Summary != "" {
-				reviewState.SetProjectContext(pctx.Summary, pctx.InputHash)
-			}
-			projectContext = pctx.Summary
 		}
+		projectContext = pctx
 	}
 
 	// AOI pre-scan
@@ -481,24 +547,12 @@ func RunReviewCore(
 	}
 
 	// ── Phase 1c: Recheck ────────────────────────────────────────
-	if len(deepFindings) > 0 {
-		log.Printf("Recheck: %d findings to validate", len(deepFindings))
-		recheckResult, recheckErr := RecheckFindings(ctx, reviewClient, deepFindings, RecheckOptions{
-			Mode:           ModePR,
-			ProjectContext: projectContext,
-		})
-		if recheckErr != nil {
-			log.Printf("Recheck failed (non-fatal): %v — keeping all findings", recheckErr)
-		} else {
-			log.Printf("Recheck: kept %d, dismissed %d, consolidated %d, modified %d",
-				len(recheckResult.Findings), recheckResult.DismissedCount,
-				recheckResult.ConsolidatedCount, recheckResult.ModifiedCount)
-			deepFindings = recheckResult.Findings
-
-			// Rebuild synthesis input from rechecked findings
-			allFindings.Reset()
-			AppendDeepFindings(&allFindings, allFileFindings, deepFindings)
-		}
+	rechecked, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext, nil, nil)
+	if changed {
+		deepFindings = rechecked
+		// Rebuild synthesis input from rechecked findings
+		allFindings.Reset()
+		AppendDeepFindings(&allFindings, allFileFindings, deepFindings)
 	}
 
 	// ── Phase 2: Synthesis ───────────────────────────────────────

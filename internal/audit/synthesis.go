@@ -190,18 +190,7 @@ func BuildSynthesisUserMessage(findings []state.DeepFinding, crossCutting []stri
 
 // ParseSynthesisResult extracts a SynthesisResult from the LLM's raw response.
 func ParseSynthesisResult(raw string) (*SynthesisResult, error) {
-	s := strings.TrimSpace(raw)
-
-	// Strip markdown fences.
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
-	}
+	s := ai.StripMarkdownFences(raw)
 
 	// Find JSON object start.
 	jsonStart := strings.Index(s, "{")

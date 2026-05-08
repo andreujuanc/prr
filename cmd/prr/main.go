@@ -20,6 +20,7 @@ import (
 	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/security"
+	"github.com/andreujuanc/prr/internal/state"
 	"github.com/andreujuanc/prr/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -87,12 +88,11 @@ func main() {
 	}
 
 	// Load config for AI
-	cfg, err := config.Load()
+	cfg, err := loadConfigAndLogger(debug)
 	if err != nil {
 		printError(err)
 		os.Exit(1)
 	}
-	cfg.Debug = debug
 
 	// Apply saved theme
 	if cfg.Theme != "" {
@@ -110,25 +110,11 @@ func main() {
 		log.Printf("AOI client not available: %v", aoiErr)
 	}
 
-	// Initialize hidden debug logger
-	if err := initLogger(); err != nil {
-		printError(fmt.Errorf("failed to initialize logger: %w", err))
-		os.Exit(1)
-	}
 	prLabel := prNumber
 	if prLabel == "" {
 		prLabel = "(picker)"
 	}
-	aoiModelName := "disabled"
-	if aoiClient != nil {
-		aoiModelName = os.Getenv("PRR_AOI_MODEL")
-		if aoiModelName == "" && cfg.AOIModel != "" {
-			aoiModelName = cfg.AOIModel
-		}
-		if aoiModelName == "" {
-			aoiModelName = "gemini-2.5-flash-lite" // default
-		}
-	}
+	aoiModelName := resolveAOIModelName(aoiClient, cfg)
 	aoiProfile := security.GetAOIProfile(aoiModelName)
 	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s, aoi: %s, aoi_context: %d)", prLabel, cfg.Provider, cfg.Model, aoiModelName, aoiProfile.ContextLines)
 
@@ -222,16 +208,9 @@ func runAudit(debug bool, args []string) {
 	opts.ExcludePatterns = append(opts.ExcludePatterns, filePatterns...)
 
 	// Load config
-	cfg, err := config.Load()
+	cfg, err := loadConfigAndLogger(debug)
 	if err != nil {
 		printError(err)
-		os.Exit(1)
-	}
-	cfg.Debug = debug
-
-	// Initialize logger
-	if err := initLogger(); err != nil {
-		printError(fmt.Errorf("failed to initialize logger: %w", err))
 		os.Exit(1)
 	}
 
@@ -293,15 +272,6 @@ func runAudit(debug bool, args []string) {
 	log.Printf("Starting audit (provider: %s, model: %s, aoi: %s, focus: %v)",
 		cfg.Provider, selection.ReviewModel, selection.AOIModel, opts.Focus)
 
-	// Styled output helpers
-	header := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
-	sevCritical := lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true)
-	sevHigh := lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true)
-	sevMedium := lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF"))
-	sevLow := lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
-
 	// Load previous findings for comparison
 	previousFindings, _ := audit.LoadSnapshot(repoRoot)
 
@@ -324,38 +294,10 @@ func runAudit(debug bool, args []string) {
 
 	if !quiet {
 		if len(result.Findings) == 0 {
-			fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render("No issues found."))
+			fmt.Fprintf(os.Stderr, "  %s\n\n", cliInfo.Render("No issues found."))
 		} else {
 			// Print findings sorted by severity
-			for _, f := range result.Findings {
-				var sevStyle lipgloss.Style
-				switch f.Severity {
-				case "critical":
-					sevStyle = sevCritical
-				case "high":
-					sevStyle = sevHigh
-				case "medium":
-					sevStyle = sevMedium
-				default:
-					sevStyle = sevLow
-				}
-
-				fmt.Fprintf(os.Stderr, "  %s %s\n",
-					sevStyle.Render("["+f.Severity+"]"),
-					info.Render(f.Title))
-				fmt.Fprintf(os.Stderr, "    %s:%s (%s/%s)\n",
-					f.File, f.Lines, f.Category, f.Subcategory)
-				if f.Description != "" {
-					fmt.Fprintf(os.Stderr, "    %s\n", dimStyle.Render(f.Description))
-				}
-				if f.Trigger != "" {
-					fmt.Fprintf(os.Stderr, "    Trigger: %s\n", dimStyle.Render(f.Trigger))
-				}
-				if f.Suggestion != "" {
-					fmt.Fprintf(os.Stderr, "    Fix: %s\n", dimStyle.Render(f.Suggestion))
-				}
-				fmt.Fprintln(os.Stderr)
-			}
+			renderDeepFindings(result.Findings)
 
 			// Visual charts
 			fmt.Fprint(os.Stderr, audit.RenderSeverityBar(result.Findings))
@@ -364,29 +306,29 @@ func runAudit(debug bool, args []string) {
 
 		// Print synthesis
 		if synthesis != nil && synthesis.ExecutiveSummary != "" {
-			fmt.Fprintf(os.Stderr, "  %s\n\n", header.Render("Executive Summary"))
-			fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render(synthesis.ExecutiveSummary))
+			fmt.Fprintf(os.Stderr, "  %s\n\n", cliHeader.Render("Executive Summary"))
+			fmt.Fprintf(os.Stderr, "  %s\n\n", cliInfo.Render(synthesis.ExecutiveSummary))
 
 			if len(synthesis.TopRisks) > 0 {
-				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Top Risks"))
+				fmt.Fprintf(os.Stderr, "  %s\n", cliHeader.Render("Top Risks"))
 				for i, risk := range synthesis.TopRisks {
-					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, info.Render(risk))
+					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, cliInfo.Render(risk))
 				}
 				fmt.Fprintln(os.Stderr)
 			}
 
 			if len(synthesis.SystemicPatterns) > 0 {
-				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Systemic Patterns"))
+				fmt.Fprintf(os.Stderr, "  %s\n", cliHeader.Render("Systemic Patterns"))
 				for _, p := range synthesis.SystemicPatterns {
-					fmt.Fprintf(os.Stderr, "  • %s\n", info.Render(p))
+					fmt.Fprintf(os.Stderr, "  • %s\n", cliInfo.Render(p))
 				}
 				fmt.Fprintln(os.Stderr)
 			}
 
 			if len(synthesis.Recommendations) > 0 {
-				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Recommendations"))
+				fmt.Fprintf(os.Stderr, "  %s\n", cliHeader.Render("Recommendations"))
 				for i, rec := range synthesis.Recommendations {
-					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, info.Render(rec))
+					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, cliInfo.Render(rec))
 				}
 				fmt.Fprintln(os.Stderr)
 			}
@@ -395,7 +337,7 @@ func runAudit(debug bool, args []string) {
 		// Comparison with previous audit
 		if previousFindings != nil {
 			comparison := audit.CompareFindings(result.Findings, previousFindings)
-			fmt.Fprintf(os.Stderr, "  %s %s\n", dimStyle.Render("[vs last audit]"), info.Render(comparison.FormatComparison()))
+			fmt.Fprintf(os.Stderr, "  %s %s\n", cliDim.Render("[vs last audit]"), cliInfo.Render(comparison.FormatComparison()))
 		}
 
 		// Cross-cutting observations are used as input to Phase 4 synthesis
@@ -417,7 +359,7 @@ func runAudit(debug bool, args []string) {
 
 		costLine := fmt.Sprintf("Tokens: %dk in / %dk out | AOI: $%.4f | Review: $%.4f | Total: $%.4f",
 			total.InputTokens/1000, total.OutputTokens/1000, aoiCost, reviewCost, totalCost)
-		fmt.Fprintf(os.Stderr, "  %s %s\n", dimStyle.Render("[cost]"), info.Render(costLine))
+		fmt.Fprintf(os.Stderr, "  %s %s\n", cliDim.Render("[cost]"), cliInfo.Render(costLine))
 	}
 	fmt.Fprintln(os.Stderr)
 
@@ -432,7 +374,7 @@ func runAudit(debug bool, args []string) {
 			printError(fmt.Errorf("exporting report: %w", err))
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "  Report saved to %s\n\n", info.Render(outputPath))
+		fmt.Fprintf(os.Stderr, "  Report saved to %s\n\n", cliInfo.Render(outputPath))
 	}
 }
 
@@ -519,17 +461,12 @@ func runReview(debug bool, args []string) {
 	}
 
 	// Load config
-	cfg, err := config.Load()
+	cfg, err := loadConfigAndLogger(debug)
 	if err != nil {
 		printError(err)
 		os.Exit(1)
 	}
 	cfg.Debug = reviewDebug
-
-	if err := initLogger(); err != nil {
-		printError(fmt.Errorf("failed to initialize logger: %w", err))
-		os.Exit(1)
-	}
 
 	// Create AI clients
 	reviewClient := createAIClient(cfg)
@@ -539,29 +476,11 @@ func runReview(debug bool, args []string) {
 		log.Printf("AOI client not available: %v", aoiErr)
 	}
 
-	aoiModelName := "disabled"
-	if aoiClient != nil {
-		aoiModelName = os.Getenv("PRR_AOI_MODEL")
-		if aoiModelName == "" && cfg.AOIModel != "" {
-			aoiModelName = cfg.AOIModel
-		}
-		if aoiModelName == "" {
-			aoiModelName = "gemini-2.5-flash-lite"
-		}
-	}
+	aoiModelName := resolveAOIModelName(aoiClient, cfg)
 	aoiProfile := security.GetAOIProfile(aoiModelName)
 
 	log.Printf("Starting headless PR review for PR #%s (provider: %s, model: %s, aoi: %s)",
 		prNumber, cfg.Provider, cfg.Model, aoiModelName)
-
-	// Styles
-	header := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
-	sevCritical := lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true)
-	sevHigh := lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true)
-	sevMedium := lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF"))
-	sevLow := lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
 
 	// Run the review pipeline
 	ctx := context.Background()
@@ -593,16 +512,16 @@ func runReview(debug bool, args []string) {
 
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "\n  %s  PR #%s: %s\n\n",
-			header.Render("Review Complete"),
+			cliHeader.Render("Review Complete"),
 			prNumber,
-			info.Render(result.PR.Title))
+			cliInfo.Render(result.PR.Title))
 
 		// Print structured review if available
 		if result.StructuredReview != nil {
 			sr := result.StructuredReview
 
 			// Verdict
-			verdictStyle := info
+			verdictStyle := cliInfo
 			switch sr.Verdict {
 			case "approve":
 				verdictStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1")).Bold(true)
@@ -610,42 +529,30 @@ func runReview(debug bool, args []string) {
 				verdictStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true)
 			}
 			fmt.Fprintf(os.Stderr, "  %s %s\n\n",
-				header.Render("Verdict:"),
+				cliHeader.Render("Verdict:"),
 				verdictStyle.Render(sr.Verdict))
 
 			// Summary
 			if sr.Summary != "" {
-				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Summary"))
-				fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render(sr.Summary))
+				fmt.Fprintf(os.Stderr, "  %s\n", cliHeader.Render("Summary"))
+				fmt.Fprintf(os.Stderr, "  %s\n\n", cliInfo.Render(sr.Summary))
 			}
 
 			// Findings
 			if len(sr.Findings) > 0 {
-				fmt.Fprintf(os.Stderr, "  %s (%d)\n\n", header.Render("Findings"), len(sr.Findings))
+				fmt.Fprintf(os.Stderr, "  %s (%d)\n\n", cliHeader.Render("Findings"), len(sr.Findings))
 				for _, f := range sr.Findings {
-					var sevStyle lipgloss.Style
-					switch f.Severity {
-					case "critical":
-						sevStyle = sevCritical
-					case "high":
-						sevStyle = sevHigh
-					case "medium":
-						sevStyle = sevMedium
-					default:
-						sevStyle = sevLow
-					}
-
 					fmt.Fprintf(os.Stderr, "  %s %s\n",
-						sevStyle.Render("["+f.Severity+"]"),
-						info.Render(f.Title))
+						sevStyle(f.Severity).Render("["+f.Severity+"]"),
+						cliInfo.Render(f.Title))
 					if f.File != "" {
 						fmt.Fprintf(os.Stderr, "    %s:%d (%s)\n", f.File, f.Line, f.Category)
 					}
 					if f.Detail != "" {
-						fmt.Fprintf(os.Stderr, "    %s\n", dimStyle.Render(f.Detail))
+						fmt.Fprintf(os.Stderr, "    %s\n", cliDim.Render(f.Detail))
 					}
 					if f.Suggestion != "" {
-						fmt.Fprintf(os.Stderr, "    Fix: %s\n", dimStyle.Render(f.Suggestion))
+						fmt.Fprintf(os.Stderr, "    Fix: %s\n", cliDim.Render(f.Suggestion))
 					}
 					fmt.Fprintln(os.Stderr)
 				}
@@ -653,57 +560,35 @@ func runReview(debug bool, args []string) {
 
 			// Questions for author
 			if len(sr.QuestionsForAuthor) > 0 {
-				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Questions for Author"))
+				fmt.Fprintf(os.Stderr, "  %s\n", cliHeader.Render("Questions for Author"))
 				for i, q := range sr.QuestionsForAuthor {
-					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, info.Render(q))
+					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, cliInfo.Render(q))
 				}
 				fmt.Fprintln(os.Stderr)
 			}
 
 			// Missing tests
 			if len(sr.MissingTests) > 0 {
-				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Missing Tests"))
+				fmt.Fprintf(os.Stderr, "  %s\n", cliHeader.Render("Missing Tests"))
 				for _, t := range sr.MissingTests {
-					fmt.Fprintf(os.Stderr, "  • %s\n", info.Render(t))
+					fmt.Fprintf(os.Stderr, "  • %s\n", cliInfo.Render(t))
 				}
 				fmt.Fprintln(os.Stderr)
 			}
 		} else if result.Review != nil && result.Review.Summary != "" {
 			// Fallback: raw summary
-			fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render(result.Review.Summary))
+			fmt.Fprintf(os.Stderr, "  %s\n\n", cliInfo.Render(result.Review.Summary))
 		}
 
 		// Deep findings (from AOI)
 		if len(result.DeepFindings) > 0 {
-			fmt.Fprintf(os.Stderr, "  %s (%d)\n\n", header.Render("Security Findings"), len(result.DeepFindings))
-			for _, f := range result.DeepFindings {
-				var sevStyle lipgloss.Style
-				switch f.Severity {
-				case "critical":
-					sevStyle = sevCritical
-				case "high":
-					sevStyle = sevHigh
-				case "medium":
-					sevStyle = sevMedium
-				default:
-					sevStyle = sevLow
-				}
-
-				fmt.Fprintf(os.Stderr, "  %s %s\n",
-					sevStyle.Render("["+f.Severity+"]"),
-					info.Render(f.Title))
-				fmt.Fprintf(os.Stderr, "    %s:%s (%s/%s)\n",
-					f.File, f.Lines, f.Category, f.Subcategory)
-				if f.Description != "" {
-					fmt.Fprintf(os.Stderr, "    %s\n", dimStyle.Render(f.Description))
-				}
-				fmt.Fprintln(os.Stderr)
-			}
+			fmt.Fprintf(os.Stderr, "  %s (%d)\n\n", cliHeader.Render("Security Findings"), len(result.DeepFindings))
+			renderDeepFindings(result.DeepFindings)
 		}
 
 		fmt.Fprintf(os.Stderr, "  %s %s files reviewed\n\n",
-			dimStyle.Render("[stats]"),
-			info.Render(fmt.Sprintf("%d", result.FilesReviewed)))
+			cliDim.Render("[stats]"),
+			cliInfo.Render(fmt.Sprintf("%d", result.FilesReviewed)))
 	}
 
 	// Export if requested
@@ -713,7 +598,7 @@ func runReview(debug bool, args []string) {
 			os.Exit(1)
 		}
 		if !quiet {
-			fmt.Fprintf(os.Stderr, "  Report saved to %s\n\n", info.Render(outputPath))
+			fmt.Fprintf(os.Stderr, "  Report saved to %s\n\n", cliInfo.Render(outputPath))
 		}
 	}
 }
@@ -789,8 +674,26 @@ func createAIClient(cfg *config.Config) ai.Client {
 		gp.ModelConfig.Temperature = modelCfg.Temperature
 		gp.ModelConfig.ThinkingBudget = modelCfg.ThinkingBudget
 		provider = gp
+	case "openai":
+		op := &ai.OpenAIProvider{
+			APIKey: cfg.APIKey,
+			Model:  cfg.Model,
+		}
+		op.ModelConfig.MaxOutputTokens = modelCfg.MaxOutputTokens
+		op.ModelConfig.Temperature = modelCfg.Temperature
+		provider = op
+	case "github-copilot":
+		op := &ai.OpenAIProvider{
+			APIKey:        cfg.APIKey,
+			Model:         cfg.Model,
+			BaseURL:       "https://models.inference.ai.azure.com",
+			ProviderLabel: "github-copilot",
+		}
+		op.ModelConfig.MaxOutputTokens = modelCfg.MaxOutputTokens
+		op.ModelConfig.Temperature = modelCfg.Temperature
+		provider = op
 	default:
-		log.Fatalf("Unsupported AI provider: %q. Supported: gemini, anthropic, openai", cfg.Provider)
+		log.Fatalf("Unsupported AI provider: %q. Supported: gemini, openai, github-copilot", cfg.Provider)
 	}
 
 	var opts []ai.AgentOption
@@ -817,10 +720,10 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 		switch cfg.Provider {
 		case "gemini":
 			aoiModel = "gemini-2.5-flash-lite"
-		case "anthropic":
-			aoiModel = "claude-haiku-3-5"
 		case "openai":
-			aoiModel = "gpt-4o-mini"
+			aoiModel = "gpt-5.4-mini"
+		case "github-copilot":
+			aoiModel = "gpt-5.4-mini"
 		default:
 			return nil, fmt.Errorf("unsupported provider %q for AOI scanning", cfg.Provider)
 		}
@@ -853,6 +756,24 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 		gp.ModelConfig.Temperature = aoiProfile.Temperature
 		gp.ModelConfig.ThinkingBudget = aoiProfile.ThinkingBudget
 		provider = gp
+	case "openai":
+		op := &ai.OpenAIProvider{
+			APIKey: aoiAPIKey,
+			Model:  aoiModel,
+		}
+		op.ModelConfig.MaxOutputTokens = aoiProfile.MaxOutputTokens
+		op.ModelConfig.Temperature = aoiProfile.Temperature
+		provider = op
+	case "github-copilot":
+		op := &ai.OpenAIProvider{
+			APIKey:        aoiAPIKey,
+			Model:         aoiModel,
+			BaseURL:       "https://models.inference.ai.azure.com",
+			ProviderLabel: "github-copilot",
+		}
+		op.ModelConfig.MaxOutputTokens = aoiProfile.MaxOutputTokens
+		op.ModelConfig.Temperature = aoiProfile.Temperature
+		provider = op
 	default:
 		return nil, fmt.Errorf("unsupported provider %q for AOI scanning", cfg.Provider)
 	}
@@ -1202,6 +1123,77 @@ func runSilent(name string, args ...string) error {
 }
 
 // ── Styled CLI output ──────────────────────────────────────────────────
+
+// CLI output styles (shared between audit and review commands).
+var (
+	cliHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	cliInfo    = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
+	cliDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	sevStyles  = map[string]lipgloss.Style{
+		"critical": lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true),
+		"high":     lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true),
+		"medium":   lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF")),
+		"low":      lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1")),
+	}
+)
+
+// sevStyle returns the lipgloss style for a severity level.
+func sevStyle(severity string) lipgloss.Style {
+	if s, ok := sevStyles[severity]; ok {
+		return s
+	}
+	return sevStyles["low"]
+}
+
+// renderDeepFindings prints DeepFinding entries to stderr.
+func renderDeepFindings(findings []state.DeepFinding) {
+	for _, f := range findings {
+		fmt.Fprintf(os.Stderr, "  %s %s\n",
+			sevStyle(f.Severity).Render("["+f.Severity+"]"),
+			cliInfo.Render(f.Title))
+		fmt.Fprintf(os.Stderr, "    %s:%s (%s/%s)\n",
+			f.File, f.Lines, f.Category, f.Subcategory)
+		if f.Description != "" {
+			fmt.Fprintf(os.Stderr, "    %s\n", cliDim.Render(f.Description))
+		}
+		if f.Trigger != "" {
+			fmt.Fprintf(os.Stderr, "    Trigger: %s\n", cliDim.Render(f.Trigger))
+		}
+		if f.Suggestion != "" {
+			fmt.Fprintf(os.Stderr, "    Fix: %s\n", cliDim.Render(f.Suggestion))
+		}
+		fmt.Fprintln(os.Stderr)
+	}
+}
+
+// loadConfigAndLogger loads the config, sets debug mode, and initializes the logger.
+func loadConfigAndLogger(debug bool) (*config.Config, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Debug = debug
+
+	if err := initLogger(); err != nil {
+		return nil, fmt.Errorf("failed to initialize logger: %w", err)
+	}
+	return cfg, nil
+}
+
+// resolveAOIModelName determines the AOI model name from env/config/defaults.
+// Returns "disabled" if aoiClient is nil.
+func resolveAOIModelName(aoiClient ai.Client, cfg *config.Config) string {
+	if aoiClient == nil {
+		return "disabled"
+	}
+	if m := os.Getenv("PRR_AOI_MODEL"); m != "" {
+		return m
+	}
+	if cfg.AOIModel != "" {
+		return cfg.AOIModel
+	}
+	return "gemini-2.5-flash-lite"
+}
 
 func printUsage() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)

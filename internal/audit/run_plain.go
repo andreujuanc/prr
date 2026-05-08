@@ -27,16 +27,6 @@ func RunPlain(
 		return nil, nil, err
 	}
 
-	// Snapshot usage before synthesis
-	snapshotUsage := func(client ai.Client) ai.TokenUsage {
-		if ur, ok := client.(ai.UsageReporter); ok {
-			u := ur.Usage()
-			ur.ResetUsage()
-			return u
-		}
-		return ai.TokenUsage{}
-	}
-
 	// Run synthesis unless disabled
 	var synthesis *SynthesisResult
 	if !noSynthesis && result != nil && len(result.Findings) > 0 {
@@ -45,7 +35,7 @@ func RunPlain(
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: synthesis failed: %v\n", err)
 		}
-		result.Usage.Synth = snapshotUsage(reviewClient)
+		result.Usage.Synth = ai.SnapshotUsage(reviewClient)
 	}
 
 	return result, synthesis, nil

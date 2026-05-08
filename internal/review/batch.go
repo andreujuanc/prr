@@ -201,17 +201,7 @@ func BuildBatchMessages(batch Batch) []ai.Message {
 // ParseBatchResult parses the JSON array from a batch review response.
 // Handles markdown code fences that AI models commonly wrap around JSON.
 func ParseBatchResult(raw string) []BatchFileReview {
-	s := strings.TrimSpace(raw)
-
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
-	}
+	s := ai.StripMarkdownFences(raw)
 
 	var results []BatchFileReview
 	if err := json.Unmarshal([]byte(s), &results); err != nil {

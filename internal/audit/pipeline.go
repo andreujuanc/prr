@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 
 	"github.com/andreujuanc/prr/internal/ai"
-	"github.com/andreujuanc/prr/internal/project"
 	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/state"
@@ -128,16 +127,6 @@ func Run(
 
 	dbg := NewDebugWriter(opts.Debug)
 
-	// Usage tracking: snapshot and reset between phases
-	snapshotUsage := func(client ai.Client) ai.TokenUsage {
-		if ur, ok := client.(ai.UsageReporter); ok {
-			u := ur.Usage()
-			ur.ResetUsage()
-			return u
-		}
-		return ai.TokenUsage{}
-	}
-
 	// Load or create audit state
 	auditState, err := state.Load("audit")
 	if err != nil {
@@ -152,7 +141,9 @@ func Run(
 
 	dbg.Phase("PHASE 0: Project Context Discovery")
 	onProgress("phase0", "Discovering project context...")
-	projectContext, err := runPhase0(ctx, aoiClient, opts.RepoRoot, auditState, onProgress)
+	projectContext, err := review.DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, auditState, func(status string) {
+		onProgress("phase0", status)
+	})
 	if err != nil {
 		log.Printf("Phase 0 (project context) failed: %v", err)
 		// Non-fatal — continue without project context
@@ -288,7 +279,7 @@ func Run(
 	if err := state.Save(auditState); err != nil {
 		log.Printf("Warning: failed to save audit state after Phase 2: %v", err)
 	}
-	aoiUsage := snapshotUsage(aoiClient)
+	aoiUsage := ai.SnapshotUsage(aoiClient)
 
 	// ── Phase 3: Deep Review (routing + execution) ──────────────────────
 
@@ -346,13 +337,11 @@ func Run(
 	if err := state.Save(auditState); err != nil {
 		log.Printf("Warning: failed to save audit state after Phase 3: %v", err)
 	}
-	reviewUsage := snapshotUsage(reviewClient)
+	reviewUsage := ai.SnapshotUsage(reviewClient)
 
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbg.Phase("PHASE 3b: Recheck")
 	if len(findings) > 0 {
-		onProgress("recheck", fmt.Sprintf("Rechecking %d findings...", len(findings)))
-
 		// Build recheck debug hook
 		var recheckDebugHook func(systemPrompt string, userMsg string, response string)
 		if dbg.Enabled() {
@@ -364,24 +353,10 @@ func Run(
 			}
 		}
 
-		recheckResult, recheckErr := review.RecheckFindings(ctx, reviewClient, findings, review.RecheckOptions{
-			Mode:           review.ModeAudit,
-			ProjectContext: projectContext,
-			OnLLMCall:      recheckDebugHook,
-		})
-		if recheckErr != nil {
-			log.Printf("Recheck failed (non-fatal): %v — keeping all findings", recheckErr)
-			onProgress("recheck", "Recheck failed, keeping all findings")
-		} else {
-			onProgress("recheck", fmt.Sprintf(
-				"Recheck complete: kept %d, dismissed %d, consolidated %d, modified %d",
-				len(recheckResult.Findings), recheckResult.DismissedCount,
-				recheckResult.ConsolidatedCount, recheckResult.ModifiedCount,
-			))
-			findings = recheckResult.Findings
-		}
+		findings, _ = review.RunRecheck(ctx, reviewClient, findings, review.ModeAudit, projectContext,
+			func(status string) { onProgress("recheck", status) }, recheckDebugHook)
 	}
-	recheckUsage := snapshotUsage(reviewClient)
+	recheckUsage := ai.SnapshotUsage(reviewClient)
 
 	result.Findings = findings
 	result.Dismissals = dismissals
@@ -396,33 +371,6 @@ func Run(
 	}
 
 	return result, nil
-}
-
-// ── Phase 0: Project Context ────────────────────────────────────────────
-
-func runPhase0(
-	ctx context.Context,
-	client ai.Client,
-	repoRoot string,
-	auditState *state.State,
-	onProgress OnProgress,
-) (string, error) {
-	cachedSummary, cachedHash := auditState.GetProjectContext()
-
-	result, err := project.Discover(ctx, repoRoot, client, cachedHash, func(status string) {
-		onProgress("phase0", status)
-	})
-	if err != nil {
-		return cachedSummary, err
-	}
-
-	if result.FromCache {
-		return cachedSummary, nil
-	}
-
-	// Cache the new context
-	auditState.SetProjectContext(result.Summary, result.InputHash)
-	return result.Summary, nil
 }
 
 // ── Phase 1b: File Classification ────────────────────────────────────────

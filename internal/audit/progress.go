@@ -173,10 +173,7 @@ func (m *ProgressUI) runAudit() tea.Cmd {
 				m.updateProgress("phase4", "Synthesis complete")
 			}
 			// Track synthesis usage
-			if ur, ok := m.reviewClient.(ai.UsageReporter); ok {
-				result.Usage.Synth = ur.Usage()
-				ur.ResetUsage()
-			}
+			result.Usage.Synth = ai.SnapshotUsage(m.reviewClient)
 		}
 
 		return auditDoneMsg{result: result, synthesis: synth, err: err}

@@ -1,6 +1,9 @@
 package ai
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Message represents a chat message.
 type Message struct {
@@ -55,4 +58,32 @@ type UsageReporter interface {
 	Usage() TokenUsage
 	// ResetUsage zeroes the usage counters.
 	ResetUsage()
+}
+
+// SnapshotUsage returns the current token usage from a client and resets
+// the counters. If the client does not implement UsageReporter, returns
+// a zero TokenUsage.
+func SnapshotUsage(client Client) TokenUsage {
+	if ur, ok := client.(UsageReporter); ok {
+		u := ur.Usage()
+		ur.ResetUsage()
+		return u
+	}
+	return TokenUsage{}
+}
+
+// StripMarkdownFences removes ```json ... ``` wrapping that LLMs commonly
+// add around JSON output. Returns the trimmed content.
+func StripMarkdownFences(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		}
+		if idx := strings.LastIndex(s, "```"); idx != -1 {
+			s = s[:idx]
+		}
+		s = strings.TrimSpace(s)
+	}
+	return s
 }
