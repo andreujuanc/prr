@@ -299,18 +299,6 @@ func runAudit(debug bool, args []string) {
 	// Load previous findings for comparison
 	previousFindings, _ := audit.LoadSnapshot(repoRoot)
 
-	// Warn when the file count is unexpectedly large
-	opts.ConfirmFileCount = func(count int) bool {
-		fmt.Fprintf(os.Stderr, "\n⚠ Warning: %d files collected for audit (threshold %d).\n", count, 200)
-		fmt.Fprintf(os.Stderr, "  This may indicate untracked files that should be in .gitignore.\n")
-		fmt.Fprintf(os.Stderr, "  Run: git ls-files --others --exclude-standard | head -20\n")
-		fmt.Fprintf(os.Stderr, "  to inspect untracked files.\n\n")
-		fmt.Fprint(os.Stderr, "Continue anyway? [y/N] ")
-		var answer string
-		fmt.Scanln(&answer)
-		return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes")
-	}
-
 	// Run audit with progress UI (or plain mode in debug)
 	ctx := context.Background()
 	var result *audit.Result

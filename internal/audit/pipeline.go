@@ -46,13 +46,8 @@ type Options struct {
 	// DebugFile restricts the audit to a single file (path relative to repo root).
 	DebugFile string
 
-	// ConfirmFileCount is called when the collected file count exceeds
-	// LargeFileThreshold. It receives the count and should return true to
-	// proceed or false to abort. When nil the audit always proceeds.
-	ConfirmFileCount func(count int) bool
-
-	// LargeFileThreshold is the file count above which ConfirmFileCount
-	// is invoked. Defaults to 200 when zero.
+	// LargeFileThreshold is the file count above which a warning is
+	// displayed. Defaults to 200 when zero.
 	LargeFileThreshold int
 }
 
@@ -178,15 +173,13 @@ func Run(
 		return nil, fmt.Errorf("phase 1 file collection: %w", err)
 	}
 
-	// Guard against unexpectedly large file sets
+	// Warn about unexpectedly large file sets
 	threshold := opts.LargeFileThreshold
 	if threshold <= 0 {
 		threshold = 200
 	}
-	if len(filePaths) > threshold && opts.ConfirmFileCount != nil {
-		if !opts.ConfirmFileCount(len(filePaths)) {
-			return nil, fmt.Errorf("audit aborted: %d files collected (threshold %d)", len(filePaths), threshold)
-		}
+	if len(filePaths) > threshold {
+		onProgress("warning", fmt.Sprintf("⚠ %d files collected (threshold %d) — this may include untracked files that should be in .gitignore. Press Ctrl+C to abort.", len(filePaths), threshold))
 	}
 
 	// Apply --file filter

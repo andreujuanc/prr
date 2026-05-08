@@ -96,6 +96,9 @@ type ProgressUI struct {
 	totalReviews  int
 	doneReviews   int
 	findingsCount int
+
+	// Warning message (e.g. large file count)
+	warning string
 }
 
 // NewProgressUI creates a new progress UI for an audit run.
@@ -181,6 +184,12 @@ func (m *ProgressUI) runAudit() tea.Cmd {
 }
 
 func (m *ProgressUI) updateProgress(phase, message string) {
+	// Handle warning messages (not tied to a phase)
+	if phase == "warning" {
+		m.warning = message
+		return
+	}
+
 	for i := range m.phases {
 		if m.phases[i].name == phase {
 			if m.phases[i].status == "waiting" {
@@ -279,7 +288,15 @@ func (m *ProgressUI) View() string {
 
 	// Model info
 	b.WriteString(pSubtle.Render(fmt.Sprintf("  review: %s  aoi: %s", m.reviewModel, m.aoiModel)))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	// Warning banner
+	if m.warning != "" {
+		b.WriteString("\n")
+		b.WriteString(pWarn.Render("  "+m.warning) + "\n")
+	}
+
+	b.WriteString("\n")
 
 	// Phase list
 	for i, phase := range m.phases {
