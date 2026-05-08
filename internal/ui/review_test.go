@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/state"
 )
 
@@ -701,24 +702,50 @@ func TestIsBatchCached_EmptyPurpose(t *testing.T) {
 }
 
 // ── Live integration tests: full review orchestrators (no mocks) ────────
-// Requires PRR_API_KEY. These test the actual orchestrator functions
+// Requires PRR_LIVE_TESTS=1. Credentials are read from ~/.config/prr/config.json.
+// These test the actual orchestrator functions
 // (reviewBatchesSequential, reviewBatchesParallel, runSynthesis,
 // streamMultiPassReview) through the ReviewReporter interface.
 
-func skipWithoutAPIKey(t *testing.T) string {
+func skipWithoutAPIKey(t *testing.T) *config.Config {
 	t.Helper()
-	key := os.Getenv("PRR_API_KEY")
-	if key == "" {
-		t.Skip("PRR_API_KEY not set, skipping live API test")
+	if os.Getenv("PRR_LIVE_TESTS") != "1" {
+		t.Skip("PRR_LIVE_TESTS=1 not set, skipping live API test")
 	}
-	return key
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("no valid config: %v", err)
+	}
+	return cfg
 }
 
-func liveModel() string {
-	if m := os.Getenv("PRR_MODEL"); m != "" {
-		return m
+func newLiveAgent(t *testing.T, cfg *config.Config) *ai.Agent {
+	t.Helper()
+	strongRef, err := config.ParseModelRef(cfg.StrongModel)
+	if err != nil {
+		t.Fatalf("invalid strong_model: %v", err)
 	}
-	return "gemini-2.5-flash"
+	pc := cfg.ProviderConfigFor(strongRef.Provider)
+
+	modelConfigs, err := config.LoadModels()
+	if err != nil {
+		t.Fatalf("LoadModels: %v", err)
+	}
+	mcfg := config.GetModelConfig(modelConfigs, strongRef.ModelID)
+
+	provider, err := ai.NewProvider(ai.ProviderConfig{
+		ProviderName:    strongRef.Provider,
+		ModelID:         strongRef.ModelID,
+		APIKey:          pc.APIKey,
+		BaseURL:         pc.BaseURL,
+		MaxOutputTokens: mcfg.MaxOutputTokens,
+		Temperature:     mcfg.Temperature,
+		ThinkingBudget:  mcfg.ThinkingBudget.Review,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	return ai.NewAgent(provider, &ai.ToolExecutor{HeadRef: "HEAD", BaseRef: "HEAD"})
 }
 
 // testReporter implements ReviewReporter and records all events for assertions.
@@ -806,11 +833,6 @@ Author: test-user
 Description: Refactor main to use a new greet function and add utilities.
 Base: main → Head: feature/greet`
 
-func newLiveAgent(key string) *ai.Agent {
-	provider := &ai.GeminiProvider{APIKey: key, Model: liveModel()}
-	return ai.NewAgent(provider, &ai.ToolExecutor{HeadRef: "HEAD", BaseRef: "HEAD"})
-}
-
 func newReviewState(diffs map[string]string) *state.State {
 	rs := state.NewState("99")
 	for path := range diffs {
@@ -855,8 +877,8 @@ func verifyStructuredReview(t *testing.T, structured *state.ReviewOutput, review
 // TestLive_ReviewSequential exercises reviewBatchesSequential through the
 // full pipeline with real Gemini API. No mocks.
 func TestLive_ReviewSequential(t *testing.T) {
-	key := skipWithoutAPIKey(t)
-	agent := newLiveAgent(key)
+	cfg := skipWithoutAPIKey(t)
+	agent := newLiveAgent(t, cfg)
 	rawDiffs := sampleDiffs()
 	rs := newReviewState(rawDiffs)
 	rr := &testReporter{}
@@ -917,8 +939,8 @@ func TestLive_ReviewSequential(t *testing.T) {
 // TestLive_ReviewMultiBatch uses files in different directories to force
 // multiple batches, then runs the sequential orchestrator.
 func TestLive_ReviewMultiBatch(t *testing.T) {
-	key := skipWithoutAPIKey(t)
-	agent := newLiveAgent(key)
+	cfg := skipWithoutAPIKey(t)
+	agent := newLiveAgent(t, cfg)
 
 	rawDiffs := map[string]string{
 		"cmd/main.go": `@@ -0,0 +1,7 @@
@@ -990,8 +1012,8 @@ func TestLive_ReviewMultiBatch(t *testing.T) {
 // The second run should skip all batches (cached) but still produce
 // a valid synthesis result.
 func TestLive_ReviewCacheSkip(t *testing.T) {
-	key := skipWithoutAPIKey(t)
-	agent := newLiveAgent(key)
+	cfg := skipWithoutAPIKey(t)
+	agent := newLiveAgent(t, cfg)
 	rawDiffs := sampleDiffs()
 	rs := newReviewState(rawDiffs)
 
@@ -1048,8 +1070,8 @@ func TestLive_ReviewCacheSkip(t *testing.T) {
 // TestLive_ReviewParallel exercises reviewBatchesParallel with multiple
 // batches and a worker pool.
 func TestLive_ReviewParallel(t *testing.T) {
-	key := skipWithoutAPIKey(t)
-	agent := newLiveAgent(key)
+	cfg := skipWithoutAPIKey(t)
+	agent := newLiveAgent(t, cfg)
 
 	// Use files in different directories to force multiple batches
 	rawDiffs := map[string]string{
@@ -1108,8 +1130,8 @@ func TestLive_ReviewParallel(t *testing.T) {
 // TestLive_StreamMultiPassReview exercises the top-level orchestrator
 // streamMultiPassReview, which is the actual function called by the UI.
 func TestLive_StreamMultiPassReview(t *testing.T) {
-	key := skipWithoutAPIKey(t)
-	agent := newLiveAgent(key)
+	cfg := skipWithoutAPIKey(t)
+	agent := newLiveAgent(t, cfg)
 	rawDiffs := sampleDiffs()
 	rs := newReviewState(rawDiffs)
 	rr := &testReporter{}

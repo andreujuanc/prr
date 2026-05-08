@@ -14,22 +14,23 @@ var defaultBenchmarkData []byte
 
 // ModelBenchmark holds benchmark results for a single model configuration.
 type ModelBenchmark struct {
-	ModelID     string  `json:"model_id"`
-	ConfigName  string  `json:"config_name"`            // e.g. "temp=0.1", "thinking=2k"
-	Temperature float64 `json:"temperature"`
-	ThinkingBudget int  `json:"thinking_budget,omitempty"`
-	RecallPct   float64 `json:"recall_pct"`             // overall recall percentage (0-100)
-	MustFindPct float64 `json:"must_find_pct"`          // must-find recall percentage (0-100)
-	LatencyMs   int     `json:"latency_ms"`             // scan latency in milliseconds
-	CostPerScan float64 `json:"cost_per_scan"`          // estimated USD per scan
-	TotalAOIs   int     `json:"total_aois"`             // AOIs found
-	FalseAlarms int     `json:"false_alarms"`           // false positives
+	ModelID        string  `json:"model_id"`
+	Provider       string  `json:"provider"`    // e.g. "gemini", "github-copilot"
+	ConfigName     string  `json:"config_name"` // e.g. "temp=0.1", "thinking=2k"
+	Temperature    float64 `json:"temperature"`
+	ThinkingBudget int     `json:"thinking_budget,omitempty"`
+	RecallPct      float64 `json:"recall_pct"`    // overall recall percentage (0-100)
+	MustFindPct    float64 `json:"must_find_pct"` // must-find recall percentage (0-100)
+	LatencyMs      int     `json:"latency_ms"`    // scan latency in milliseconds
+	CostPerScan    float64 `json:"cost_per_scan"` // estimated USD per scan
+	TotalAOIs      int     `json:"total_aois"`    // AOIs found
+	FalseAlarms    int     `json:"false_alarms"`  // false positives
 }
 
 // BenchmarkResults holds the full benchmark output file.
 type BenchmarkResults struct {
-	Version   int              `json:"version"`    // schema version, currently 1
-	Timestamp time.Time        `json:"timestamp"`  // when the benchmark was run
+	Version   int              `json:"version"`   // schema version, currently 1
+	Timestamp time.Time        `json:"timestamp"` // when the benchmark was run
 	Models    []ModelBenchmark `json:"models"`
 }
 
@@ -42,7 +43,9 @@ func BenchmarkPath() (string, error) {
 	return filepath.Join(home, ".config", "prr", "benchmark.json"), nil
 }
 
-// SaveBenchmarkResults writes benchmark results to ~/.config/prr/benchmark.json.
+// SaveBenchmarkResults merges new benchmark results into ~/.config/prr/benchmark.json.
+// Existing entries are updated if they match on provider+model_id+config_name;
+// new entries are appended. The timestamp is always updated.
 func SaveBenchmarkResults(results *BenchmarkResults) error {
 	path, err := BenchmarkPath()
 	if err != nil {
@@ -53,7 +56,34 @@ func SaveBenchmarkResults(results *BenchmarkResults) error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	data, err := json.MarshalIndent(results, "", "  ")
+	// Load existing results to merge with.
+	var existing BenchmarkResults
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &existing) // ignore errors, start fresh if corrupt
+	}
+
+	// Build index of existing entries for fast lookup.
+	type key struct{ provider, modelID, configName string }
+	idx := make(map[key]int, len(existing.Models))
+	for i, m := range existing.Models {
+		idx[key{m.Provider, m.ModelID, m.ConfigName}] = i
+	}
+
+	// Merge new results: update existing or append.
+	for _, m := range results.Models {
+		k := key{m.Provider, m.ModelID, m.ConfigName}
+		if i, ok := idx[k]; ok {
+			existing.Models[i] = m // update
+		} else {
+			existing.Models = append(existing.Models, m)
+			idx[k] = len(existing.Models) - 1
+		}
+	}
+
+	existing.Version = results.Version
+	existing.Timestamp = results.Timestamp
+
+	data, err := json.MarshalIndent(&existing, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal benchmark results: %w", err)
 	}
@@ -86,6 +116,7 @@ func LoadBenchmarkResults() (*BenchmarkResults, error) {
 }
 
 // GetModelBenchmark returns benchmark data for a specific model, or nil if not found.
+// When provider is non-empty, it matches on provider+model_id.
 // When multiple runs exist for the same model (different configs), returns the
 // one with the highest recall.
 func (b *BenchmarkResults) GetModelBenchmark(modelID string) *ModelBenchmark {
@@ -101,4 +132,31 @@ func (b *BenchmarkResults) GetModelBenchmark(modelID string) *ModelBenchmark {
 		}
 	}
 	return best
+}
+
+// GetModelBenchmarkForProvider returns benchmark data matching both provider and model ID.
+// Falls back to provider-agnostic match if no provider-specific entry exists.
+func (b *BenchmarkResults) GetModelBenchmarkForProvider(provider, modelID string) *ModelBenchmark {
+	if b == nil {
+		return nil
+	}
+	var bestExact, bestFallback *ModelBenchmark
+	for i := range b.Models {
+		if b.Models[i].ModelID != modelID {
+			continue
+		}
+		if b.Models[i].Provider == provider {
+			if bestExact == nil || b.Models[i].RecallPct > bestExact.RecallPct {
+				bestExact = &b.Models[i]
+			}
+		} else if b.Models[i].Provider == "" {
+			if bestFallback == nil || b.Models[i].RecallPct > bestFallback.RecallPct {
+				bestFallback = &b.Models[i]
+			}
+		}
+	}
+	if bestExact != nil {
+		return bestExact
+	}
+	return bestFallback
 }

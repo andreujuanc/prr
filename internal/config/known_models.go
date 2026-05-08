@@ -4,7 +4,7 @@ import "fmt"
 
 // KnownModel describes a model available for selection in pickers and validation.
 type KnownModel struct {
-	ID       string // API model ID (e.g. "gemini-2.5-flash")
+	ID       string // API model ID (e.g. "gemini-3.1-flash-lite")
 	Label    string // Human-friendly display label
 	Provider string // "gemini", "anthropic", "openai"
 	Thinking bool   // Whether the model supports thinking/reasoning
@@ -33,72 +33,155 @@ var knownModels = []KnownModel{
 		InputPricePer1M: 0.02, OutputPricePer1M: 0.10, Speed: "fast"},
 	{ID: "gemini-3.1-flash-lite-preview", Label: "Gemini 3.1 Flash Lite Preview", Provider: "gemini", Thinking: true, Review: true, AOI: true,
 		InputPricePer1M: 0.02, OutputPricePer1M: 0.10, Speed: "fast"},
-	{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", Provider: "gemini", Thinking: true, Review: true, AOI: true,
-		InputPricePer1M: 1.25, OutputPricePer1M: 10.00, Speed: "slow"},
-	{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash", Provider: "gemini", Thinking: true, Review: true, AOI: true,
-		InputPricePer1M: 0.15, OutputPricePer1M: 0.60, Speed: "medium"},
-	{ID: "gemini-2.5-flash-lite", Label: "Gemini 2.5 Flash-Lite", Provider: "gemini", Review: true, AOI: true,
-		InputPricePer1M: 0.02, OutputPricePer1M: 0.10, Speed: "fast"},
-	// ── Anthropic ───────────────────────────────────────────────────────
-	{ID: "claude-sonnet-4-20250514", Label: "Claude Sonnet 4", Provider: "anthropic", Thinking: true, Review: true, AOI: true,
-		InputPricePer1M: 3.00, OutputPricePer1M: 15.00, Speed: "medium"},
-	{ID: "claude-haiku-3-5", Label: "Claude Haiku 3.5", Provider: "anthropic", Review: true, AOI: true,
-		InputPricePer1M: 0.80, OutputPricePer1M: 4.00, Speed: "fast"},
 
-	// ── OpenAI ──────────────────────────────────────────────────────────
-	{ID: "gpt-4o", Label: "GPT-4o", Provider: "openai", Review: true,
+	// ── Anthropic (direct API) ─────────────────────────────────────────
+	{ID: "claude-opus-4-7", Label: "Claude Opus 4.7", Provider: "anthropic", Thinking: true, Review: true,
+		InputPricePer1M: 5.00, OutputPricePer1M: 25.00, Speed: "slow"},
+	{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6", Provider: "anthropic", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 3.00, OutputPricePer1M: 15.00, Speed: "medium"},
+
+	// ── OpenAI (direct API) ────────────────────────────────────────────
+	{ID: "gpt-5.5", Label: "GPT-5.5", Provider: "openai", Thinking: true, Review: true,
+		InputPricePer1M: 5.00, OutputPricePer1M: 20.00, Speed: "slow"},
+	{ID: "gpt-5.5-pro", Label: "GPT-5.5 Pro", Provider: "openai", Thinking: true, Review: true,
+		InputPricePer1M: 10.00, OutputPricePer1M: 40.00, Speed: "slow"},
+	{ID: "gpt-5.5-instant", Label: "GPT-5.5 Instant", Provider: "openai", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 1.00, OutputPricePer1M: 4.00, Speed: "fast"},
+	{ID: "gpt-5.4", Label: "GPT-5.4", Provider: "openai", Thinking: true, Review: true,
 		InputPricePer1M: 2.50, OutputPricePer1M: 10.00, Speed: "medium"},
-	{ID: "gpt-4o-mini", Label: "GPT-4o Mini", Provider: "openai", AOI: true,
+	{ID: "gpt-5.4-mini", Label: "GPT-5.4 Mini", Provider: "openai", AOI: true,
 		InputPricePer1M: 0.15, OutputPricePer1M: 0.60, Speed: "fast"},
+	{ID: "gpt-5.4-nano", Label: "GPT-5.4 Nano", Provider: "openai", AOI: true,
+		InputPricePer1M: 0.05, OutputPricePer1M: 0.20, Speed: "fast"},
+	{ID: "gpt-5.3-codex", Label: "GPT-5.3 Codex", Provider: "openai", Thinking: true, Review: true,
+		InputPricePer1M: 2.50, OutputPricePer1M: 10.00, Speed: "medium"},
+
+	// ── GitHub Copilot (models from api.githubcopilot.com/models) ──────
+	{ID: "claude-opus-4.6", Label: "Claude Opus 4.6", Provider: "github-copilot", Thinking: true, Review: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "slow"},
+	{ID: "claude-sonnet-4.6", Label: "Claude Sonnet 4.6", Provider: "github-copilot", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "medium"},
+	{ID: "gemini-3.1-pro-preview", Label: "Gemini 3.1 Pro Preview", Provider: "github-copilot", Thinking: true, Review: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "slow"},
+	{ID: "gpt-5.4", Label: "GPT-5.4", Provider: "github-copilot", Thinking: true, Review: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "medium"},
+	{ID: "gpt-4.1", Label: "GPT-4.1", Provider: "github-copilot", Review: true, AOI: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "fast"},
+	{ID: "grok-code-fast-1", Label: "Grok Code Fast 1", Provider: "github-copilot", Review: true, AOI: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "fast"},
 }
 
-// knownModelSet is built at init for fast lookup.
-var knownModelSet map[string]KnownModel
+// knownModelByProvider is keyed by "provider/model-id" for exact lookups.
+// knownModelByID is keyed by bare model ID; when multiple providers offer
+// the same model, the entry with pricing wins.
+var (
+	knownModelByProvider map[string]KnownModel
+	knownModelByID       map[string]KnownModel
+)
 
 func init() {
-	knownModelSet = make(map[string]KnownModel, len(knownModels))
+	knownModelByProvider = make(map[string]KnownModel, len(knownModels))
+	knownModelByID = make(map[string]KnownModel, len(knownModels))
 	for _, m := range knownModels {
-		knownModelSet[m.ID] = m
+		knownModelByProvider[m.Provider+"/"+m.ID] = m
+
+		if existing, ok := knownModelByID[m.ID]; ok {
+			if existing.InputPricePer1M > 0 && m.InputPricePer1M == 0 {
+				continue
+			}
+		}
+		knownModelByID[m.ID] = m
 	}
 }
 
-// IsKnownModel returns true if the model ID is in the known models list.
+// IsKnownModel returns true if the model ID is known.
+// Accepts either "provider/model-id" or bare "model-id".
 func IsKnownModel(id string) bool {
-	_, ok := knownModelSet[id]
+	if _, ok := knownModelByProvider[id]; ok {
+		return true
+	}
+	_, ok := knownModelByID[id]
 	return ok
 }
 
-// GetKnownModel returns the KnownModel for an ID, or ok=false if unknown.
+// GetKnownModel returns the KnownModel for an ID.
+// Accepts "provider/model-id" (exact match) or bare "model-id"
+// (returns the entry with pricing when ambiguous).
 func GetKnownModel(id string) (KnownModel, bool) {
-	m, ok := knownModelSet[id]
+	if m, ok := knownModelByProvider[id]; ok {
+		return m, true
+	}
+	m, ok := knownModelByID[id]
 	return m, ok
 }
 
-// ReviewModels returns known models suitable for review, filtered by provider.
-func ReviewModels(provider string) []KnownModel {
+// GetKnownModelForProvider returns the KnownModel for a specific provider/model pair.
+func GetKnownModelForProvider(provider, modelID string) (KnownModel, bool) {
+	m, ok := knownModelByProvider[provider+"/"+modelID]
+	return m, ok
+}
+
+// KnownModelsForProvider returns all known models for a given provider.
+func KnownModelsForProvider(provider string) []KnownModel {
 	var result []KnownModel
 	for _, m := range knownModels {
-		if m.Provider == provider && m.Review {
+		if m.Provider == provider {
 			result = append(result, m)
 		}
 	}
 	return result
 }
 
-// AOIModels returns known models suitable for AOI pre-scanning, filtered by provider.
-func AOIModels(provider string) []KnownModel {
+// ReviewModels returns all known models suitable for review.
+// If providers is non-empty, only models from those providers are returned.
+func ReviewModels(providers ...string) []KnownModel {
+	allowed := providerSet(providers)
 	var result []KnownModel
 	for _, m := range knownModels {
-		if m.Provider == provider && m.AOI {
-			result = append(result, m)
+		if !m.Review {
+			continue
 		}
+		if allowed != nil && !allowed[m.Provider] {
+			continue
+		}
+		result = append(result, m)
 	}
 	return result
+}
+
+// AOIModels returns known models suitable for AOI pre-scanning.
+// If providers is non-empty, only models from those providers are returned.
+func AOIModels(providers ...string) []KnownModel {
+	allowed := providerSet(providers)
+	var result []KnownModel
+	for _, m := range knownModels {
+		if !m.AOI {
+			continue
+		}
+		if allowed != nil && !allowed[m.Provider] {
+			continue
+		}
+		result = append(result, m)
+	}
+	return result
+}
+
+// providerSet converts a slice of provider names to a set for fast lookup.
+// Returns nil if the slice is empty (meaning "all providers").
+func providerSet(providers []string) map[string]bool {
+	if len(providers) == 0 {
+		return nil
+	}
+	s := make(map[string]bool, len(providers))
+	for _, p := range providers {
+		s[p] = true
+	}
+	return s
 }
 
 // KnownProviders returns the list of supported provider names.
 func KnownProviders() []string {
-	return []string{"gemini", "anthropic", "openai"}
+	return []string{"gemini", "openai", "github-copilot"}
 }
 
 // PriceTag returns a short human-readable price string like "$0.15/1M in".

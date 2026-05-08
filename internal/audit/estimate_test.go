@@ -27,7 +27,7 @@ func makeRouteResult(individual, grouped int) *review.RouteResult {
 
 func TestEstimateCost_NoCap(t *testing.T) {
 	routing := makeRouteResult(12, 8)
-	pricing := DefaultPricing("gemini-2.5-pro")
+	pricing := DefaultPricing("gemini-3.1-pro-preview")
 	est := EstimateCost(routing, 0, pricing)
 
 	if est.TotalCalls != 20 {
@@ -58,7 +58,7 @@ func TestEstimateCost_NoCap(t *testing.T) {
 
 func TestEstimateCost_WithCap(t *testing.T) {
 	routing := makeRouteResult(10, 10)
-	pricing := DefaultPricing("gemini-2.5-flash-lite")
+	pricing := DefaultPricing("gemini-3.1-flash-lite")
 	est := EstimateCost(routing, 15, pricing)
 
 	if est.TotalCalls != 15 {
@@ -95,8 +95,8 @@ func TestDefaultPricing(t *testing.T) {
 		model     string
 		wantInput float64
 	}{
-		{"gemini-2.5-pro", 1.25},
-		{"gemini-2.5-flash", 0.15},
+		{"gemini-3.1-pro-preview", 2.50},
+		{"gemini-3.1-flash-lite", 0.02},
 		{"gemini-3.1-flash-lite-preview", 0.02},
 		{"something-else", 2.50},
 	}

@@ -19,11 +19,14 @@ import (
 // It uses a fixed set of diffs with KNOWN security issues (ground truth)
 // and measures which model catches the most real issues at the lowest cost.
 //
+// Credentials are read from ~/.config/prr/config.json (same as the app).
+// Model tuning parameters are read from models.json.
+//
 // Run with:
-//   PRR_API_KEY=your_key go test ./internal/security/ -run TestAOIModelComparison -v -timeout 10m
+//   PRR_LIVE_TESTS=1 go test ./internal/security/ -run TestAOIModelComparison -v -timeout 10m
 //
 // Override models list:
-//   PRR_AOI_MODELS="gemini-2.5-flash,gemini-2.5-pro" PRR_API_KEY=... go test ...
+//   PRR_AOI_MODELS="gemini-3.1-flash-lite,gemini-3.1-pro-preview" PRR_LIVE_TESTS=1 go test ...
 
 // groundTruthAOI defines an expected security area of interest.
 // The test checks whether the model found it.
@@ -250,80 +253,123 @@ func securityTestDiffs() (map[string]string, []groundTruthAOI) {
 type modelSpec struct {
 	name           string
 	model          string
+	provider       string // provider name (e.g. "gemini", "github-copilot")
+	apiKey         string
+	baseURL        string // optional endpoint override
 	thinkingBudget int
 	temperature    float64
 	maxOutput      int
+	contextLines   int // AOI context lines (0 = use default 3)
 }
 
-// defaultModels returns the list of models to compare.
-// Models are ordered cheapest → most expensive. The test helps find the
-// cheapest model that still achieves acceptable recall for AOI pre-scan.
-//
-// Current Gemini lineup (as of 2026-05):
-//
-//	Tier          Model ID
-//	─────────     ─────────────────────────────
-//	cheapest      gemini-2.5-flash-lite
-//	cheap         gemini-2.5-flash
-//	new-cheap     gemini-3.1-flash-lite-preview
-//	baseline      gemini-3.1-pro-preview      (latest, most capable)
-func defaultModels() []modelSpec {
-	return []modelSpec{
-		// ── Cheapest: gemini-2.5-flash-lite ──────────────────────────
-		{
-			name:        "2.5-flash-lite (temp=0.1)",
-			model:       "gemini-2.5-flash-lite",
-			temperature: 0.1,
-			maxOutput:   8192,
-		},
-		{
-			name:        "2.5-flash-lite (temp=0.3)",
-			model:       "gemini-2.5-flash-lite",
-			temperature: 0.3,
-			maxOutput:   8192,
-		},
-
-		// ── Cheap: gemini-2.5-flash (current AOI default) ───────────
-		{
-			name:        "2.5-flash (no thinking)",
-			model:       "gemini-2.5-flash",
-			temperature: 0.1,
-			maxOutput:   8192,
-		},
-		{
-			name:           "2.5-flash (thinking=2k)",
-			model:          "gemini-2.5-flash",
-			thinkingBudget: 2048,
-			temperature:    0.1,
-			maxOutput:      8192,
-		},
-
-		// ── New cheap: gemini-3.1-flash-lite-preview ─────────────────
-		{
-			name:        "3.1-flash-lite-preview (temp=0.1)",
-			model:       "gemini-3.1-flash-lite-preview",
-			temperature: 0.1,
-			maxOutput:   8192,
-		},
-
-		// ── Expensive baseline: gemini-3.1-pro-preview ──────────────
-		// Included as a recall ceiling — NOT intended for AOI use.
-		{
-			name:        "3.1-pro-preview (baseline)",
-			model:       "gemini-3.1-pro-preview",
-			temperature: 0.1,
-			maxOutput:   8192,
-		},
+// specFromConfig creates a modelSpec from a model ID and its config.ModelConfig,
+// using ThinkingBudget.Fast for the AOI thinking budget.
+// provider, apiKey, and baseURL are passed from the app config.
+func specFromConfig(name, modelID, provider, apiKey, baseURL string, mcfg config.ModelConfig) modelSpec {
+	return modelSpec{
+		name:           name,
+		model:          modelID,
+		provider:       provider,
+		apiKey:         apiKey,
+		baseURL:        baseURL,
+		thinkingBudget: mcfg.ThinkingBudget.Fast,
+		temperature:    mcfg.Temperature,
+		maxOutput:      mcfg.MaxOutputTokens,
+		contextLines:   mcfg.ResolvedAOIContextLines(),
 	}
 }
 
+// defaultModels returns models to compare, iterating over ALL configured providers
+// and including every known model tagged with AOI=true or Review=true for that provider.
+// Also includes thinking-budget variants for models that support thinking.
+func defaultModels(cfg *config.Config, models map[string]config.ModelConfig) []modelSpec {
+	mcfg := func(id string) config.ModelConfig { return config.GetModelConfig(models, id) }
+
+	var specs []modelSpec
+
+	for providerName, pc := range cfg.Providers {
+		if pc.APIKey == "" {
+			continue
+		}
+
+		baseURL := pc.BaseURL
+		known := config.KnownModelsForProvider(providerName)
+
+		for _, km := range known {
+			if !km.AOI && !km.Review {
+				continue // skip models not useful for AOI
+			}
+
+			mc := mcfg(km.ID)
+			label := fmt.Sprintf("[%s] %s", providerName, km.ID)
+			s := specFromConfig(label, km.ID, providerName, pc.APIKey, baseURL, mc)
+			specs = append(specs, s)
+
+			// Add thinking variants for Gemini models that support it.
+			// Copilot ignores thinking budget (uses opaque server-side thinking).
+			if km.Thinking && mc.ThinkingBudget.Fast == 0 && providerName != "github-copilot" {
+				for _, budget := range []int{1024, 2048} {
+					s2 := specFromConfig(
+						fmt.Sprintf("[%s] %s (thinking=%dk)", providerName, km.ID, budget/1024),
+						km.ID, providerName, pc.APIKey, baseURL, mc,
+					)
+					s2.thinkingBudget = budget
+					specs = append(specs, s2)
+				}
+			}
+		}
+	}
+
+	return specs
+}
+
+// createProvider creates an ai.Provider from a modelSpec using the provider factory.
+func createProvider(spec modelSpec) (ai.Provider, error) {
+	return ai.NewProvider(ai.ProviderConfig{
+		ProviderName:    spec.provider,
+		ModelID:         spec.model,
+		APIKey:          spec.apiKey,
+		BaseURL:         spec.baseURL,
+		MaxOutputTokens: spec.maxOutput,
+		Temperature:     spec.temperature,
+		ThinkingBudget:  spec.thinkingBudget,
+	})
+}
+
+// loadTestConfig loads ~/.config/prr/config.json for live tests.
+// Skips the test unless PRR_LIVE_TESTS=1 is set (live tests make real API calls).
+// Returns nil if the config file is missing or invalid (caller should t.Skip).
+func loadTestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	if os.Getenv("PRR_LIVE_TESTS") != "1" {
+		return nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	return cfg
+}
+
 // parseModelsFromEnv parses PRR_AOI_MODELS env var into model specs.
-// Format: "model1,model2,..." — all use default settings.
-func parseModelsFromEnv() []modelSpec {
+// Format: "model1,model2,..." — settings are read from models.json,
+// credentials from config.json.
+//
+// PRR_AOI_PROVIDER overrides the provider (default: from fast_model config).
+// Useful for testing Copilot models: PRR_AOI_PROVIDER=github-copilot PRR_AOI_MODELS=gpt-4.1,claude-sonnet-4.6
+func parseModelsFromEnv(cfg *config.Config, models map[string]config.ModelConfig) []modelSpec {
 	envModels := os.Getenv("PRR_AOI_MODELS")
 	if envModels == "" {
 		return nil
 	}
+
+	// Determine provider + credentials — allow override via PRR_AOI_PROVIDER
+	providerName := os.Getenv("PRR_AOI_PROVIDER")
+	if providerName == "" {
+		fastRef, _ := config.ParseModelRef(cfg.FastModel)
+		providerName = fastRef.Provider
+	}
+	pc := cfg.ProviderConfigFor(providerName)
 
 	var specs []modelSpec
 	for _, m := range strings.Split(envModels, ",") {
@@ -331,12 +377,8 @@ func parseModelsFromEnv() []modelSpec {
 		if m == "" {
 			continue
 		}
-		specs = append(specs, modelSpec{
-			name:        m,
-			model:       m,
-			temperature: 0.1,
-			maxOutput:   8192,
-		})
+		mcfg := config.GetModelConfig(models, m)
+		specs = append(specs, specFromConfig(m, m, providerName, pc.APIKey, pc.BaseURL, mcfg))
 	}
 	return specs
 }
@@ -350,11 +392,9 @@ type modelPricing struct {
 }
 
 var geminiPricing = map[string]modelPricing{
-	"gemini-2.5-flash-lite":         {0.10, 0.40},
-	"gemini-2.5-flash":              {0.30, 2.50},
-	"gemini-3.1-flash-lite-preview": {0.25, 1.50},
-	"gemini-2.5-pro":                {1.25, 10.00}, // ≤200k prompt
-	"gemini-3.1-pro-preview":        {2.00, 12.00}, // ≤200k prompt
+	"gemini-3.1-flash-lite":         {0.02, 0.10},
+	"gemini-3.1-flash-lite-preview": {0.02, 0.10},
+	"gemini-3.1-pro-preview":        {2.50, 15.00},
 }
 
 func estimateCost(model string, inputTokens, outputTokens int) float64 {
@@ -407,14 +447,19 @@ func matchAOI(aoi security.AreaOfInterest, gt groundTruthAOI) (fileMatch, lineMa
 }
 
 func TestAOIModelComparison(t *testing.T) {
-	apiKey := os.Getenv("PRR_API_KEY")
-	if apiKey == "" {
-		t.Skip("PRR_API_KEY not set — skipping live AOI model comparison test")
+	cfg := loadTestConfig(t)
+	if cfg == nil {
+		t.Skip("PRR_LIVE_TESTS=1 not set or no valid config — skipping live AOI model comparison test")
 	}
 
-	models := parseModelsFromEnv()
+	modelConfigs, err := config.LoadModels()
+	if err != nil {
+		t.Fatalf("LoadModels: %v", err)
+	}
+
+	models := parseModelsFromEnv(cfg, modelConfigs)
 	if models == nil {
-		models = defaultModels()
+		models = defaultModels(cfg, modelConfigs)
 	}
 
 	diffs, groundTruth := securityTestDiffs()
@@ -438,13 +483,10 @@ func TestAOIModelComparison(t *testing.T) {
 
 	for i, spec := range models {
 		t.Run(spec.name, func(t *testing.T) {
-			provider := &ai.GeminiProvider{
-				APIKey: apiKey,
-				Model:  spec.model,
+			provider, err := createProvider(spec)
+			if err != nil {
+				t.Fatalf("createProvider: %v", err)
 			}
-			provider.ModelConfig.MaxOutputTokens = spec.maxOutput
-			provider.ModelConfig.Temperature = spec.temperature
-			provider.ModelConfig.ThinkingBudget = spec.thinkingBudget
 
 			tracker := &ai.UsageTracker{}
 			client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker))
@@ -628,6 +670,7 @@ func TestAOIModelComparison(t *testing.T) {
 		}
 		benchmarks.Models = append(benchmarks.Models, config.ModelBenchmark{
 			ModelID:        r.spec.model,
+			Provider:       r.spec.provider,
 			ConfigName:     r.spec.name,
 			Temperature:    r.spec.temperature,
 			ThinkingBudget: r.spec.thinkingBudget,
@@ -650,24 +693,34 @@ func TestAOIModelComparison(t *testing.T) {
 // TestAOIModelComparison_DetailedOutput runs a single model and prints
 // the full AOI output for manual inspection. Useful for prompt tuning.
 func TestAOIModelComparison_DetailedOutput(t *testing.T) {
-	apiKey := os.Getenv("PRR_API_KEY")
-	if apiKey == "" {
-		t.Skip("PRR_API_KEY not set — skipping live AOI detail test")
+	cfg := loadTestConfig(t)
+	if cfg == nil {
+		t.Skip("PRR_LIVE_TESTS=1 not set or no valid config — skipping live AOI detail test")
+	}
+
+	modelConfigs, err := config.LoadModels()
+	if err != nil {
+		t.Fatalf("LoadModels: %v", err)
 	}
 
 	model := os.Getenv("PRR_AOI_MODEL")
 	if model == "" {
-		model = "gemini-2.5-flash-lite"
+		// Use the configured fast model
+		fastRef, _ := config.ParseModelRef(cfg.FastModel)
+		model = fastRef.ModelID
 	}
+
+	mcfg := config.GetModelConfig(modelConfigs, model)
+	fastRef, _ := config.ParseModelRef(cfg.FastModel)
+	pc := cfg.ProviderConfigFor(fastRef.Provider)
 
 	diffs, groundTruth := securityTestDiffs()
 
-	provider := &ai.GeminiProvider{
-		APIKey: apiKey,
-		Model:  model,
+	spec := specFromConfig(model, model, fastRef.Provider, pc.APIKey, pc.BaseURL, mcfg)
+	provider, err := createProvider(spec)
+	if err != nil {
+		t.Fatalf("createProvider: %v", err)
 	}
-	provider.ModelConfig.MaxOutputTokens = 8192
-	provider.ModelConfig.Temperature = 0.1
 
 	tracker := &ai.UsageTracker{}
 	client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker))
@@ -926,9 +979,9 @@ func contextLineDiffs() (u3 map[string]string, u10 map[string]string, gt []groun
 // vs U3) improves the model's ability to detect vulnerabilities where the
 // source (user input) is not in the changed lines but in surrounding context.
 func TestAOIContextLineComparison(t *testing.T) {
-	apiKey := os.Getenv("PRR_API_KEY")
-	if apiKey == "" {
-		t.Skip("PRR_API_KEY not set — skipping context line comparison test")
+	cfg := loadTestConfig(t)
+	if cfg == nil {
+		t.Skip("PRR_LIVE_TESTS=1 not set or no valid config — skipping context line comparison test")
 	}
 
 	u3Diffs, u10Diffs, groundTruth := contextLineDiffs()
@@ -944,11 +997,23 @@ func TestAOIContextLineComparison(t *testing.T) {
 	}
 
 	// Models to test — use env override or a focused subset
-	models := parseModelsFromEnv()
+	modelConfigs, err := config.LoadModels()
+	if err != nil {
+		t.Fatalf("LoadModels: %v", err)
+	}
+
+	fastRef, _ := config.ParseModelRef(cfg.FastModel)
+	pc := cfg.ProviderConfigFor(fastRef.Provider)
+
+	models := parseModelsFromEnv(cfg, modelConfigs)
 	if models == nil {
+		mcfg := func(id string) config.ModelConfig { return config.GetModelConfig(modelConfigs, id) }
+		mk := func(name, modelID string, mc config.ModelConfig) modelSpec {
+			return specFromConfig(name, modelID, fastRef.Provider, pc.APIKey, pc.BaseURL, mc)
+		}
 		models = []modelSpec{
-			{name: "2.5-flash-lite", model: "gemini-2.5-flash-lite", temperature: 0.1, maxOutput: 8192},
-			{name: "3.1-flash-lite-preview", model: "gemini-3.1-flash-lite-preview", temperature: 0.1, maxOutput: 8192},
+			mk("3.1-flash-lite", "gemini-3.1-flash-lite", mcfg("gemini-3.1-flash-lite")),
+			mk("3.1-flash-lite-preview", "gemini-3.1-flash-lite-preview", mcfg("gemini-3.1-flash-lite-preview")),
 		}
 	}
 
@@ -969,13 +1034,10 @@ func TestAOIContextLineComparison(t *testing.T) {
 		} {
 			testName := fmt.Sprintf("%s/%s", spec.name, tc.label)
 			t.Run(testName, func(t *testing.T) {
-				provider := &ai.GeminiProvider{
-					APIKey: apiKey,
-					Model:  spec.model,
+				provider, err := createProvider(spec)
+				if err != nil {
+					t.Fatalf("createProvider: %v", err)
 				}
-				provider.ModelConfig.MaxOutputTokens = spec.maxOutput
-				provider.ModelConfig.Temperature = spec.temperature
-				provider.ModelConfig.ThinkingBudget = spec.thinkingBudget
 
 				tracker := &ai.UsageTracker{}
 				client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker))

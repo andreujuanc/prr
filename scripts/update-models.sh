@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # Fetches the current Gemini model list from the API and updates
-# internal/config/known_models.go with text-capable 2.5 and 3.1 models.
+# internal/config/known_models.go with text-capable 3.1 models.
 #
 # Usage:
-#   PRR_API_KEY=... ./scripts/update-models.sh
-#   # or: source .env && ./scripts/update-models.sh
+#   ./scripts/update-models.sh
+#   # Reads the Gemini API key from ~/.config/prr/config.json
 #
 # The script filters out non-text models (image, TTS, computer-use, robotics,
 # embeddings, custom-tools) and only keeps models that support generateContent
@@ -13,9 +13,25 @@
 #
 set -euo pipefail
 
-KEY="${PRR_API_KEY:-}"
+# Read Gemini API key from config.json
+CONFIG_FILE="${HOME}/.config/prr/config.json"
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "error: $CONFIG_FILE not found — configure the app first" >&2
+  exit 1
+fi
+
+KEY=$(python3 -c "
+import json, sys
+try:
+    cfg = json.load(open('$CONFIG_FILE'))
+    print(cfg.get('providers', {}).get('gemini', {}).get('api_key', ''))
+except Exception:
+    pass
+")
+
 if [ -z "$KEY" ]; then
-  echo "error: PRR_API_KEY is not set" >&2
+  echo "error: no gemini API key found in $CONFIG_FILE" >&2
+  echo "  Add it under providers.gemini.api_key" >&2
   exit 1
 fi
 
@@ -41,13 +57,13 @@ import json, sys
 data = json.load(sys.stdin)
 models = data.get('models', [])
 
-# Filter: 2.5 and 3.1 family, text generation capable, large context
+# Filter: 3.1 family, text generation capable, large context
 SKIP_KEYWORDS = ['image', 'tts', 'computer-use', 'robotics', 'embedding', 'customtools', 'live', 'research']
 
 text_models = []
 for m in models:
     mid = m['name'].replace('models/', '')
-    if not ('2.5' in mid or '3.1' in mid):
+    if not ('3.1' in mid or mid.startswith('gemini-3-')):
         continue
     methods = m.get('supportedGenerationMethods', [])
     if 'generateContent' not in methods:
@@ -63,10 +79,10 @@ for m in models:
         'output_limit': m.get('outputTokenLimit', 0),
     })
 
-# Sort: 3.1 before 2.5, pro before flash, stable before preview
+# Sort: pro before flash, stable before preview
 def sort_key(m):
     mid = m['id']
-    family = 0 if '3.1' in mid else 1
+    family = 0
     tier = 0 if '-pro' in mid else (1 if 'flash-lite' not in mid and 'flash' in mid else 2)
     preview = 1 if 'preview' in mid else 0
     return (family, tier, preview, mid)
@@ -85,7 +101,7 @@ for m in text_models:
     # Role assignment
     m['review'] = True  # all text models can review
     m['aoi'] = is_lite  # lite models are AOI-suitable
-    m['thinking'] = is_pro or is_31 or mid == 'gemini-2.5-flash'
+    m['thinking'] = is_pro or is_31
 
     # Speed estimate
     if is_lite:

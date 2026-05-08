@@ -326,6 +326,9 @@ func Run(
 		}
 	}
 
+	if mi, ok := reviewClient.(ai.ModelInfo); ok {
+		log.Printf("Phase 3: using review model %s/%s", mi.ProviderName(), mi.ModelName())
+	}
 	findings, dismissals, crossCutting, err := runPhase3(
 		ctx, reviewClient, opts, auditState, projectContext, calls, onProgress, phase3DebugHook, phase3ToolHook,
 	)
@@ -490,7 +493,10 @@ func runPhase2(
 
 // ── Phase 3: Deep Review ────────────────────────────────────────────────
 
-const phase3MaxConcurrency = 10
+// phase3MaxConcurrency caps parallel deep review calls.
+// Benchmarked at 5 concurrent Opus 4.6 calls via Copilot: 100% recall, 0 FP, ~48s.
+// Higher values (7+) occasionally trigger malformed responses from the API.
+const phase3MaxConcurrency = 5
 
 func runPhase3(
 	ctx context.Context,

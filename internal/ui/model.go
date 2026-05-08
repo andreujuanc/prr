@@ -279,9 +279,8 @@ type Model struct {
 	// AI
 	aiClient            ai.Client
 	aoiClient           ai.Client // optional: lightweight model for AOI security pre-scan
-	aiModelName         string    // model identifier for display (e.g. "gemini-2.5-pro")
+	aiModelName         string    // model identifier for display (e.g. "gemini-3.1-pro-preview")
 	aoiModelName        string    // AOI model identifier for display
-	aiProvider          string    // provider name (gemini, anthropic, openai)
 	aiStreaming         bool      // true while AI is generating
 	aiStreamBuffer      string    // accumulated streamed response
 	aiStreamDirty       bool      // true when buffer has unflushed tokens
@@ -382,7 +381,7 @@ type Model struct {
 
 // ── Constructor ─────────────────────────────────────────────────────────
 
-func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallelReviews int, aoiContextLines int, useChroma bool, provider string) Model {
+func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallelReviews int, aoiContextLines int, useChroma bool) Model {
 	diffVp := viewport.New(0, 0)
 	diffVp.Style = lipgloss.NewStyle().Foreground(textPrimary)
 
@@ -455,7 +454,6 @@ func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallel
 		aoiClient:          aoiClient,
 		aiModelName:        modelName,
 		aoiModelName:       aoiModelDisplayName,
-		aiProvider:         provider,
 		contextLines:       3,
 		aoiContextLines:    aoiContextLines,
 		comments:           make(map[string][]git.ReviewComment),
@@ -1517,9 +1515,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				si, ii := modelPickerItemAt(sections, m.modelPickerCursor)
 				selected := sections[si].items[ii]
 				if si == 0 {
-					m.switchModel(selected.id)
+					m.switchModel(selected.modelRef())
 				} else {
-					m.switchAOIModel(selected.id)
+					m.switchAOIModel(selected.modelRef())
 				}
 				m.showModelPicker = false
 			}
@@ -2243,6 +2241,15 @@ func (m *Model) sendChatMessage() tea.Cmd {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	m.aiCancelFn = cancel
+
+	// Use chat thinking budget (lower than review for responsiveness)
+	if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
+		models, _ := config.LoadModels()
+		if mi, ok2 := m.aiClient.(ai.ModelInfo); ok2 {
+			mcfg := config.GetModelConfig(models, mi.ModelName())
+			tbs.SetThinkingBudget(mcfg.ThinkingBudget.Chat)
+		}
+	}
 
 	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
 }
@@ -3267,6 +3274,15 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		m.aiCancelFn = cancel
 
+		// Ensure review thinking budget is active (chat may have lowered it)
+		if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
+			models, _ := config.LoadModels()
+			if mi, ok2 := m.aiClient.(ai.ModelInfo); ok2 {
+				mcfg := config.GetModelConfig(models, mi.ModelName())
+				tbs.SetThinkingBudget(mcfg.ThinkingBudget.Review)
+			}
+		}
+
 		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines, m.repoRoot))
 	}
 
@@ -3334,6 +3350,15 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	m.aiCancelFn = cancel
+
+	// Use review thinking budget (same depth as batch review)
+	if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
+		models, _ := config.LoadModels()
+		if mi, ok2 := m.aiClient.(ai.ModelInfo); ok2 {
+			mcfg := config.GetModelConfig(models, mi.ModelName())
+			tbs.SetThinkingBudget(mcfg.ThinkingBudget.Review)
+		}
+	}
 
 	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
 }

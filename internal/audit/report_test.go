@@ -12,9 +12,9 @@ import (
 
 func sampleResult() *Result {
 	return &Result{
-		FilesScanned:  42,
-		AOIsGenerated: 128,
-		ReviewCalls:   20,
+		FilesScanned:      42,
+		AOIsGenerated:     128,
+		ReviewCalls:       20,
 		IndividualReviews: 12,
 		GroupedReviews:    8,
 		Findings: []state.DeepFinding{

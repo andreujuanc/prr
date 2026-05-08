@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -372,6 +373,13 @@ func (m *ProgressUI) activeProgress() float64 {
 			if m.totalReviews > 0 {
 				return float64(m.doneReviews) / float64(m.totalReviews)
 			}
+		case "phase4":
+			// Synthesis is a single LLM call without granular sub-steps.
+			// Animate a pulsing progress bar based on elapsed time so the
+			// user sees activity.  The value oscillates between 0.05 and 0.95
+			// with a period of ~4 seconds.
+			secs := m.elapsed.Seconds()
+			return 0.5 + 0.45*math.Sin(secs*math.Pi/2)
 		}
 	}
 	return 0

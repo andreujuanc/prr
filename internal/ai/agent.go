@@ -107,8 +107,8 @@ type Agent struct {
 	provider     Provider
 	toolExecutor *ToolExecutor
 	maxRounds    int
-	debugLog     *log.Logger   // nil = no debug logging
-	usageTracker *UsageTracker // nil = don't track usage
+	debugLog     *log.Logger     // nil = no debug logging
+	usageTracker *UsageTracker   // nil = don't track usage
 	toolFilter   map[string]bool // nil = all tools; non-nil = only named tools
 }
 
@@ -483,6 +483,17 @@ func (a *Agent) ModelName() string {
 	return a.provider.ModelID()
 }
 
+// SetThinkingBudget changes the thinking budget on the current provider.
+// Used to reduce thinking for chat vs review.
+func (a *Agent) SetThinkingBudget(budget int) {
+	switch p := a.provider.(type) {
+	case *GeminiProvider:
+		p.ModelConfig.ThinkingBudget = budget
+	case *OpenAIProvider:
+		p.ModelConfig.ThinkingBudget = budget
+	}
+}
+
 // SetHeadRef configures the git ref used for file reading tools.
 func (a *Agent) SetHeadRef(ref string) {
 	if a.toolExecutor != nil {
@@ -511,16 +522,55 @@ func (a *Agent) SetReviewGetter(fn func() string) {
 	}
 }
 
-// SwitchModel changes the underlying model at runtime.
-func (a *Agent) SwitchModel(modelID string, maxOutputTokens int, temperature float64, thinkingBudget int) error {
-	if gp, ok := a.provider.(*GeminiProvider); ok {
-		gp.Model = modelID
-		gp.ModelConfig.MaxOutputTokens = maxOutputTokens
-		gp.ModelConfig.Temperature = temperature
-		gp.ModelConfig.ThinkingBudget = thinkingBudget
-		return nil
+// SwitchModel changes the underlying model (and possibly provider) at runtime.
+func (a *Agent) SwitchModel(cfg ProviderConfig) error {
+	// If the provider type is the same, just update in place
+	currentName := a.provider.Name()
+	targetName := cfg.ProviderName
+
+	// Normalize: github-copilot uses OpenAIProvider
+	sameType := currentName == targetName ||
+		(currentName == "github-copilot" && targetName == "github-copilot") ||
+		(currentName == "openai" && targetName == "openai")
+
+	if sameType {
+		switch p := a.provider.(type) {
+		case *GeminiProvider:
+			p.APIKey = cfg.APIKey
+			p.Model = cfg.ModelID
+			if cfg.BaseURL != "" {
+				p.BaseURL = cfg.BaseURL
+			}
+			p.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
+			p.ModelConfig.Temperature = cfg.Temperature
+			p.ModelConfig.ThinkingBudget = cfg.ThinkingBudget
+			return nil
+		case *OpenAIProvider:
+			p.APIKey = cfg.APIKey
+			p.Model = cfg.ModelID
+			if cfg.BaseURL != "" {
+				p.BaseURL = cfg.BaseURL
+			}
+			if cfg.ProviderName == "github-copilot" {
+				p.ProviderLabel = "github-copilot"
+				p.ExtraHeaders = map[string]string{
+					"Openai-Intent": "conversation-edits",
+					"User-Agent":    "prr",
+				}
+			}
+			p.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
+			p.ModelConfig.Temperature = cfg.Temperature
+			return nil
+		}
 	}
-	return fmt.Errorf("model switching not supported for provider %s", a.provider.Name())
+
+	// Different provider type — create a new provider
+	newProvider, err := NewProvider(cfg)
+	if err != nil {
+		return err
+	}
+	a.provider = newProvider
+	return nil
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

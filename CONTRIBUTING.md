@@ -7,7 +7,7 @@ Thanks for your interest in contributing to prr! Here's how to get started.
 - Go 1.22+
 - [gh](https://cli.github.com/) (GitHub CLI, authenticated)
 - [delta](https://github.com/dandavison/delta) (git-delta)
-- A Gemini API key (for running integration tests)
+- A configured `~/.config/prr/config.json` with API keys (for running integration tests)
 
 ## Setup
 
@@ -45,12 +45,14 @@ internal/
 # Unit tests (no API key needed)
 go test ./...
 
-# Integration tests with real Gemini API
-export PRR_API_KEY="your-key"
-go test ./internal/ai/ -run TestLive -v
+# Integration tests with real API (reads keys from ~/.config/prr/config.json)
+PRR_LIVE_TESTS=1 go test ./internal/ai/ -run TestLive -v
+
+# Or use the helper script:
+./scripts/test-live.sh
 ```
 
-Integration tests are gated behind the `PRR_API_KEY` environment variable. They make real API calls and are skipped when the variable is not set.
+Integration tests are gated behind the `PRR_LIVE_TESTS=1` environment variable. They read API credentials from `~/.config/prr/config.json` (the same config file the app uses) and are skipped when the variable is not set.
 
 ## Code Style
 

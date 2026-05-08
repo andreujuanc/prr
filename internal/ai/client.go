@@ -28,7 +28,7 @@ type Client interface {
 type ModelInfo interface {
 	// ProviderName returns the provider name (e.g. "gemini", "anthropic").
 	ProviderName() string
-	// ModelName returns the model identifier (e.g. "gemini-2.5-pro").
+	// ModelName returns the model identifier (e.g. "gemini-3.1-pro-preview").
 	ModelName() string
 }
 
@@ -47,9 +47,16 @@ type ToolConfigurer interface {
 // ModelSwitcher is optionally implemented by clients that support switching
 // the underlying model at runtime (e.g. via a TUI model picker).
 type ModelSwitcher interface {
-	// SwitchModel changes the active model to the given ID and applies the
-	// provided tuning parameters. Returns an error if the model is invalid.
-	SwitchModel(modelID string, maxOutputTokens int, temperature float64, thinkingBudget int) error
+	// SwitchModel changes the active model. The modelRef is "provider/model-id" format.
+	// apiKey and baseURL are the credentials for the new provider.
+	// Tuning params are applied from the provided ProviderConfig.
+	SwitchModel(cfg ProviderConfig) error
+}
+
+// ThinkingBudgetSetter is optionally implemented by clients that support
+// adjusting the thinking budget at runtime (e.g. lower for chat, higher for review).
+type ThinkingBudgetSetter interface {
+	SetThinkingBudget(budget int)
 }
 
 // UsageReporter is optionally implemented by clients that track token usage.

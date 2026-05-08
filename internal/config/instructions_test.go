@@ -107,7 +107,7 @@ func TestLoadCustomInstructions_TruncatesAtRuneBoundary(t *testing.T) {
 	// Create content with multi-byte UTF-8 characters (emoji = 4 bytes each)
 	// Place them so the 4000 byte cut would split a character
 	prefix := strings.Repeat("a", 3998) // 3998 bytes
-	content := prefix + "🎉🎉"          // 3998 + 8 = 4006 bytes
+	content := prefix + "🎉🎉"            // 3998 + 8 = 4006 bytes
 
 	setupRepoWithInstructions(t, ".prr/instructions.md", content)
 

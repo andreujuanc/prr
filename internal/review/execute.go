@@ -259,6 +259,17 @@ func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult 
 	}
 	s = s[jsonStart:]
 
+	// Trim trailing non-JSON (e.g. markdown code fences like ```)
+	if s[0] == '{' {
+		if end := strings.LastIndex(s, "}"); end != -1 {
+			s = s[:end+1]
+		}
+	} else if s[0] == '[' {
+		if end := strings.LastIndex(s, "]"); end != -1 {
+			s = s[:end+1]
+		}
+	}
+
 	if call.Type == "individual" {
 		var parsed struct {
 			AOIID              string `json:"aoi_id"`

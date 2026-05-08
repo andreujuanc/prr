@@ -37,12 +37,13 @@ Single Go module. Entrypoint: `cmd/prr/main.go`.
 - **Never use `fmt.Print*` for output** — stdout is owned by Bubble Tea. Use `log.Printf` for debug logging.
 - **Error wrapping**: `fmt.Errorf("context: %w", err)`.
 - **Formatting**: `gofmt` only (no goimports, no custom config).
-- **Codegen**: `scripts/update-models.sh` regenerates `internal/config/known_models.go` from the Gemini API. Requires `PRR_API_KEY` and `python3`. Do not hand-edit that file.
+- **Codegen**: `scripts/update-models.sh` regenerates `internal/config/known_models.go` from the Gemini API. Reads the API key from `~/.config/prr/config.json`. Requires `python3`. Do not hand-edit that file.
 
 ## Testing
 
-- Integration tests in `internal/ai/` require `PRR_API_KEY` env var and are skipped without it: `PRR_API_KEY=... go test ./internal/ai/ -run TestLive -v`
-- Helper script: `scripts/test-live.sh` (loads `.env` automatically).
+- Integration tests require `PRR_LIVE_TESTS=1` and a valid `~/.config/prr/config.json` with API keys configured. They are skipped otherwise.
+- Run live tests: `PRR_LIVE_TESTS=1 go test ./internal/ai/ -run TestLive -v`
+- Helper script: `scripts/test-live.sh` (sets `PRR_LIVE_TESTS=1` automatically).
 
 ## Branching & release
 

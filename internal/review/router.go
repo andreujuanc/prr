@@ -39,8 +39,8 @@ type RouteResult struct {
 	Grouped []ReviewCall
 
 	// Stats for reporting.
-	TotalAOIs       int
-	IndividualCount int
+	TotalAOIs        int
+	IndividualCount  int
 	GroupedCount     int
 	SubcategoryCount int
 }

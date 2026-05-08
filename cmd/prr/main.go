@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -13,17 +15,18 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/audit"
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/review"
-	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/state"
 	"github.com/andreujuanc/prr/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
@@ -43,7 +46,7 @@ func main() {
 	seenSubcommand := false
 	for _, arg := range args {
 		// Once we see a subcommand, pass all remaining args through
-		if !seenSubcommand && (arg == "audit" || arg == "review") {
+		if !seenSubcommand && (arg == "audit" || arg == "review" || arg == "config") {
 			seenSubcommand = true
 			positional = append(positional, arg)
 			continue
@@ -76,6 +79,10 @@ func main() {
 		}
 		if positional[0] == "review" {
 			runReview(debug, positional[1:])
+			return
+		}
+		if positional[0] == "config" {
+			runConfig()
 			return
 		}
 		prNumber = positional[0]
@@ -115,10 +122,10 @@ func main() {
 		prLabel = "(picker)"
 	}
 	aoiModelName := resolveAOIModelName(aoiClient, cfg)
-	aoiProfile := security.GetAOIProfile(aoiModelName)
-	log.Printf("Starting PR review TUI for PR #%s (provider: %s, model: %s, aoi: %s, aoi_context: %d)", prLabel, cfg.Provider, cfg.Model, aoiModelName, aoiProfile.ContextLines)
+	aoiContextLines := resolveAOIContextLines(aoiModelName)
+	log.Printf("Starting PR review TUI for PR #%s (strong: %s, fast: %s, aoi_context: %d)", prLabel, cfg.StrongModel, cfg.FastModel, aoiContextLines)
 
-	model := ui.NewModel(prNumber, aiClient, aoiClient, cfg.ParallelReviews, aoiProfile.ContextLines, useChroma, cfg.Provider)
+	model := ui.NewModel(prNumber, aiClient, aoiClient, cfg.ParallelReviews, aoiContextLines, useChroma)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
 
@@ -220,9 +227,18 @@ func runAudit(debug bool, args []string) {
 	envAOI := os.Getenv("PRR_AOI_MODEL")
 	var selection *audit.ModelSelection
 	if envReview != "" && envAOI != "" {
+		// Env vars can be in "provider/model" format or bare model IDs
+		reviewRef := envReview
+		if !strings.Contains(reviewRef, "/") {
+			reviewRef = resolveModelProvider(cfg, envReview)
+		}
+		aoiRef := envAOI
+		if !strings.Contains(aoiRef, "/") {
+			aoiRef = resolveModelProvider(cfg, envAOI)
+		}
 		selection = &audit.ModelSelection{
-			ReviewModel: envReview,
-			AOIModel:    envAOI,
+			StrongModel: reviewRef,
+			FastModel:   aoiRef,
 		}
 	} else {
 		var selErr error
@@ -233,25 +249,33 @@ func runAudit(debug bool, args []string) {
 		}
 	}
 
-	// Apply selections to config for client creation
-	cfg.Model = selection.ReviewModel
-	cfg.AOIModel = selection.AOIModel
+	// Validate model refs
+	strongRef, err := config.ParseModelRef(selection.StrongModel)
+	if err != nil {
+		printError(fmt.Errorf("invalid review model: %w", err))
+		os.Exit(1)
+	}
+	fastRef, err := config.ParseModelRef(selection.FastModel)
+	if err != nil {
+		printError(fmt.Errorf("invalid AOI model: %w", err))
+		os.Exit(1)
+	}
 
-	// Validate models are known and match the configured provider
-	if rm, ok := config.GetKnownModel(selection.ReviewModel); !ok {
-		printError(fmt.Errorf("unknown review model %q — run without PRR_REVIEW_MODEL to see available models", selection.ReviewModel))
-		os.Exit(1)
-	} else if rm.Provider != cfg.Provider {
-		printError(fmt.Errorf("review model %q belongs to provider %q but configured provider is %q", selection.ReviewModel, rm.Provider, cfg.Provider))
+	// Resolve API keys for selected providers
+	strongKey := cfg.APIKeyFor(strongRef.Provider)
+	if strongKey == "" {
+		printError(fmt.Errorf("no API key for provider %q (used by review model %q)", strongRef.Provider, selection.StrongModel))
 		os.Exit(1)
 	}
-	if am, ok := config.GetKnownModel(selection.AOIModel); !ok {
-		printError(fmt.Errorf("unknown AOI model %q — run without PRR_AOI_MODEL to see available models", selection.AOIModel))
-		os.Exit(1)
-	} else if am.Provider != cfg.Provider {
-		printError(fmt.Errorf("AOI model %q belongs to provider %q but configured provider is %q", selection.AOIModel, am.Provider, cfg.Provider))
+	fastKey := cfg.APIKeyFor(fastRef.Provider)
+	if fastKey == "" {
+		printError(fmt.Errorf("no API key for provider %q (used by AOI model %q)", fastRef.Provider, selection.FastModel))
 		os.Exit(1)
 	}
+
+	// Apply selections to config for client creation
+	cfg.StrongModel = selection.StrongModel
+	cfg.FastModel = selection.FastModel
 
 	// Create AI clients
 	reviewClient := createAIClient(cfg)
@@ -266,11 +290,10 @@ func runAudit(debug bool, args []string) {
 	}
 
 	// Get AOI profile for context lines
-	aoiProfile := security.GetAOIProfile(selection.AOIModel)
-	opts.AOIContextLines = aoiProfile.ContextLines
+	opts.AOIContextLines = resolveAOIContextLines(fastRef.ModelID)
 
-	log.Printf("Starting audit (provider: %s, model: %s, aoi: %s, focus: %v)",
-		cfg.Provider, selection.ReviewModel, selection.AOIModel, opts.Focus)
+	log.Printf("Starting audit (strong: %s, fast: %s, focus: %v)",
+		cfg.StrongModel, cfg.FastModel, opts.Focus)
 
 	// Load previous findings for comparison
 	previousFindings, _ := audit.LoadSnapshot(repoRoot)
@@ -282,10 +305,10 @@ func runAudit(debug bool, args []string) {
 	if opts.Debug {
 		// In debug mode, skip Bubble Tea UI — run directly with simple progress to stderr
 		result, synthesis, err = audit.RunPlain(ctx, reviewClient, aoiClient, opts,
-			selection.ReviewModel, selection.AOIModel, noSynth)
+			cfg.StrongModel, cfg.FastModel, noSynth)
 	} else {
 		result, synthesis, err = audit.RunWithUI(ctx, reviewClient, aoiClient, opts,
-			selection.ReviewModel, selection.AOIModel, noSynth)
+			cfg.StrongModel, cfg.FastModel, noSynth)
 	}
 	if err != nil {
 		printError(err)
@@ -348,8 +371,8 @@ func runAudit(debug bool, args []string) {
 	{
 		u := result.Usage
 		total := u.Total()
-		aoiPricing := audit.DefaultPricing(selection.AOIModel)
-		reviewPricing := audit.DefaultPricing(selection.ReviewModel)
+		aoiPricing := audit.DefaultPricing(fastRef.ModelID)
+		reviewPricing := audit.DefaultPricing(strongRef.ModelID)
 
 		aoiCost := float64(u.AOI.InputTokens)/1_000_000*aoiPricing.InputPerMTok +
 			float64(u.AOI.OutputTokens)/1_000_000*aoiPricing.OutputPerMTok
@@ -477,10 +500,10 @@ func runReview(debug bool, args []string) {
 	}
 
 	aoiModelName := resolveAOIModelName(aoiClient, cfg)
-	aoiProfile := security.GetAOIProfile(aoiModelName)
+	aoiCtxLines := resolveAOIContextLines(aoiModelName)
 
-	log.Printf("Starting headless PR review for PR #%s (provider: %s, model: %s, aoi: %s)",
-		prNumber, cfg.Provider, cfg.Model, aoiModelName)
+	log.Printf("Starting headless PR review for PR #%s (strong: %s, fast: %s)",
+		prNumber, cfg.StrongModel, cfg.FastModel)
 
 	// Run the review pipeline
 	ctx := context.Background()
@@ -491,7 +514,7 @@ func runReview(debug bool, args []string) {
 		NoCache:            noCache,
 		NoSynthesis:        noSynth,
 		ParallelReviews:    cfg.ParallelReviews,
-		AOIContextLines:    aoiProfile.ContextLines,
+		AOIContextLines:    aoiCtxLines,
 		CustomInstructions: config.LoadCustomInstructions(),
 		Debug:              reviewDebug,
 	}
@@ -647,8 +670,15 @@ func printReviewUsage() {
 }
 
 func createAIClient(cfg *config.Config) ai.Client {
-	if cfg.APIKey == "" || cfg.APIKey == "YOUR_API_KEY" {
-		printError(fmt.Errorf("no API key configured. Set PRR_API_KEY or update api_key in your config file"))
+	ref, err := config.ParseModelRef(cfg.StrongModel)
+	if err != nil {
+		printError(fmt.Errorf("invalid strong_model: %w", err))
+		os.Exit(1)
+	}
+
+	apiKey := cfg.APIKeyFor(ref.Provider)
+	if apiKey == "" || apiKey == "YOUR_API_KEY" {
+		printError(fmt.Errorf("no API key configured for provider %q (used by strong_model %q)", ref.Provider, cfg.StrongModel))
 		os.Exit(1)
 	}
 
@@ -661,44 +691,25 @@ func createAIClient(cfg *config.Config) ai.Client {
 	if err != nil {
 		log.Printf("Warning: failed to load models config: %v", err)
 	}
-	modelCfg := config.GetModelConfig(models, cfg.Model)
+	modelCfg := config.GetModelConfig(models, ref.ModelID)
 
-	var provider ai.Provider
-	switch cfg.Provider {
-	case "gemini":
-		gp := &ai.GeminiProvider{
-			APIKey: cfg.APIKey,
-			Model:  cfg.Model,
-		}
-		gp.ModelConfig.MaxOutputTokens = modelCfg.MaxOutputTokens
-		gp.ModelConfig.Temperature = modelCfg.Temperature
-		gp.ModelConfig.ThinkingBudget = modelCfg.ThinkingBudget
-		provider = gp
-	case "openai":
-		op := &ai.OpenAIProvider{
-			APIKey: cfg.APIKey,
-			Model:  cfg.Model,
-		}
-		op.ModelConfig.MaxOutputTokens = modelCfg.MaxOutputTokens
-		op.ModelConfig.Temperature = modelCfg.Temperature
-		provider = op
-	case "github-copilot":
-		op := &ai.OpenAIProvider{
-			APIKey:        cfg.APIKey,
-			Model:         cfg.Model,
-			BaseURL:       "https://models.inference.ai.azure.com",
-			ProviderLabel: "github-copilot",
-		}
-		op.ModelConfig.MaxOutputTokens = modelCfg.MaxOutputTokens
-		op.ModelConfig.Temperature = modelCfg.Temperature
-		provider = op
-	default:
-		log.Fatalf("Unsupported AI provider: %q. Supported: gemini, openai, github-copilot", cfg.Provider)
+	pc := cfg.ProviderConfigFor(ref.Provider)
+
+	provider, err := ai.NewProvider(ai.ProviderConfig{
+		ProviderName:    ref.Provider,
+		ModelID:         ref.ModelID,
+		APIKey:          apiKey,
+		BaseURL:         pc.BaseURL,
+		MaxOutputTokens: modelCfg.MaxOutputTokens,
+		Temperature:     modelCfg.Temperature,
+		ThinkingBudget:  modelCfg.ThinkingBudget.Review,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create AI provider: %v", err)
 	}
 
 	var opts []ai.AgentOption
 	if cfg.Debug {
-		// Debug log goes to the same log file as the rest of the app
 		opts = append(opts, ai.WithDebugLogger(log.Writer()))
 	}
 
@@ -706,76 +717,58 @@ func createAIClient(cfg *config.Config) ai.Client {
 }
 
 // createAOIClient creates a lightweight AI client for the security AOI pre-scan.
-// It uses the same provider credentials but with the cheapest available model
-// and no tools. The AOI scanner only needs to analyze diffs — no file reading or grep.
-// createAOIClient creates the cheap LLM client for AOI pre-scanning.
-// Priority: PRR_AOI_MODEL env var > config aoi_model > provider default.
+// It uses the fast model with no tools — only diff analysis.
 func createAOIClient(cfg *config.Config) (ai.Client, error) {
-	var aoiModel string
+	fastModel := cfg.FastModel
 	if envModel := os.Getenv("PRR_AOI_MODEL"); envModel != "" {
-		aoiModel = envModel
-	} else if cfg.AOIModel != "" {
-		aoiModel = cfg.AOIModel
-	} else {
-		switch cfg.Provider {
-		case "gemini":
-			aoiModel = "gemini-2.5-flash-lite"
-		case "openai":
-			aoiModel = "gpt-5.4-mini"
-		case "github-copilot":
-			aoiModel = "gpt-5.4-mini"
-		default:
-			return nil, fmt.Errorf("unsupported provider %q for AOI scanning", cfg.Provider)
+		// Legacy env var support: bare model ID → try to keep the configured fast model's provider
+		if !strings.Contains(envModel, "/") {
+			ref, err := config.ParseModelRef(cfg.FastModel)
+			if err == nil {
+				fastModel = ref.Provider + "/" + envModel
+			} else {
+				fastModel = "gemini/" + envModel
+			}
+		} else {
+			fastModel = envModel
 		}
 	}
 
-	// API key: PRR_AOI_API_KEY env > config aoi_api_key > config api_key
-	aoiAPIKey := cfg.APIKey
-	if cfg.AOIAPIKey != "" {
-		aoiAPIKey = cfg.AOIAPIKey
+	ref, err := config.ParseModelRef(fastModel)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fast_model: %w", err)
 	}
+
+	// API key: PRR_AOI_API_KEY env > providers[provider].api_key
+	apiKey := cfg.APIKeyFor(ref.Provider)
 	if envKey := os.Getenv("PRR_AOI_API_KEY"); envKey != "" {
-		aoiAPIKey = envKey
+		apiKey = envKey
 	}
 
-	if aoiAPIKey == "" || aoiAPIKey == "YOUR_API_KEY" {
-		return nil, fmt.Errorf("no API key configured for AOI model (%s). Set PRR_AOI_API_KEY, or configure aoi_api_key / api_key in your config", aoiModel)
+	if apiKey == "" || apiKey == "YOUR_API_KEY" {
+		return nil, fmt.Errorf("no API key configured for provider %q (used by fast_model %q). Set PRR_AOI_API_KEY or configure providers.%s.api_key", ref.Provider, fastModel, ref.Provider)
 	}
 
-	// Use benchmark-tuned settings from the model profile
-	aoiProfile := security.GetAOIProfile(aoiModel)
+	// Load per-model tuning
+	models, err := config.LoadModels()
+	if err != nil {
+		log.Printf("Warning: failed to load models config for AOI: %v", err)
+	}
+	modelCfg := config.GetModelConfig(models, ref.ModelID)
 
-	var provider ai.Provider
-	switch cfg.Provider {
-	case "gemini":
-		gp := &ai.GeminiProvider{
-			APIKey: aoiAPIKey,
-			Model:  aoiModel,
-		}
-		gp.ModelConfig.MaxOutputTokens = aoiProfile.MaxOutputTokens
-		gp.ModelConfig.Temperature = aoiProfile.Temperature
-		gp.ModelConfig.ThinkingBudget = aoiProfile.ThinkingBudget
-		provider = gp
-	case "openai":
-		op := &ai.OpenAIProvider{
-			APIKey: aoiAPIKey,
-			Model:  aoiModel,
-		}
-		op.ModelConfig.MaxOutputTokens = aoiProfile.MaxOutputTokens
-		op.ModelConfig.Temperature = aoiProfile.Temperature
-		provider = op
-	case "github-copilot":
-		op := &ai.OpenAIProvider{
-			APIKey:        aoiAPIKey,
-			Model:         aoiModel,
-			BaseURL:       "https://models.inference.ai.azure.com",
-			ProviderLabel: "github-copilot",
-		}
-		op.ModelConfig.MaxOutputTokens = aoiProfile.MaxOutputTokens
-		op.ModelConfig.Temperature = aoiProfile.Temperature
-		provider = op
-	default:
-		return nil, fmt.Errorf("unsupported provider %q for AOI scanning", cfg.Provider)
+	pc := cfg.ProviderConfigFor(ref.Provider)
+
+	provider, err := ai.NewProvider(ai.ProviderConfig{
+		ProviderName:    ref.Provider,
+		ModelID:         ref.ModelID,
+		APIKey:          apiKey,
+		BaseURL:         pc.BaseURL,
+		MaxOutputTokens: modelCfg.MaxOutputTokens,
+		Temperature:     modelCfg.Temperature,
+		ThinkingBudget:  modelCfg.ThinkingBudget.Fast,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AOI provider: %w", err)
 	}
 
 	// AOI client has no tool executor — it only analyzes the diffs passed to it
@@ -1126,10 +1119,10 @@ func runSilent(name string, args ...string) error {
 
 // CLI output styles (shared between audit and review commands).
 var (
-	cliHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	cliInfo    = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
-	cliDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
-	sevStyles  = map[string]lipgloss.Style{
+	cliHeader = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	cliInfo   = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
+	cliDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	sevStyles = map[string]lipgloss.Style{
 		"critical": lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true),
 		"high":     lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true),
 		"medium":   lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF")),
@@ -1180,19 +1173,32 @@ func loadConfigAndLogger(debug bool) (*config.Config, error) {
 	return cfg, nil
 }
 
-// resolveAOIModelName determines the AOI model name from env/config/defaults.
+// resolveAOIModelName determines the AOI model name for display/profile lookup.
 // Returns "disabled" if aoiClient is nil.
 func resolveAOIModelName(aoiClient ai.Client, cfg *config.Config) string {
 	if aoiClient == nil {
 		return "disabled"
 	}
-	if m := os.Getenv("PRR_AOI_MODEL"); m != "" {
-		return m
+	if mi, ok := aoiClient.(ai.ModelInfo); ok {
+		return mi.ModelName()
 	}
-	if cfg.AOIModel != "" {
-		return cfg.AOIModel
+	if ref, err := config.ParseModelRef(cfg.FastModel); err == nil {
+		return ref.ModelID
 	}
-	return "gemini-2.5-flash-lite"
+	return "disabled"
+}
+
+// resolveAOIContextLines returns the AOI context lines for the given model ID
+// from the model config. Falls back to 3.
+func resolveAOIContextLines(modelID string) int {
+	if modelID == "disabled" {
+		return 3
+	}
+	models, err := config.LoadModels()
+	if err != nil {
+		return 3
+	}
+	return config.GetModelConfig(models, modelID).ResolvedAOIContextLines()
 }
 
 func printUsage() {
@@ -1258,4 +1264,339 @@ func initLogger() error {
 	// tea.LogToFile sets log output globally, so it must stay open for the process lifetime.
 	_, err = tea.LogToFile(logFile, "debug")
 	return err
+}
+
+// ── prr config ─────────────────────────────────────────────────────────
+
+func runConfig() {
+	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
+	success := lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
+
+	fmt.Fprintf(os.Stderr, "\n  %s %s\n\n",
+		logo.Render("prr config"),
+		dim.Render("— configure providers and models"))
+
+	// Load existing config (or create default)
+	cfg, err := config.LoadRaw()
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+
+	// Show current state
+	fmt.Fprintf(os.Stderr, "  %s %s\n", info.Render("Strong model:"), logo.Render(cfg.StrongModel))
+	fmt.Fprintf(os.Stderr, "  %s %s\n", info.Render("Fast model:  "), logo.Render(cfg.FastModel))
+	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Configured providers:"))
+	if len(cfg.Providers) == 0 {
+		fmt.Fprintf(os.Stderr, "    %s\n", dim.Render("(none)"))
+	} else {
+		for name, pc := range cfg.Providers {
+			masked := maskKey(pc.APIKey)
+			fmt.Fprintf(os.Stderr, "    %s %s\n", info.Render(name), dim.Render(masked))
+		}
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+
+	// Ask what to do
+	var action string
+	actionForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("What would you like to do?").
+				Options(
+					huh.NewOption("Change strong model (deep review)", "strong"),
+					huh.NewOption("Change fast model (discovery/AOI)", "fast"),
+					huh.NewOption("Add or update a provider API key", "add"),
+				).
+				Value(&action),
+		),
+	).WithTheme(huh.ThemeCatppuccin())
+
+	if err := actionForm.Run(); err != nil {
+		return
+	}
+
+	var ok bool
+	switch action {
+	case "strong":
+		ok = runConfigModel(cfg, "strong")
+	case "fast":
+		ok = runConfigModel(cfg, "fast")
+	case "add":
+		ok = runConfigAdd(cfg)
+	}
+
+	if !ok {
+		return
+	}
+
+	// Save
+	if err := config.Save(cfg); err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  %s\n\n", success.Render("✓ Config saved"))
+}
+
+func runConfigAdd(cfg *config.Config) bool {
+	providers := config.KnownProviders()
+	opts := make([]huh.Option[string], len(providers))
+	for i, p := range providers {
+		opts[i] = huh.NewOption(p, p)
+	}
+
+	var selected string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Which provider?").
+				Options(opts...).
+				Value(&selected),
+		),
+	).WithTheme(huh.ThemeCatppuccin())
+
+	if err := form.Run(); err != nil {
+		return false
+	}
+
+	return runConfigAddForProvider(cfg, selected)
+}
+
+func runConfigAddForProvider(cfg *config.Config, provider string) bool {
+	// GitHub Copilot uses OAuth device flow instead of API key input
+	if provider == "github-copilot" {
+		return runCopilotOAuth(cfg)
+	}
+
+	var apiKey string
+	hint := ""
+	switch provider {
+	case "gemini":
+		hint = "Get your key at https://aistudio.google.com/apikey"
+	case "openai":
+		hint = "Get your key at https://platform.openai.com/api-keys"
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("API Key for " + provider).
+				Description(hint).
+				Value(&apiKey).
+				EchoMode(huh.EchoModePassword),
+		),
+	).WithTheme(huh.ThemeCatppuccin())
+
+	if err := form.Run(); err != nil || apiKey == "" {
+		return false
+	}
+
+	// Validate the key by making a small API request
+	fmt.Fprintf(os.Stderr, "  Validating API key...")
+	if err := validateAPIKey(provider, apiKey); err != nil {
+		fmt.Fprintf(os.Stderr, " ✗\n")
+		printError(fmt.Errorf("API key validation failed: %w", err))
+		return false
+	}
+	fmt.Fprintf(os.Stderr, " ✓\n")
+
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]config.ProviderConfig)
+	}
+	cfg.Providers[provider] = config.ProviderConfig{
+		APIKey: apiKey,
+	}
+	return true
+}
+
+func runCopilotOAuth(cfg *config.Config) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	fmt.Fprintf(os.Stderr, "\n  Starting GitHub Copilot login...\n")
+
+	auth, err := ai.CopilotRequestDeviceCode(ctx)
+	if err != nil {
+		printError(fmt.Errorf("failed to start Copilot login: %w", err))
+		return false
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  1. Open:  %s\n", auth.VerificationURI)
+	fmt.Fprintf(os.Stderr, "  2. Enter: %s\n\n", auth.UserCode)
+	fmt.Fprintf(os.Stderr, "  Waiting for authorization...")
+
+	token, err := ai.CopilotPollForToken(ctx, auth.DeviceCode, auth.Interval)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, " ✗\n")
+		printError(fmt.Errorf("Copilot login failed: %w", err))
+		return false
+	}
+
+	fmt.Fprintf(os.Stderr, " ✓\n")
+
+	// Validate the token
+	fmt.Fprintf(os.Stderr, "  Validating token...")
+	if err := ai.CopilotValidateToken(ctx, token); err != nil {
+		fmt.Fprintf(os.Stderr, " ✗\n")
+		printError(fmt.Errorf("token validation failed: %w", err))
+		return false
+	}
+	fmt.Fprintf(os.Stderr, " ✓\n")
+
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]config.ProviderConfig)
+	}
+	cfg.Providers["github-copilot"] = config.ProviderConfig{
+		APIKey: token,
+	}
+	return true
+}
+
+func runConfigModel(cfg *config.Config, slot string) bool {
+	providers := cfg.ConfiguredProviders()
+	var models []config.KnownModel
+	var title string
+	switch slot {
+	case "strong":
+		models = config.ReviewModels(providers...)
+		title = "Select strong model (deep review, re-review, synthesis)"
+	case "fast":
+		models = config.AOIModels(providers...)
+		title = "Select fast model (discovery, AOI pre-scan)"
+	}
+
+	if len(models) == 0 {
+		fmt.Fprintf(os.Stderr, "  No models available\n")
+		return false
+	}
+
+	// Group by provider for display
+	opts := make([]huh.Option[string], len(models))
+	for i, m := range models {
+		ref := m.Provider + "/" + m.ID
+		label := fmt.Sprintf("%-16s %-24s %s  %s",
+			"["+m.Provider+"]", m.Label, m.SpeedIcon(), m.PriceTag())
+		opts[i] = huh.NewOption(label, ref)
+	}
+
+	// Determine current selection for default
+	var currentRef string
+	switch slot {
+	case "strong":
+		currentRef = cfg.StrongModel
+	case "fast":
+		currentRef = cfg.FastModel
+	}
+
+	var selected string
+	selected = currentRef
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(title).
+				Options(opts...).
+				Value(&selected),
+		),
+	).WithTheme(huh.ThemeCatppuccin())
+
+	if err := form.Run(); err != nil {
+		return false
+	}
+
+	// Check the provider has an API key
+	ref, err := config.ParseModelRef(selected)
+	if err != nil {
+		printError(err)
+		return false
+	}
+	if cfg.APIKeyFor(ref.Provider) == "" {
+		fmt.Fprintf(os.Stderr, "  Provider %q needs an API key first.\n", ref.Provider)
+		if !runConfigAddForProvider(cfg, ref.Provider) {
+			return false
+		}
+	}
+
+	switch slot {
+	case "strong":
+		cfg.StrongModel = selected
+	case "fast":
+		cfg.FastModel = selected
+	}
+	return true
+}
+
+func maskKey(key string) string {
+	if len(key) <= 8 {
+		return "***"
+	}
+	return key[:4] + "..." + key[len(key)-4:]
+}
+
+// validateAPIKey makes a lightweight API call to verify the key is valid.
+// Uses the "list models" endpoint which requires auth but no inference.
+func validateAPIKey(provider, apiKey string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var url string
+	var authHeader string
+	var authValue string
+
+	switch provider {
+	case "gemini":
+		url = "https://generativelanguage.googleapis.com/v1beta/models"
+		authHeader = "x-goog-api-key"
+		authValue = apiKey
+	case "openai":
+		url = "https://api.openai.com/v1/models"
+		authHeader = "Authorization"
+		authValue = "Bearer " + apiKey
+	case "github-copilot":
+		// Copilot validation is handled in runCopilotOAuth, not here.
+		return nil
+	default:
+		return fmt.Errorf("unknown provider %q", provider)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(authHeader, authValue)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+}
+
+// resolveModelProvider resolves a bare model ID to "provider/model" format,
+// preferring a provider the user has actually configured with an API key.
+func resolveModelProvider(cfg *config.Config, modelID string) string {
+	// Check each configured provider for this model
+	for provName, pc := range cfg.Providers {
+		if pc.APIKey == "" {
+			continue
+		}
+		if _, ok := config.GetKnownModelForProvider(provName, modelID); ok {
+			return provName + "/" + modelID
+		}
+	}
+	// Fallback to whatever GetKnownModel returns
+	if km, ok := config.GetKnownModel(modelID); ok {
+		return km.Provider + "/" + modelID
+	}
+	return modelID
 }

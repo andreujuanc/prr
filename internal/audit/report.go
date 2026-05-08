@@ -13,15 +13,15 @@ import (
 
 // ReportJSON is the JSON-serializable form of an audit result.
 type ReportJSON struct {
-	FilesScanned             int                  `json:"files_scanned"`
-	AOIsGenerated            int                  `json:"aois_generated"`
-	ReviewCalls              int                  `json:"review_calls"`
-	IndividualReviews        int                  `json:"individual_reviews"`
-	GroupedReviews           int                  `json:"grouped_reviews"`
-	Findings                 []state.DeepFinding  `json:"findings"`
-	Dismissals               int                  `json:"dismissals"`
-	CrossCuttingObservations []string             `json:"cross_cutting_observations,omitempty"`
-	SkippedSubcategories     []string             `json:"skipped_subcategories,omitempty"`
+	FilesScanned             int                 `json:"files_scanned"`
+	AOIsGenerated            int                 `json:"aois_generated"`
+	ReviewCalls              int                 `json:"review_calls"`
+	IndividualReviews        int                 `json:"individual_reviews"`
+	GroupedReviews           int                 `json:"grouped_reviews"`
+	Findings                 []state.DeepFinding `json:"findings"`
+	Dismissals               int                 `json:"dismissals"`
+	CrossCuttingObservations []string            `json:"cross_cutting_observations,omitempty"`
+	SkippedSubcategories     []string            `json:"skipped_subcategories,omitempty"`
 }
 
 func toReportJSON(r *Result) ReportJSON {

@@ -190,7 +190,7 @@ type recheckResponse struct {
 		Suggestion  string `json:"suggestion,omitempty"`
 	} `json:"modified"`
 	Consolidated []struct {
-		FindingIDs []string         `json:"finding_ids"`
+		FindingIDs []string          `json:"finding_ids"`
 		Finding    state.DeepFinding `json:"finding"`
 	} `json:"consolidated"`
 	Dismissed []struct {

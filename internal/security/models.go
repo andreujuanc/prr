@@ -5,9 +5,9 @@ package security
 // from the review dimension taxonomy and an urgency level that controls
 // how it is reviewed in Phase 3.
 type AreaOfInterest struct {
-	File       string `json:"file"`
-	Line       int    `json:"line"`
-	EndLine    int    `json:"end_line,omitempty"` // optional: range end
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	EndLine int    `json:"end_line,omitempty"` // optional: range end
 
 	// Category + Subcategory from the dimension taxonomy (e.g. "error-handling" / "swallowed-errors").
 	Category    string `json:"category"`

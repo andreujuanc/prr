@@ -17,11 +17,13 @@ func TestLoadModels_EmbeddedDefaults(t *testing.T) {
 	tests := []struct {
 		model           string
 		maxOutputTokens int
-		thinkingBudget  int
+		reviewBudget    int
+		chatBudget      int
+		fastBudget      int
 	}{
-		{"gemini-3.1-pro-preview", 65536, 16384},
-		{"gemini-3.1-flash-lite-preview", 65536, 8192},
-		{"gemini-2.5-flash", 65536, 8192},
+		{"gemini-3.1-pro-preview", 65536, 32768, 2048, 1024},
+		{"gemini-3.1-flash-lite-preview", 65536, 8192, 2048, 2048},
+		{"gemini-3.1-flash-lite", 65536, 8192, 2048, 2048},
 	}
 
 	for _, tt := range tests {
@@ -33,11 +35,17 @@ func TestLoadModels_EmbeddedDefaults(t *testing.T) {
 			if cfg.MaxOutputTokens != tt.maxOutputTokens {
 				t.Errorf("MaxOutputTokens = %d, want %d", cfg.MaxOutputTokens, tt.maxOutputTokens)
 			}
-			if cfg.ThinkingBudget != tt.thinkingBudget {
-				t.Errorf("ThinkingBudget = %d, want %d", cfg.ThinkingBudget, tt.thinkingBudget)
+			if cfg.ThinkingBudget.Review != tt.reviewBudget {
+				t.Errorf("ThinkingBudget.Review = %d, want %d", cfg.ThinkingBudget.Review, tt.reviewBudget)
 			}
-			if cfg.Temperature != 0.2 {
-				t.Errorf("Temperature = %f, want 0.2", cfg.Temperature)
+			if cfg.ThinkingBudget.Chat != tt.chatBudget {
+				t.Errorf("ThinkingBudget.Chat = %d, want %d", cfg.ThinkingBudget.Chat, tt.chatBudget)
+			}
+			if cfg.ThinkingBudget.Fast != tt.fastBudget {
+				t.Errorf("ThinkingBudget.Fast = %d, want %d", cfg.ThinkingBudget.Fast, tt.fastBudget)
+			}
+			if cfg.Temperature != 0.1 {
+				t.Errorf("Temperature = %f, want 0.1", cfg.Temperature)
 			}
 		})
 	}
@@ -49,12 +57,12 @@ func TestGetModelConfig_Known(t *testing.T) {
 		t.Fatalf("LoadModels() error: %v", err)
 	}
 
-	cfg := GetModelConfig(models, "gemini-2.5-flash")
+	cfg := GetModelConfig(models, "gemini-3.1-flash-lite")
 	if cfg.MaxOutputTokens != 65536 {
 		t.Errorf("MaxOutputTokens = %d, want 65536", cfg.MaxOutputTokens)
 	}
-	if cfg.ThinkingBudget != 8192 {
-		t.Errorf("ThinkingBudget = %d, want 8192", cfg.ThinkingBudget)
+	if cfg.ThinkingBudget.Review != 8192 {
+		t.Errorf("ThinkingBudget.Review = %d, want 8192", cfg.ThinkingBudget.Review)
 	}
 }
 
@@ -68,8 +76,8 @@ func TestGetModelConfig_Unknown(t *testing.T) {
 	if cfg.MaxOutputTokens != 8192 {
 		t.Errorf("fallback MaxOutputTokens = %d, want 8192", cfg.MaxOutputTokens)
 	}
-	if cfg.ThinkingBudget != 0 {
-		t.Errorf("fallback ThinkingBudget = %d, want 0", cfg.ThinkingBudget)
+	if cfg.ThinkingBudget.Review != 0 {
+		t.Errorf("fallback ThinkingBudget.Review = %d, want 0", cfg.ThinkingBudget.Review)
 	}
 	if cfg.Temperature != 0.2 {
 		t.Errorf("fallback Temperature = %f, want 0.2", cfg.Temperature)
@@ -85,8 +93,8 @@ func TestLoadModels_UserOverrideMerges(t *testing.T) {
 	os.MkdirAll(dir, 0755)
 
 	overrides := map[string]ModelConfig{
-		"my-custom-model": {MaxOutputTokens: 1024, Temperature: 0.5, ThinkingBudget: 0},
-		"gemini-2.5-flash": {MaxOutputTokens: 99999, Temperature: 0.9, ThinkingBudget: 0},
+		"my-custom-model":       {MaxOutputTokens: 1024, Temperature: 0.5, ThinkingBudget: ThinkingBudgets{}},
+		"gemini-3.1-flash-lite": {MaxOutputTokens: 99999, Temperature: 0.9, ThinkingBudget: ThinkingBudgets{}},
 	}
 	data, _ := json.MarshalIndent(overrides, "", "  ")
 	os.WriteFile(filepath.Join(dir, "models.json"), data, 0644)
@@ -106,7 +114,7 @@ func TestLoadModels_UserOverrideMerges(t *testing.T) {
 	}
 
 	// User override should win over embedded default
-	flash := models["gemini-2.5-flash"]
+	flash := models["gemini-3.1-flash-lite"]
 	if flash.MaxOutputTokens != 99999 {
 		t.Errorf("overridden MaxOutputTokens = %d, want 99999", flash.MaxOutputTokens)
 	}
@@ -131,7 +139,7 @@ func TestLoadModels_CorruptUserFileFallsBackToDefaults(t *testing.T) {
 	}
 
 	// Should fall back to embedded defaults
-	if _, ok := models["gemini-2.5-flash"]; !ok {
+	if _, ok := models["gemini-3.1-flash-lite"]; !ok {
 		t.Error("expected embedded defaults when user file is corrupt")
 	}
 }
@@ -146,7 +154,7 @@ func TestLoadModels_CreatesUserFileWhenMissing(t *testing.T) {
 	}
 
 	// Should return embedded defaults
-	if _, ok := models["gemini-2.5-flash"]; !ok {
+	if _, ok := models["gemini-3.1-flash-lite"]; !ok {
 		t.Error("expected embedded defaults")
 	}
 

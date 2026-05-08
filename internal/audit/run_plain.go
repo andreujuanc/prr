@@ -22,6 +22,8 @@ func RunPlain(
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", phase, msg)
 	}
 
+	fmt.Fprintf(os.Stderr, "\n  review: %s  aoi: %s\n\n", reviewModel, aoiModel)
+
 	result, err := Run(ctx, reviewClient, aoiClient, opts, onProgress)
 	if err != nil {
 		return nil, nil, err

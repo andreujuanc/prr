@@ -59,8 +59,8 @@ func TestCompareFindings_Mixed(t *testing.T) {
 		f("c.go", "perf", "", "slow loop", "medium"),
 	}
 	current := []state.DeepFinding{
-		f("a.go", "bug", "", "nil deref", "high"),       // persistent
-		f("d.go", "style", "", "naming", "low"),          // new
+		f("a.go", "bug", "", "nil deref", "high"),         // persistent
+		f("d.go", "style", "", "naming", "low"),           // new
 		f("b.go", "security", "sql", "injection", "high"), // persistent (severity changed)
 	}
 	result := CompareFindings(current, previous)

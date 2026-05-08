@@ -7,31 +7,56 @@ import (
 	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/config"
 )
 
-// Run with: PRR_API_KEY=<key> go test ./internal/audit/ -run TestLiveClassify -v
+// Run with: PRR_LIVE_TESTS=1 go test ./internal/audit/ -run TestLiveClassify -v
 
-func skipWithoutAPIKey(t *testing.T) string {
+func skipWithoutAPIKey(t *testing.T) *config.Config {
 	t.Helper()
-	key := os.Getenv("PRR_API_KEY")
-	if key == "" {
-		t.Skip("PRR_API_KEY not set, skipping live API test")
+	if os.Getenv("PRR_LIVE_TESTS") != "1" {
+		t.Skip("PRR_LIVE_TESTS=1 not set, skipping live API test")
 	}
-	return key
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("no valid config: %v", err)
+	}
+	return cfg
 }
 
-func liveAOIModel() string {
-	if m := os.Getenv("PRR_AOI_MODEL"); m != "" {
-		return m
+func newLiveClassifyAgent(t *testing.T, cfg *config.Config) *ai.Agent {
+	t.Helper()
+	// Use the configured fast model for classification
+	fastRef, err := config.ParseModelRef(cfg.FastModel)
+	if err != nil {
+		t.Fatalf("invalid fast_model: %v", err)
 	}
-	return "gemini-2.5-flash-lite"
+	pc := cfg.ProviderConfigFor(fastRef.Provider)
+
+	modelConfigs, err := config.LoadModels()
+	if err != nil {
+		t.Fatalf("LoadModels: %v", err)
+	}
+	mcfg := config.GetModelConfig(modelConfigs, fastRef.ModelID)
+
+	provider, err := ai.NewProvider(ai.ProviderConfig{
+		ProviderName:    fastRef.Provider,
+		ModelID:         fastRef.ModelID,
+		APIKey:          pc.APIKey,
+		BaseURL:         pc.BaseURL,
+		MaxOutputTokens: mcfg.MaxOutputTokens,
+		Temperature:     mcfg.Temperature,
+		ThinkingBudget:  mcfg.ThinkingBudget.Fast,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	return ai.NewAgent(provider, nil)
 }
 
 func TestLiveClassify_MixedFiles(t *testing.T) {
-	key := skipWithoutAPIKey(t)
-
-	provider := &ai.GeminiProvider{APIKey: key, Model: liveAOIModel()}
-	client := ai.NewAgent(provider, nil)
+	cfg := skipWithoutAPIKey(t)
+	client := newLiveClassifyAgent(t, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -159,10 +184,8 @@ func main() {
 }
 
 func TestLiveClassify_BusinessLogicAndClient(t *testing.T) {
-	key := skipWithoutAPIKey(t)
-
-	provider := &ai.GeminiProvider{APIKey: key, Model: liveAOIModel()}
-	client := ai.NewAgent(provider, nil)
+	cfg := skipWithoutAPIKey(t)
+	client := newLiveClassifyAgent(t, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -320,10 +343,8 @@ func sendEmail(job EmailJob) error {
 }
 
 func TestLiveClassify_Unknown(t *testing.T) {
-	key := skipWithoutAPIKey(t)
-
-	provider := &ai.GeminiProvider{APIKey: key, Model: liveAOIModel()}
-	client := ai.NewAgent(provider, nil)
+	cfg := skipWithoutAPIKey(t)
+	client := newLiveClassifyAgent(t, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
