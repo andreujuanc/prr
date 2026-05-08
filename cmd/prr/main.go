@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/andreujuanc/prr/internal/audit"
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/git"
+	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/ui"
 
@@ -40,7 +42,7 @@ func main() {
 	seenSubcommand := false
 	for _, arg := range args {
 		// Once we see a subcommand, pass all remaining args through
-		if !seenSubcommand && arg == "audit" {
+		if !seenSubcommand && (arg == "audit" || arg == "review") {
 			seenSubcommand = true
 			positional = append(positional, arg)
 			continue
@@ -66,9 +68,13 @@ func main() {
 
 	var prNumber string
 	if len(positional) >= 1 {
-		// Check for "audit" subcommand
+		// Check for subcommands
 		if positional[0] == "audit" {
 			runAudit(debug, positional[1:])
+			return
+		}
+		if positional[0] == "review" {
+			runReview(debug, positional[1:])
 			return
 		}
 		prNumber = positional[0]
@@ -457,6 +463,302 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "    cryptography, error-handling, concurrency, external-io, financial,\n")
 	fmt.Fprintf(os.Stderr, "    configuration, api-design, resource-management, testing, correctness,\n")
 	fmt.Fprintf(os.Stderr, "    design, performance, readability, cross-cutting\n\n")
+}
+
+// ── Review mode ────────────────────────────────────────────────────────
+
+func runReview(debug bool, args []string) {
+	var outputPath string
+	noSynth := false
+	noCache := false
+	quiet := false
+	reviewDebug := debug
+
+	// Parse flags and find the PR number
+	var prNumber string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--output=") {
+			outputPath = strings.TrimPrefix(arg, "--output=")
+		} else if arg == "--no-cache" {
+			noCache = true
+		} else if arg == "--no-synthesis" {
+			noSynth = true
+		} else if arg == "--quiet" || arg == "-q" {
+			quiet = true
+		} else if arg == "--debug" {
+			reviewDebug = true
+		} else if arg == "--help" || arg == "-h" {
+			printReviewUsage()
+			os.Exit(0)
+		} else if !strings.HasPrefix(arg, "-") {
+			prNumber = arg
+		}
+	}
+
+	if prNumber == "" {
+		printReviewUsage()
+		printError(fmt.Errorf("PR number is required: prr review <number>"))
+		os.Exit(1)
+	}
+
+	// Pre-flight: must be in a git repo with gh CLI
+	if err := runSilent("git", "rev-parse", "--git-dir"); err != nil {
+		printError(fmt.Errorf("not a git repository"))
+		os.Exit(1)
+	}
+
+	repoRoot, err := git.RepoRoot()
+	if err != nil {
+		printError(fmt.Errorf("finding repo root: %w", err))
+		os.Exit(1)
+	}
+
+	if err := runSilent("gh", "auth", "status"); err != nil {
+		printError(fmt.Errorf("gh CLI not authenticated. Run: gh auth login"))
+		os.Exit(1)
+	}
+
+	// Load config
+	cfg, err := config.Load()
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+	cfg.Debug = reviewDebug
+
+	if err := initLogger(); err != nil {
+		printError(fmt.Errorf("failed to initialize logger: %w", err))
+		os.Exit(1)
+	}
+
+	// Create AI clients
+	reviewClient := createAIClient(cfg)
+
+	aoiClient, aoiErr := createAOIClient(cfg)
+	if aoiErr != nil {
+		log.Printf("AOI client not available: %v", aoiErr)
+	}
+
+	aoiModelName := "disabled"
+	if aoiClient != nil {
+		aoiModelName = os.Getenv("PRR_AOI_MODEL")
+		if aoiModelName == "" && cfg.AOIModel != "" {
+			aoiModelName = cfg.AOIModel
+		}
+		if aoiModelName == "" {
+			aoiModelName = "gemini-2.5-flash-lite"
+		}
+	}
+	aoiProfile := security.GetAOIProfile(aoiModelName)
+
+	log.Printf("Starting headless PR review for PR #%s (provider: %s, model: %s, aoi: %s)",
+		prNumber, cfg.Provider, cfg.Model, aoiModelName)
+
+	// Styles
+	header := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	sevCritical := lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true)
+	sevHigh := lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true)
+	sevMedium := lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF"))
+	sevLow := lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
+
+	// Run the review pipeline
+	ctx := context.Background()
+
+	opts := review.PRReviewOptions{
+		PRNumber:           prNumber,
+		RepoRoot:           repoRoot,
+		NoCache:            noCache,
+		NoSynthesis:        noSynth,
+		ParallelReviews:    cfg.ParallelReviews,
+		AOIContextLines:    aoiProfile.ContextLines,
+		CustomInstructions: config.LoadCustomInstructions(),
+		Debug:              reviewDebug,
+	}
+
+	result, err := review.RunPRReview(ctx, reviewClient, aoiClient, opts, func(phase, msg string) {
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "[%s] %s\n", phase, msg)
+		}
+	})
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+
+	if quiet && outputPath == "" {
+		os.Exit(0)
+	}
+
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "\n  %s  PR #%s: %s\n\n",
+			header.Render("Review Complete"),
+			prNumber,
+			info.Render(result.PR.Title))
+
+		// Print structured review if available
+		if result.StructuredReview != nil {
+			sr := result.StructuredReview
+
+			// Verdict
+			verdictStyle := info
+			switch sr.Verdict {
+			case "approve":
+				verdictStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1")).Bold(true)
+			case "request_changes":
+				verdictStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true)
+			}
+			fmt.Fprintf(os.Stderr, "  %s %s\n\n",
+				header.Render("Verdict:"),
+				verdictStyle.Render(sr.Verdict))
+
+			// Summary
+			if sr.Summary != "" {
+				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Summary"))
+				fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render(sr.Summary))
+			}
+
+			// Findings
+			if len(sr.Findings) > 0 {
+				fmt.Fprintf(os.Stderr, "  %s (%d)\n\n", header.Render("Findings"), len(sr.Findings))
+				for _, f := range sr.Findings {
+					var sevStyle lipgloss.Style
+					switch f.Severity {
+					case "critical":
+						sevStyle = sevCritical
+					case "high":
+						sevStyle = sevHigh
+					case "medium":
+						sevStyle = sevMedium
+					default:
+						sevStyle = sevLow
+					}
+
+					fmt.Fprintf(os.Stderr, "  %s %s\n",
+						sevStyle.Render("["+f.Severity+"]"),
+						info.Render(f.Title))
+					if f.File != "" {
+						fmt.Fprintf(os.Stderr, "    %s:%d (%s)\n", f.File, f.Line, f.Category)
+					}
+					if f.Detail != "" {
+						fmt.Fprintf(os.Stderr, "    %s\n", dimStyle.Render(f.Detail))
+					}
+					if f.Suggestion != "" {
+						fmt.Fprintf(os.Stderr, "    Fix: %s\n", dimStyle.Render(f.Suggestion))
+					}
+					fmt.Fprintln(os.Stderr)
+				}
+			}
+
+			// Questions for author
+			if len(sr.QuestionsForAuthor) > 0 {
+				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Questions for Author"))
+				for i, q := range sr.QuestionsForAuthor {
+					fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, info.Render(q))
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+
+			// Missing tests
+			if len(sr.MissingTests) > 0 {
+				fmt.Fprintf(os.Stderr, "  %s\n", header.Render("Missing Tests"))
+				for _, t := range sr.MissingTests {
+					fmt.Fprintf(os.Stderr, "  • %s\n", info.Render(t))
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+		} else if result.Review != nil && result.Review.Summary != "" {
+			// Fallback: raw summary
+			fmt.Fprintf(os.Stderr, "  %s\n\n", info.Render(result.Review.Summary))
+		}
+
+		// Deep findings (from AOI)
+		if len(result.DeepFindings) > 0 {
+			fmt.Fprintf(os.Stderr, "  %s (%d)\n\n", header.Render("Security Findings"), len(result.DeepFindings))
+			for _, f := range result.DeepFindings {
+				var sevStyle lipgloss.Style
+				switch f.Severity {
+				case "critical":
+					sevStyle = sevCritical
+				case "high":
+					sevStyle = sevHigh
+				case "medium":
+					sevStyle = sevMedium
+				default:
+					sevStyle = sevLow
+				}
+
+				fmt.Fprintf(os.Stderr, "  %s %s\n",
+					sevStyle.Render("["+f.Severity+"]"),
+					info.Render(f.Title))
+				fmt.Fprintf(os.Stderr, "    %s:%s (%s/%s)\n",
+					f.File, f.Lines, f.Category, f.Subcategory)
+				if f.Description != "" {
+					fmt.Fprintf(os.Stderr, "    %s\n", dimStyle.Render(f.Description))
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "  %s %s files reviewed\n\n",
+			dimStyle.Render("[stats]"),
+			info.Render(fmt.Sprintf("%d", result.FilesReviewed)))
+	}
+
+	// Export if requested
+	if outputPath != "" {
+		if err := exportReviewResult(result, outputPath); err != nil {
+			printError(fmt.Errorf("exporting report: %w", err))
+			os.Exit(1)
+		}
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "  Report saved to %s\n\n", info.Render(outputPath))
+		}
+	}
+}
+
+// exportReviewResult writes the review result to a JSON file.
+func exportReviewResult(result *review.PRReviewResult, path string) error {
+	data := map[string]interface{}{
+		"pr_number":      result.PR.Number,
+		"pr_title":       result.PR.Title,
+		"files_reviewed": result.FilesReviewed,
+	}
+	if result.StructuredReview != nil {
+		data["review"] = result.StructuredReview
+	}
+	if len(result.DeepFindings) > 0 {
+		data["deep_findings"] = result.DeepFindings
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	return enc.Encode(data)
+}
+
+func printReviewUsage() {
+	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+
+	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
+		logo.Render("prr review"),
+		dim.Render(version),
+		dim.Render("— headless PR review"))
+	fmt.Fprintf(os.Stderr, "  %s  prr review <number> [flags]\n\n",
+		dim.Render("Usage:"))
+	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Flags:"))
+	fmt.Fprintf(os.Stderr, "    --output=<path>      Export report to JSON file\n")
+	fmt.Fprintf(os.Stderr, "    --no-cache           Ignore cached results\n")
+	fmt.Fprintf(os.Stderr, "    --no-synthesis       Skip synthesis phase\n")
+	fmt.Fprintf(os.Stderr, "    --quiet, -q          Suppress terminal output (use with --output)\n")
+	fmt.Fprintf(os.Stderr, "    --debug              Print all LLM prompts and responses\n\n")
 }
 
 func createAIClient(cfg *config.Config) ai.Client {
@@ -911,15 +1213,19 @@ func printUsage() {
 		dim.Render("— review PRs in your terminal"))
 	fmt.Fprintf(os.Stderr, "  %s  prr [pr_number]\n",
 		dim.Render("Usage:"))
+	fmt.Fprintf(os.Stderr, "  %s  prr review <number> [flags]\n",
+		dim.Render("      "))
 	fmt.Fprintf(os.Stderr, "  %s  prr audit [flags]\n\n",
 		dim.Render("      "))
-	fmt.Fprintf(os.Stderr, "  %s  prr 42        Review PR #42\n",
+	fmt.Fprintf(os.Stderr, "  %s  prr 42            Review PR #42 (interactive TUI)\n",
 		dim.Render(""))
-	fmt.Fprintf(os.Stderr, "  %s  prr           Pick from open PRs\n",
+	fmt.Fprintf(os.Stderr, "  %s  prr               Pick from open PRs\n",
 		dim.Render(""))
-	fmt.Fprintf(os.Stderr, "  %s  prr audit     Full-project code audit\n",
+	fmt.Fprintf(os.Stderr, "  %s  prr review 42     Headless PR review (prints to terminal)\n",
 		dim.Render(""))
-	fmt.Fprintf(os.Stderr, "  %s  prr --chroma  Use experimental chroma renderer (no delta needed)\n\n",
+	fmt.Fprintf(os.Stderr, "  %s  prr audit         Full-project code audit\n",
+		dim.Render(""))
+	fmt.Fprintf(os.Stderr, "  %s  prr --chroma      Use experimental chroma renderer (no delta needed)\n\n",
 		dim.Render(""))
 }
 

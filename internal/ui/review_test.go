@@ -57,7 +57,7 @@ func TestReviewBatchWithRetry_SuccessFirstAttempt(t *testing.T) {
 			{result: validBatchJSON()},
 		},
 	}
-	batch := reviewBatch{label: "root", files: []string{"main.go"}, diffs: "diff"}
+	batch := reviewBatch{Label: "root", Files: []string{"main.go"}, Diffs: "diff"}
 
 	result, err := reviewBatchWithRetry(context.Background(), client, "system", batch, nil)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestReviewBatchWithRetry_EmptyThenSuccess(t *testing.T) {
 			{result: validBatchJSON()}, // attempt 3: success
 		},
 	}
-	batch := reviewBatch{label: "pkg", files: []string{"main.go"}, diffs: "diff"}
+	batch := reviewBatch{Label: "pkg", Files: []string{"main.go"}, Diffs: "diff"}
 
 	result, err := reviewBatchWithRetry(context.Background(), client, "system", batch, nil)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestReviewBatchWithRetry_AllRetriesExhausted(t *testing.T) {
 			{result: "bad3"},
 		},
 	}
-	batch := reviewBatch{label: "pkg", files: []string{"main.go"}, diffs: "diff"}
+	batch := reviewBatch{Label: "pkg", Files: []string{"main.go"}, Diffs: "diff"}
 
 	result, err := reviewBatchWithRetry(context.Background(), client, "system", batch, nil)
 	if err != nil {
@@ -122,7 +122,7 @@ func TestReviewBatchWithRetry_APIError(t *testing.T) {
 			{err: fmt.Errorf("rate limited")},
 		},
 	}
-	batch := reviewBatch{label: "pkg", files: []string{"main.go"}, diffs: "diff"}
+	batch := reviewBatch{Label: "pkg", Files: []string{"main.go"}, Diffs: "diff"}
 
 	_, err := reviewBatchWithRetry(context.Background(), client, "system", batch, nil)
 	if err == nil {
@@ -145,7 +145,7 @@ func TestReviewBatchWithRetry_CancelledContext(t *testing.T) {
 			{result: validBatchJSON()},
 		},
 	}
-	batch := reviewBatch{label: "pkg", files: []string{"main.go"}, diffs: "diff"}
+	batch := reviewBatch{Label: "pkg", Files: []string{"main.go"}, Diffs: "diff"}
 
 	_, err := reviewBatchWithRetry(ctx, client, "system", batch, nil)
 	if err == nil {
@@ -291,7 +291,7 @@ func TestPersistBatchFindings_AllFilesCached(t *testing.T) {
 	rs.Files["a.go"] = &state.FileState{Status: state.StatusUnreviewed, DiffHash: "h1"}
 	rs.Files["b.go"] = &state.FileState{Status: state.StatusUnreviewed, DiffHash: "h2"}
 
-	batch := reviewBatch{label: "root", files: []string{"a.go", "b.go"}}
+	batch := reviewBatch{Label: "root", Files: []string{"a.go", "b.go"}}
 	rawResult := `[{"file":"a.go","purpose":"entry","findings":"issue"},{"file":"b.go","purpose":"helper","findings":""}]`
 
 	parsed, ff := persistBatchFindings(rs, batch, rawResult)
@@ -320,7 +320,7 @@ func TestPersistBatchFindings_EmptyPurposeDefaulted(t *testing.T) {
 	rs := state.NewState("1")
 	rs.Files["x.go"] = &state.FileState{Status: state.StatusUnreviewed, DiffHash: "h1"}
 
-	batch := reviewBatch{label: "root", files: []string{"x.go"}}
+	batch := reviewBatch{Label: "root", Files: []string{"x.go"}}
 	// AI returns empty purpose
 	rawResult := `[{"file":"x.go","purpose":"","findings":"something"}]`
 
@@ -339,7 +339,7 @@ func TestPersistBatchFindings_AIOmitsFile(t *testing.T) {
 	rs.Files["a.go"] = &state.FileState{Status: state.StatusUnreviewed, DiffHash: "h1"}
 	rs.Files["b.go"] = &state.FileState{Status: state.StatusUnreviewed, DiffHash: "h2"}
 
-	batch := reviewBatch{label: "root", files: []string{"a.go", "b.go"}}
+	batch := reviewBatch{Label: "root", Files: []string{"a.go", "b.go"}}
 	// AI only returns a.go, omits b.go
 	rawResult := `[{"file":"a.go","purpose":"main entry","findings":""}]`
 
@@ -364,12 +364,12 @@ func TestPersistBatchFindings_UnparseableFallback(t *testing.T) {
 	rs.Files["a.go"] = &state.FileState{Status: state.StatusUnreviewed, DiffHash: "h1"}
 	rs.Files["b.go"] = &state.FileState{Status: state.StatusUnreviewed, DiffHash: "h2"}
 
-	batch := reviewBatch{label: "root", files: []string{"a.go", "b.go"}}
+	batch := reviewBatch{Label: "root", Files: []string{"a.go", "b.go"}}
 
 	persistBatchFindings(rs, batch, "not json at all")
 
 	// All files should have purpose set (fallback)
-	for _, f := range batch.files {
+	for _, f := range batch.Files {
 		if rs.Files[f].Purpose == "" {
 			t.Fatalf("file %q should have Purpose set in fallback mode", f)
 		}
@@ -390,13 +390,13 @@ func TestBuildReviewBatches_SingleFile(t *testing.T) {
 	if len(batches) != 1 {
 		t.Fatalf("expected 1 batch, got %d", len(batches))
 	}
-	if len(batches[0].files) != 1 || batches[0].files[0] != "main.go" {
-		t.Fatalf("expected [main.go], got %v", batches[0].files)
+	if len(batches[0].Files) != 1 || batches[0].Files[0] != "main.go" {
+		t.Fatalf("expected [main.go], got %v", batches[0].Files)
 	}
-	if batches[0].label != "root" {
-		t.Errorf("expected label 'root' for root-level file, got %q", batches[0].label)
+	if batches[0].Label != "root" {
+		t.Errorf("expected label 'root' for root-level file, got %q", batches[0].Label)
 	}
-	if !strings.Contains(batches[0].diffs, "=== main.go ===") {
+	if !strings.Contains(batches[0].Diffs, "=== main.go ===") {
 		t.Error("batch diffs should contain the file header")
 	}
 }
@@ -428,9 +428,9 @@ func TestBuildReviewBatches_GroupsByDirectory(t *testing.T) {
 
 	// internal/ui batch should have 2 files
 	for _, b := range batches {
-		if b.label == "internal/ui" {
-			if len(b.files) != 2 {
-				t.Errorf("internal/ui batch: expected 2 files, got %d", len(b.files))
+		if b.Label == "internal/ui" {
+			if len(b.Files) != 2 {
+				t.Errorf("internal/ui batch: expected 2 files, got %d", len(b.Files))
 			}
 		}
 	}
@@ -457,7 +457,7 @@ func TestBuildReviewBatches_LargeFileSplitsBatch(t *testing.T) {
 	// All files should be present across batches
 	allFiles := make(map[string]bool)
 	for _, b := range batches {
-		for _, f := range b.files {
+		for _, f := range b.Files {
 			allFiles[f] = true
 		}
 	}
@@ -479,7 +479,7 @@ func TestBuildReviewBatches_ExcludedFilesSkipped(t *testing.T) {
 	// Only main.go should remain
 	allFiles := make(map[string]bool)
 	for _, b := range batches {
-		for _, f := range b.files {
+		for _, f := range b.Files {
 			allFiles[f] = true
 		}
 	}
@@ -543,7 +543,7 @@ func TestBuildReviewBatches_DeterministicOrder(t *testing.T) {
 func batchLabels(batches []reviewBatch) []string {
 	labels := make([]string, len(batches))
 	for i, b := range batches {
-		labels[i] = b.label
+		labels[i] = b.Label
 	}
 	return labels
 }
@@ -589,7 +589,7 @@ func TestCollectCachedFindings_WithFindings(t *testing.T) {
 	rs.Files["b.go"] = &state.FileState{Purpose: "helper", BatchFindings: ""}
 	rs.Files["c.go"] = &state.FileState{Purpose: "util", BatchFindings: "bug in c.go"}
 
-	batch := reviewBatch{files: []string{"a.go", "b.go", "c.go"}}
+	batch := reviewBatch{Files: []string{"a.go", "b.go", "c.go"}}
 	text, ff := collectCachedFindings(batch, rs)
 
 	// Only files with findings should be in the output
@@ -618,7 +618,7 @@ func TestCollectCachedFindings_AllClean(t *testing.T) {
 	rs := state.NewState("1")
 	rs.Files["a.go"] = &state.FileState{Purpose: "clean", BatchFindings: ""}
 
-	batch := reviewBatch{files: []string{"a.go"}}
+	batch := reviewBatch{Files: []string{"a.go"}}
 	text, ff := collectCachedFindings(batch, rs)
 
 	if strings.TrimSpace(text) != "" {
@@ -653,9 +653,9 @@ func TestBuildBatchSystemPrompt_WithoutCustomInstructions(t *testing.T) {
 
 func TestBuildBatchMessages_ContainsFileListAndDiffs(t *testing.T) {
 	batch := reviewBatch{
-		label: "pkg",
-		files: []string{"pkg/a.go", "pkg/b.go"},
-		diffs: "=== pkg/a.go ===\n+line\n\n=== pkg/b.go ===\n+other\n",
+		Label: "pkg",
+		Files: []string{"pkg/a.go", "pkg/b.go"},
+		Diffs: "=== pkg/a.go ===\n+line\n\n=== pkg/b.go ===\n+other\n",
 	}
 	msgs := buildBatchMessages(batch)
 	if len(msgs) != 1 {
@@ -675,7 +675,7 @@ func TestBuildBatchMessages_ContainsFileListAndDiffs(t *testing.T) {
 // ── isBatchCached tests (pure function) ─────────────────────────────────
 
 func TestIsBatchCached_NilState(t *testing.T) {
-	batch := reviewBatch{files: []string{"a.go"}}
+	batch := reviewBatch{Files: []string{"a.go"}}
 	if isBatchCached(batch, nil) {
 		t.Error("should return false for nil state")
 	}
@@ -685,7 +685,7 @@ func TestIsBatchCached_MissingFile(t *testing.T) {
 	rs := state.NewState("1")
 	rs.Files["a.go"] = &state.FileState{Purpose: "cached"}
 	// b.go not in state
-	batch := reviewBatch{files: []string{"a.go", "b.go"}}
+	batch := reviewBatch{Files: []string{"a.go", "b.go"}}
 	if isBatchCached(batch, rs) {
 		t.Error("should return false when a file is missing from state")
 	}
@@ -694,7 +694,7 @@ func TestIsBatchCached_MissingFile(t *testing.T) {
 func TestIsBatchCached_EmptyPurpose(t *testing.T) {
 	rs := state.NewState("1")
 	rs.Files["a.go"] = &state.FileState{Purpose: ""}
-	batch := reviewBatch{files: []string{"a.go"}}
+	batch := reviewBatch{Files: []string{"a.go"}}
 	if isBatchCached(batch, rs) {
 		t.Error("should return false when Purpose is empty")
 	}
@@ -892,7 +892,7 @@ func TestLive_ReviewSequential(t *testing.T) {
 
 	// Verify state was populated
 	for _, b := range batches {
-		for _, f := range b.files {
+		for _, f := range b.Files {
 			if rs.Files[f].Purpose == "" {
 				t.Errorf("file %q has empty Purpose", f)
 			}
@@ -902,7 +902,7 @@ func TestLive_ReviewSequential(t *testing.T) {
 	// Verify structured output
 	reviewedFiles := make(map[string]bool)
 	for _, b := range batches {
-		for _, f := range b.files {
+		for _, f := range b.Files {
 			reviewedFiles[f] = true
 		}
 	}
@@ -979,7 +979,7 @@ func TestLive_ReviewMultiBatch(t *testing.T) {
 
 	reviewedFiles := make(map[string]bool)
 	for _, b := range batches {
-		for _, f := range b.files {
+		for _, f := range b.Files {
 			reviewedFiles[f] = true
 		}
 	}
@@ -1012,7 +1012,7 @@ func TestLive_ReviewCacheSkip(t *testing.T) {
 	// Verify all batches are now cached
 	for _, batch := range batches {
 		if !isBatchCached(batch, rs) {
-			t.Fatalf("batch %q should be cached after first run", batch.label)
+			t.Fatalf("batch %q should be cached after first run", batch.Label)
 		}
 	}
 
@@ -1037,7 +1037,7 @@ func TestLive_ReviewCacheSkip(t *testing.T) {
 	// Should still produce a valid structured review
 	reviewedFiles := make(map[string]bool)
 	for _, b := range batches {
-		for _, f := range b.files {
+		for _, f := range b.Files {
 			reviewedFiles[f] = true
 		}
 	}
@@ -1098,7 +1098,7 @@ func TestLive_ReviewParallel(t *testing.T) {
 
 	reviewedFiles := make(map[string]bool)
 	for _, b := range batches {
-		for _, f := range b.files {
+		for _, f := range b.Files {
 			reviewedFiles[f] = true
 		}
 	}
@@ -1151,7 +1151,7 @@ func TestLive_StreamMultiPassReview(t *testing.T) {
 	reviewedFiles := make(map[string]bool)
 	batches := buildReviewBatches(rawDiffs)
 	for _, b := range batches {
-		for _, f := range b.files {
+		for _, f := range b.Files {
 			reviewedFiles[f] = true
 		}
 	}
