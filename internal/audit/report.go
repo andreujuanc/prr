@@ -94,7 +94,7 @@ func ExportMarkdown(result *Result, path string) error {
 				if f.Lines != "" {
 					loc += ":" + f.Lines
 				}
-				fmt.Fprintf(&b, "#### [%s] %s\n", loc, f.Title)
+				fmt.Fprintf(&b, "#### %s [%s] %s\n", f.FindingID, loc, f.Title)
 				cat := f.Category
 				if f.Subcategory != "" {
 					cat += " / " + f.Subcategory
