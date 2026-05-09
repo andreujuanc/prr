@@ -101,6 +101,11 @@ type ProgressUI struct {
 
 	// Warning message (e.g. large file count)
 	warning string
+
+	// send dispatches messages back to the Bubble Tea event loop. Set by
+	// RunWithUI before p.Run() so background goroutines (e.g. runAudit) can
+	// hand off state mutations to Update instead of touching m directly.
+	send func(tea.Msg)
 }
 
 // NewProgressUI creates a new progress UI for an audit run.
@@ -156,9 +161,15 @@ func (m *ProgressUI) tickTimer() tea.Cmd {
 
 func (m *ProgressUI) runAudit() tea.Cmd {
 	return func() tea.Msg {
-		result, err := Run(m.ctx, m.reviewClient, m.aoiClient, m.opts, func(phase, message string) {
-			m.updateProgress(phase, message)
-		})
+		// emit hands progress updates to the Bubble Tea event loop so the
+		// model is only mutated from Update (main goroutine).
+		emit := func(phase, message string) {
+			if m.send != nil {
+				m.send(progressMsg{phase: phase, message: message})
+			}
+		}
+
+		result, err := Run(m.ctx, m.reviewClient, m.aoiClient, m.opts, emit)
 		if err != nil {
 			return auditDoneMsg{result: result, err: err}
 		}
@@ -166,16 +177,17 @@ func (m *ProgressUI) runAudit() tea.Cmd {
 		// Phase 4: Synthesis
 		var synth *SynthesisResult
 		if len(result.Findings) > 0 && !m.noSynthesis {
-			m.updateProgress("phase4", "Synthesizing executive summary...")
+			emit("phase4", "Synthesizing executive summary...")
 			synth, err = SynthesizeCached(m.ctx, m.reviewClient, result.Findings, result.CrossCuttingObservations, result.ProjectContext, nil, m.opts.NoCache)
 			if err != nil {
-				m.updateProgress("phase4", "Synthesis failed: "+err.Error())
+				emit("phase4", "Synthesis failed: "+err.Error())
 				// Non-fatal — continue without synthesis
 				err = nil
 			} else {
-				m.updateProgress("phase4", "Synthesis complete")
+				emit("phase4", "Synthesis complete")
 			}
-			// Track synthesis usage
+			// Track synthesis usage. Safe to mutate result here because no
+			// other goroutine holds a reference until auditDoneMsg below.
 			result.Usage.Synth = ai.SnapshotUsage(m.reviewClient)
 		}
 
@@ -262,6 +274,12 @@ func (m *ProgressUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
 		}
+
+	case progressMsg:
+		// Apply state changes on the main goroutine to avoid racing with
+		// Update/View. The runAudit goroutine sends these via p.Send.
+		m.updateProgress(msg.phase, msg.message)
+		return m, nil
 
 	case auditDoneMsg:
 		m.done = true
@@ -436,6 +454,9 @@ func RunWithUI(
 	ui := NewProgressUI(ctx, reviewClient, aoiClient, opts, reviewModel, aoiModel)
 	ui.noSynthesis = noSynthesis
 	p := tea.NewProgram(ui, tea.WithAltScreen())
+	// Set send before p.Run() so runAudit's goroutine never sees a nil
+	// callback. p.Send is safe to call concurrently with the program loop.
+	ui.send = p.Send
 
 	finalModel, err := p.Run()
 	if err != nil {

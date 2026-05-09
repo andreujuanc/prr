@@ -496,7 +496,10 @@ func runPhase1b(
 		onProgress("phase1b", status)
 	})
 	if err != nil {
-		return nil, err
+		// Partial results: surface the failure as a warning but proceed —
+		// files from failed batches are already filled in as unknown, which
+		// triggers the conservative full-dimension AOI scan downstream.
+		onProgress("warning", fmt.Sprintf("classification partial: %v", err))
 	}
 
 	// Cache results

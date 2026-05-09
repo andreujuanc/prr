@@ -237,7 +237,7 @@ func synthesizeHierarchical(
 		len(findings), strings.Join(categorySummaries, "\n\n"))
 
 	if len(crossCutting) > 0 {
-		mergeInput += "\n\n## Cross-Cutting Observations\n" + strings.Join(crossCutting, "\n- ")
+		mergeInput += "\n\n## Cross-Cutting Observations\n- " + strings.Join(crossCutting, "\n- ")
 	}
 
 	messages := []ai.Message{

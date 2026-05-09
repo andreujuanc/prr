@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -165,11 +166,11 @@ func ClassifyFiles(
 		close(resultsCh)
 	}()
 
-	var errors []string
+	var batchErrs []error
 	for br := range resultsCh {
 		if br.err != nil {
 			log.Printf("Classification batch %d failed: %v", br.index+1, br.err)
-			errors = append(errors, br.err.Error())
+			batchErrs = append(batchErrs, fmt.Errorf("batch %d: %w", br.index+1, br.err))
 			continue
 		}
 		for _, fc := range br.results {
@@ -188,7 +189,10 @@ func ClassifyFiles(
 		onProgress(fmt.Sprintf("classified %d file(s)", len(uncached)))
 	}
 
-	return result, nil
+	// Return partial results alongside any batch errors so callers can decide
+	// whether to fail or proceed with unknowns. errors.Join returns nil when
+	// the slice is empty.
+	return result, errors.Join(batchErrs...)
 }
 
 // buildClassifyBatches splits files into batches of classifyBatchMaxFiles.

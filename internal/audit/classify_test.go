@@ -188,9 +188,13 @@ func TestParseClassifyResult(t *testing.T) {
 }
 
 func TestBuildClassifyBatches(t *testing.T) {
-	// Create files to batch
+	// Pick a count that exercises a partial trailing batch regardless of
+	// what classifyBatchMaxFiles is set to.
+	const remainder = 20
+	totalFiles := classifyBatchMaxFiles*2 + remainder
+
 	var files []AuditFile
-	for i := 0; i < 120; i++ {
+	for i := 0; i < totalFiles; i++ {
 		files = append(files, AuditFile{
 			Path:    fmt.Sprintf("file%d.go", i),
 			Content: "package main",
@@ -199,18 +203,15 @@ func TestBuildClassifyBatches(t *testing.T) {
 
 	batches := buildClassifyBatches(files)
 
-	// With classifyBatchMaxFiles=50, expect 3 batches: 50, 50, 20
-	if len(batches) != 3 {
-		t.Fatalf("got %d batches, want 3", len(batches))
+	wantBatches := 3
+	if len(batches) != wantBatches {
+		t.Fatalf("got %d batches, want %d", len(batches), wantBatches)
 	}
-	if len(batches[0]) != 50 {
-		t.Errorf("batch 0: got %d files, want 50", len(batches[0]))
-	}
-	if len(batches[1]) != 50 {
-		t.Errorf("batch 1: got %d files, want 50", len(batches[1]))
-	}
-	if len(batches[2]) != 20 {
-		t.Errorf("batch 2: got %d files, want 20", len(batches[2]))
+	wantSizes := []int{classifyBatchMaxFiles, classifyBatchMaxFiles, remainder}
+	for i, want := range wantSizes {
+		if got := len(batches[i]); got != want {
+			t.Errorf("batch %d: got %d files, want %d", i, got, want)
+		}
 	}
 }
 
