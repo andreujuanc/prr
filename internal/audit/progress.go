@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"path/filepath"
 	"strings"
@@ -203,28 +204,42 @@ func (m *ProgressUI) updateProgress(phase, message string) {
 		}
 	}
 
-	// Parse counters from progress messages
+	// Parse counters from progress messages. Each branch matches a specific
+	// known format string; if Sscanf fails, log it so format drift is
+	// visible during development instead of silently zeroing the counter.
 	switch {
 	case phase == "phase1" && strings.Contains(message, "files to audit"):
-		fmt.Sscanf(message, "Phase 1 complete: %d files to audit", &m.totalFiles)
+		scanCounter(phase, message, "Phase 1 complete: %d files to audit", &m.totalFiles)
 	case phase == "phase2" && strings.Contains(message, "Scanning"):
-		fmt.Sscanf(message, "Scanning %d files", &m.scannedFiles)
+		scanCounter(phase, message, "Scanning %d files", &m.scannedFiles)
 	case phase == "phase2" && strings.Contains(message, "complete"):
-		// "AOI scan 3/5 complete"
 		var done, total int
-		if _, err := fmt.Sscanf(message, "AOI scan %d/%d complete", &done, &total); err == nil {
+		if scanCounter(phase, message, "AOI scan %d/%d complete", &done, &total) {
 			m.scannedFiles = done
 			m.totalFiles = total
 		}
 	case phase == "phase3" && strings.Contains(message, "Executing"):
-		fmt.Sscanf(message, "Executing %d review calls...", &m.totalReviews)
+		scanCounter(phase, message, "Executing %d review calls...", &m.totalReviews)
 	case phase == "phase3" && strings.Contains(message, "review") && strings.Contains(message, "/"):
 		var done, total int
-		if _, err := fmt.Sscanf(message, "review %d/%d", &done, &total); err == nil {
+		if scanCounter(phase, message, "review %d/%d", &done, &total) {
 			m.doneReviews = done
 			m.totalReviews = total
 		}
 	}
+}
+
+// scanCounter wraps fmt.Sscanf with a logged warning on format mismatch so
+// progress-string drift surfaces during development rather than silently
+// dropping counter updates.
+func scanCounter(phase, message, format string, dest ...interface{}) bool {
+	n, err := fmt.Sscanf(message, format, dest...)
+	if err != nil || n != len(dest) {
+		log.Printf("progress: counter parse mismatch in phase=%q (format=%q, message=%q): %v",
+			phase, format, message, err)
+		return false
+	}
+	return true
 }
 
 func (m *ProgressUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

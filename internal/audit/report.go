@@ -88,7 +88,7 @@ func ExportMarkdown(result *Result, path string) error {
 			if len(findings) == 0 {
 				continue
 			}
-			b.WriteString("### " + strings.Title(sev) + "\n\n")
+			b.WriteString("### " + strings.ToUpper(sev[:1]) + sev[1:] + "\n\n")
 			for _, f := range findings {
 				loc := f.File
 				if f.Lines != "" {

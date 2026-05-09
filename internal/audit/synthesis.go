@@ -189,15 +189,13 @@ func BuildSynthesisUserMessage(findings []state.DeepFinding, crossCutting []stri
 }
 
 // ParseSynthesisResult extracts a SynthesisResult from the LLM's raw response.
+// Uses ai.ExtractJSON so trailing prose, embedded fences, and multi-round
+// agent output don't break parsing.
 func ParseSynthesisResult(raw string) (*SynthesisResult, error) {
-	s := ai.StripMarkdownFences(raw)
-
-	// Find JSON object start.
-	jsonStart := strings.Index(s, "{")
-	if jsonStart == -1 {
+	s := ai.ExtractJSON(raw)
+	if s == "" {
 		return nil, fmt.Errorf("no JSON object found in synthesis response")
 	}
-	s = s[jsonStart:]
 
 	var result SynthesisResult
 	if err := json.Unmarshal([]byte(s), &result); err != nil {

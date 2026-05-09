@@ -14,9 +14,9 @@ import (
 // and minor JSON formatting issues.
 // Returns nil if parsing fails.
 func ParseReviewOutput(raw string) *state.ReviewOutput {
-	s := extractJSON(raw)
+	s := ExtractJSON(raw)
 	if s == "" {
-		log.Printf("ParseReviewOutput: extractJSON returned empty (raw len=%d)", len(raw))
+		log.Printf("ParseReviewOutput: ExtractJSON returned empty (raw len=%d)", len(raw))
 		return nil
 	}
 
@@ -59,9 +59,10 @@ func ParseReviewOutput(raw string) *state.ReviewOutput {
 	return &out
 }
 
-// extractJSON extracts a JSON object from raw text that may contain
+// ExtractJSON extracts a JSON object from raw text that may contain
 // markdown code fences, leading prose, or trailing commentary.
-func extractJSON(raw string) string {
+// Returns the last well-formed top-level {...} found, or "" if none.
+func ExtractJSON(raw string) string {
 	s := strings.TrimSpace(raw)
 
 	// Try to extract from a markdown code fence first (handles fences
