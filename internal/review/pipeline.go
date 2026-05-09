@@ -498,7 +498,7 @@ func RunReviewCore(
 			maxConc = 5
 		}
 
-		execResult, execErr := RunReviewCalls(ctx, reviewClient, reviewCalls, ExecuteOptions{
+		execOpts := ExecuteOptions{
 			Mode:               ModePR,
 			ProjectContext:     projectContext,
 			CustomInstructions: enhancedInstructions,
@@ -508,13 +508,31 @@ func RunReviewCore(
 				if idx < 0 || idx >= len(reviewCalls) {
 					return
 				}
-				if callErr != nil {
+				if cached {
+					rr.BatchProgress(idx, StatusCached)
+				} else if callErr != nil {
 					rr.BatchProgress(idx, StatusFailed)
 				} else {
 					rr.BatchProgress(idx, StatusDone)
 				}
 			},
-		})
+		}
+
+		// Wire up deep review caching to review state
+		if reviewState != nil {
+			execOpts.CacheGet = func(key string) *state.DeepReviewResult {
+				return reviewState.GetDeepReview(key)
+			}
+			execOpts.CacheSet = func(key string, result *state.DeepReviewResult) {
+				reviewState.SetDeepReview(key, result)
+				// Persist immediately so cache survives crashes
+				if err := state.Save(reviewState); err != nil {
+					log.Printf("Warning: failed to persist deep review cache: %v", err)
+				}
+			}
+		}
+
+		execResult, execErr := RunReviewCalls(ctx, reviewClient, reviewCalls, execOpts)
 		if execErr != nil {
 			return nil, fmt.Errorf("AOI review: %w", execErr)
 		}

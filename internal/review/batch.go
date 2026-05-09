@@ -464,12 +464,30 @@ func RunSynthesis(
 	structured := ai.ParseReviewOutput(summary)
 
 	if structured == nil {
+		// Log the raw summary for debugging
+		if len(summary) > 500 {
+			log.Printf("Synthesis: parse failed. Summary length=%d, first 500 chars: %s", len(summary), summary[:500])
+		} else {
+			log.Printf("Synthesis: parse failed. Summary: %s", summary)
+		}
+
 		// Retry with correction
 		log.Printf("Synthesis: initial JSON parse failed, retrying with correction prompt")
+
+		// Detect whether the response looks like truncated JSON.
+		trimmed := strings.TrimSpace(summary)
+		isTruncated := (strings.Contains(trimmed, `"summary"`) || strings.Contains(trimmed, `"findings"`)) &&
+			!strings.HasSuffix(trimmed, "}")
+
+		correctionHint := "Your response was not valid JSON. Please return ONLY a valid JSON object matching the schema specified in the system prompt. No markdown, no prose — just the raw JSON object starting with { and ending with }."
+		if isTruncated {
+			correctionHint = "Your response was truncated — it appears the output was cut off before the JSON was complete. Please return the SAME review but be MORE CONCISE in your detail/suggestion fields so the full JSON fits. Return ONLY the JSON object, no markdown fences, no prose."
+		}
+
 		correctionMessages := []ai.Message{
 			{Role: "user", Content: "Synthesize the per-file findings into a final PR review. Return ONLY the JSON review object."},
 			{Role: "assistant", Content: summary},
-			{Role: "user", Content: "Your response was not valid JSON. Please return ONLY a valid JSON object matching the schema specified in the system prompt. No markdown, no prose — just the raw JSON object starting with { and ending with }."},
+			{Role: "user", Content: correctionHint},
 		}
 
 		corrected, corrErr := SynthesisWithRetry(ctx, client, synthesisSystem, correctionMessages, onToken)

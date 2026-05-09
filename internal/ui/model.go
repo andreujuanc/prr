@@ -2635,8 +2635,19 @@ func (m Model) renderReviewProgress(maxWidth int) string {
 		return spin + " " + bar + " " + styleTextMuted.Render(label)
 	}
 
-	// Synthesis phase — full bar
-	bar := styleProgressBar.Render(strings.Repeat("█", barWidth))
+	// Synthesis phase — pulsing bar to show activity
+	secs := float64(time.Now().UnixMilli()) / 1000.0
+	pct := 0.5 + 0.45*math.Sin(secs*math.Pi/2)
+	filled := int(pct * float64(barWidth))
+	if filled < 1 {
+		filled = 1
+	}
+	if filled > barWidth {
+		filled = barWidth
+	}
+	empty := barWidth - filled
+	bar := styleProgressBar.Render(strings.Repeat("█", filled)) +
+		styleProgressBg.Render(strings.Repeat("░", empty))
 	return spin + " " + bar + " " + styleTextMuted.Render(label)
 }
 
@@ -3778,6 +3789,25 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 	// Check if we have structured review data
 	if review.Structured != nil {
 		structured := review.Structured
+		stale := m.reviewState.IsReviewStale()
+		return func() tea.Msg {
+			rendered, findings := renderStructuredReview(structured, width, cursor, stale)
+			return ReviewRenderedMsg{Content: rendered, Findings: findings}
+		}
+	}
+
+	// Attempt to recover structured data from the raw summary.
+	// This handles reviews saved by older versions where ParseReviewOutput
+	// failed due to multi-round prose mixed with JSON.
+	if parsed := ai.ParseReviewOutput(review.Summary); parsed != nil {
+		review.Structured = parsed
+		// Persist the recovered structured data so we don't re-parse next time.
+		if m.reviewState != nil {
+			if err := state.Save(m.reviewState); err != nil {
+				log.Printf("Warning: failed to persist recovered structured review: %v", err)
+			}
+		}
+		structured := parsed
 		stale := m.reviewState.IsReviewStale()
 		return func() tea.Msg {
 			rendered, findings := renderStructuredReview(structured, width, cursor, stale)
