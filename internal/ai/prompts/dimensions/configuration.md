@@ -29,10 +29,15 @@ Code that handles secrets, environment configuration, defaults, and feature flag
 - Configuration files loaded from user-writable locations
 - Missing environment variable documentation (operators don't know what to set)
 
-**dependency-security** — Dependencies and security infrastructure changes:
+**dependency-security** — Dependencies, supply chain, security infrastructure:
 - New dependencies added without review of what they do or their vulnerability history
-- Security headers modified or removed (CSP, HSTS, X-Frame-Options)
-- CORS configuration changes (especially wildcard origins in production)
+- Lockfile not committed, out of sync with the manifest, or regenerated without intent (yarn.lock, package-lock.json, go.sum, Cargo.lock, poetry.lock, Pipfile.lock)
+- Floating version specifiers (`*`, `latest`, `^1.x` with no lockfile) that allow silent transitive upgrades
+- New dependency with a typo-squatted-looking name, very low download count, or recently published by an unknown author
+- Postinstall / preinstall / build hooks introduced by a new dependency — these run arbitrary code on `npm install`
+- Removal or downgrade of audit/SBOM tooling (`npm audit`, `pip-audit`, `govulncheck`, `cargo audit`, `osv-scanner`)
+- Security headers modified or removed (CSP, HSTS, X-Frame-Options) — see also `web-security/security-headers`
+- CORS configuration changes (especially wildcard origins in production) — see also `web-security/cors-config`
 - Rate limiting removed or weakened
 - Security middleware ordering changes (auth check moved after handler)
 - Feature flags that gate security controls (disabling auth via config)

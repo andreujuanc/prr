@@ -47,19 +47,19 @@ func DimensionsForType(ft FileType) []string {
 	case FileTypeTest:
 		return []string{"testing", "correctness"}
 	case FileTypeHandler:
-		return []string{"input-validation", "authentication", "authorization", "error-handling", "api-design", "performance", "test-coverage"}
+		return []string{"input-validation", "authentication", "authorization", "web-security", "error-handling", "api-design", "performance", "observability", "test-coverage"}
 	case FileTypeRepository:
-		return []string{"data-integrity", "input-validation", "error-handling", "resource-management", "concurrency", "test-coverage"}
+		return []string{"data-integrity", "input-validation", "error-handling", "resource-management", "concurrency", "observability", "test-coverage"}
 	case FileTypeModel:
 		return []string{"api-design", "input-validation", "data-integrity", "correctness", "test-coverage"}
 	case FileTypeClient:
-		return []string{"external-io", "error-handling", "resource-management", "input-validation", "test-coverage"}
+		return []string{"external-io", "error-handling", "resource-management", "input-validation", "observability", "test-coverage"}
 	case FileTypeWorker:
-		return []string{"concurrency", "error-handling", "resource-management", "external-io", "correctness", "test-coverage"}
+		return []string{"concurrency", "error-handling", "resource-management", "external-io", "correctness", "observability", "test-coverage"}
 	case FileTypeBusinessLogic:
-		return []string{"correctness", "data-integrity", "error-handling", "design", "financial", "concurrency", "test-coverage"}
+		return []string{"correctness", "data-integrity", "error-handling", "design", "financial", "concurrency", "observability", "test-coverage"}
 	case FileTypeInfrastructure:
-		return []string{"configuration", "error-handling", "resource-management", "test-coverage"}
+		return []string{"configuration", "error-handling", "resource-management", "web-security", "observability", "test-coverage"}
 	default:
 		return ai.AllDimensionSlugs()
 	}

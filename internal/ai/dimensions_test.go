@@ -6,12 +6,13 @@ import (
 
 func TestDimensionsLoaded(t *testing.T) {
 	slugs := AllDimensionSlugs()
-	if len(slugs) != 19 {
-		t.Errorf("expected 19 dimensions, got %d: %v", len(slugs), slugs)
+	const expected = 21
+	if len(slugs) != expected {
+		t.Errorf("expected %d dimensions, got %d: %v", expected, len(slugs), slugs)
 	}
 
-	// Spot-check a few
-	for _, slug := range []string{"authentication", "correctness", "design", "performance", "testing", "cross-cutting"} {
+	// Spot-check a few — including the newer observability and web-security dimensions
+	for _, slug := range []string{"authentication", "correctness", "design", "performance", "testing", "cross-cutting", "observability", "web-security"} {
 		if !DimensionExists(slug) {
 			t.Errorf("dimension %q not found", slug)
 		}
