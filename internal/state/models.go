@@ -127,6 +127,16 @@ type State struct {
 	// review inputs (file content + AOI content + focus dimensions for individual;
 	// all AOI content + focus dimensions for grouped).
 	DeepReviews map[string]*DeepReviewResult `json:"deep_reviews,omitempty"`
+
+	// RecheckCache caches Phase 3b recheck output by hash of the input
+	// findings + project context + mode. The value is a serialized
+	// []DeepFinding (the cleaned, deduplicated set).
+	RecheckCache map[string]json.RawMessage `json:"recheck_cache,omitempty"`
+
+	// SynthesisCache caches Phase 4 synthesis output by hash of the input
+	// findings + cross-cutting + project context. The value is a serialized
+	// SynthesisResult (audit-package type, opaque to this package).
+	SynthesisCache map[string]json.RawMessage `json:"synthesis_cache,omitempty"`
 }
 
 // DeepReviewResult stores the cached output of a Phase 3 review call.
@@ -275,6 +285,8 @@ func (s *State) ClearAllCaches() {
 	}
 	s.Review = nil
 	s.DeepReviews = nil
+	s.RecheckCache = nil
+	s.SynthesisCache = nil
 	s.ProjectContext = ""
 	s.ProjectContextHash = ""
 }
@@ -350,6 +362,46 @@ func (s *State) GetDeepReview(key string) *DeepReviewResult {
 		return nil
 	}
 	return s.DeepReviews[key]
+}
+
+// SetRecheckCache stores a recheck output (serialized JSON) by cache key.
+func (s *State) SetRecheckCache(key string, raw json.RawMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.RecheckCache == nil {
+		s.RecheckCache = make(map[string]json.RawMessage)
+	}
+	s.RecheckCache[key] = raw
+}
+
+// GetRecheckCache returns a cached recheck result by key, or nil.
+func (s *State) GetRecheckCache(key string) json.RawMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.RecheckCache == nil {
+		return nil
+	}
+	return s.RecheckCache[key]
+}
+
+// SetSynthesisCache stores a synthesis output (serialized JSON) by cache key.
+func (s *State) SetSynthesisCache(key string, raw json.RawMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SynthesisCache == nil {
+		s.SynthesisCache = make(map[string]json.RawMessage)
+	}
+	s.SynthesisCache[key] = raw
+}
+
+// GetSynthesisCache returns a cached synthesis result by key, or nil.
+func (s *State) GetSynthesisCache(key string) json.RawMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.SynthesisCache == nil {
+		return nil
+	}
+	return s.SynthesisCache[key]
 }
 
 // ClearDeepReviews removes all cached Phase 3 results.

@@ -12,8 +12,23 @@ import (
 	"github.com/andreujuanc/prr/internal/state"
 )
 
-// hierarchicalMaxConcurrency caps parallel per-category synthesis calls.
-const hierarchicalMaxConcurrency = 5
+// defaultHierarchicalMaxConcurrency caps parallel per-category synthesis
+// calls. SetHierarchicalSynthConcurrency overrides this for the lifetime
+// of the process.
+const defaultHierarchicalMaxConcurrency = 5
+
+var hierarchicalMaxConcurrency = defaultHierarchicalMaxConcurrency
+
+// SetHierarchicalSynthConcurrency sets the max number of per-category
+// synthesis calls run in parallel. Values <= 0 reset to the default.
+// Not safe to call concurrently with synthesis in flight.
+func SetHierarchicalSynthConcurrency(n int) {
+	if n <= 0 {
+		hierarchicalMaxConcurrency = defaultHierarchicalMaxConcurrency
+		return
+	}
+	hierarchicalMaxConcurrency = n
+}
 
 // SynthesisResult holds the output of Phase 4 synthesis.
 type SynthesisResult struct {
@@ -58,6 +73,60 @@ func Synthesize(
 	}
 
 	return synthesizeDirect(ctx, client, findings, crossCutting, projectContext, onToken)
+}
+
+// SynthesizeCached wraps Synthesize with persistent cache lookup against the
+// audit state. Cache misses run synthesis and persist the result. Cache hits
+// are returned without an LLM call. Pass noCache=true to bypass.
+//
+// The audit state is loaded and (if updated) saved by this function — callers
+// don't need to manage it.
+func SynthesizeCached(
+	ctx context.Context,
+	client ai.Client,
+	findings []state.DeepFinding,
+	crossCutting []string,
+	projectContext string,
+	onToken func(string),
+	noCache bool,
+) (*SynthesisResult, error) {
+	if len(findings) == 0 {
+		return Synthesize(ctx, client, findings, crossCutting, projectContext, onToken)
+	}
+
+	key := computeSynthesisCacheKey(findings, crossCutting, projectContext)
+
+	auditState, loadErr := state.Load("audit")
+	if loadErr != nil {
+		// Cache disabled — run synthesis as usual.
+		return Synthesize(ctx, client, findings, crossCutting, projectContext, onToken)
+	}
+
+	if !noCache {
+		if raw := auditState.GetSynthesisCache(key); raw != nil {
+			var cached SynthesisResult
+			if err := json.Unmarshal(raw, &cached); err == nil {
+				return &cached, nil
+			}
+			// Corrupt entry — fall through and regenerate.
+		}
+	}
+
+	result, err := Synthesize(ctx, client, findings, crossCutting, projectContext, onToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Persist on success.
+	if raw, marshalErr := json.Marshal(result); marshalErr == nil {
+		auditState.SetSynthesisCache(key, raw)
+		if saveErr := state.Save(auditState); saveErr != nil {
+			// Non-fatal — we have the result, just won't be cached next time.
+			_ = saveErr
+		}
+	}
+
+	return result, nil
 }
 
 // synthesizeDirect sends all findings in a single LLM call.

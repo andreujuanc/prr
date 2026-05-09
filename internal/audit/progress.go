@@ -167,7 +167,7 @@ func (m *ProgressUI) runAudit() tea.Cmd {
 		var synth *SynthesisResult
 		if len(result.Findings) > 0 && !m.noSynthesis {
 			m.updateProgress("phase4", "Synthesizing executive summary...")
-			synth, err = Synthesize(m.ctx, m.reviewClient, result.Findings, result.CrossCuttingObservations, result.ProjectContext, nil)
+			synth, err = SynthesizeCached(m.ctx, m.reviewClient, result.Findings, result.CrossCuttingObservations, result.ProjectContext, nil, m.opts.NoCache)
 			if err != nil {
 				m.updateProgress("phase4", "Synthesis failed: "+err.Error())
 				// Non-fatal — continue without synthesis

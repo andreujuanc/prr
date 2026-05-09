@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/review"
@@ -48,6 +49,34 @@ type Options struct {
 	// LargeFileThreshold is the file count above which a warning is
 	// displayed. Defaults to 200 when zero.
 	LargeFileThreshold int
+
+	// Concurrency tunes per-phase concurrency caps. Each zero field falls
+	// back to the package default (currently 5).
+	Concurrency ConcurrencyConfig
+}
+
+// ConcurrencyConfig holds per-phase concurrency caps. Each field is the
+// maximum number of in-flight LLM calls for that phase. Zero = use the
+// package default.
+type ConcurrencyConfig struct {
+	// Classify caps Phase 1b classification calls.
+	Classify int
+	// AOIScan caps Phase 2 AOI batch calls.
+	AOIScan int
+	// DeepReview caps Phase 3 review calls.
+	DeepReview int
+	// Recheck caps Phase 3b recheck batch calls.
+	Recheck int
+	// HierarchicalSynth caps Phase 4 per-category synthesis calls.
+	HierarchicalSynth int
+}
+
+// concurrencyOr returns n when positive, otherwise defaultVal.
+func concurrencyOr(n, defaultVal int) int {
+	if n <= 0 {
+		return defaultVal
+	}
+	return n
 }
 
 // Result holds the output of an audit run.
@@ -146,6 +175,12 @@ func Run(
 	if opts.NoCache {
 		auditState.ClearAllCaches()
 	}
+
+	// Apply configured per-phase concurrency. Each setter accepts <=0 as
+	// "reset to default", so leaving fields zero preserves baseline behavior.
+	SetClassifyConcurrency(opts.Concurrency.Classify)
+	security.SetAOIConcurrency(opts.Concurrency.AOIScan)
+	SetHierarchicalSynthConcurrency(opts.Concurrency.HierarchicalSynth)
 
 	// ── Phase 0 + Phase 1 in parallel ───────────────────────────────────
 	// Phase 0 (project discovery) is one LLM call; Phase 1 (file collection)
@@ -381,6 +416,19 @@ func Run(
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbg.Phase("PHASE 3b: Recheck")
 	if len(findings) > 0 {
+		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit")
+		if !opts.NoCache {
+			if raw := auditState.GetRecheckCache(recheckKey); raw != nil {
+				var cached []state.DeepFinding
+				if err := json.Unmarshal(raw, &cached); err == nil {
+					findings = cached
+					onProgress("recheck", "Using cached recheck result")
+					goto afterRecheck
+				}
+				log.Printf("Recheck cache: ignoring corrupted entry: %v", err)
+			}
+		}
+
 		// Build recheck debug hook
 		var recheckDebugHook func(systemPrompt string, userMsg string, response string)
 		if dbg.Enabled() {
@@ -392,9 +440,19 @@ func Run(
 			}
 		}
 
-		findings, _ = review.RunRecheck(ctx, reviewClient, findings, review.ModeAudit, projectContext,
-			func(status string) { onProgress("recheck", status) }, recheckDebugHook)
+		var changed bool
+		findings, changed = review.RunRecheck(ctx, reviewClient, findings, review.ModeAudit, projectContext,
+			func(status string) { onProgress("recheck", status) }, recheckDebugHook,
+			review.RecheckSettings{MaxConcurrency: opts.Concurrency.Recheck})
+
+		// Persist on success.
+		if changed {
+			if raw, marshalErr := json.Marshal(findings); marshalErr == nil {
+				auditState.SetRecheckCache(recheckKey, raw)
+			}
+		}
 	}
+afterRecheck:
 	recheckUsage := ai.SnapshotUsage(reviewClient)
 
 	result.Findings = findings
@@ -550,7 +608,7 @@ func runPhase3(
 		Mode:            review.ModeAudit,
 		ProjectContext:  projectContext,
 		FocusDimensions: opts.Focus,
-		MaxConcurrency:  phase3MaxConcurrency,
+		MaxConcurrency:  concurrencyOr(opts.Concurrency.DeepReview, phase3MaxConcurrency),
 		NoCache:         opts.NoCache,
 		OnLLMCall:       debugHook,
 		OnToolCall:      toolHook,
@@ -590,6 +648,47 @@ func runPhase3(
 func hashContent(content string) string {
 	h := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(h[:])[:32]
+}
+
+// computeRecheckCacheKey hashes the recheck inputs into a stable key.
+// Findings are sorted by FindingID before hashing so order doesn't matter.
+func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode string) string {
+	sorted := make([]state.DeepFinding, len(findings))
+	copy(sorted, findings)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].FindingID < sorted[j].FindingID })
+
+	h := sha256.New()
+	h.Write([]byte(mode))
+	h.Write([]byte{0})
+	h.Write([]byte(projectContext))
+	h.Write([]byte{0})
+	if data, err := json.Marshal(sorted); err == nil {
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// computeSynthesisCacheKey hashes the synthesis inputs into a stable key.
+func computeSynthesisCacheKey(findings []state.DeepFinding, crossCutting []string, projectContext string) string {
+	sortedFindings := make([]state.DeepFinding, len(findings))
+	copy(sortedFindings, findings)
+	sort.Slice(sortedFindings, func(i, j int) bool { return sortedFindings[i].FindingID < sortedFindings[j].FindingID })
+
+	sortedCC := make([]string, len(crossCutting))
+	copy(sortedCC, crossCutting)
+	sort.Strings(sortedCC)
+
+	h := sha256.New()
+	h.Write([]byte(projectContext))
+	h.Write([]byte{0})
+	if data, err := json.Marshal(sortedFindings); err == nil {
+		h.Write(data)
+	}
+	h.Write([]byte{0})
+	if data, err := json.Marshal(sortedCC); err == nil {
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
 func ensureFileState(s *state.State, path, contentHash string) {

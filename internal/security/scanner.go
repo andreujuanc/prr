@@ -67,9 +67,23 @@ func RevalidatePrompt() string { return revalidatePrompt }
 // Kept generous since the cheap model handles large contexts fast.
 const aoiBatchMaxChars = 30000
 
-// aoiMaxConcurrency is the max number of AOI batches that run in parallel.
-// Capped to avoid hitting API rate limits on the provider.
-const aoiMaxConcurrency = 5
+// aoiMaxConcurrency is the default max number of AOI batches that run in
+// parallel. Capped to avoid hitting API rate limits on the provider.
+// SetAOIConcurrency overrides this for the lifetime of the process.
+const defaultAOIMaxConcurrency = 5
+
+var aoiMaxConcurrency = defaultAOIMaxConcurrency
+
+// SetAOIConcurrency sets the max number of AOI batches run in parallel.
+// Values <= 0 reset to the default. Not safe to call concurrently with
+// scans in flight; intended to be called once at startup.
+func SetAOIConcurrency(n int) {
+	if n <= 0 {
+		aoiMaxConcurrency = defaultAOIMaxConcurrency
+		return
+	}
+	aoiMaxConcurrency = n
+}
 
 // ScanAreasOfInterest runs the AOI pre-scan on all changed files using
 // a lightweight LLM. It batches files by dimension set (or all together

@@ -74,8 +74,22 @@ type FileClassification struct {
 // classifyBatchMaxFiles caps how many files we send per classification call.
 const classifyBatchMaxFiles = 50
 
-// classifyMaxConcurrency caps parallel classification calls.
-const classifyMaxConcurrency = 5
+// defaultClassifyMaxConcurrency is the default cap on parallel classification
+// calls. SetClassifyConcurrency overrides this for the lifetime of the process.
+const defaultClassifyMaxConcurrency = 5
+
+var classifyMaxConcurrency = defaultClassifyMaxConcurrency
+
+// SetClassifyConcurrency sets the max number of classification batches run in
+// parallel. Values <= 0 reset to the default. Not safe to call concurrently
+// with classification in flight; intended to be called once at startup.
+func SetClassifyConcurrency(n int) {
+	if n <= 0 {
+		classifyMaxConcurrency = defaultClassifyMaxConcurrency
+		return
+	}
+	classifyMaxConcurrency = n
+}
 
 //go:embed prompts/classify.md
 var classifyPrompt string

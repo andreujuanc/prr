@@ -161,6 +161,16 @@ func runAudit(debug bool, args []string) {
 			includeStr = strings.TrimPrefix(arg, "--include=")
 		} else if strings.HasPrefix(arg, "--max-reviews=") {
 			fmt.Sscanf(strings.TrimPrefix(arg, "--max-reviews="), "%d", &opts.MaxReviews)
+		} else if strings.HasPrefix(arg, "--concurrency=") {
+			var n int
+			fmt.Sscanf(strings.TrimPrefix(arg, "--concurrency="), "%d", &n)
+			if n > 0 {
+				opts.Concurrency.Classify = n
+				opts.Concurrency.AOIScan = n
+				opts.Concurrency.DeepReview = n
+				opts.Concurrency.Recheck = n
+				opts.Concurrency.HierarchicalSynth = n
+			}
 		} else if strings.HasPrefix(arg, "--output=") {
 			outputPath = strings.TrimPrefix(arg, "--output=")
 		} else if arg == "--no-cache" {
@@ -416,6 +426,7 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "    --exclude=<globs>    Additional exclude patterns (comma-separated)\n")
 	fmt.Fprintf(os.Stderr, "    --include=<globs>    Force-include patterns (override exclusions)\n")
 	fmt.Fprintf(os.Stderr, "    --max-reviews=<n>    Cap Phase 3 review calls\n")
+	fmt.Fprintf(os.Stderr, "    --concurrency=<n>    Set per-phase parallelism cap (default 5)\n")
 	fmt.Fprintf(os.Stderr, "    --output=<path>      Export report (.json or .md)\n")
 	fmt.Fprintf(os.Stderr, "    --no-cache           Ignore cached results, re-audit everything\n")
 	fmt.Fprintf(os.Stderr, "    --no-synthesis       Skip Phase 4 executive summary synthesis\n")
@@ -426,8 +437,9 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available dimensions:"))
 	fmt.Fprintf(os.Stderr, "    authentication, authorization, input-validation, data-integrity,\n")
 	fmt.Fprintf(os.Stderr, "    cryptography, error-handling, concurrency, external-io, financial,\n")
-	fmt.Fprintf(os.Stderr, "    configuration, api-design, resource-management, testing, correctness,\n")
-	fmt.Fprintf(os.Stderr, "    design, performance, readability, cross-cutting\n\n")
+	fmt.Fprintf(os.Stderr, "    configuration, api-design, resource-management, testing, test-coverage,\n")
+	fmt.Fprintf(os.Stderr, "    correctness, design, performance, readability, cross-cutting,\n")
+	fmt.Fprintf(os.Stderr, "    observability, web-security\n\n")
 }
 
 // ── Review mode ────────────────────────────────────────────────────────

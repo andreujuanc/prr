@@ -240,6 +240,12 @@ func DiscoverProjectContext(
 	return result.Summary, nil
 }
 
+// RecheckSettings is an optional settings bundle for RunRecheck. Zero-value
+// fields fall back to defaults inside RecheckFindings.
+type RecheckSettings struct {
+	MaxConcurrency int
+}
+
 // RunRecheck validates and deduplicates deep findings. On failure, returns
 // the original findings unchanged (non-fatal). The returned bool indicates
 // whether the findings were modified by the recheck.
@@ -251,6 +257,7 @@ func RunRecheck(
 	projectContext string,
 	onProgress func(string),
 	debugHook func(systemPrompt, userMsg, response string),
+	settings ...RecheckSettings,
 ) ([]state.DeepFinding, bool) {
 	if len(findings) == 0 {
 		return findings, false
@@ -260,11 +267,17 @@ func RunRecheck(
 		onProgress = func(string) {}
 	}
 
+	var s RecheckSettings
+	if len(settings) > 0 {
+		s = settings[0]
+	}
+
 	onProgress(fmt.Sprintf("Rechecking %d findings...", len(findings)))
 
 	recheckResult, recheckErr := RecheckFindings(ctx, client, findings, RecheckOptions{
 		Mode:           mode,
 		ProjectContext: projectContext,
+		MaxConcurrency: s.MaxConcurrency,
 		OnLLMCall:      debugHook,
 	})
 	if recheckErr != nil {
