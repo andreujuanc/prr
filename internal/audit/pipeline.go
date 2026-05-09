@@ -147,16 +147,45 @@ func Run(
 		auditState.ClearAllCaches()
 	}
 
-	// ── Phase 0: Project Context Discovery ──────────────────────────────
+	// ── Phase 0 + Phase 1 in parallel ───────────────────────────────────
+	// Phase 0 (project discovery) is one LLM call; Phase 1 (file collection)
+	// is `git ls-files` plus filters. They have no dependency on each other,
+	// and Phase 0 only feeds Phase 3 prompts and Phase 4 synthesis.
+	dbg.Phase("PHASE 0+1: Project Discovery + File Collection (parallel)")
 
-	dbg.Phase("PHASE 0: Project Context Discovery")
+	type p0Result struct {
+		ctx string
+		err error
+	}
+	type p1Result struct {
+		paths []string
+		err   error
+	}
+
+	p0Ch := make(chan p0Result, 1)
+	p1Ch := make(chan p1Result, 1)
+
 	onProgress("phase0", "Discovering project context...")
-	projectContext, err := review.DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, auditState, func(status string) {
-		onProgress("phase0", status)
-	})
-	if err != nil {
-		log.Printf("Phase 0 (project context) failed: %v", err)
-		// Non-fatal — continue without project context
+	go func() {
+		ctxOut, err := review.DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, auditState, func(status string) {
+			onProgress("phase0", status)
+		})
+		p0Ch <- p0Result{ctx: ctxOut, err: err}
+	}()
+
+	onProgress("phase1", "Collecting files...")
+	go func() {
+		paths, err := CollectFiles(opts.RepoRoot, opts.ExcludePatterns, opts.IncludePatterns)
+		p1Ch <- p1Result{paths: paths, err: err}
+	}()
+
+	p0 := <-p0Ch
+	p1 := <-p1Ch
+
+	projectContext := p0.ctx
+	if p0.err != nil {
+		log.Printf("Phase 0 (project context) failed: %v", p0.err)
+		// Non-fatal — continue without project context.
 	}
 	dbg.Section("Project Context Result")
 	if projectContext != "" {
@@ -165,14 +194,10 @@ func Run(
 		dbg.Text("(no project context discovered)")
 	}
 
-	// ── Phase 1: File Collection ────────────────────────────────────────
-
-	dbg.Phase("PHASE 1: File Collection")
-	onProgress("phase1", "Collecting files...")
-	filePaths, err := CollectFiles(opts.RepoRoot, opts.ExcludePatterns, opts.IncludePatterns)
-	if err != nil {
-		return nil, fmt.Errorf("phase 1 file collection: %w", err)
+	if p1.err != nil {
+		return nil, fmt.Errorf("phase 1 file collection: %w", p1.err)
 	}
+	filePaths := p1.paths
 
 	// Warn about unexpectedly large file sets
 	threshold := opts.LargeFileThreshold

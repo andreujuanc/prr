@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/state"
@@ -23,6 +24,9 @@ type RecheckOptions struct {
 	// If total findings exceed this, they're split by file.
 	// Default: 50.
 	MaxFindingsPerBatch int
+
+	// MaxConcurrency caps parallel batch calls. Default: 5.
+	MaxConcurrency int
 
 	// OnLLMCall is called with the prompt and response for debugging. Can be nil.
 	OnLLMCall func(systemPrompt string, userMsg string, response string)
@@ -78,25 +82,65 @@ func RecheckFindings(
 		return recheckBatch(ctx, client, findings, opts)
 	}
 
-	// Split by file, recheck each batch, then merge and do a final cross-batch pass
+	// Split by file, recheck each batch in parallel, then merge and do a
+	// final cross-batch pass.
 	batches := splitFindingsByFile(findings, maxPerBatch)
+
+	maxConc := opts.MaxConcurrency
+	if maxConc <= 0 {
+		maxConc = 5
+	}
+
+	type batchOutcome struct {
+		index    int
+		findings []state.DeepFinding
+		dismissed,
+		consolidated,
+		modified int
+	}
+
+	outcomes := make([]batchOutcome, len(batches))
+	sem := make(chan struct{}, maxConc)
+	var wg sync.WaitGroup
+
+	for i, batch := range batches {
+		wg.Add(1)
+		go func(i int, batch []state.DeepFinding) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				outcomes[i] = batchOutcome{index: i, findings: batch}
+				return
+			}
+			log.Printf("Recheck batch %d/%d: %d findings", i+1, len(batches), len(batch))
+			result, err := recheckBatch(ctx, client, batch, opts)
+			if err != nil {
+				log.Printf("Recheck batch %d failed: %v (keeping all findings)", i+1, err)
+				outcomes[i] = batchOutcome{index: i, findings: batch}
+				return
+			}
+			outcomes[i] = batchOutcome{
+				index:        i,
+				findings:     result.Findings,
+				dismissed:    result.DismissedCount,
+				consolidated: result.ConsolidatedCount,
+				modified:     result.ModifiedCount,
+			}
+		}(i, batch)
+	}
+	wg.Wait()
+
 	var allKept []state.DeepFinding
 	totalDismissed := 0
 	totalConsolidated := 0
 	totalModified := 0
-
-	for i, batch := range batches {
-		log.Printf("Recheck batch %d/%d: %d findings", i+1, len(batches), len(batch))
-		result, err := recheckBatch(ctx, client, batch, opts)
-		if err != nil {
-			log.Printf("Recheck batch %d failed: %v (keeping all findings)", i+1, err)
-			allKept = append(allKept, batch...)
-			continue
-		}
-		allKept = append(allKept, result.Findings...)
-		totalDismissed += result.DismissedCount
-		totalConsolidated += result.ConsolidatedCount
-		totalModified += result.ModifiedCount
+	for _, o := range outcomes {
+		allKept = append(allKept, o.findings...)
+		totalDismissed += o.dismissed
+		totalConsolidated += o.consolidated
+		totalModified += o.modified
 	}
 
 	// If we had multiple batches, do a final cross-batch dedup

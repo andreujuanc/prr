@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/state"
 )
+
+// hierarchicalMaxConcurrency caps parallel per-category synthesis calls.
+const hierarchicalMaxConcurrency = 5
 
 // SynthesisResult holds the output of Phase 4 synthesis.
 type SynthesisResult struct {
@@ -103,15 +108,59 @@ func synthesizeHierarchical(
 		byCategory[cat] = append(byCategory[cat], f)
 	}
 
-	// Synthesize each category.
+	// Synthesize each category in parallel.
+	type catResult struct {
+		category string
+		count    int
+		summary  string
+		err      error
+	}
+
+	// Build a stable, sorted list of categories so the merge prompt has a
+	// deterministic order regardless of map iteration randomization.
+	cats := make([]string, 0, len(byCategory))
+	for cat := range byCategory {
+		cats = append(cats, cat)
+	}
+	sort.Strings(cats)
+
+	results := make([]catResult, len(cats))
+	sem := make(chan struct{}, hierarchicalMaxConcurrency)
+	var wg sync.WaitGroup
+
+	for i, cat := range cats {
+		wg.Add(1)
+		go func(i int, cat string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results[i] = catResult{category: cat, err: ctx.Err()}
+				return
+			}
+			catFindings := byCategory[cat]
+			r, err := synthesizeDirect(ctx, client, catFindings, nil, projectContext, nil)
+			if err != nil {
+				results[i] = catResult{category: cat, count: len(catFindings), err: err}
+				return
+			}
+			results[i] = catResult{
+				category: cat,
+				count:    len(catFindings),
+				summary:  r.ExecutiveSummary,
+			}
+		}(i, cat)
+	}
+	wg.Wait()
+
 	var categorySummaries []string
-	for cat, catFindings := range byCategory {
-		catResult, err := synthesizeDirect(ctx, client, catFindings, nil, projectContext, nil)
-		if err != nil {
-			return nil, fmt.Errorf("category %q synthesis: %w", cat, err)
+	for _, r := range results {
+		if r.err != nil {
+			return nil, fmt.Errorf("category %q synthesis: %w", r.category, r.err)
 		}
 		categorySummaries = append(categorySummaries,
-			fmt.Sprintf("## Category: %s (%d findings)\n%s", cat, len(catFindings), catResult.ExecutiveSummary))
+			fmt.Sprintf("## Category: %s (%d findings)\n%s", r.category, r.count, r.summary))
 	}
 
 	// Final merge: use category summaries as input.
