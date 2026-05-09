@@ -393,7 +393,7 @@ func runAudit(debug bool, args []string) {
 
 	// Export report if requested
 	if outputPath != "" {
-		if err := audit.Export(result, outputPath); err != nil {
+		if err := audit.Export(result, synthesis, outputPath); err != nil {
 			printError(fmt.Errorf("exporting report: %w", err))
 			os.Exit(1)
 		}

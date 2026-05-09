@@ -33,7 +33,7 @@ func RunPlain(
 	var synthesis *SynthesisResult
 	if !noSynthesis && result != nil && len(result.Findings) > 0 {
 		onProgress("synthesis", "Generating executive summary...")
-		synthesis, err = Synthesize(ctx, reviewClient, result.Findings, result.CrossCuttingObservations, "", nil)
+		synthesis, err = Synthesize(ctx, reviewClient, result.Findings, result.CrossCuttingObservations, result.ProjectContext, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: synthesis failed: %v\n", err)
 		}

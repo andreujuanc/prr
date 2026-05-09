@@ -58,6 +58,9 @@ type ExecuteResult struct {
 	Findings     []state.DeepFinding
 	Dismissals   int
 	CrossCutting []string
+	// Failed is the count of review calls that errored. The caller should
+	// surface this — failed calls drop their AOIs from the result.
+	Failed int
 }
 
 // RunReviewCalls executes all review calls concurrently with bounded concurrency.
@@ -187,6 +190,7 @@ func RunReviewCalls(
 		completed++
 		if cr.err != nil {
 			log.Printf("Review call %d failed: %v", cr.index+1, cr.err)
+			execResult.Failed++
 			if opts.OnProgress != nil {
 				opts.OnProgress(completed, len(calls), cr.fromCache, cr.err)
 			}

@@ -67,6 +67,11 @@ type Result struct {
 	// GroupedReviews is the count of grouped review calls.
 	GroupedReviews int
 
+	// FailedReviews is the count of Phase 3 review calls that errored and
+	// produced no findings. The user should know about these — silently
+	// dropping them means the audit's recall is lower than it appears.
+	FailedReviews int
+
 	// Findings is all confirmed findings from Phase 3.
 	Findings []state.DeepFinding
 
@@ -81,6 +86,11 @@ type Result struct {
 
 	// Routing is the Phase 3 routing result (for summary display).
 	Routing *review.RouteResult
+
+	// ProjectContext is the Phase 0 project briefing. Captured here so the
+	// caller can plumb it into Phase 4 synthesis (otherwise the work done in
+	// Phase 0 would not reach the executive summary).
+	ProjectContext string
 
 	// TokenUsage tracks actual token consumption per phase.
 	Usage PhaseUsage
@@ -292,6 +302,7 @@ func Run(
 		FilesScanned:         len(files),
 		AOIsGenerated:        routing.TotalAOIs,
 		Routing:              routing,
+		ProjectContext:       projectContext,
 		SkippedSubcategories: routing.SkippedSubcategories(opts.MaxReviews),
 	}
 
@@ -329,7 +340,7 @@ func Run(
 	if mi, ok := reviewClient.(ai.ModelInfo); ok {
 		log.Printf("Phase 3: using review model %s/%s", mi.ProviderName(), mi.ModelName())
 	}
-	findings, dismissals, crossCutting, err := runPhase3(
+	findings, dismissals, crossCutting, failed, err := runPhase3(
 		ctx, reviewClient, opts, auditState, projectContext, calls, onProgress, phase3DebugHook, phase3ToolHook,
 	)
 	if err != nil {
@@ -367,6 +378,7 @@ func Run(
 	result.ReviewCalls = len(calls)
 	result.IndividualReviews = len(routing.Individual)
 	result.GroupedReviews = len(routing.Grouped)
+	result.FailedReviews = failed
 	result.Usage = PhaseUsage{
 		AOI:     aoiUsage,
 		Review:  reviewUsage,
@@ -508,7 +520,7 @@ func runPhase3(
 	onProgress OnProgress,
 	debugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string),
 	toolHook func(callIndex int, toolName string, args string, status string, duration string),
-) (findings []state.DeepFinding, dismissals int, crossCutting []string, err error) {
+) (findings []state.DeepFinding, dismissals int, crossCutting []string, failed int, err error) {
 	execOpts := review.ExecuteOptions{
 		Mode:            review.ModeAudit,
 		ProjectContext:  projectContext,
@@ -542,10 +554,10 @@ func runPhase3(
 
 	execResult, execErr := review.RunReviewCalls(ctx, reviewClient, calls, execOpts)
 	if execErr != nil {
-		return nil, 0, nil, execErr
+		return nil, 0, nil, 0, execErr
 	}
 
-	return execResult.Findings, execResult.Dismissals, execResult.CrossCutting, nil
+	return execResult.Findings, execResult.Dismissals, execResult.CrossCutting, execResult.Failed, nil
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

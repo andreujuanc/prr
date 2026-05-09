@@ -6,10 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/state"
 )
+
+// reportSeverityOrder is the canonical severity ordering used in the markdown
+// and JSON reports. Keep in sync with the 5-level scale used elsewhere.
+var reportSeverityOrder = []string{"critical", "high", "medium", "low", "nit"}
 
 // ReportJSON is the JSON-serializable form of an audit result.
 type ReportJSON struct {
@@ -18,13 +23,15 @@ type ReportJSON struct {
 	ReviewCalls              int                 `json:"review_calls"`
 	IndividualReviews        int                 `json:"individual_reviews"`
 	GroupedReviews           int                 `json:"grouped_reviews"`
+	FailedReviews            int                 `json:"failed_reviews,omitempty"`
 	Findings                 []state.DeepFinding `json:"findings"`
 	Dismissals               int                 `json:"dismissals"`
 	CrossCuttingObservations []string            `json:"cross_cutting_observations,omitempty"`
 	SkippedSubcategories     []string            `json:"skipped_subcategories,omitempty"`
+	Synthesis                *SynthesisResult    `json:"synthesis,omitempty"`
 }
 
-func toReportJSON(r *Result) ReportJSON {
+func toReportJSON(r *Result, synthesis *SynthesisResult) ReportJSON {
 	findings := r.Findings
 	if findings == nil {
 		findings = []state.DeepFinding{}
@@ -35,16 +42,19 @@ func toReportJSON(r *Result) ReportJSON {
 		ReviewCalls:              r.ReviewCalls,
 		IndividualReviews:        r.IndividualReviews,
 		GroupedReviews:           r.GroupedReviews,
+		FailedReviews:            r.FailedReviews,
 		Findings:                 findings,
 		Dismissals:               r.Dismissals,
 		CrossCuttingObservations: r.CrossCuttingObservations,
 		SkippedSubcategories:     r.SkippedSubcategories,
+		Synthesis:                synthesis,
 	}
 }
 
 // ExportJSON writes the audit result as structured JSON to the given path.
-func ExportJSON(result *Result, path string) error {
-	report := toReportJSON(result)
+// synthesis may be nil when synthesis was disabled or failed.
+func ExportJSON(result *Result, synthesis *SynthesisResult, path string) error {
+	report := toReportJSON(result, synthesis)
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal report: %w", err)
@@ -53,7 +63,8 @@ func ExportJSON(result *Result, path string) error {
 }
 
 // ExportMarkdown writes a styled markdown report to the given path.
-func ExportMarkdown(result *Result, path string) error {
+// synthesis may be nil when synthesis was disabled or failed.
+func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) error {
 	var b strings.Builder
 
 	b.WriteString("# prr Audit Report\n\n")
@@ -66,24 +77,21 @@ func ExportMarkdown(result *Result, path string) error {
 		result.ReviewCalls, result.IndividualReviews, result.GroupedReviews)
 	fmt.Fprintf(&b, "- Findings: %d\n", len(result.Findings))
 	fmt.Fprintf(&b, "- Dismissed: %d\n", result.Dismissals)
+	if result.FailedReviews > 0 {
+		fmt.Fprintf(&b, "- Failed reviews: %d (these AOIs were not reviewed; see logs)\n", result.FailedReviews)
+	}
 	b.WriteString("\n")
 
-	// Findings grouped by severity
-	severityOrder := []string{"critical", "high", "medium", "low"}
-	grouped := map[string][]state.DeepFinding{}
-	for _, f := range result.Findings {
-		grouped[f.Severity] = append(grouped[f.Severity], f)
-	}
-	// Sort each group by file path
-	for _, findings := range grouped {
-		sort.Slice(findings, func(i, j int) bool {
-			return findings[i].File < findings[j].File
-		})
-	}
+	// Synthesis (if available) — most valuable for executive consumers, so it
+	// goes ahead of the per-finding detail.
+	writeSynthesisMarkdown(&b, synthesis)
 
+	// Findings grouped by severity
 	if len(result.Findings) > 0 {
+		grouped := groupFindingsBySeverity(result.Findings)
+
 		b.WriteString("## Findings\n\n")
-		for _, sev := range severityOrder {
+		for _, sev := range reportSeverityOrder {
 			findings := grouped[sev]
 			if len(findings) == 0 {
 				continue
@@ -109,20 +117,100 @@ func ExportMarkdown(result *Result, path string) error {
 		}
 	}
 
-	// Cross-cutting observations are used as input to Phase 4 synthesis
-	// but not included in the report — the synthesis output covers them.
+	// Cross-cutting observations — kept verbatim. Synthesis paraphrases them
+	// for the executive summary; the originals are still useful raw input.
+	if len(result.CrossCuttingObservations) > 0 {
+		b.WriteString("## Cross-Cutting Observations\n\n")
+		for _, obs := range result.CrossCuttingObservations {
+			fmt.Fprintf(&b, "- %s\n", obs)
+		}
+		b.WriteString("\n")
+	}
 
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
+// writeSynthesisMarkdown emits the executive summary, top risks, systemic
+// patterns, and recommendations from a synthesis result. No-op when nil.
+func writeSynthesisMarkdown(b *strings.Builder, s *SynthesisResult) {
+	if s == nil {
+		return
+	}
+	if s.ExecutiveSummary != "" {
+		b.WriteString("## Executive Summary\n\n")
+		b.WriteString(s.ExecutiveSummary)
+		b.WriteString("\n\n")
+	}
+	if len(s.TopRisks) > 0 {
+		b.WriteString("## Top Risks\n\n")
+		for i, r := range s.TopRisks {
+			fmt.Fprintf(b, "%d. %s\n", i+1, r)
+		}
+		b.WriteString("\n")
+	}
+	if len(s.SystemicPatterns) > 0 {
+		b.WriteString("## Systemic Patterns\n\n")
+		for _, p := range s.SystemicPatterns {
+			fmt.Fprintf(b, "- %s\n", p)
+		}
+		b.WriteString("\n")
+	}
+	if len(s.Recommendations) > 0 {
+		b.WriteString("## Recommendations\n\n")
+		for i, r := range s.Recommendations {
+			fmt.Fprintf(b, "%d. %s\n", i+1, r)
+		}
+		b.WriteString("\n")
+	}
+}
+
+// groupFindingsBySeverity groups findings by their severity string and sorts
+// each bucket by file path then by the leading line number in the Lines
+// field. Lines is a string like "33-41"; we parse the leading int (or 0 on
+// failure) so two findings in the same file appear in source order.
+func groupFindingsBySeverity(findings []state.DeepFinding) map[string][]state.DeepFinding {
+	grouped := make(map[string][]state.DeepFinding)
+	for _, f := range findings {
+		grouped[f.Severity] = append(grouped[f.Severity], f)
+	}
+	for _, group := range grouped {
+		sort.Slice(group, func(i, j int) bool {
+			if group[i].File != group[j].File {
+				return group[i].File < group[j].File
+			}
+			return leadingLineNumber(group[i].Lines) < leadingLineNumber(group[j].Lines)
+		})
+	}
+	return grouped
+}
+
+// leadingLineNumber parses the integer at the start of a "33-41" / "42" /
+// "L42" style range. Returns 0 if no leading digits are present.
+func leadingLineNumber(s string) int {
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(s[:end])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // Export auto-detects format from file extension (.json or .md/.markdown).
-func Export(result *Result, path string) error {
+// synthesis may be nil; the report is still written without the executive
+// summary section in that case.
+func Export(result *Result, synthesis *SynthesisResult, path string) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".json":
-		return ExportJSON(result, path)
+		return ExportJSON(result, synthesis, path)
 	case ".md", ".markdown":
-		return ExportMarkdown(result, path)
+		return ExportMarkdown(result, synthesis, path)
 	default:
 		return fmt.Errorf("unsupported export format %q (use .json or .md)", ext)
 	}

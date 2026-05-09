@@ -131,6 +131,7 @@ func NewProgressUI(
 		phases: []phaseInfo{
 			{name: "phase0", label: "Project Discovery", status: "waiting"},
 			{name: "phase1", label: "File Collection", status: "waiting"},
+			{name: "phase1b", label: "Classification", status: "waiting"},
 			{name: "phase2", label: "AOI Pre-scan", status: "waiting"},
 			{name: "phase3", label: "Deep Review", status: "waiting"},
 			{name: "recheck", label: "Recheck", status: "waiting"},
@@ -166,7 +167,7 @@ func (m *ProgressUI) runAudit() tea.Cmd {
 		var synth *SynthesisResult
 		if len(result.Findings) > 0 && !m.noSynthesis {
 			m.updateProgress("phase4", "Synthesizing executive summary...")
-			synth, err = Synthesize(m.ctx, m.reviewClient, result.Findings, result.CrossCuttingObservations, "", nil)
+			synth, err = Synthesize(m.ctx, m.reviewClient, result.Findings, result.CrossCuttingObservations, result.ProjectContext, nil)
 			if err != nil {
 				m.updateProgress("phase4", "Synthesis failed: "+err.Error())
 				// Non-fatal — continue without synthesis

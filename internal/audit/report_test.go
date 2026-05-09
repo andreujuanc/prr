@@ -67,7 +67,7 @@ func TestExportJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "report.json")
 
-	if err := ExportJSON(sampleResult(), path); err != nil {
+	if err := ExportJSON(sampleResult(), nil, path); err != nil {
 		t.Fatalf("ExportJSON: %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestExportMarkdown(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "report.md")
 
-	if err := ExportMarkdown(sampleResult(), path); err != nil {
+	if err := ExportMarkdown(sampleResult(), nil, path); err != nil {
 		t.Fatalf("ExportMarkdown: %v", err)
 	}
 
@@ -135,6 +135,124 @@ func TestExportMarkdown(t *testing.T) {
 	if critIdx > highIdx {
 		t.Error("Critical should appear before High")
 	}
+
+	// Cross-cutting observations should be in the report
+	if !strings.Contains(md, "## Cross-Cutting Observations") {
+		t.Error("missing Cross-Cutting Observations section")
+	}
+	if !strings.Contains(md, "Pattern of missing input validation across HTTP handlers") {
+		t.Error("first cross-cutting observation not embedded verbatim")
+	}
+}
+
+func TestExportMarkdown_WithSynthesis(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	syn := &SynthesisResult{
+		ExecutiveSummary: "The audit found 3 findings clustered in input validation.",
+		TopRisks: []string{
+			"SQL injection in user query path",
+			"Command injection via exec",
+		},
+		SystemicPatterns: []string{
+			"Missing input validation across HTTP handlers",
+		},
+		Recommendations: []string{
+			"Add a shared input-validation middleware",
+		},
+	}
+
+	if err := ExportMarkdown(sampleResult(), syn, path); err != nil {
+		t.Fatalf("ExportMarkdown: %v", err)
+	}
+
+	data, _ := os.ReadFile(path)
+	md := string(data)
+
+	for _, want := range []string{
+		"## Executive Summary",
+		"clustered in input validation",
+		"## Top Risks",
+		"1. SQL injection in user query path",
+		"## Systemic Patterns",
+		"Missing input validation across HTTP handlers",
+		"## Recommendations",
+		"shared input-validation middleware",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown missing synthesis section %q", want)
+		}
+	}
+
+	// Synthesis should appear before per-finding detail
+	execIdx := strings.Index(md, "## Executive Summary")
+	findingsIdx := strings.Index(md, "## Findings")
+	if execIdx == -1 || findingsIdx == -1 || execIdx > findingsIdx {
+		t.Error("Executive Summary should appear before Findings")
+	}
+}
+
+func TestExportMarkdown_NitFindingsIncluded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	r := &Result{
+		Findings: []state.DeepFinding{
+			{Severity: "nit", File: "x.go", Title: "trailing whitespace", Lines: "10"},
+		},
+	}
+	if err := ExportMarkdown(r, nil, path); err != nil {
+		t.Fatalf("ExportMarkdown: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	md := string(data)
+	if !strings.Contains(md, "### Nit") {
+		t.Error("nit findings should render under '### Nit' heading")
+	}
+	if !strings.Contains(md, "trailing whitespace") {
+		t.Error("nit finding title missing")
+	}
+}
+
+func TestExportMarkdown_FailedReviewsLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	r := sampleResult()
+	r.FailedReviews = 4
+	if err := ExportMarkdown(r, nil, path); err != nil {
+		t.Fatalf("ExportMarkdown: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "Failed reviews: 4") {
+		t.Error("expected 'Failed reviews: 4' line in summary")
+	}
+}
+
+func TestExportMarkdown_FindingsSortedByLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	r := &Result{
+		Findings: []state.DeepFinding{
+			{Severity: "high", File: "a.go", Lines: "100", Title: "later"},
+			{Severity: "high", File: "a.go", Lines: "10", Title: "earlier"},
+			{Severity: "high", File: "a.go", Lines: "50-60", Title: "middle"},
+		},
+	}
+	if err := ExportMarkdown(r, nil, path); err != nil {
+		t.Fatalf("ExportMarkdown: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	md := string(data)
+
+	earlyIdx := strings.Index(md, "earlier")
+	midIdx := strings.Index(md, "middle")
+	lateIdx := strings.Index(md, "later")
+	if !(earlyIdx < midIdx && midIdx < lateIdx) {
+		t.Errorf("findings not sorted by line: earlier=%d middle=%d later=%d", earlyIdx, midIdx, lateIdx)
+	}
 }
 
 func TestExportAutoDetect(t *testing.T) {
@@ -143,18 +261,18 @@ func TestExportAutoDetect(t *testing.T) {
 
 	// JSON
 	jp := filepath.Join(dir, "out.json")
-	if err := Export(r, jp); err != nil {
+	if err := Export(r, nil, jp); err != nil {
 		t.Fatalf("Export .json: %v", err)
 	}
 
 	// MD
 	mp := filepath.Join(dir, "out.md")
-	if err := Export(r, mp); err != nil {
+	if err := Export(r, nil, mp); err != nil {
 		t.Fatalf("Export .md: %v", err)
 	}
 
 	// Unsupported
-	if err := Export(r, filepath.Join(dir, "out.txt")); err == nil {
+	if err := Export(r, nil, filepath.Join(dir, "out.txt")); err == nil {
 		t.Error("expected error for .txt extension")
 	}
 }
@@ -164,7 +282,7 @@ func TestExportJSONNilFindings(t *testing.T) {
 	path := filepath.Join(dir, "report.json")
 
 	r := &Result{FilesScanned: 1}
-	if err := ExportJSON(r, path); err != nil {
+	if err := ExportJSON(r, nil, path); err != nil {
 		t.Fatalf("ExportJSON: %v", err)
 	}
 
@@ -181,7 +299,7 @@ func TestToReportJSON_NilFindings(t *testing.T) {
 		AOIsGenerated: 10,
 		Findings:      nil,
 	}
-	rj := toReportJSON(r)
+	rj := toReportJSON(r, nil)
 	if rj.Findings == nil {
 		t.Error("expected non-nil findings slice")
 	}
@@ -202,7 +320,7 @@ func TestToReportJSON_FieldMapping(t *testing.T) {
 		CrossCuttingObservations: []string{"obs1"},
 		SkippedSubcategories:     []string{"sub1"},
 	}
-	rj := toReportJSON(r)
+	rj := toReportJSON(r, nil)
 	if rj.FilesScanned != 10 {
 		t.Errorf("FilesScanned: want 10, got %d", rj.FilesScanned)
 	}
