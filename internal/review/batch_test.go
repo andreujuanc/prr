@@ -1,6 +1,7 @@
 package review
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -75,7 +76,57 @@ func TestParseBatchResult_Fields(t *testing.T) {
 	if r.Purpose != "application entry point" {
 		t.Errorf("Purpose = %q, want %q", r.Purpose, "application entry point")
 	}
-	if r.Findings != "Missing error handling on line 42" {
-		t.Errorf("Findings = %q, want %q", r.Findings, "Missing error handling on line 42")
+	if got := r.Findings.Text(); got != "Missing error handling on line 42" {
+		t.Errorf("Findings.Text() = %q, want %q", got, "Missing error handling on line 42")
+	}
+}
+
+func TestParseBatchResult_StructuredFindings(t *testing.T) {
+	input := `[{
+		"file": "src/main.go",
+		"purpose": "entry point",
+		"findings": [
+			{
+				"severity": "high",
+				"confidence": "high",
+				"dimension": "correctness",
+				"title": "Off-by-one in expiry",
+				"line": 87,
+				"detail": "exp <= now accepts an expired token.",
+				"suggestion": "Use exp < now."
+			}
+		]
+	}]`
+	results := ParseBatchResult(input)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if len(r.Findings.Items) != 1 {
+		t.Fatalf("expected 1 finding item, got %d", len(r.Findings.Items))
+	}
+	got := r.Findings.Items[0]
+	if got.Severity != "high" || got.Line != 87 || got.Title != "Off-by-one in expiry" {
+		t.Errorf("unexpected finding: %+v", got)
+	}
+	if r.Findings.IsEmpty() {
+		t.Error("expected non-empty findings")
+	}
+	if !strings.Contains(r.Findings.Text(), "Off-by-one in expiry") {
+		t.Errorf("Text() should include the title; got %q", r.Findings.Text())
+	}
+}
+
+func TestBatchFindings_EmptyArray(t *testing.T) {
+	input := `[{"file":"a.go","purpose":"p","findings":[]}]`
+	results := ParseBatchResult(input)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result")
+	}
+	if !results[0].Findings.IsEmpty() {
+		t.Error("expected empty findings")
+	}
+	if results[0].Findings.Text() != "" {
+		t.Errorf("Text() should be empty; got %q", results[0].Findings.Text())
 	}
 }

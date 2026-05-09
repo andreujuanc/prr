@@ -12,16 +12,7 @@ Code that tests application logic — unit tests, integration tests, test helper
 - Missing negative assertions — test proves the happy path works but never verifies that invalid input is rejected, wrong state is prevented, or errors are raised when they should be
 - Assertions undermined by the test setup — e.g., mocking the function being tested and then asserting on the mock's return value
 
-**coverage-gaps** — Missing test cases, untested paths:
-- Happy path tested but error/edge cases missing
-- Error handling code with no test that triggers the error
-- Boundary conditions not tested (empty input, nil, zero, max values)
-- Concurrency-sensitive code tested only sequentially
-- Security-critical code paths without dedicated tests (auth bypass, injection)
-- New public API methods without corresponding test cases
-- Conditional branches where only one branch is exercised
-- Bug fixes without a regression test that would catch the bug recurring
-- Test assertions weakened to make tests pass (e.g., `assertEqual` relaxed to `assertNotNil`)
+> Coverage gaps in **production** code (untested branches, missing regression tests, weakened assertions) belong to the `test-coverage` category. This file covers issues with the **test code itself** — assertions, correctness, reliability.
 
 **test-correctness** — Tests that pass but don't verify what they claim:
 - Tests that mock the system under test (testing the mock, not the code)

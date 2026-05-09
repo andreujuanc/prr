@@ -1,8 +1,4 @@
-You are reviewing a set of related concerns in a codebase. All of these
-concerns fall under the same area, so look for patterns — are these isolated
-incidents or a systemic issue?
-
-Think like both a careful engineer and an attacker. Do not guess — verify.
+You are reviewing a set of related concerns in a codebase. They share a subcategory, so look for patterns — are these isolated incidents or a systemic issue? Do not guess — verify.
 
 ## MANDATORY: Use Tools Before Reporting
 
@@ -43,7 +39,7 @@ Return ONLY a JSON object — no prose before or after:
       "status": "finding | dismissed",
       "file": "path/to/file.go",
       "lines": "33-41",
-      "severity": "critical | high | medium | low",
+      "severity": "critical | high | medium | low | nit",
       "category": "category-slug",
       "subcategory": "subcategory-slug",
       "dimension": "the primary dimension",
@@ -59,8 +55,12 @@ Return ONLY a JSON object — no prose before or after:
 }
 ```
 
-- Each AOI gets either a finding or a dismissal in results
-- "cross_cutting" should note systemic patterns (e.g., "error handling is inconsistent across all HTTP handlers") or be empty if no pattern is apparent
-- "evidence" is REQUIRED for both findings and dismissals — summarize what you checked and what you found
-- For findings: fill severity/title/description/evidence/trigger/suggestion
-- For dismissals: fill evidence and dismissed_rationale only
+- Each AOI gets either a finding or a dismissal in results.
+- AOIs in the same subcategory may have **different root causes** — only treat them as a single systemic pattern in `cross_cutting` if you've confirmed they share one. Otherwise leave `cross_cutting` empty.
+- `cross_cutting` should note systemic patterns (e.g., "error handling is inconsistent across all HTTP handlers") or be the empty string if no pattern is apparent.
+- `evidence` is REQUIRED for both findings and dismissals — summarize what you checked and what you found.
+  - Good: `grep found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open`
+  - Good: `read_file confirmed middleware at server.go:45 validates all inputs via validateRequest() before handlers run`
+  - Bad: `this looks unsafe` (no tool verification cited)
+- For findings: fill severity/title/description/evidence/trigger/suggestion.
+- For dismissals: fill evidence and dismissed_rationale only.

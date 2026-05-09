@@ -5,10 +5,10 @@ Code that handles, propagates, or recovers from errors.
 #### Subcategories
 
 **swallowed-errors** — Ignored returns, empty catch blocks:
-- Error return values assigned to `_` or explicitly ignored
+- Error return values assigned to `_` or explicitly ignored when the error matters (write paths, business operations, anything with side effects)
 - Empty `catch` blocks or `catch` that only logs without re-throwing/returning
 - Error channels that are never read
-- Deferred function calls whose errors are never checked (e.g., `defer f.Close()`)
+- Deferred Close() on **write** paths whose error is dropped (`defer w.Close()` on a writer can hide flush failures — use a named return + closure, or check explicitly). Note: ignoring `defer f.Close()` on **read-only** files is idiomatic in Go and not a bug.
 - Functions that return errors but callers don't check them
 - `// nolint` or `// eslint-disable` on error checks without justification
 

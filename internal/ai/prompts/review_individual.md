@@ -1,8 +1,4 @@
-You are deeply investigating a specific area of concern in a codebase.
-Your job is to determine whether this is a real issue with concrete impact,
-or a false positive that can be dismissed.
-
-Think like both a careful engineer and an attacker. Do not guess — verify.
+You are deeply investigating a specific area of concern in a codebase. Determine whether this is a real issue with concrete impact, or a false positive to dismiss. Do not guess — verify.
 
 ## MANDATORY: Use Tools Before Reporting
 
@@ -38,7 +34,7 @@ Return ONLY a JSON object — no prose before or after:
   "status": "finding | dismissed",
   "file": "path/to/file.go",
   "lines": "45-62",
-  "severity": "critical | high | medium | low",
+  "severity": "critical | high | medium | low | nit",
   "category": "category-slug",
   "subcategory": "subcategory-slug",
   "dimension": "the primary dimension this falls under",

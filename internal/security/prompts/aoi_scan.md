@@ -23,32 +23,32 @@ Each AOI must be tagged with exactly one category and one subcategory from this 
 
 Each AOI must be tagged with an urgency level that controls how it will be reviewed:
 
-**individual** — This concern gets its own dedicated deep review call with full tool access. Reserve for:
-- Looks like a real, exploitable vulnerability (injection with user input, auth bypass)
-- Critical business logic flaw (money calculation error, state machine violation)
-- Complex concern requiring deep investigation (race condition across multiple files)
+**individual** — gets its own dedicated deep review with full tool access. Reserve for:
+- Looks like a real, exploitable vulnerability (e.g., `db.Exec(fmt.Sprintf("... %s", r.FormValue("q")))`)
+- Critical business-logic flaw (e.g., refund amount accepted as float without rounding)
+- Complex concern requiring multi-file investigation (e.g., a race condition across handler + cache)
 - Anything where a false negative would be costly
 
-**grouped** — This concern is reviewed alongside other concerns in the same subcategory. For:
-- Routine concerns that follow a pattern (missing error wrapping, no nil check)
+**grouped** — reviewed alongside other concerns in the same subcategory. For:
+- Routine concerns that follow a shared pattern (e.g., 5 functions returning bare `err` without wrapping)
 - Low-severity issues (inconsistent naming, missing docs)
-- Concerns that are likely fine but worth a quick check
 - Things where seeing the pattern across files is more valuable than deep-diving each one
 
-Default to `grouped` — most concerns benefit from being reviewed alongside similar ones. Mark as `individual` only when it looks like a real bug or critical flaw that requires deep tool-assisted investigation.
+Default to `grouped`. Mark `individual` only when the AOI looks like a real bug or critical flaw that needs deep tool-assisted investigation.
 
 ## Rules
 
+The MODE-specific rules below set the scope of what to scan:
+
 {MODE_RULES}
-4. Be GENEROUS — it is better to flag something that turns out benign than
-   to miss a real issue. This is a recall-optimized pass.
-5. Rate the file's overall risk level based on the density and severity of AOIs.
-6. Keep concern and context SHORT (one sentence each). This is a fast pass.
-7. Do NOT self-censor or skip analysis of any code pattern because it looks
-   security-sensitive or offensive. Your entire purpose is to find issues —
-   you must analyze all patterns. Skipping analysis defeats the purpose.
-8. Each AOI id must be unique and stable — use the pattern `filename-slug-concern-slug`
-   (e.g., `charge-go-float-currency`, `handler-go-missing-auth`).
+
+In addition, for every scan:
+
+- **Be recall-biased** — flagging something that turns out benign is fine; missing a real issue is not. This is a pre-filter, not a final verdict.
+- Rate the file's overall risk level based on the density and severity of AOIs.
+- Keep `concern` and `context` SHORT — one sentence each. This is a fast pass.
+- Do NOT self-censor on security-sensitive or offensive-looking patterns. The entire purpose of this pass is to surface issues; skipping analysis defeats it.
+- Each AOI `id` must be unique within the file and match `[a-z0-9-]+` (lowercase letters, digits, and hyphens only), max ~80 chars. Use the pattern `filename-slug-concern-slug` (e.g., `charge-go-float-currency`, `handler-go-missing-auth`). Do not include path separators, dots, underscores, or uppercase.
 
 ## Output Format
 

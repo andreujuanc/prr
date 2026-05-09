@@ -152,7 +152,7 @@ func BuildSynthesisUserMessage(findings []state.DeepFinding, crossCutting []stri
 
 	// Group by severity for structured presentation.
 	bySeverity := map[string][]state.DeepFinding{}
-	severityOrder := []string{"critical", "high", "medium", "low"}
+	severityOrder := []string{"critical", "high", "medium", "low", "nit"}
 	for _, f := range findings {
 		sev := f.Severity
 		if sev == "" {

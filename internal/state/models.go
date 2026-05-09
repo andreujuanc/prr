@@ -36,8 +36,9 @@ type ReviewOutput struct {
 
 // ReviewFinding is a single finding from the structured review.
 type ReviewFinding struct {
-	Severity   string `json:"severity"` // "critical", "high", "medium", "low", "nit"
-	Category   string `json:"category"` // "bug", "security", "performance", "testing", "style", "architecture", "docs"
+	Severity   string `json:"severity"`             // "critical", "high", "medium", "low", "nit"
+	Confidence string `json:"confidence,omitempty"` // "high", "medium", "low" — set by synthesis after verification
+	Category   string `json:"category"`             // "bug", "security", "performance", "testing", "style", "architecture", "docs"
 	File       string `json:"file"`
 	Line       int    `json:"line"`
 	Title      string `json:"title"`
@@ -159,7 +160,7 @@ type DeepFinding struct {
 	AOIID       string `json:"aoi_id"`
 	File        string `json:"file"`
 	Lines       string `json:"lines"`
-	Severity    string `json:"severity"` // "critical", "high", "medium", "low"
+	Severity    string `json:"severity"` // "critical", "high", "medium", "low", "nit"
 	Category    string `json:"category"`
 	Subcategory string `json:"subcategory,omitempty"`
 	Dimension   string `json:"dimension"`

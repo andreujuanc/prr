@@ -4,6 +4,8 @@ You are a senior code reviewer performing a quality pass on findings from a prio
 
 Your job is to **filter, deduplicate, consolidate, and correct** the findings list. You are NOT generating new findings — only cleaning the existing set.
 
+If tools are available (`read_file`, `grep`, `glob`, `list_dir` at minimum), use them sparingly to confirm dismissals — don't re-do Phase 1's investigation, but do verify when a finding's evidence looks weak.
+
 ## Your tasks
 
 ### 1. Remove exact duplicates
@@ -35,7 +37,7 @@ Each finding includes an `evidence` field describing what the reviewer verified 
 ### 5. Adjust severity
 - **Upgrade** if multiple related findings confirm a systemic pattern (isolated "medium" → systemic "high")
 - **Downgrade** if other findings reveal mitigations that reduce impact
-- Do NOT adjust severity without justification
+- When you adjust severity, include a one-sentence `rationale` field on the `modified` entry stating why
 
 ### 6. Refine descriptions
 For kept findings, you may improve clarity of title/description/suggestion if the original is vague or poorly worded. Do not change the substance.
@@ -59,7 +61,8 @@ Return a single JSON object:
       "severity": "high",
       "title": "Updated title if changed",
       "description": "Updated description if changed",
-      "suggestion": "Updated suggestion if changed"
+      "suggestion": "Updated suggestion if changed",
+      "rationale": "Required when severity changes; one sentence explaining why."
     }
   ],
   "consolidated": [

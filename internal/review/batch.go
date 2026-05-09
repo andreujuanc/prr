@@ -24,11 +24,123 @@ type Batch struct {
 	Diffs string   // concatenated diffs for all files in this batch
 }
 
+// BatchFinding is one structured finding from a batch review (new format).
+type BatchFinding struct {
+	Severity       string `json:"severity,omitempty"`
+	Confidence     string `json:"confidence,omitempty"`
+	Dimension      string `json:"dimension,omitempty"`
+	Title          string `json:"title,omitempty"`
+	Line           int    `json:"line,omitempty"`
+	Detail         string `json:"detail,omitempty"`
+	Suggestion     string `json:"suggestion,omitempty"`
+	CWE            string `json:"cwe,omitempty"`
+	Exploitability string `json:"exploitability,omitempty"`
+	Impact         string `json:"impact,omitempty"`
+}
+
+// BatchFindings holds the findings for one file. It deserializes from either
+// the new structured array form OR the legacy newline-bullet string form, so
+// previously cached results and older models still parse cleanly.
+type BatchFindings struct {
+	Items []BatchFinding
+	Raw   string // populated when the input was the legacy string form
+}
+
+// UnmarshalJSON accepts either a JSON array of BatchFinding or a JSON string.
+func (bf *BatchFindings) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var items []BatchFinding
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+		bf.Items = items
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	bf.Raw = s
+	return nil
+}
+
+// MarshalJSON emits the structured array form when populated, falling back to
+// the legacy string when only Raw is set. Empty values emit "[]".
+func (bf BatchFindings) MarshalJSON() ([]byte, error) {
+	if len(bf.Items) > 0 {
+		return json.Marshal(bf.Items)
+	}
+	if bf.Raw != "" {
+		return json.Marshal(bf.Raw)
+	}
+	return []byte("[]"), nil
+}
+
+// IsEmpty reports whether there are no findings to surface for this file.
+func (bf BatchFindings) IsEmpty() bool {
+	return len(bf.Items) == 0 && strings.TrimSpace(bf.Raw) == ""
+}
+
+// Text renders a human-readable representation for synthesis input. When the
+// findings came in as legacy string form, that string is returned verbatim.
+func (bf BatchFindings) Text() string {
+	if bf.Raw != "" {
+		return bf.Raw
+	}
+	if len(bf.Items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, f := range bf.Items {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("- ")
+		if f.Severity != "" {
+			b.WriteString("[severity: " + f.Severity + "] ")
+		}
+		if f.Confidence != "" {
+			b.WriteString("[confidence: " + f.Confidence + "] ")
+		}
+		if f.Dimension != "" {
+			b.WriteString("[" + f.Dimension + "] ")
+		}
+		if f.Title != "" {
+			b.WriteString(f.Title)
+		} else if f.Detail != "" {
+			b.WriteString(f.Detail)
+		}
+		if f.Line > 0 {
+			fmt.Fprintf(&b, " (line %d)", f.Line)
+		}
+		if f.CWE != "" {
+			b.WriteString(" [" + f.CWE + "]")
+		}
+		if f.Exploitability != "" {
+			b.WriteString(" [exploitability: " + f.Exploitability + "]")
+		}
+		if f.Impact != "" {
+			b.WriteString(" [impact: " + f.Impact + "]")
+		}
+		if f.Title != "" && f.Detail != "" {
+			b.WriteString("\n  " + f.Detail)
+		}
+		if f.Suggestion != "" {
+			b.WriteString("\n  Suggestion: " + f.Suggestion)
+		}
+	}
+	return b.String()
+}
+
 // BatchFileReview is the structured output from reviewing a single file in a batch.
 type BatchFileReview struct {
-	File     string `json:"file"`
-	Purpose  string `json:"purpose"`
-	Findings string `json:"findings"`
+	File     string        `json:"file"`
+	Purpose  string        `json:"purpose"`
+	Findings BatchFindings `json:"findings"`
 }
 
 // BatchMaxChars is the approximate max diff size per batch.
@@ -322,15 +434,16 @@ func PersistBatchFindings(reviewState *state.State, batch Batch, rawResult strin
 				continue
 			}
 			matchedFiles[entry.File] = true
+			findingsText := entry.Findings.Text()
 			if reviewState != nil {
 				purpose := entry.Purpose
 				if purpose == "" {
 					purpose = "reviewed"
 				}
-				reviewState.SetBatchFindings(entry.File, purpose, entry.Findings)
+				reviewState.SetBatchFindings(entry.File, purpose, findingsText)
 			}
-			if entry.Findings != "" {
-				fileFindings[entry.File] = entry.Findings
+			if !entry.Findings.IsEmpty() {
+				fileFindings[entry.File] = findingsText
 			}
 		}
 
@@ -593,9 +706,9 @@ func RunBatchesOnly(
 				}
 				if parsed != nil {
 					for _, entry := range parsed {
-						if entry.Findings != "" {
+						if !entry.Findings.IsEmpty() {
 							allFindings.WriteString(fmt.Sprintf("#### %s\nPurpose: %s\n%s\n\n",
-								entry.File, entry.Purpose, entry.Findings))
+								entry.File, entry.Purpose, entry.Findings.Text()))
 						}
 					}
 				} else {
@@ -643,9 +756,9 @@ func RunBatchesOnly(
 			allFindings.WriteString(fmt.Sprintf("Files: %s\n\n", strings.Join(batch.Files, ", ")))
 			if parsed != nil {
 				for _, entry := range parsed {
-					if entry.Findings != "" {
+					if !entry.Findings.IsEmpty() {
 						allFindings.WriteString(fmt.Sprintf("#### %s\nPurpose: %s\n%s\n\n",
-							entry.File, entry.Purpose, entry.Findings))
+							entry.File, entry.Purpose, entry.Findings.Text()))
 					}
 				}
 			} else {

@@ -410,8 +410,8 @@ func reviewBatchesParallel(
 			}
 			if parsed != nil {
 				for _, entry := range parsed {
-					if entry.Findings != "" {
-						allFindings.WriteString(fmt.Sprintf("#### %s\nPurpose: %s\n%s\n\n", entry.File, entry.Purpose, entry.Findings))
+					if !entry.Findings.IsEmpty() {
+						allFindings.WriteString(fmt.Sprintf("#### %s\nPurpose: %s\n%s\n\n", entry.File, entry.Purpose, entry.Findings.Text()))
 					}
 				}
 			} else {

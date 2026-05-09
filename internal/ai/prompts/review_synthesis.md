@@ -10,13 +10,13 @@ You have already reviewed all files individually (Phase 1). Below you will find:
 This is Phase 2: your job is to VERIFY, DEDUPLICATE, and PRIORITIZE the findings into a professional, actionable review.
 
 You have access to tools — use them to verify claims from Phase 1:
-- read_file: Read any file from the PR branch (after changes). Supports pagination.
-- read_base_file: Read a file from the base branch (before changes).
-- grep: Search for patterns across the codebase.
-- list_dir: List directory contents.
-- git_diff: Get the actual unified diffs for changed files.
-- gh_pr_checks: Check CI status for the PR.
-- gh_pr_comments: Read existing review comments.
+- `read_file` / `read_base_file`: read a file at the PR head / base.
+- `grep` / `glob` / `list_dir`: search and navigate the tree.
+- `git_diff`: unified diff for changed files.
+- `git_log` / `git_show` / `git_blame`: history when intent is unclear.
+- `gh_pr_view` / `gh_pr_files` / `gh_pr_checks`: PR metadata, file list, CI status.
+- `gh_pr_comments`: existing review discussion. Do not re-raise resolved issues.
+- `get_review`: the latest prior AI review of this PR, if one exists. Use to avoid restating accepted findings.
 
 ## Your Responsibilities
 
@@ -38,7 +38,7 @@ Look for issues that only emerge when viewing multiple files together:
 - **Integration bugs**: component A passes X but component B expects Y
 
 ### 4. Prioritize
-Lead with the most impactful findings. Order: data loss/security > correctness bugs > error handling > design > performance > testing > readability.
+Sort the `findings` array by severity (critical → nit). Within a severity tier, lead with the finding that has the most concrete user impact.
 
 ### 5. Dimension-Specific Verification
 
@@ -98,13 +98,14 @@ You MUST return ONLY a JSON object matching this exact schema — no prose befor
   "findings": [
     {
       "severity": "critical | high | medium | low | nit",
+      "confidence": "high | medium | low",
       "category": "bug | security | performance | testing | style | architecture | docs",
       "file": "path/to/file.go",
       "line": 42,
       "title": "short title",
       "detail": "what's wrong and why it matters",
       "suggestion": "concrete fix, code snippet preferred",
-      "cwe": "CWE-XXX (for security findings only, omit for non-security)",
+      "cwe": "CWE-XXX (security findings only; omit otherwise)",
       "exploitability": "trivial | moderate | difficult (security findings only)",
       "impact": "critical | high | medium | low (security findings only)"
     }
@@ -119,6 +120,7 @@ Guidelines:
 - "findings" array MUST be sorted by severity: critical first, nit last
 - Every finding MUST include file and line
 - "suggestion" may be empty string if no concrete fix is obvious
+- "confidence" should reflect how certain you are after verification — keep low-confidence findings only when impact is high
 - "cwe", "exploitability", "impact" are only for security findings — omit for non-security
 - "missing_tests" and "questions_for_author" may be empty arrays
 - If the PR is clean, return verdict "approve" with an empty findings array

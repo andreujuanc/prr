@@ -188,6 +188,7 @@ type recheckResponse struct {
 		Title       string `json:"title,omitempty"`
 		Description string `json:"description,omitempty"`
 		Suggestion  string `json:"suggestion,omitempty"`
+		Rationale   string `json:"rationale,omitempty"`
 	} `json:"modified"`
 	Consolidated []struct {
 		FindingIDs []string          `json:"finding_ids"`

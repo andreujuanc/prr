@@ -5,10 +5,10 @@ Code clarity, naming, complexity — whether a new team member can understand th
 #### Subcategories
 
 **naming** — Names that convey (or obscure) intent:
-- Single-letter variables outside tiny loops (`x`, `d`, `t` for non-obvious things)
-- Ambiguous abbreviations (`proc` — process or processor? `mgr` — manager of what?)
+- Single-letter variables for non-obvious things in non-trivial scope. Note: short conventional names are idiomatic in Go and should NOT be flagged — receivers (`r *Repo`), `t *testing.T`, `r io.Reader`, `w io.Writer`, `b *bytes.Buffer`, `i`/`j` in loops, `err` for errors, `ok` for boolean returns.
+- Ambiguous abbreviations whose expansion isn't obvious from context (`proc` — process or processor? `mgr` — manager of what?)
 - Names inconsistent with the rest of the codebase (same concept, different name)
-- Boolean variables without is/has/can/should prefix (unclear what true means)
+- Boolean variables whose name doesn't convey what `true` means (unclear polarity, e.g. `flag`, `disabled` used as enabled)
 - Functions named for implementation rather than intent (`loopAndCheck` vs `validateAll`)
 
 **complexity** — Functions and structures too complex to reason about:
@@ -28,9 +28,9 @@ Code clarity, naming, complexity — whether a new team member can understand th
 **comments** — Comment quality and accuracy:
 - Comments that restate the code instead of explaining WHY (`// increment i` above `i++`)
 - Stale comments that contradict the current code (changed logic, comment not updated)
-- Missing comments on non-obvious business logic or workarounds
+- Missing comments on non-obvious business logic, hidden constraints, or workarounds
 - Commented-out code with no explanation of why it's kept
-- Missing doc comments on public APIs
+- Missing doc comments on public APIs that have non-obvious semantics. Do NOT flag a missing doc comment when the symbol's name and signature already make behavior obvious — this is style noise.
 
 **magic-values** — Hardcoded literals that should be named constants:
 - Numeric literals with non-obvious meaning (`if retries > 3`, `timeout: 30000`)

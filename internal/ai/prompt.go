@@ -64,21 +64,22 @@ var RecheckPrompt string
 var ReviewPRPrompt = ReviewPRSystemPrompt + `
 
 You have access to tools — use them proactively to understand the code:
-- git_diff: Get the unified diffs for changed files.
-- read_file: Read any file from the PR branch (after changes). Supports pagination.
-- read_base_file: Read a file from the base branch (before changes).
-- grep: Search for patterns across the codebase (regex). Find callers, usages, related code.
-- list_dir: List directory contents to understand the project structure.
-- gh_pr_checks: Check CI status for the PR.
-- gh_pr_comments: Read existing review comments.
+- read_file / read_base_file: read a file at the PR head / base.
+- grep / glob / list_dir: search and navigate the tree.
+- git_diff: unified diffs for changed files.
+- git_log / git_show / git_blame: history and authorship when intent is unclear.
+- gh_pr_view / gh_pr_files / gh_pr_checks: PR metadata, file list, CI status.
+- gh_pr_comments: existing review comments. Do not re-raise resolved issues.
+- gh_issue_view: linked issues referenced in the PR body.
+- get_review: the latest prior AI review of this PR, if one exists.
 
 ## Workflow
 
-1. Use git_diff to read the diffs for all changed files
-2. Use read_file and read_base_file to examine files when you need more context
-3. Use grep to find callers, usages, and related code
-4. Use gh_pr_checks to check CI status
-5. Use gh_pr_comments to read existing review comments
+1. Read the diffs for all changed files via git_diff.
+2. Use read_file / read_base_file for surrounding context, especially on refactors.
+3. Use grep to find callers and related code before flagging.
+4. Check gh_pr_comments and get_review to avoid re-raising resolved issues.
+5. Check gh_pr_checks to know whether CI surfaced anything you should focus on.
 
 ## Output Format
 

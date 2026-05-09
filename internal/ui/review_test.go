@@ -255,7 +255,7 @@ func TestParseBatchResult_ValidJSON(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(result))
 	}
-	if result[0].File != "a.go" || result[0].Purpose != "does stuff" || result[0].Findings != "issue found" {
+	if result[0].File != "a.go" || result[0].Purpose != "does stuff" || result[0].Findings.Text() != "issue found" {
 		t.Fatalf("unexpected entry: %+v", result[0])
 	}
 }
