@@ -11,6 +11,7 @@ import (
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/git"
+	"github.com/andreujuanc/prr/internal/prcontext"
 	"github.com/andreujuanc/prr/internal/project"
 	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/state"
@@ -41,6 +42,12 @@ type PRReviewOptions struct {
 
 	// Debug enables verbose output.
 	Debug bool
+
+	// WatchdogTap (optional) is called on every pipeline activity event
+	// — phase boundaries AND streamed tokens. Headless callers wire
+	// this to an ai.IdleWatch so stalls during long synthesis runs are
+	// detected even though no phase events are firing.
+	WatchdogTap func(string)
 }
 
 // PRReviewResult holds the output of a headless PR review.
@@ -139,7 +146,10 @@ func RunPRReview(
 	}
 	onProgress("fetch", fmt.Sprintf("Collected diffs for %d files", len(rawDiffs)))
 
-	// Build PR metadata string
+	// Build PR metadata string. PR Brief (condensed comments / prior
+	// reviews / CI) is built inside RunReviewCore — both this headless
+	// path and the TUI path go through there, so building it once
+	// covers both.
 	var meta strings.Builder
 	meta.WriteString(fmt.Sprintf("PR #%d: %s\n", pr.Number, pr.Title))
 	if pr.Body != "" {
@@ -148,8 +158,13 @@ func RunPRReview(
 	meta.WriteString(fmt.Sprintf("Base: %s → Head: %s\n\n", pr.BaseRefName, pr.HeadRefName))
 	prMeta := meta.String()
 
-	// Run the shared core pipeline
-	rr := &progressReporter{onProgress: onProgress}
+	// Run the shared core pipeline. If a watchdog tap is provided,
+	// wrap the reporter so streamed tokens (which progressReporter
+	// ignores) still reset the watchdog.
+	var rr Reporter = &progressReporter{onProgress: onProgress}
+	if opts.WatchdogTap != nil {
+		rr = &WatchdogReporter{Inner: rr, Tap: opts.WatchdogTap}
+	}
 	coreResult, err := RunReviewCore(ctx, reviewClient, aoiClient, CoreOptions{
 		PRMeta:             prMeta,
 		RawDiffs:           rawDiffs,
@@ -161,6 +176,7 @@ func RunPRReview(
 		AOIContextLines:    opts.AOIContextLines,
 		RepoRoot:           opts.RepoRoot,
 		NoSynthesis:        opts.NoSynthesis,
+		PR:                 pr,
 	}, rr)
 	if err != nil {
 		return nil, err
@@ -174,6 +190,41 @@ func RunPRReview(
 		DeepFindings:     coreResult.DeepFindings,
 		FileFindings:     coreResult.FileFindings,
 	}, nil
+}
+
+// summarizeCacheState builds a human-readable one-liner listing the
+// phases whose results were loaded from the persisted state — emitted
+// at the start of RunReviewCore so callers see what's being reused
+// instead of re-computed. Returns "" when nothing is cached (fresh run).
+//
+// All state reads go through locked accessors. Earlier versions of this
+// function dipped into s.Files directly between HasFile calls, which
+// was racy against concurrent writers (theoretical at startup, real if
+// the function ever moves later in the pipeline).
+func summarizeCacheState(s *state.State, rawDiffs map[string]string) string {
+	if s == nil {
+		return ""
+	}
+	var parts []string
+	if ctxSummary, _ := s.GetProjectContext(); ctxSummary != "" {
+		parts = append(parts, "project_ctx ✓")
+	}
+	if brief, _ := s.GetPRBrief(); brief != "" {
+		parts = append(parts, "pr_brief ✓")
+	}
+	if total := len(rawDiffs); total > 0 {
+		paths := make([]string, 0, total)
+		for p := range rawDiffs {
+			paths = append(paths, p)
+		}
+		if cached := s.CountCachedBatchFindings(paths); cached > 0 {
+			parts = append(parts, fmt.Sprintf("batches %d/%d ✓", cached, total))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " | ")
 }
 
 // progressReporter adapts the simple onProgress callback to the Reporter interface.
@@ -205,6 +256,48 @@ func (p *progressReporter) SynthesisStarted() {
 func (p *progressReporter) Token(token string) {}
 
 // ── Shared pipeline steps ────────────────────────────────────────────────
+
+// DiscoverPRBrief runs PR-specific context discovery with state caching.
+// Mirrors DiscoverProjectContext: returns the cached brief on hash match,
+// otherwise gathers gh data and summarizes via the fast client.
+//
+// Failure is non-fatal — on any error returns the cached brief (if any)
+// or empty string. The brief is a quality enhancement; review can
+// proceed without it.
+func DiscoverPRBrief(
+	ctx context.Context,
+	fastClient ai.Client,
+	pr *git.PullRequest,
+	reviewState *state.State,
+	onProgress func(string),
+) (string, error) {
+	if onProgress == nil {
+		onProgress = func(string) {}
+	}
+
+	var cachedBrief, cachedHash string
+	if reviewState != nil {
+		cachedBrief, cachedHash = reviewState.GetPRBrief()
+	}
+
+	result, err := prcontext.BuildPRBrief(ctx, fastClient, pr, reviewState, cachedHash, onProgress)
+	if err != nil {
+		// Defensive — BuildPRBrief never returns errors today (all paths
+		// log and return empty Brief), but mirror DiscoverProjectContext's
+		// shape for symmetry.
+		return cachedBrief, err
+	}
+
+	if result.FromCache {
+		return cachedBrief, nil
+	}
+
+	// Cache the new brief on success.
+	if reviewState != nil && result.Summary != "" {
+		reviewState.SetPRBrief(result.Summary, result.InputHash)
+	}
+	return result.Summary, nil
+}
 
 // DiscoverProjectContext runs project context discovery with state caching.
 // Both the audit and review pipelines use this to get a project summary.
@@ -307,6 +400,24 @@ type CoreOptions struct {
 	AOIContextLines    int
 	RepoRoot           string
 	NoSynthesis        bool
+
+	// SkipSynthesis tells the pipeline to stop after recheck and skip
+	// the synthesis (Phase 2) entirely. The CoreResult comes back with
+	// Review=nil and DeepFindings populated. The TUI uses this by
+	// default — synthesis is an expensive extra LLM call that doesn't
+	// add value to the navigable findings list. Headless review keeps
+	// it (set false) because CI consumers want the JSON ReviewOutput.
+	//
+	// Different from NoSynthesis: NoSynthesis still returns a Review
+	// (with raw findings string) to satisfy the legacy contract.
+	// SkipSynthesis returns no Review at all — DeepFindings is the
+	// source of truth for the UI.
+	SkipSynthesis bool
+
+	// PR is the pull request metadata, when one is available. Used by
+	// the PR-brief discovery step in Phase 0 to gather comments, prior
+	// AI reviews, and CI status from gh. Nil for audit mode (no PR).
+	PR *git.PullRequest
 }
 
 // CoreResult holds the output of the shared review pipeline core.
@@ -332,6 +443,13 @@ func RunReviewCore(
 
 	reviewState := opts.ReviewState
 
+	// Emit a cache-resume summary so the user can see what's being
+	// reused on this run. Reduces the "did my re-run skip work?"
+	// anxiety, especially after a failed/cancelled previous attempt.
+	if msg := summarizeCacheState(reviewState, opts.RawDiffs); msg != "" {
+		rr.AOIProgress("Resuming: "+msg, false, 0)
+	}
+
 	// ── Phase 0: Project context + AOI pre-scan ──────────────────
 	var securityDigest string
 	var aoiScanResults []security.AOIScanResult
@@ -346,6 +464,34 @@ func RunReviewCore(
 			log.Printf("Project context discovery failed (non-fatal): %v", err)
 		}
 		projectContext = pctx
+	}
+
+	// PR Brief discovery — condensed summary of comments / prior AI
+	// reviews / CI status. Appended to PRMeta so every downstream
+	// prompt sees it. Non-fatal: failure leaves PRMeta unchanged.
+	if opts.PR != nil {
+		brief, err := DiscoverPRBrief(ctx, aoiClient, opts.PR, reviewState, func(status string) {
+			rr.AOIProgress("PR brief: "+status, false, 0)
+		})
+		if err != nil {
+			log.Printf("PR brief discovery failed (non-fatal): %v", err)
+		}
+		if brief != "" {
+			if !strings.HasSuffix(opts.PRMeta, "\n") {
+				opts.PRMeta += "\n"
+			}
+			opts.PRMeta += brief
+			if !strings.HasSuffix(brief, "\n") {
+				opts.PRMeta += "\n"
+			}
+			// Persist immediately so the brief survives even if later
+			// phases fail.
+			if reviewState != nil {
+				if saveErr := state.Save(reviewState); saveErr != nil {
+					log.Printf("Warning: failed to save state after PR brief: %v", saveErr)
+				}
+			}
+		}
 	}
 
 	// AOI pre-scan
@@ -553,6 +699,18 @@ func RunReviewCore(
 		deepFindings = execResult.Findings
 		AppendDeepFindings(&allFindings, allFileFindings, deepFindings)
 
+		// Persist the deep findings to state immediately so a crash,
+		// cancellation, or skipped synthesis doesn't throw them away.
+		// This is the load-bearing fix: previously findings were only
+		// saved when the final Review object was constructed, which
+		// meant any failure between here and synthesis discarded them.
+		if reviewState != nil {
+			reviewState.SetDeepFindings(deepFindings)
+			if err := state.Save(reviewState); err != nil {
+				log.Printf("Warning: failed to persist deep findings after Phase 1a: %v", err)
+			}
+		}
+
 		// Mark all AOI call batches as done
 		for i := range reviewCalls {
 			rr.BatchProgress(i, StatusDone)
@@ -584,9 +742,26 @@ func RunReviewCore(
 		// Rebuild synthesis input from rechecked findings
 		allFindings.Reset()
 		AppendDeepFindings(&allFindings, allFileFindings, deepFindings)
+		// Persist the post-recheck findings (which may be deduped /
+		// consolidated / dismissed relative to the pre-recheck set).
+		if reviewState != nil {
+			reviewState.SetDeepFindings(deepFindings)
+			if err := state.Save(reviewState); err != nil {
+				log.Printf("Warning: failed to persist deep findings after recheck: %v", err)
+			}
+		}
 	}
 
 	// ── Phase 2: Synthesis ───────────────────────────────────────
+	// SkipSynthesis (TUI default): return immediately with DeepFindings
+	// as the source of truth. Review is nil — the UI renders findings
+	// directly from state.DeepFindings.
+	if opts.SkipSynthesis {
+		return &CoreResult{
+			DeepFindings: deepFindings,
+			FileFindings: allFileFindings,
+		}, nil
+	}
 	if opts.NoSynthesis {
 		return &CoreResult{
 			Review: &state.AIReview{

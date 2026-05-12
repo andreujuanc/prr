@@ -244,9 +244,25 @@ const (
 	viewModeTaskOutput                 // background task output
 )
 
+// AI panel tab indices. The panel cycles through these via Tab / Shift+Tab.
+// Review and Chat live in separate viewports — see reviewViewport and
+// chatViewport. Tasks renders inline (no viewport).
+const (
+	tabReview = 0
+	tabTasks  = 1
+	tabChat   = 2
+)
+
 type Model struct {
-	fileTree     fileTree
+	fileTree fileTree
+	// diffViewport: middle pane (diff display).
 	diffViewport viewport.Model
+	// reviewViewport: AI panel, Review tab — holds streamed review
+	// output during a run and the rendered final review after.
+	reviewViewport viewport.Model
+	// chatViewport: AI panel, Chat tab — holds chat transcript and
+	// chat-stream content. Kept separate from reviewViewport so chat
+	// history isn't clobbered by a review stream and vice versa.
 	chatViewport viewport.Model
 	chatInput    textarea.Model
 	spinner      spinner.Model
@@ -314,6 +330,7 @@ type Model struct {
 	// Navigable review findings
 	reviewFindings     []state.ReviewFinding // flat ordered list of findings (severity-sorted, matching render order)
 	reviewCursor       int                   // currently highlighted finding index (-1 = none)
+	findingsExpanded   map[int]bool          // per-finding expansion state, keyed by index into reviewFindings; nil/missing = collapsed
 	pendingScrollLine  int                   // line to scroll to after diff loads (0 = none)
 	cameFromFinding    bool                  // true when diff was opened via finding jump (Esc returns to review)
 	diffContent        string                // cached diff content for line scanning (set on StyledDiffMsg)
@@ -386,6 +403,7 @@ func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallel
 	diffVp.Style = lipgloss.NewStyle().Foreground(textPrimary)
 
 	chatVp := viewport.New(0, 0)
+	reviewVp := viewport.New(0, 0)
 
 	ta := textarea.New()
 	ta.Placeholder = "Ask about this code..."
@@ -443,6 +461,7 @@ func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallel
 	m := Model{
 		fileTree:           newFileTree(nil),
 		diffViewport:       diffVp,
+		reviewViewport:     reviewVp,
 		chatViewport:       chatVp,
 		chatInput:          ta,
 		spinner:            s,
@@ -689,10 +708,20 @@ func pollActionsTick() tea.Cmd {
 	})
 }
 
-// streamAIChat sends the conversation to the AI and streams tokens back via tea.Msg.
-func streamAIChat(client ai.Client, ctx context.Context, systemPrompt string, messages []ai.Message, p *tea.Program) tea.Cmd {
+// streamAIChat runs a single ChatStream call as a tea.Cmd, streaming
+// tokens back via tea.Msg. watchdogTap (nullable) is called on every
+// streamed token so an ai.IdleWatch associated with ctx can detect
+// stalls. stopWatchdog (nullable) is invoked when the stream returns to
+// release the watchdog goroutine.
+func streamAIChat(client ai.Client, ctx context.Context, systemPrompt string, messages []ai.Message, p *tea.Program, watchdogTap func(string), stopWatchdog func()) tea.Cmd {
 	return func() tea.Msg {
+		if stopWatchdog != nil {
+			defer stopWatchdog()
+		}
 		fullResponse, err := client.ChatStream(ctx, systemPrompt, messages, func(token string) {
+			if watchdogTap != nil {
+				watchdogTap(token)
+			}
 			p.Send(AIChatDeltaMsg{Token: token})
 		})
 		return AIChatDoneMsg{FullResponse: fullResponse, Err: err}
@@ -834,6 +863,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewState = msg.State
 		m.rawDiffs = msg.RawDiffs
 		m.skippedFiles = msg.SkippedFiles
+		// Visibility for cache hits: when state arrives with a cached
+		// review, log a summary line. Helps the user confirm that
+		// re-opening prr restored their previous review instead of
+		// silently starting fresh — which would imply they need to
+		// pay for another review.
+		if r := msg.State.Review; r != nil {
+			verdict := "comment"
+			findingCount := 0
+			if r.Structured != nil {
+				if r.Structured.Verdict != "" {
+					verdict = r.Structured.Verdict
+				}
+				findingCount = len(r.Structured.Findings)
+			}
+			log.Printf("Loaded cached review: verdict=%s, findings=%d", verdict, findingCount)
+		}
 		// Clear blame cache — diffs may have changed
 		m.blameCache = make(map[string]map[int]git.BlameLine)
 		// Provide diffs to AI tool executor for the git_diff tool
@@ -1071,7 +1116,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if t.FindingIdx >= 0 && t.FindingIdx < len(m.reviewFindings) {
 						m.reviewFindings[t.FindingIdx].Resolved = true
 						// Re-render review if on Review tab
-						if m.aiPanelTab == 0 {
+						if m.aiPanelTab == tabReview {
 							cmds = append(cmds, m.rerenderReviewWithCursor())
 						}
 					}
@@ -1095,13 +1140,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case ChatRenderedMsg:
-		// For Review tab (0): cache the rendered content and always apply — content is global, not per-file
-		// For Chat tab (2): only apply if still on the same file
-		if msg.Tab == 0 {
+		// Review tab (0) content is global (not per-file) and lands in
+		// reviewViewport. Chat tab (2) content is per-file and lands in
+		// chatViewport — only apply if still on the same file.
+		if msg.Tab == tabReview {
 			m.aiReviewRendered = msg.Content
-			m.aiReviewRenderWidth = m.chatViewport.Width - 2
-		}
-		if msg.Tab == m.aiPanelTab && (msg.Tab == 0 || msg.FilePath == m.selectedFile) {
+			m.aiReviewRenderWidth = m.reviewViewport.Width - 2
+			if m.aiPanelTab == tabReview {
+				m.reviewViewport.SetContent(msg.Content)
+				m.reviewViewport.GotoTop()
+			}
+		} else if msg.Tab == m.aiPanelTab && msg.FilePath == m.selectedFile {
 			m.chatViewport.SetContent(msg.Content)
 			m.chatViewport.GotoTop()
 		}
@@ -1109,12 +1158,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ReviewRenderedMsg:
 		// Structured review rendered — store findings and cache content
+		// against reviewViewport's width. A fresh review means the
+		// expansion state for the previous one is irrelevant (indices
+		// likely don't correspond to the same finding anymore).
 		m.reviewFindings = msg.Findings
+		m.findingsExpanded = nil
 		m.aiReviewRendered = msg.Content
-		m.aiReviewRenderWidth = m.chatViewport.Width - 2
-		if m.aiPanelTab == 0 {
-			m.chatViewport.SetContent(msg.Content)
-			m.chatViewport.GotoTop()
+		m.aiReviewRenderWidth = m.reviewViewport.Width - 2
+		if m.aiPanelTab == tabReview {
+			m.reviewViewport.SetContent(msg.Content)
+			m.reviewViewport.GotoTop()
 		}
 		// Initialize cursor to first finding and re-render with the
 		// indicator visible, so the user sees the cursor immediately.
@@ -1309,19 +1362,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					log.Printf("Warning: failed to save file findings: %v", err)
 				}
 			}
-			// Store deep findings from AOI-driven review
+			// Persist deep findings to state.DeepFindings independently
+			// of Review. This is the load-bearing fix: when synthesis
+			// is skipped (TUI default) or fails, the findings still
+			// survive close+reopen because they live as a first-class
+			// state field rather than only-on-Review.
 			if len(msg.DeepFindings) > 0 {
 				m.deepFindings = msg.DeepFindings
 				if msg.Review != nil {
 					msg.Review.DeepFindings = msg.DeepFindings
 				}
+				if m.reviewState != nil {
+					m.reviewState.SetDeepFindings(msg.DeepFindings)
+					if err := state.Save(m.reviewState); err != nil {
+						log.Printf("Warning: failed to persist deep findings: %v", err)
+					}
+				}
+				// Invalidate the render cache so the Review tab picks
+				// up the new findings via renderActiveAIView below.
+				m.aiReviewRendered = ""
+				m.reviewFindings = nil
+				m.reviewCursor = -1
 			}
-			if msg.Review != nil {
-				// Review results live in Review tab only — don't pollute Chat
+			// Both the synthesized-Review path and the SkipSynthesis
+			// (DeepFindings-only) path route to the Review tab — the
+			// user pressed 'a' for a review and expects to see one,
+			// not a chat history page.
+			if msg.Review != nil || len(msg.DeepFindings) > 0 {
 				m.aiStreamBuffer = ""
 				m.aiChatHistoryCache = ""
-				m.aiPanelTab = 0
-				m.syncLayout() // recalculate viewport height (no chat input on review tab)
+				m.aiPanelTab = tabReview
+				m.syncLayout()
 				cmd = m.renderActiveAIView()
 			} else {
 				// Regular chat — save response to chat history
@@ -1678,7 +1749,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.focusedPane = PaneDiff
 					m.syncFocus()
 				}
-			} else if m.focusedPane == PaneChat && m.aiPanelTab == 2 {
+			} else if m.focusedPane == PaneChat && m.aiPanelTab == tabChat {
 				// Send chat message only on Chat tab; on Review tab Enter is
 				// handled by the pane-specific finding navigation below.
 				cmd = m.sendChatMessage()
@@ -1756,7 +1827,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, m.syncLayoutWithRerender())
 		case "?":
-			if m.focusedPane != PaneChat || m.aiPanelTab != 2 {
+			if m.focusedPane != PaneChat || m.aiPanelTab != tabChat {
 				m.showHelp = !m.showHelp
 			}
 		case "m":
@@ -1899,7 +1970,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cameFromFinding && m.showAIPanel {
 					m.cameFromFinding = false
 					m.focusedPane = PaneChat
-					m.aiPanelTab = 0
+					m.aiPanelTab = tabReview
 					m.syncLayout()
 					cmds = append(cmds, m.syncFocus())
 					cmds = append(cmds, m.renderActiveAIView())
@@ -2008,7 +2079,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PaneChat:
 		if km, ok := msg.(tea.KeyMsg); ok {
 			// Review tab finding navigation (j/k/Enter when findings exist)
-			if m.aiPanelTab == 0 && len(m.reviewFindings) > 0 {
+			if m.aiPanelTab == tabReview && len(m.reviewFindings) > 0 {
 				switch km.String() {
 				case "j", "down":
 					if m.reviewCursor < len(m.reviewFindings)-1 {
@@ -2019,6 +2090,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "k", "up":
 					if m.reviewCursor > 0 {
 						m.reviewCursor--
+						cmds = append(cmds, m.rerenderReviewWithCursor())
+					}
+					return m, tea.Batch(cmds...)
+				case "l", "right":
+					// Expand the current finding (file tree-style:
+					// l/right opens, h/left closes).
+					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
+						if m.findingsExpanded == nil {
+							m.findingsExpanded = make(map[int]bool)
+						}
+						if !m.findingsExpanded[m.reviewCursor] {
+							m.findingsExpanded[m.reviewCursor] = true
+							cmds = append(cmds, m.rerenderReviewWithCursor())
+						}
+					}
+					return m, tea.Batch(cmds...)
+				case "h", "left":
+					// Collapse the current finding.
+					if m.reviewCursor >= 0 && m.findingsExpanded[m.reviewCursor] {
+						delete(m.findingsExpanded, m.reviewCursor)
 						cmds = append(cmds, m.rerenderReviewWithCursor())
 					}
 					return m, tea.Batch(cmds...)
@@ -2104,7 +2195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Tasks tab navigation (j/k/Enter/d/x when tasks exist)
-			if m.aiPanelTab == 1 && len(m.tasks) > 0 {
+			if m.aiPanelTab == tabTasks && len(m.tasks) > 0 {
 				switch km.String() {
 				case "j", "down":
 					if m.taskCursor < len(m.tasks)-1 {
@@ -2156,43 +2247,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			switch km.String() {
 			case "pgup", "pgdown":
-				m.chatViewport, cmd = m.chatViewport.Update(msg)
+				// Route scroll to the viewport that's actually visible
+				// for the active tab. Tab 1 (Tasks) renders inline and
+				// has no viewport — keystroke is a no-op there.
+				if m.aiPanelTab == tabReview {
+					m.reviewViewport, cmd = m.reviewViewport.Update(msg)
+				} else if m.aiPanelTab == tabChat {
+					m.chatViewport, cmd = m.chatViewport.Update(msg)
+				}
 				cmds = append(cmds, cmd)
 			case "ctrl+k":
 				m.clearChat()
 			case "]":
 				// Cycle forward between Review, Tasks, and Chat sub-tabs
 				// (only when not typing in the chat input)
-				if m.aiPanelTab == 2 && !m.aiStreaming {
+				if m.aiPanelTab == tabChat && !m.aiStreaming {
 					m.chatInput, cmd = m.chatInput.Update(msg)
 					cmds = append(cmds, cmd)
 				} else if m.hasReview() || len(m.tasks) > 0 {
-					maxTab := 2 // Review(0), Tasks(1), Chat(2)
+					maxTab := tabChat // Review(0), Tasks(1), Chat(2)
 					m.aiPanelTab = (m.aiPanelTab + 1) % (maxTab + 1)
 					m.syncLayout()
 					cmds = append(cmds, m.renderActiveAIView())
 				}
 			case "[":
 				// Cycle backward between Review, Tasks, and Chat sub-tabs
-				if m.aiPanelTab == 2 && !m.aiStreaming {
+				if m.aiPanelTab == tabChat && !m.aiStreaming {
 					m.chatInput, cmd = m.chatInput.Update(msg)
 					cmds = append(cmds, cmd)
 				} else if m.hasReview() || len(m.tasks) > 0 {
-					maxTab := 2 // Review(0), Tasks(1), Chat(2)
+					maxTab := tabChat
 					m.aiPanelTab = (m.aiPanelTab - 1 + maxTab + 1) % (maxTab + 1)
 					m.syncLayout()
 					cmds = append(cmds, m.renderActiveAIView())
 				}
 			default:
 				// Only allow text input on the Chat tab, and not while AI is streaming
-				if m.aiPanelTab == 2 && !m.aiStreaming {
+				if m.aiPanelTab == tabChat && !m.aiStreaming {
 					m.chatInput, cmd = m.chatInput.Update(msg)
 					cmds = append(cmds, cmd)
 				}
 			}
 		} else {
-			// Pass mouse/resize events to viewport for scroll support
-			m.chatViewport, cmd = m.chatViewport.Update(msg)
+			// Mouse/resize events: route scroll to the visible viewport.
+			if m.aiPanelTab == tabReview {
+				m.reviewViewport, cmd = m.reviewViewport.Update(msg)
+			} else if m.aiPanelTab == tabChat {
+				m.chatViewport, cmd = m.chatViewport.Update(msg)
+			}
 			cmds = append(cmds, cmd)
 			m.chatInput, cmd = m.chatInput.Update(msg)
 			cmds = append(cmds, cmd)
@@ -2211,7 +2313,7 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	}
 
 	// Auto-switch to Chat tab when sending a message
-	m.aiPanelTab = 2
+	m.aiPanelTab = tabChat
 	m.syncLayout()
 
 	// Clear input
@@ -2239,8 +2341,13 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	// Render chat with the new user message and streaming indicator
 	m.updateChatViewWithStream()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	m.aiCancelFn = cancel
+	// User-cancellable parent + idle watchdog. 240s of total silence
+	// (no tokens, no thinking, no tool events) is treated as a stall;
+	// active streams run to completion. The aiCancelFn hook still
+	// gives the user Esc-cancel via the parent.
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	m.aiCancelFn = parentCancel
+	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
 
 	// Use chat thinking budget (lower than review for responsiveness)
 	if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
@@ -2251,7 +2358,7 @@ func (m *Model) sendChatMessage() tea.Cmd {
 		}
 	}
 
-	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
+	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program, watchdogTap, stopWatchdog))
 }
 
 func (m *Model) appendMessageToState(msg state.Message) {
@@ -2314,7 +2421,7 @@ func (m *Model) getAIContext() (string, string) {
 			added, removed := countDiffStats(diff)
 			allDiffs.WriteString(fmt.Sprintf("  %-50s +%-4d -%d\n", p, added, removed))
 		}
-		allDiffs.WriteString("\nUse the git_diff tool to read the actual diffs.\n")
+		allDiffs.WriteString(ai.HintPROverview)
 
 		return m.withInstructions(ai.ReviewPRPrompt), allDiffs.String()
 	}
@@ -2437,13 +2544,26 @@ func (m *Model) clearChat() {
 	m.chatViewport.GotoTop()
 }
 
+// updateChatViewWithStream is the dispatcher for streaming AI panel
+// updates. It routes review-phase content to reviewViewport and chat
+// content to chatViewport so the two viewports stay independent —
+// chat history isn't clobbered by a review stream and a streaming
+// review doesn't disturb chat state.
+//
+// The function name is kept (rather than renamed to a more neutral
+// "updateAIStream") so the dozen-plus call sites stay surgical; the
+// in-function dispatch keeps the routing logic in one place.
 func (m *Model) updateChatViewWithStream() {
-	// If a PR review is streaming but the user has navigated to a file,
-	// don't overwrite the file's chat panel with review stream content.
-	if m.aiReviewPhase != "" && m.hasFileSelected() {
+	if m.aiReviewPhase != "" {
+		m.updateReviewViewWithStream()
 		return
 	}
+	m.updateChatViewOnly()
+}
 
+// updateChatViewOnly renders the chat transcript + active chat stream
+// into chatViewport. Used when no review phase is active.
+func (m *Model) updateChatViewOnly() {
 	var b strings.Builder
 
 	// Use cached rendered prefix of completed messages (built once when streaming starts)
@@ -2466,32 +2586,17 @@ func (m *Model) updateChatViewWithStream() {
 	}
 	b.WriteString(m.aiChatHistoryCache)
 
-	// Render streaming AI response
+	// Render streaming AI response (chat reply)
 	if m.aiStreaming || m.aiStreamBuffer != "" {
 		b.WriteString(styleAccentMauveBold.Render("AI") + "\n")
-
-		// During review, show the in-place batch list
-		if len(m.aiReviewBatches) > 0 {
-			b.WriteString(m.renderBatchList())
-		}
-
-		if m.aiReviewPhase == "synthesis" || len(m.aiReviewBatches) == 0 {
-			// Show synthesis stream or regular chat stream
-			if m.aiStreamBuffer == "" && len(m.aiReviewBatches) == 0 {
-				b.WriteString(styleTextMuted.Render("thinking...") + "\n")
-			} else if m.aiStreamBuffer != "" {
-				if m.aiReviewPhase == "synthesis" {
-					// During synthesis the model outputs raw JSON — hide it
-					// and show a friendlier progress message instead.
-					b.WriteString(styleTextMuted.Render("Synthesizing final review...") + "\n")
-				} else {
-					b.WriteString(m.aiStreamBuffer)
-				}
-				if m.aiStreaming {
-					b.WriteString(styleAccentBlue.Render("▊"))
-				}
-				b.WriteString("\n")
+		if m.aiStreamBuffer == "" {
+			b.WriteString(styleTextMuted.Render("thinking...") + "\n")
+		} else {
+			b.WriteString(m.aiStreamBuffer)
+			if m.aiStreaming {
+				b.WriteString(styleAccentBlue.Render("▊"))
 			}
+			b.WriteString("\n")
 		}
 	}
 
@@ -2501,6 +2606,50 @@ func (m *Model) updateChatViewWithStream() {
 	m.chatViewport.SetContent(b.String())
 	if wasAtBottom {
 		m.chatViewport.GotoBottom()
+	}
+}
+
+// updateReviewViewWithStream renders the active review (batch list +
+// synthesis status + token stream) into reviewViewport. No chat
+// history — the review tab is dedicated to the run in progress.
+//
+// If the user has navigated to a file mid-review, this is a no-op:
+// the per-file review state lives elsewhere and shouldn't be clobbered
+// by the PR-level stream.
+func (m *Model) updateReviewViewWithStream() {
+	if m.hasFileSelected() {
+		return
+	}
+
+	var b strings.Builder
+
+	if len(m.aiReviewBatches) > 0 {
+		b.WriteString(m.renderBatchList())
+	}
+
+	if m.aiReviewPhase == "synthesis" || len(m.aiReviewBatches) == 0 {
+		// Show synthesis stream or initial "thinking" placeholder.
+		if m.aiStreamBuffer == "" && len(m.aiReviewBatches) == 0 {
+			b.WriteString(styleTextMuted.Render("thinking...") + "\n")
+		} else if m.aiStreamBuffer != "" {
+			if m.aiReviewPhase == "synthesis" {
+				// During synthesis the model outputs raw JSON — hide it
+				// and show a friendlier progress message instead.
+				b.WriteString(styleTextMuted.Render("Synthesizing final review...") + "\n")
+			} else {
+				b.WriteString(m.aiStreamBuffer)
+			}
+			if m.aiStreaming {
+				b.WriteString(styleAccentBlue.Render("▊"))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	wasAtBottom := m.reviewViewport.AtBottom()
+	m.reviewViewport.SetContent(b.String())
+	if wasAtBottom {
+		m.reviewViewport.GotoBottom()
 	}
 }
 
@@ -2522,9 +2671,22 @@ func (m Model) renderChatInputLabel(width int) string {
 	return styleTextSubtle.Render(strings.Repeat("─", width))
 }
 
-// hasReview returns true if a PR-level review exists.
+// hasReview returns true if any reviewable content exists for the
+// current PR — either a synthesized Review object (headless / legacy)
+// OR persisted deep findings (TUI default since synthesis is skipped).
+//
+// Decoupling "Review tab populated" from "synthesis ran" is the
+// architectural fix that prevents losing review work on reopen: the
+// pipeline persists DeepFindings incrementally, so even a failed/
+// cancelled run leaves something for the Review tab to render.
 func (m Model) hasReview() bool {
-	return m.reviewState != nil && m.reviewState.Review != nil
+	if m.reviewState == nil {
+		return false
+	}
+	if m.reviewState.Review != nil {
+		return true
+	}
+	return len(m.reviewState.GetDeepFindings()) > 0
 }
 
 // renderAIPanelTitle builds the AI panel title with tab indicators and streaming status.
@@ -3172,7 +3334,7 @@ func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
 	m.tasks = append(m.tasks, task)
 
 	// Auto-switch to Tasks tab
-	m.aiPanelTab = 1
+	m.aiPanelTab = tabTasks
 	m.syncLayout()
 	m.taskCursor = len(m.tasks) - 1
 
@@ -3273,17 +3435,21 @@ func (m *Model) triggerAIReview() tea.Cmd {
 			// m.reviewState.Review = nil
 		}
 
-		// Start streaming
+		// Start streaming on the Review tab. The user just pressed `a`
+		// expecting a review — render it where they're looking.
 		m.aiStreaming = true
-		m.aiPanelTab = 2 // show Chat tab (batch list + synthesis stream)
+		m.aiPanelTab = tabReview
 		m.syncLayout()
 		m.aiStreamBuffer = ""
 		m.aiChatHistoryCache = ""
 		m.updateChatViewWithStream()
 
-		// Longer timeout for multi-pass (multiple sequential AI calls)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		m.aiCancelFn = cancel
+		// Idle watchdog instead of wall-clock timeout. 240s of zero
+		// activity (no tokens, no batch progress, no AOI updates)
+		// cancels the run; slow-but-active multi-pass reviews finish.
+		parentCtx, parentCancel := context.WithCancel(context.Background())
+		m.aiCancelFn = parentCancel
+		ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
 
 		// Ensure review thinking budget is active (chat may have lowered it)
 		if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
@@ -3294,7 +3460,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 			}
 		}
 
-		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines, m.repoRoot))
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, m.pr, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines, m.repoRoot, watchdogTap, stopWatchdog))
 	}
 
 	// Single file mode
@@ -3304,7 +3470,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Skip files excluded by content filter (binary, generated, large)
 	if reason, ok := m.skippedFiles[path]; ok {
-		m.aiPanelTab = 2
+		m.aiPanelTab = tabChat
 		m.syncLayout()
 		m.chatViewport.SetContent(
 			styleTextMuted.Render(fmt.Sprintf("This file is excluded from AI review (%s).", reason)))
@@ -3318,7 +3484,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Skip files that are excluded from review (lock files, generated code, etc.)
 	if config.ShouldExcludeFromReview(path) {
-		m.aiPanelTab = 2 // show message in Chat tab
+		m.aiPanelTab = tabChat // show info notice in Chat tab
 		m.syncLayout()
 		m.chatViewport.SetContent(
 			styleTextMuted.Render("This file is excluded from AI review (lock file, generated code, or vendored dependency)."))
@@ -3335,10 +3501,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	diffLines := strings.Count(diff, "\n")
 	var userContent string
 	if diffLines > largeDiffLines {
-		userContent = fmt.Sprintf(
-			"Please review the changes to `%s`. The diff is large (%d lines), so use the git_diff tool with paths=\"%s\" to read it, using pagination if needed.",
-			path, diffLines, path,
-		)
+		userContent = fmt.Sprintf(ai.HintLargeFileReview, path, diffLines)
 	} else {
 		userContent = fmt.Sprintf("Please review the changes to `%s`.\n\n```diff\n%s\n```", path, diff)
 	}
@@ -3351,16 +3514,20 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	messages := m.buildAIMessages()
 	aiMessages := m.buildAIMessagesWithContext(messages)
 
-	// Start streaming on the Chat tab
+	// Single-file review streams into the per-file Chat history, so
+	// route to the Chat tab — distinct from PR-level multi-pass review.
 	m.aiStreaming = true
-	m.aiPanelTab = 2
+	m.aiPanelTab = tabChat
 	m.syncLayout()
 	m.aiStreamBuffer = ""
 	m.aiChatHistoryCache = "" // invalidate so it's rebuilt on first tick
 	m.updateChatViewWithStream()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	m.aiCancelFn = cancel
+	// Idle watchdog: 240s of zero activity cancels the call. Esc still
+	// works as a user cancel via parentCancel.
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	m.aiCancelFn = parentCancel
+	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
 
 	// Use review thinking budget (same depth as batch review)
 	if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
@@ -3371,7 +3538,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		}
 	}
 
-	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program))
+	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program, watchdogTap, stopWatchdog))
 }
 
 // forceReReview clears all cached batch findings and triggers a fresh PR review.
@@ -3746,18 +3913,19 @@ func (m *Model) renderActiveAIView() tea.Cmd {
 		return nil
 	}
 	switch m.aiPanelTab {
-	case 0: // Review tab
+	case tabReview:
 		if m.hasReview() {
 			return m.renderReviewForFile(m.selectedFile)
 		}
-		// No review yet — show placeholder
+		// No review yet — show placeholder in the review viewport.
 		placeholder := styleTextMuted.Render("  No review yet — press R to start a review")
-		m.chatViewport.SetContent(placeholder)
-		m.chatViewport.GotoTop()
+		m.reviewViewport.SetContent(placeholder)
+		m.reviewViewport.GotoTop()
 		return nil
-	case 1: // Tasks tab — rendered directly in View(), nothing to prepare
+	case tabTasks:
+		// Rendered directly in View(), nothing to prepare.
 		return nil
-	default: // Chat tab (2)
+	default: // tabChat
 		return m.renderChatForFile(m.selectedFile)
 	}
 }
@@ -3765,33 +3933,58 @@ func (m *Model) renderActiveAIView() tea.Cmd {
 // renderReviewForFile renders the PR-level AI review in the Review tab.
 // If a structured ReviewOutput is available, it renders that with severity
 // grouping and color coding. Otherwise falls back to markdown rendering.
+//
+// Output goes to reviewViewport (Tab 0). The cached-render width tracks
+// reviewViewport's width so cache invalidation fires when the Review tab
+// resizes.
 func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
-	if m.reviewState == nil || m.reviewState.Review == nil {
+	if m.reviewState == nil {
 		return nil
 	}
 
-	width := m.chatViewport.Width - 2
+	width := m.reviewViewport.Width - 2
 	cursor := m.reviewCursor
 
 	// If we already rendered at this width, reuse the cached content.
 	// (Cache is invalidated when a new review arrives or cursor changes
 	// via rerenderReviewWithCursor.)
 	if m.aiReviewRendered != "" && m.aiReviewRenderWidth == width {
-		m.chatViewport.SetContent(m.aiReviewRendered)
+		m.reviewViewport.SetContent(m.aiReviewRendered)
 		return nil
+	}
+
+	// SkipSynthesis path: no synthesized Review. Render the persisted
+	// DeepFindings directly via a synthetic ReviewOutput. This is the
+	// TUI default — synthesis is no longer required for the Review tab
+	// to populate, which means a closed-then-reopened prr session
+	// shows the findings instead of "no reviews yet."
+	if m.reviewState.Review == nil {
+		deep := m.reviewState.GetDeepFindings()
+		if len(deep) == 0 {
+			return nil
+		}
+		synthetic := buildSyntheticReviewFromDeepFindings(deep)
+		stale := m.reviewState.IsReviewStale()
+		expanded := m.findingsExpanded
+		return func() tea.Msg {
+			rendered, findings := renderStructuredReview(synthetic, width, cursor, expanded, stale)
+			return ReviewRenderedMsg{Content: rendered, Findings: findings}
+		}
 	}
 
 	review := m.reviewState.Review
 
 	// Show placeholder, render async
-	m.chatViewport.SetContent(styleTextMuted.Render("Rendering review..."))
+	m.reviewViewport.SetContent(styleTextMuted.Render("Rendering review..."))
+
+	expanded := m.findingsExpanded
 
 	// Check if we have structured review data
 	if review.Structured != nil {
 		structured := review.Structured
 		stale := m.reviewState.IsReviewStale()
 		return func() tea.Msg {
-			rendered, findings := renderStructuredReview(structured, width, cursor, stale)
+			rendered, findings := renderStructuredReview(structured, width, cursor, expanded, stale)
 			return ReviewRenderedMsg{Content: rendered, Findings: findings}
 		}
 	}
@@ -3810,7 +4003,7 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 		structured := parsed
 		stale := m.reviewState.IsReviewStale()
 		return func() tea.Msg {
-			rendered, findings := renderStructuredReview(structured, width, cursor, stale)
+			rendered, findings := renderStructuredReview(structured, width, cursor, expanded, stale)
 			return ReviewRenderedMsg{Content: rendered, Findings: findings}
 		}
 	}
@@ -3833,12 +4026,12 @@ func (m *Model) rerenderReviewWithCursor() tea.Cmd {
 		return nil
 	}
 
-	width := m.chatViewport.Width - 2
+	width := m.reviewViewport.Width - 2
 	stale := m.reviewState.IsReviewStale()
-	rendered, _ := renderStructuredReview(m.reviewState.Review.Structured, width, m.reviewCursor, stale)
+	rendered, _ := renderStructuredReview(m.reviewState.Review.Structured, width, m.reviewCursor, m.findingsExpanded, stale)
 	m.aiReviewRendered = rendered
 	m.aiReviewRenderWidth = width
-	m.chatViewport.SetContent(rendered)
+	m.reviewViewport.SetContent(rendered)
 
 	// Scroll the review viewport to keep the selected finding visible.
 	m.scrollReviewToFinding(m.reviewCursor)
@@ -3846,8 +4039,9 @@ func (m *Model) rerenderReviewWithCursor() tea.Cmd {
 	return nil
 }
 
-// scrollReviewToFinding scrolls the chat viewport so the selected finding
-// is visible. Scans the rendered content for the "▸" cursor marker.
+// scrollReviewToFinding scrolls the review viewport so the selected
+// finding is visible. Scans the rendered content for the "▸" cursor
+// marker.
 func (m *Model) scrollReviewToFinding(idx int) {
 	if idx < 0 {
 		return
@@ -3871,19 +4065,19 @@ func (m *Model) scrollReviewToFinding(idx int) {
 		return
 	}
 
-	vpHeight := m.chatViewport.Height
+	vpHeight := m.reviewViewport.Height
 	offset := targetLine - vpHeight/3 // show marker in upper third
 	if offset < 0 {
 		offset = 0
 	}
-	maxOffset := m.chatViewport.TotalLineCount() - vpHeight
+	maxOffset := m.reviewViewport.TotalLineCount() - vpHeight
 	if maxOffset < 0 {
 		maxOffset = 0
 	}
 	if offset > maxOffset {
 		offset = maxOffset
 	}
-	m.chatViewport.SetYOffset(offset)
+	m.reviewViewport.SetYOffset(offset)
 }
 
 func (m *Model) renderChatForFile(filePath string) tea.Cmd {
@@ -4101,14 +4295,16 @@ func (m *Model) syncLayout() {
 	if cols[2] > 2 {
 		cw := cols[2] - 2
 		chatInputH := 3
+		// Chat input is visible only on Tab 2 (Chat) when not streaming.
+		// On any other tab, or during AI streaming, the input is hidden
+		// and the viewport gets the full content height.
+		inputVisible := m.aiPanelTab == tabChat && !m.aiStreaming
 		var chatVpH int
-		if m.aiPanelTab == 2 {
-			// Chat tab: reserve space for separator(1) + "\n" + input(chatInputH) + "\n"
+		if inputVisible {
 			// renderPane clips to contentH = ih - 2 (borders)
-			// So chatVpH + 1 + 1 + chatInputH = ih - 2 => chatVpH = ih - chatInputH - 3
+			// chatVpH + 1 (separator) + 1 (newline) + chatInputH = ih - 2
 			chatVpH = ih - chatInputH - 3
 		} else {
-			// Review/Tasks tabs: no chat input, viewport gets full height
 			chatVpH = ih - 2
 		}
 		if chatVpH < 1 {
@@ -4118,6 +4314,16 @@ func (m *Model) syncLayout() {
 		m.chatViewport.Height = chatVpH
 		m.chatInput.SetWidth(cw)
 		m.chatInput.SetHeight(chatInputH)
+
+		// Review viewport always gets the full content area — Tab 0 has
+		// no input. Sized identically to chatViewport's "no input" mode
+		// so layout is consistent across tab switches.
+		reviewVpH := ih - 2
+		if reviewVpH < 1 {
+			reviewVpH = 1
+		}
+		m.reviewViewport.Width = cw
+		m.reviewViewport.Height = reviewVpH
 	}
 
 	// Comment input width matches diff pane
@@ -4129,6 +4335,7 @@ func (m *Model) syncLayout() {
 func (m *Model) syncLayoutWithRerender() tea.Cmd {
 	prevDiffW := m.diffViewport.Width
 	prevChatW := m.chatViewport.Width
+	prevReviewW := m.reviewViewport.Width
 	m.syncLayout()
 
 	var cmds []tea.Cmd
@@ -4159,11 +4366,14 @@ func (m *Model) syncLayoutWithRerender() tea.Cmd {
 		}
 	}
 
-	// Re-render AI panel content if chat viewport width changed
-	if m.chatViewport.Width != prevChatW {
-		// Invalidate cached review render so it re-wraps at new width
+	// Re-render AI panel content if either viewport width changed.
+	// Review-cache invalidation is tied to reviewViewport since that's
+	// where rendered review content lives now.
+	if m.reviewViewport.Width != prevReviewW {
 		m.aiReviewRendered = ""
 		m.aiReviewRenderWidth = 0
+	}
+	if m.chatViewport.Width != prevChatW || m.reviewViewport.Width != prevReviewW {
 		cmds = append(cmds, m.renderActiveAIView())
 	}
 
@@ -4499,13 +4709,20 @@ func (m Model) View() string {
 		// Build chat body — depends on active tab
 		var chatBody string
 		switch m.aiPanelTab {
-		case 0: // Review tab
-			chatBody = m.chatViewport.View()
-		case 1: // Tasks tab
+		case tabReview:
+			chatBody = m.reviewViewport.View()
+		case tabTasks:
 			chatBody = m.renderTasksTab(cw)
-		case 2: // Chat tab
-			inputLabel := m.renderChatInputLabel(cw)
-			chatBody = m.chatViewport.View() + "\n" + inputLabel + "\n" + m.chatInput.View()
+		case tabChat:
+			// Hide the chat input while an AI stream is running. Input
+			// handling already gates on !aiStreaming, but the field
+			// would otherwise be visible-but-dead, which is confusing.
+			if m.aiStreaming {
+				chatBody = m.chatViewport.View()
+			} else {
+				inputLabel := m.renderChatInputLabel(cw)
+				chatBody = m.chatViewport.View() + "\n" + inputLabel + "\n" + m.chatInput.View()
+			}
 		}
 
 		// Build title with tab indicators
@@ -4828,12 +5045,12 @@ func (m Model) viewFooter() string {
 			struct{ key, desc string }{"c", "comment"},
 		)
 	case PaneChat:
-		if m.aiPanelTab == 0 {
+		if m.aiPanelTab == tabReview {
 			bindings = append(bindings,
 				struct{ key, desc string }{"j/k", "findings"},
 				struct{ key, desc string }{"Enter", "jump"},
 			)
-		} else if m.aiPanelTab == 2 {
+		} else if m.aiPanelTab == tabChat {
 			bindings = append(bindings,
 				struct{ key, desc string }{"Enter", "send"},
 			)

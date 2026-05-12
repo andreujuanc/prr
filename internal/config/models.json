@@ -28,5 +28,35 @@
       "fast": 2048
     },
     "aoi_context_lines": 3
+  },
+  "claude-opus-4-7": {
+    "max_output_tokens": 32000,
+    "temperature": 0.2,
+    "thinking_budget": {
+      "review": 0,
+      "chat": 0,
+      "fast": 0
+    },
+    "aoi_context_lines": 5
+  },
+  "claude-sonnet-4-6": {
+    "max_output_tokens": 32000,
+    "temperature": 0.2,
+    "thinking_budget": {
+      "review": 0,
+      "chat": 0,
+      "fast": 0
+    },
+    "aoi_context_lines": 3
+  },
+  "claude-haiku-4-5": {
+    "max_output_tokens": 32000,
+    "temperature": 0.2,
+    "thinking_budget": {
+      "review": 0,
+      "chat": 0,
+      "fast": 0
+    },
+    "aoi_context_lines": 3
   }
 }

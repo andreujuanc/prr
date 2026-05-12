@@ -1,9 +1,36 @@
 package ai
 
-import _ "embed"
+import (
+	_ "embed"
+	"strings"
+)
 
 // All prompts are embedded from prompts/*.md. Do not hardcode multi-line
 // prompts in Go source — edit the markdown files instead.
+
+// toolsBlock is the canonical "Tools available" section injected into
+// any prompt containing the {{TOOLS}} placeholder when the provider
+// drives prr's tool loop. Providers that run their own internal tool
+// loop (e.g. Claude Code) get an empty substitution — their native
+// tools are used instead. See ResolveTools.
+//
+//go:embed prompts/tools.md
+var toolsBlock string
+
+// toolsPlaceholder marks where the canonical tool listing goes in each
+// prompt. Must appear on its own line — the surrounding heading and
+// intro line live inside tools.md, not in the consuming prompts.
+const toolsPlaceholder = "{{TOOLS}}"
+
+// ResolveTools substitutes {{TOOLS}} in a prompt. When the provider
+// runs its own internal tool loop, the placeholder is replaced with an
+// empty string. Otherwise the canonical tool block is injected.
+func ResolveTools(raw string, p Provider) string {
+	if p == nil || !p.Capabilities().RunsOwnToolLoop {
+		return strings.ReplaceAll(raw, toolsPlaceholder, strings.TrimRight(toolsBlock, "\n"))
+	}
+	return strings.ReplaceAll(raw, toolsPlaceholder, "")
+}
 
 // ReviewPRSystemPrompt is the high-quality, agent-driven review prompt
 // used as the base for single-pass PR review.
@@ -60,26 +87,18 @@ var RecheckPrompt string
 
 // ReviewPRPrompt is the system prompt for single-pass PR review.
 // Combines the embedded review instructions with structured JSON output
-// requirements and tool workflow guidance.
+// requirements and tool workflow guidance. The {{TOOLS}} placeholder is
+// resolved at request time against the active provider.
 var ReviewPRPrompt = ReviewPRSystemPrompt + `
 
-You have access to tools — use them proactively to understand the code:
-- read_file / read_base_file: read a file at the PR head / base.
-- grep / glob / list_dir: search and navigate the tree.
-- git_diff: unified diffs for changed files.
-- git_log / git_show / git_blame: history and authorship when intent is unclear.
-- gh_pr_view / gh_pr_files / gh_pr_checks: PR metadata, file list, CI status.
-- gh_pr_comments: existing review comments. Do not re-raise resolved issues.
-- gh_issue_view: linked issues referenced in the PR body.
-- get_review: the latest prior AI review of this PR, if one exists.
+{{TOOLS}}
 
 ## Workflow
 
-1. Read the diffs for all changed files via git_diff.
-2. Use read_file / read_base_file for surrounding context, especially on refactors.
-3. Use grep to find callers and related code before flagging.
-4. Check gh_pr_comments and get_review to avoid re-raising resolved issues.
-5. Check gh_pr_checks to know whether CI surfaced anything you should focus on.
+1. Read the diffs for all changed files.
+2. Read base/head files for surrounding context, especially on refactors.
+3. Find callers and related code before flagging.
+4. Consult the PR Brief in the PR Context section above for prior comments, prior AI reviews, and CI status — do not re-raise resolved points or restate prior findings.
 
 ## Output Format
 

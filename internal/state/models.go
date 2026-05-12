@@ -122,6 +122,8 @@ type State struct {
 	Files              map[string]*FileState `json:"files"`
 	ProjectContext     string                `json:"project_context,omitempty"`      // cached project briefing
 	ProjectContextHash string                `json:"project_context_hash,omitempty"` // hash of inputs used to generate it
+	PRBrief            string                `json:"pr_brief,omitempty"`             // cached PR-specific briefing (comments, prior reviews, CI)
+	PRBriefHash        string                `json:"pr_brief_hash,omitempty"`        // hash of inputs used to generate the PR brief
 
 	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
 	// review inputs (file content + AOI content + focus dimensions for individual;
@@ -137,6 +139,14 @@ type State struct {
 	// findings + cross-cutting + project context. The value is a serialized
 	// SynthesisResult (audit-package type, opaque to this package).
 	SynthesisCache map[string]json.RawMessage `json:"synthesis_cache,omitempty"`
+
+	// DeepFindings is the top-level persisted list of Phase 1 + Phase 1c
+	// findings, independent of the synthesized Review object. Populated
+	// incrementally as each batch completes so a crash, cancellation, or
+	// failed-synthesis still leaves the user with their findings on
+	// reopen. The Review tab reads this when state.Review is nil — which
+	// is the default in TUI mode where synthesis is skipped.
+	DeepFindings []DeepFinding `json:"deep_findings,omitempty"`
 }
 
 // DeepReviewResult stores the cached output of a Phase 3 review call.
@@ -289,6 +299,8 @@ func (s *State) ClearAllCaches() {
 	s.SynthesisCache = nil
 	s.ProjectContext = ""
 	s.ProjectContextHash = ""
+	s.PRBrief = ""
+	s.PRBriefHash = ""
 }
 
 // HasCachedBatch reports whether all files in the given paths have cached findings.
@@ -328,6 +340,66 @@ func (s *State) HasFile(path string) bool {
 	return ok
 }
 
+// CountCachedBatchFindings returns how many of the given paths have a
+// non-empty BatchFindings entry in state. Holds the read lock for the
+// entire iteration so the count is consistent against concurrent
+// writers — callers that build their own loops via HasFile + direct
+// Files map access would race.
+func (s *State) CountCachedBatchFindings(paths []string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, p := range paths {
+		if fs, ok := s.Files[p]; ok && fs != nil && fs.BatchFindings != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// SetDeepFindings replaces the persisted top-level deep findings.
+// Used by the pipeline at recheck boundaries (replace) and on load
+// migration. For incremental append during Phase 1, use AppendDeepFindings.
+func (s *State) SetDeepFindings(findings []DeepFinding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DeepFindings = append([]DeepFinding(nil), findings...)
+}
+
+// AppendDeepFindings adds findings to the top-level list. Holds the
+// write lock for the whole append so concurrent batch goroutines don't
+// drop entries via read-then-write races.
+func (s *State) AppendDeepFindings(findings []DeepFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DeepFindings = append(s.DeepFindings, findings...)
+}
+
+// GetDeepFindings returns a copy of the persisted deep findings.
+// Returning a copy keeps callers from racing with concurrent writers.
+func (s *State) GetDeepFindings() []DeepFinding {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.DeepFindings) == 0 {
+		return nil
+	}
+	out := make([]DeepFinding, len(s.DeepFindings))
+	copy(out, s.DeepFindings)
+	return out
+}
+
+// ClearDeepFindings empties the persisted list. Used when the pipeline
+// starts a fresh review run and wants to discard stale incremental
+// findings before accumulating new ones.
+func (s *State) ClearDeepFindings() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DeepFindings = nil
+}
+
 // SetProjectContext stores a cached project context and its input hash.
 func (s *State) SetProjectContext(summary, inputHash string) {
 	s.mu.Lock()
@@ -341,6 +413,34 @@ func (s *State) GetProjectContext() (summary, inputHash string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ProjectContext, s.ProjectContextHash
+}
+
+// SetPRBrief stores a cached PR-specific briefing (summary of comments,
+// prior AI reviews, CI status) and its input hash. Mirrors the
+// SetProjectContext API so callers in internal/prcontext can use it the
+// same way internal/project uses ProjectContext.
+func (s *State) SetPRBrief(brief, inputHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PRBrief = brief
+	s.PRBriefHash = inputHash
+}
+
+// GetPRBrief returns the cached PR brief and its input hash.
+func (s *State) GetPRBrief() (brief, inputHash string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.PRBrief, s.PRBriefHash
+}
+
+// ClearPRBrief invalidates the cached PR brief. Use when external state
+// (e.g. the prior AI review) changes in a way that should force
+// regeneration even if the input hash hasn't moved.
+func (s *State) ClearPRBrief() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PRBrief = ""
+	s.PRBriefHash = ""
 }
 
 // SetDeepReview stores a Phase 3 deep review result by cache key.

@@ -2,9 +2,11 @@ package security
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/aitesting"
 )
 
 // mockClient implements ai.Client for testing.
@@ -34,6 +36,33 @@ func TestRevalidatePrompt(t *testing.T) {
 	p := RevalidatePrompt()
 	if p == "" {
 		t.Fatal("RevalidatePrompt() should not be empty")
+	}
+}
+
+// TestSecurityPrompts_NoToolNamesLeakIntoClaudeCode mirrors the leak
+// check in internal/ai/prompt_test.go for prompts that live in this
+// package. Any inline tool name that wasn't rephrased shows up here.
+// The fake provider and tool-name list come from internal/aitesting so
+// there is a single source of truth across leak-test sites.
+func TestSecurityPrompts_NoToolNamesLeakIntoClaudeCode(t *testing.T) {
+	prompts := map[string]string{
+		"AOIScanPrompt":    AOIScanPrompt(),
+		"AOIAuditPrompt":   AOIAuditPrompt(),
+		"RevalidatePrompt": RevalidatePrompt(),
+	}
+
+	claude := aitesting.ClaudeCodeProvider{}
+	for name, raw := range prompts {
+		resolved := ai.ResolveTools(raw, claude)
+		var leaked []string
+		for _, tn := range aitesting.PrrSpecificToolNames {
+			if strings.Contains(resolved, tn) {
+				leaked = append(leaked, tn)
+			}
+		}
+		if len(leaked) > 0 {
+			t.Errorf("%s leaked tool names into Claude Code resolve: %v", name, leaked)
+		}
 	}
 }
 

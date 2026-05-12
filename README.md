@@ -47,6 +47,12 @@ On first run, prr creates `~/.config/prr/config.json`:
 
 Set your API key and you're ready to go. The `pipes` array is optional — see [Pipe Targets](#pipe-targets) for configuration.
 
+### Claude Code (zero-config)
+
+If you already have the [`claude` CLI](https://docs.claude.com/claude-code) installed and signed in, prr will detect it and offer Claude Opus / Sonnet / Haiku in the model picker without any API key in `config.json`. Auth is handled by Claude Code itself (subscription, OAuth, or `ANTHROPIC_API_KEY`), which is useful in environments where you can't easily set an Anthropic API key (e.g. Claude Enterprise).
+
+The provider runs `claude -p` per request with a curated read-only toolset (`Read`, `Grep`, `Glob`, plus specific read-only `git` subcommands) and `--permission-mode bypassPermissions`, so it never edits files and never prompts for permission.
+
 ## Usage
 
 ```bash

@@ -60,7 +60,13 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		op.ModelConfig.ThinkingBudget = cfg.ThinkingBudget
 		return op, nil
 
+	case "claude-code":
+		if !DetectClaudeCode() {
+			return nil, fmt.Errorf("claude-code: %q binary not found on PATH — install Claude Code to use this provider", claudeCodeBinaryName)
+		}
+		return &ClaudeCodeProvider{Model: cfg.ModelID}, nil
+
 	default:
-		return nil, fmt.Errorf("unsupported AI provider: %q (supported: gemini, openai, github-copilot)", cfg.ProviderName)
+		return nil, fmt.Errorf("unsupported AI provider: %q (supported: gemini, openai, github-copilot, claude-code)", cfg.ProviderName)
 	}
 }

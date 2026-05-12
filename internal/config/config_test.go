@@ -673,3 +673,60 @@ func TestLoad_MissingProviderKey_ForFastModel(t *testing.T) {
 		t.Errorf("expected error about openai, got: %v", err)
 	}
 }
+
+// TestProviderConfig_UseCLI_RoundTrip pins the wizard's claude-code
+// placeholder contract: a ProviderConfig{UseCLI: true} survives Save →
+// Load intact, the saved JSON contains "use_cli": true, and it does NOT
+// contain an empty api_key (the json:"api_key,omitempty" tag ensures
+// the field is omitted when empty so we don't ship misleading blanks).
+//
+// Why this matters (Rule 9): the marker exists so a user inspecting
+// config.json can see the wizard's claude-code selection. A regression
+// that strips the field on save or accidentally re-adds an empty key
+// would break that visibility — silently. This test fails loudly.
+func TestProviderConfig_UseCLI_RoundTrip(t *testing.T) {
+	home := setTestHome(t)
+	path := filepath.Join(home, ".config", "prr", "config.json")
+
+	cfg := &Config{
+		StrongModel: "claude-code/claude-opus-4-7",
+		FastModel:   "claude-code/claude-haiku-4-5",
+		Providers: map[string]ProviderConfig{
+			"claude-code": {UseCLI: true},
+		},
+	}
+	if err := SaveTo(cfg, path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	// Inspect the raw JSON bytes — both presence of use_cli and absence
+	// of an empty api_key matter.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(raw), `"use_cli": true`) {
+		t.Errorf("saved config missing \"use_cli\": true; got:\n%s", string(raw))
+	}
+	if strings.Contains(string(raw), `"api_key": ""`) {
+		t.Errorf("saved config contains empty api_key (should be omitted via omitempty); got:\n%s", string(raw))
+	}
+
+	// Load and verify the field deserializes back. Bypass the full
+	// validator path (Load enforces real model refs / api keys); use
+	// raw decode against the actual file we just wrote.
+	loaded, err := LoadRawFrom(path)
+	if err != nil {
+		t.Fatalf("LoadRawFrom: %v", err)
+	}
+	pc, ok := loaded.Providers["claude-code"]
+	if !ok {
+		t.Fatal("claude-code provider missing after round-trip")
+	}
+	if !pc.UseCLI {
+		t.Errorf("UseCLI = false after round-trip, want true")
+	}
+	if pc.APIKey != "" {
+		t.Errorf("APIKey = %q after round-trip, want empty", pc.APIKey)
+	}
+}

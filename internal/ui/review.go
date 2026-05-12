@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/state"
 
@@ -204,12 +205,16 @@ func collectCachedFindings(batch reviewBatch, reviewState *state.State) (string,
 
 // ── streamMultiPassReview ───────────────────────────────────────────────
 
-// streamMultiPassReview runs a multi-pass PR review using the shared pipeline core.
-// This is now a thin wrapper around review.RunReviewCore.
+// streamMultiPassReview runs a multi-pass PR review using the shared
+// pipeline core. watchdogTap (nullable) is called on every reporter
+// event so an associated ai.IdleWatch sees all progress as activity;
+// stopWatchdog (nullable) is invoked when the run finishes to release
+// the watchdog goroutine.
 func streamMultiPassReview(
 	ctx context.Context,
 	client ai.Client,
 	aoiClient ai.Client,
+	pr *git.PullRequest,
 	prMeta string,
 	rawDiffs map[string]string,
 	customInstructions string,
@@ -219,9 +224,21 @@ func streamMultiPassReview(
 	base, head string,
 	aoiContextLines int,
 	repoRoot string,
+	watchdogTap func(string),
+	stopWatchdog func(),
 ) tea.Cmd {
 	return func() tea.Msg {
+		if stopWatchdog != nil {
+			defer stopWatchdog()
+		}
 		adapter := &reviewReporterAdapter{rr: rr}
+		// Wrap adapter so every Token / BatchProgress / AOIProgress
+		// resets the idle watchdog — stalls during the long synthesis
+		// phase still get caught, but active phases run unimpeded.
+		var reporter review.Reporter = adapter
+		if watchdogTap != nil {
+			reporter = &review.WatchdogReporter{Inner: adapter, Tap: watchdogTap}
+		}
 
 		coreResult, err := review.RunReviewCore(ctx, client, aoiClient, review.CoreOptions{
 			PRMeta:             prMeta,
@@ -233,18 +250,31 @@ func streamMultiPassReview(
 			Head:               head,
 			AOIContextLines:    aoiContextLines,
 			RepoRoot:           repoRoot,
-		}, adapter)
+			PR:                 pr,
+			// TUI default: skip synthesis. DeepFindings is the source
+			// of truth for the Review tab. Saves ~$3-5 per review and
+			// removes one failure mode (synthesis stalls). Headless
+			// `prr review` keeps synthesis for CI consumers that want
+			// the JSON ReviewOutput.
+			SkipSynthesis: true,
+		}, reporter)
 		if err != nil {
 			return AIChatDoneMsg{Err: err}
 		}
 
-		return AIChatDoneMsg{
-			FullResponse:     coreResult.Review.Summary,
-			Review:           coreResult.Review,
-			StructuredReview: coreResult.StructuredReview,
-			FileFindings:     coreResult.FileFindings,
-			DeepFindings:     coreResult.DeepFindings,
+		// With SkipSynthesis=true, coreResult.Review is nil and
+		// DeepFindings is the payload. Build a minimal response that
+		// the model goroutine can persist + display.
+		msg := AIChatDoneMsg{
+			Review:       coreResult.Review,
+			FileFindings: coreResult.FileFindings,
+			DeepFindings: coreResult.DeepFindings,
 		}
+		if coreResult.Review != nil {
+			msg.FullResponse = coreResult.Review.Summary
+			msg.StructuredReview = coreResult.StructuredReview
+		}
+		return msg
 	}
 }
 

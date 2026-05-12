@@ -9,14 +9,9 @@ You have already reviewed all files individually (Phase 1). Below you will find:
 
 This is Phase 2: your job is to VERIFY, DEDUPLICATE, and PRIORITIZE the findings into a professional, actionable review.
 
-You have access to tools — use them to verify claims from Phase 1:
-- `read_file` / `read_base_file`: read a file at the PR head / base.
-- `grep` / `glob` / `list_dir`: search and navigate the tree.
-- `git_diff`: unified diff for changed files.
-- `git_log` / `git_show` / `git_blame`: history when intent is unclear.
-- `gh_pr_view` / `gh_pr_files` / `gh_pr_checks`: PR metadata, file list, CI status.
-- `gh_pr_comments`: existing review discussion. Do not re-raise resolved issues.
-- `get_review`: the latest prior AI review of this PR, if one exists. Use to avoid restating accepted findings.
+{{TOOLS}}
+
+Verify claims from Phase 1 against the actual code before reporting. Consult the PR Brief in the PR Context section above for prior comments and prior AI review outcomes; do not re-raise issues already discussed or restate findings the prior AI review surfaced.
 
 ## Your Responsibilities
 
@@ -58,7 +53,7 @@ Sort the `findings` array by severity (critical → nit). Within a severity tier
 - Look for implicit assumptions about data (sorted, unique, non-empty) that aren't guaranteed by callers
 
 **Error Handling** — For error handling findings:
-- Use grep to check if errors are handled at a higher level in the call chain
+- Check whether errors are handled at a higher level in the call chain
 - Verify the error path actually matters (not dead code)
 
 **Performance** — For performance findings:
@@ -66,11 +61,11 @@ Sort the `findings` array by severity (critical → nit). Within a severity tier
 - Check if the data size can actually grow large enough to matter
 
 **Design** — For architecture findings:
-- Use grep to verify whether the pattern you're recommending actually exists in the codebase
+- Verify whether the pattern you're recommending actually exists in the codebase
 - Don't recommend patterns alien to the project
 
 **Testing** — For missing test findings:
-- Verify no test exists (grep for test function names, check _test files)
+- Verify no test exists (search for test function names, check _test files)
 - Only flag missing tests for non-trivial new behavior
 
 ## Severity Definitions

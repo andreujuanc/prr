@@ -231,61 +231,13 @@ func runAudit(debug bool, args []string) {
 		os.Exit(1)
 	}
 
-	// ── Interactive model selection ─────────────────────────────────────
-	// Allow env vars to skip the interactive prompt
-	envReview := os.Getenv("PRR_REVIEW_MODEL")
-	envAOI := os.Getenv("PRR_AOI_MODEL")
-	var selection *audit.ModelSelection
-	if envReview != "" && envAOI != "" {
-		// Env vars can be in "provider/model" format or bare model IDs
-		reviewRef := envReview
-		if !strings.Contains(reviewRef, "/") {
-			reviewRef = resolveModelProvider(cfg, envReview)
-		}
-		aoiRef := envAOI
-		if !strings.Contains(aoiRef, "/") {
-			aoiRef = resolveModelProvider(cfg, envAOI)
-		}
-		selection = &audit.ModelSelection{
-			StrongModel: reviewRef,
-			FastModel:   aoiRef,
-		}
-	} else {
-		var selErr error
-		selection, selErr = audit.PromptModels(cfg)
-		if selErr != nil {
-			printError(selErr)
-			os.Exit(1)
-		}
-	}
-
-	// Validate model refs
-	strongRef, err := config.ParseModelRef(selection.StrongModel)
+	// Interactive model selection (or PRR_REVIEW_MODEL/PRR_AOI_MODEL
+	// env vars). Mutates cfg.StrongModel/cfg.FastModel.
+	strongRef, fastRef, err := cfg.ResolveModels()
 	if err != nil {
-		printError(fmt.Errorf("invalid review model: %w", err))
+		printError(err)
 		os.Exit(1)
 	}
-	fastRef, err := config.ParseModelRef(selection.FastModel)
-	if err != nil {
-		printError(fmt.Errorf("invalid AOI model: %w", err))
-		os.Exit(1)
-	}
-
-	// Resolve API keys for selected providers
-	strongKey := cfg.APIKeyFor(strongRef.Provider)
-	if strongKey == "" {
-		printError(fmt.Errorf("no API key for provider %q (used by review model %q)", strongRef.Provider, selection.StrongModel))
-		os.Exit(1)
-	}
-	fastKey := cfg.APIKeyFor(fastRef.Provider)
-	if fastKey == "" {
-		printError(fmt.Errorf("no API key for provider %q (used by AOI model %q)", fastRef.Provider, selection.FastModel))
-		os.Exit(1)
-	}
-
-	// Apply selections to config for client creation
-	cfg.StrongModel = selection.StrongModel
-	cfg.FastModel = selection.FastModel
 
 	// Create AI clients
 	reviewClient := createAIClient(cfg)
@@ -503,6 +455,15 @@ func runReview(debug bool, args []string) {
 	}
 	cfg.Debug = reviewDebug
 
+	// Interactive model selection (or PRR_REVIEW_MODEL/PRR_AOI_MODEL
+	// env vars). Mutates cfg.StrongModel/cfg.FastModel before the
+	// clients below read them.
+	_, fastRef, err := cfg.ResolveModels()
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+
 	// Create AI clients
 	reviewClient := createAIClient(cfg)
 
@@ -511,14 +472,17 @@ func runReview(debug bool, args []string) {
 		log.Printf("AOI client not available: %v", aoiErr)
 	}
 
-	aoiModelName := resolveAOIModelName(aoiClient, cfg)
-	aoiCtxLines := resolveAOIContextLines(aoiModelName)
+	aoiCtxLines := resolveAOIContextLines(fastRef.ModelID)
 
 	log.Printf("Starting headless PR review for PR #%s (strong: %s, fast: %s)",
 		prNumber, cfg.StrongModel, cfg.FastModel)
 
-	// Run the review pipeline
-	ctx := context.Background()
+	// Run the review pipeline with an idle watchdog. The headless path
+	// has no user-facing cancel, but a stalled agent shouldn't burn
+	// budget indefinitely in CI. 240s of zero activity (no tokens, no
+	// phase events) cancels the run with ai.ErrIdle.
+	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(context.Background(), 240*time.Second, nil)
+	defer stopWatchdog()
 
 	opts := review.PRReviewOptions{
 		PRNumber:           prNumber,
@@ -529,6 +493,10 @@ func runReview(debug bool, args []string) {
 		AOIContextLines:    aoiCtxLines,
 		CustomInstructions: config.LoadCustomInstructions(),
 		Debug:              reviewDebug,
+		// WatchdogTap routes streamed-token activity into the watchdog
+		// reset. Phase events also flow through it via the reporter
+		// wrapping inside RunPRReview.
+		WatchdogTap: watchdogTap,
 	}
 
 	result, err := review.RunPRReview(ctx, reviewClient, aoiClient, opts, func(phase, msg string) {
@@ -689,7 +657,10 @@ func createAIClient(cfg *config.Config) ai.Client {
 	}
 
 	apiKey := cfg.APIKeyFor(ref.Provider)
-	if apiKey == "" || apiKey == "YOUR_API_KEY" {
+	// Keyless providers (e.g. claude-code) authenticate via their own
+	// CLI; prr does not need an API key for them. The factory will
+	// detect availability and surface an error if the CLI isn't on PATH.
+	if !config.IsKeylessProvider(ref.Provider) && (apiKey == "" || apiKey == "YOUR_API_KEY") {
 		printError(fmt.Errorf("no API key configured for provider %q (used by strong_model %q)", ref.Provider, cfg.StrongModel))
 		os.Exit(1)
 	}
@@ -757,7 +728,9 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 		apiKey = envKey
 	}
 
-	if apiKey == "" || apiKey == "YOUR_API_KEY" {
+	// Keyless providers (e.g. claude-code) authenticate via their own
+	// CLI; no key required here.
+	if !config.IsKeylessProvider(ref.Provider) && (apiKey == "" || apiKey == "YOUR_API_KEY") {
 		return nil, fmt.Errorf("no API key configured for provider %q (used by fast_model %q). Set PRR_AOI_API_KEY or configure providers.%s.api_key", ref.Provider, fastModel, ref.Provider)
 	}
 
@@ -1355,9 +1328,19 @@ func runConfig() {
 
 func runConfigAdd(cfg *config.Config) bool {
 	providers := config.KnownProviders()
-	opts := make([]huh.Option[string], len(providers))
-	for i, p := range providers {
-		opts[i] = huh.NewOption(p, p)
+	opts := make([]huh.Option[string], 0, len(providers))
+	for _, p := range providers {
+		// Hide keyless providers whose detector reports them as
+		// unavailable (e.g. claude-code without the CLI on PATH).
+		if config.IsKeylessProvider(p) {
+			detect, ok := config.KeylessProviderAvailable[p]
+			if !ok || detect == nil || !detect() {
+				continue
+			}
+			opts = append(opts, huh.NewOption(p+" (detected, no key needed)", p))
+			continue
+		}
+		opts = append(opts, huh.NewOption(p, p))
 	}
 
 	var selected string
@@ -1381,6 +1364,25 @@ func runConfigAddForProvider(cfg *config.Config, provider string) bool {
 	// GitHub Copilot uses OAuth device flow instead of API key input
 	if provider == "github-copilot" {
 		return runCopilotOAuth(cfg)
+	}
+
+	// Claude Code authenticates via its own CLI (subscription / OAuth /
+	// ANTHROPIC_API_KEY). We just confirm the binary is available; no
+	// key needs to be stored in prr's config. We do write a small
+	// marker entry so the user's selection is visible in config.json
+	// (otherwise the wizard appears to save nothing for this provider).
+	if provider == "claude-code" {
+		detect, ok := config.KeylessProviderAvailable[provider]
+		if !ok || detect == nil || !detect() {
+			printError(fmt.Errorf("claude CLI not found on PATH — install Claude Code first (https://docs.claude.com/claude-code)"))
+			return false
+		}
+		if cfg.Providers == nil {
+			cfg.Providers = make(map[string]config.ProviderConfig)
+		}
+		cfg.Providers["claude-code"] = config.ProviderConfig{UseCLI: true}
+		fmt.Fprintf(os.Stderr, "  ✓ claude detected — using its own auth (subscription / OAuth / ANTHROPIC_API_KEY)\n")
+		return true
 	}
 
 	var apiKey string
@@ -1519,13 +1521,14 @@ func runConfigModel(cfg *config.Config, slot string) bool {
 		return false
 	}
 
-	// Check the provider has an API key
+	// Check the provider is usable. Keyless providers (claude-code)
+	// are usable as long as their CLI is detected; no API key required.
 	ref, err := config.ParseModelRef(selected)
 	if err != nil {
 		printError(err)
 		return false
 	}
-	if cfg.APIKeyFor(ref.Provider) == "" {
+	if cfg.APIKeyFor(ref.Provider) == "" && !config.IsKeylessProvider(ref.Provider) {
 		fmt.Fprintf(os.Stderr, "  Provider %q needs an API key first.\n", ref.Provider)
 		if !runConfigAddForProvider(cfg, ref.Provider) {
 			return false
@@ -1594,21 +1597,3 @@ func validateAPIKey(provider, apiKey string) error {
 	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 }
 
-// resolveModelProvider resolves a bare model ID to "provider/model" format,
-// preferring a provider the user has actually configured with an API key.
-func resolveModelProvider(cfg *config.Config, modelID string) string {
-	// Check each configured provider for this model
-	for provName, pc := range cfg.Providers {
-		if pc.APIKey == "" {
-			continue
-		}
-		if _, ok := config.GetKnownModelForProvider(provName, modelID); ok {
-			return provName + "/" + modelID
-		}
-	}
-	// Fallback to whatever GetKnownModel returns
-	if km, ok := config.GetKnownModel(modelID); ok {
-		return km.Provider + "/" + modelID
-	}
-	return modelID
-}

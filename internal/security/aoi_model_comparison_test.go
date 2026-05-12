@@ -355,32 +355,43 @@ func loadTestConfig(t *testing.T) *config.Config {
 // Format: "model1,model2,..." — settings are read from models.json,
 // credentials from config.json.
 //
-// PRR_AOI_PROVIDER overrides the provider (default: from fast_model config).
-// Useful for testing Copilot models: PRR_AOI_PROVIDER=github-copilot PRR_AOI_MODELS=gpt-4.1,claude-sonnet-4.6
+// Model list format: entries may be either "provider/model-id" or just "model-id".
+// If a provider is omitted the provider from the configured fast_model is used.
+// Example: PRR_AOI_MODELS="github-copilot/gpt-5-mini,gemini-3.1-flash-lite"
 func parseModelsFromEnv(cfg *config.Config, models map[string]config.ModelConfig) []modelSpec {
 	envModels := os.Getenv("PRR_AOI_MODELS")
 	if envModels == "" {
 		return nil
 	}
 
-	// Determine provider + credentials — allow override via PRR_AOI_PROVIDER
-	providerName := os.Getenv("PRR_AOI_PROVIDER")
-	if providerName == "" {
-		fastRef, _ := config.ParseModelRef(cfg.FastModel)
-		providerName = fastRef.Provider
-	}
-	pc := cfg.ProviderConfigFor(providerName)
+    // Fast model provider is used as the fallback when an entry omits the provider.
+    fastRef, _ := config.ParseModelRef(cfg.FastModel)
 
-	var specs []modelSpec
-	for _, m := range strings.Split(envModels, ",") {
-		m = strings.TrimSpace(m)
-		if m == "" {
-			continue
-		}
-		mcfg := config.GetModelConfig(models, m)
-		specs = append(specs, specFromConfig(m, m, providerName, pc.APIKey, pc.BaseURL, mcfg))
-	}
-	return specs
+    var specs []modelSpec
+    for _, entry := range strings.Split(envModels, ",") {
+        entry = strings.TrimSpace(entry)
+        if entry == "" {
+            continue
+        }
+
+        // Allow either "provider/model-id" or just "model-id". If the
+        // provider is omitted, fall back to the configured fast model's provider.
+        var providerName, modelID string
+        if ref, err := config.ParseModelRef(entry); err == nil {
+            providerName = ref.Provider
+            modelID = ref.ModelID
+        } else {
+            providerName = fastRef.Provider
+            modelID = entry
+        }
+
+        pc := cfg.ProviderConfigFor(providerName)
+        mcfg := config.GetModelConfig(models, modelID)
+        // Use the original entry as the display name so callers see the
+        // provider/model form when provided.
+        specs = append(specs, specFromConfig(entry, modelID, providerName, pc.APIKey, pc.BaseURL, mcfg))
+    }
+    return specs
 }
 
 // ── Gemini pricing (Standard tier, per 1M tokens, text input) ─────────
@@ -488,8 +499,9 @@ func TestAOIModelComparison(t *testing.T) {
 				t.Fatalf("createProvider: %v", err)
 			}
 
-			tracker := &ai.UsageTracker{}
-			client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker))
+    tracker := &ai.UsageTracker{}
+    // Enable verbose debug logging for this detailed run to capture HTTP/debug info.
+    client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker), ai.WithDebugLogger(os.Stderr))
 
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()

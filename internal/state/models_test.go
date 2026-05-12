@@ -2,7 +2,10 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 )
 
 // ── SeverityRank ────────────────────────────────────────────────────────
@@ -327,6 +330,187 @@ func TestGetProjectContext_Empty(t *testing.T) {
 	summary, hash := s.GetProjectContext()
 	if summary != "" || hash != "" {
 		t.Errorf("expected empty strings, got %q, %q", summary, hash)
+	}
+}
+
+// ── PRBrief ─────────────────────────────────────────────────────────────
+
+func TestSetGetPRBrief(t *testing.T) {
+	s := NewState("42")
+	s.SetPRBrief("PR #42 — auth refactor. 3 prior comments; CI passing.", "sha256xyz")
+
+	brief, hash := s.GetPRBrief()
+	if brief != "PR #42 — auth refactor. 3 prior comments; CI passing." {
+		t.Errorf("brief = %q", brief)
+	}
+	if hash != "sha256xyz" {
+		t.Errorf("hash = %q, want sha256xyz", hash)
+	}
+}
+
+func TestGetPRBrief_Empty(t *testing.T) {
+	s := NewState("42")
+	brief, hash := s.GetPRBrief()
+	if brief != "" || hash != "" {
+		t.Errorf("expected empty strings, got %q, %q", brief, hash)
+	}
+}
+
+// TestDeepFindings_PersistsAcrossSaveLoad is the load-bearing contract
+// for the robustness fix: when pipeline writes deep findings to state,
+// they must survive Save → close → Load. Without this guarantee, the
+// pipeline could "succeed" yet leave the user with nothing on reopen —
+// exactly the $20-loss symptom we're trying to fix.
+//
+// This is a state-layer test; the pipeline integration test in
+// internal/review proves the pipeline actually populates this field.
+func TestDeepFindings_PersistsAcrossSaveLoad(t *testing.T) {
+	root := t.TempDir()
+	prevRoot := repoRootFn
+	repoRootFn = func() (string, error) { return root, nil }
+	defer func() { repoRootFn = prevRoot }()
+
+	s := NewState("42")
+	s.SetDeepFindings([]DeepFinding{
+		{FindingID: "F-001", Severity: "high", Category: "bug", File: "main.go", Lines: "42", Title: "off-by-one"},
+		{FindingID: "F-002", Severity: "medium", Category: "performance", File: "util.go", Lines: "10-15", Title: "redundant copy"},
+	})
+
+	if err := Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load("42")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := loaded.GetDeepFindings()
+	if len(got) != 2 {
+		t.Fatalf("DeepFindings count after round-trip = %d, want 2", len(got))
+	}
+	if got[0].Title != "off-by-one" || got[1].Title != "redundant copy" {
+		t.Errorf("DeepFindings content not preserved across save/load: %+v", got)
+	}
+}
+
+// TestDeepFindings_AppendIsAtomicUnderConcurrency: the pipeline appends
+// findings as each batch completes from multiple goroutines (parallel
+// batch reviews). The append accessor must hold the write lock for the
+// whole append, not split read-then-write — otherwise concurrent
+// appends drop findings on the floor.
+func TestDeepFindings_AppendIsAtomicUnderConcurrency(t *testing.T) {
+	s := NewState("42")
+
+	const writers = 8
+	const perWriter = 50
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for w := 0; w < writers; w++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < perWriter; j++ {
+				s.AppendDeepFindings([]DeepFinding{
+					{FindingID: fmt.Sprintf("w%d-f%d", id, j)},
+				})
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	got := s.GetDeepFindings()
+	want := writers * perWriter
+	if len(got) != want {
+		t.Errorf("DeepFindings count after %d concurrent appends = %d, want %d (lost findings under contention)",
+			writers*perWriter, len(got), want)
+	}
+}
+
+// TestCountCachedBatchFindings_RaceFree exercises the locked-iteration
+// contract under concurrent writers. The race detector flags any
+// access to s.Files that escapes the lock; without lock-discipline
+// this test would catch the regression. Counter values are loose —
+// what matters is that no race is reported.
+func TestCountCachedBatchFindings_RaceFree(t *testing.T) {
+	s := NewState("42")
+	paths := []string{"a.go", "b.go", "c.go", "d.go"}
+
+	// Seed everything.
+	for _, p := range paths {
+		s.SetBatchFindings(p, "p", "f")
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Writers: keep mutating BatchFindings while readers count.
+	wg.Add(2)
+	for w := 0; w < 2; w++ {
+		go func(id int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for _, p := range paths {
+						s.SetBatchFindings(p, "p", fmt.Sprintf("w%d", id))
+					}
+				}
+			}
+		}(w)
+	}
+
+	// Readers: hammer CountCachedBatchFindings.
+	wg.Add(4)
+	for r := 0; r < 4; r++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 5000; i++ {
+				_ = s.CountCachedBatchFindings(paths)
+			}
+		}()
+	}
+
+	// Let readers finish; then signal writers to stop.
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+// TestCountCachedBatchFindings pins basic correctness of the accessor.
+// Lock behavior is verified separately by the _RaceFree test under
+// -race.
+func TestCountCachedBatchFindings(t *testing.T) {
+	s := NewState("42")
+	s.SetBatchFindings("a.go", "purpose-a", "findings-a")
+	s.SetBatchFindings("b.go", "purpose-b", "findings-b")
+	s.SetBatchFindings("empty.go", "purpose-c", "") // empty findings → not counted
+
+	// Three paths: two populated, one empty, one not in state at all.
+	got := s.CountCachedBatchFindings([]string{"a.go", "b.go", "empty.go", "missing.go"})
+	if got != 2 {
+		t.Errorf("CountCachedBatchFindings = %d, want 2", got)
+	}
+
+	// Empty input → 0.
+	if got := s.CountCachedBatchFindings(nil); got != 0 {
+		t.Errorf("nil paths = %d, want 0", got)
+	}
+}
+
+// TestPRBrief_ClearInvalidates pins the invalidation contract: callers
+// can force regeneration on next session by clearing the cached brief,
+// even when input hashes would otherwise match. Important when an
+// external trigger (e.g. prior AI review changes structure) should
+// invalidate the brief independent of GitHub-side input changes.
+func TestPRBrief_ClearInvalidates(t *testing.T) {
+	s := NewState("42")
+	s.SetPRBrief("cached brief", "hash1")
+	s.ClearPRBrief()
+
+	brief, hash := s.GetPRBrief()
+	if brief != "" || hash != "" {
+		t.Errorf("after Clear, expected empty; got brief=%q hash=%q", brief, hash)
 	}
 }
 

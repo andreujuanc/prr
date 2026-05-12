@@ -159,6 +159,12 @@ func (a *Agent) ResetUsage() {
 // substance), we tolerate this once and continue. On the second
 // occurrence, we terminate.
 func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []Message, onToken func(string)) (string, error) {
+	// Resolve {{TOOLS}} placeholder against the active provider. Harness
+	// providers get the canonical prr tool listing; providers that run
+	// their own tool loop (Claude Code) get an empty substitution so
+	// they aren't told to call tools that don't exist in their env.
+	systemPrompt = ResolveTools(systemPrompt, a.provider)
+
 	// Convert simple Messages to ProviderMessages
 	provMsgs := make([]ProviderMessage, 0, len(messages))
 	for _, m := range messages {
@@ -560,6 +566,9 @@ func (a *Agent) SwitchModel(cfg ProviderConfig) error {
 			}
 			p.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 			p.ModelConfig.Temperature = cfg.Temperature
+			return nil
+		case *ClaudeCodeProvider:
+			p.Model = cfg.ModelID
 			return nil
 		}
 	}

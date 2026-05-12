@@ -1139,7 +1139,7 @@ func TestLive_StreamMultiPassReview(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := streamMultiPassReview(ctx, agent, nil, samplePRMeta, rawDiffs, "", rs, 1, rr, "", "", 3, "")
+	cmd := streamMultiPassReview(ctx, agent, nil, nil, samplePRMeta, rawDiffs, "", rs, 1, rr, "", "", 3, "", nil, nil)
 	msg := cmd() // execute the tea.Cmd
 
 	done, ok := msg.(AIChatDoneMsg)
@@ -1194,14 +1194,14 @@ func TestRenderStructuredReview_StaleBanner(t *testing.T) {
 	}
 
 	t.Run("no stale banner when not stale", func(t *testing.T) {
-		rendered, _ := renderStructuredReview(review, 80, -1, false)
+		rendered, _ := renderStructuredReview(review, 80, -1, nil, false)
 		if strings.Contains(rendered, "STALE") {
 			t.Error("expected no STALE banner, but found one")
 		}
 	})
 
 	t.Run("stale banner shown when stale", func(t *testing.T) {
-		rendered, _ := renderStructuredReview(review, 80, -1, true)
+		rendered, _ := renderStructuredReview(review, 80, -1, nil, true)
 		if !strings.Contains(rendered, "STALE") {
 			t.Error("expected STALE banner, but not found")
 		}

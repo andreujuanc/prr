@@ -195,13 +195,14 @@ func (m *Model) switchModel(modelRef string) string {
 	models, _ := config.LoadModels()
 	mcfg := config.GetModelConfig(models, ref.ModelID)
 
-	// Resolve API key for the target provider
+	// Resolve API key for the target provider. Keyless providers
+	// (claude-code) don't need a key in config — their CLI handles auth.
 	cfg, err := config.Load()
 	if err != nil {
 		return m.aiModelName
 	}
 	apiKey := cfg.APIKeyFor(ref.Provider)
-	if apiKey == "" {
+	if apiKey == "" && !config.IsKeylessProvider(ref.Provider) {
 		m.flashMsg = "No API key configured for provider " + ref.Provider
 		return m.aiModelName
 	}
@@ -252,13 +253,14 @@ func (m *Model) switchAOIModel(modelRef string) string {
 	models, _ := config.LoadModels()
 	mcfg := config.GetModelConfig(models, ref.ModelID)
 
-	// Resolve API key for the target provider
+	// Resolve API key for the target provider. Keyless providers
+	// (claude-code) don't need a key in config — their CLI handles auth.
 	cfg, err := config.Load()
 	if err != nil {
 		return m.aoiModelName
 	}
 	apiKey := cfg.APIKeyFor(ref.Provider)
-	if apiKey == "" {
+	if apiKey == "" && !config.IsKeylessProvider(ref.Provider) {
 		m.flashMsg = "No API key configured for provider " + ref.Provider
 		return m.aoiModelName
 	}

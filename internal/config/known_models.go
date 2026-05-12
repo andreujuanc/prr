@@ -65,9 +65,24 @@ var knownModels = []KnownModel{
 		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "slow"},
 	{ID: "gpt-5.4", Label: "GPT-5.4", Provider: "github-copilot", Thinking: true, Review: true,
 		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "medium"},
+	{ID: "gpt-5-mini", Label: "GPT-5 Mini", Provider: "github-copilot", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "fast"},
 	{ID: "gpt-4.1", Label: "GPT-4.1", Provider: "github-copilot", Review: true, AOI: true,
 		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "fast"},
 	{ID: "grok-code-fast-1", Label: "Grok Code Fast 1", Provider: "github-copilot", Review: true, AOI: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "fast"},
+
+	// ── Claude Code (local CLI; auth handled by Claude Code itself) ────
+	// IDs are the CLI's alias form (no date suffix). Full IDs look like
+	// "claude-haiku-4-5-20251001"; the CLI resolves aliases at request
+	// time. If a future CLI release tightens model-ID resolution, prr
+	// requests will fail and these entries need to be updated to the
+	// full date-stamped form.
+	{ID: "claude-opus-4-7", Label: "Claude Opus 4.7 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "slow"},
+	{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "medium"},
+	{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5 (Claude Code)", Provider: "claude-code", Thinking: true, AOI: true,
 		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "fast"},
 }
 
@@ -180,8 +195,19 @@ func providerSet(providers []string) map[string]bool {
 }
 
 // KnownProviders returns the list of supported provider names.
+//
+// claude-code is included unconditionally so callers (e.g. ParseModelRef
+// validation) recognise it; whether it is actually usable on the current
+// machine is decided by ai.DetectClaudeCode at runtime.
 func KnownProviders() []string {
-	return []string{"gemini", "openai", "github-copilot"}
+	return []string{"gemini", "openai", "github-copilot", "claude-code"}
+}
+
+// IsKeylessProvider reports whether a provider is usable without an API key
+// in the prr config. claude-code authenticates via the Claude Code CLI's
+// own keychain/subscription/OAuth, so prr does not need a key for it.
+func IsKeylessProvider(provider string) bool {
+	return provider == "claude-code"
 }
 
 // PriceTag returns a short human-readable price string like "$0.15/1M in".

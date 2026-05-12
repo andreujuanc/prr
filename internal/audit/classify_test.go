@@ -2,8 +2,35 @@ package audit
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+
+	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/aitesting"
 )
+
+// TestClassifyPrompt_NoToolNamesLeakIntoClaudeCode is the audit-package
+// mirror of the leak-prevention test in internal/ai. It catches future
+// regressions where someone adds a prr-specific tool name (read_file,
+// git_diff, etc.) to classify.md without rephrasing or adding the
+// {{TOOLS}} placeholder. Currently classify.md doesn't mention tools
+// at all — the classifier just inspects file paths — but if that
+// changes, Claude Code prompts must not see prr's tool names.
+func TestClassifyPrompt_NoToolNamesLeakIntoClaudeCode(t *testing.T) {
+	resolved := ai.ResolveTools(classifyPrompt, aitesting.ClaudeCodeProvider{})
+	var leaked []string
+	for _, tn := range aitesting.PrrSpecificToolNames {
+		if strings.Contains(resolved, tn) {
+			leaked = append(leaked, tn)
+		}
+	}
+	if len(leaked) > 0 {
+		t.Errorf("classify.md leaked tool names into Claude Code resolve: %v\n"+
+			"If you added a tool reference, either rephrase it to neutral prose "+
+			"(\"search the codebase\", \"read the file\") or insert {{TOOLS}} to "+
+			"inject the canonical tool block for harness providers.", leaked)
+	}
+}
 
 func TestDimensionsForType(t *testing.T) {
 	tests := []struct {

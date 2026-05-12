@@ -61,8 +61,16 @@ type Config struct {
 
 // ProviderConfig holds credentials and settings for a single provider.
 type ProviderConfig struct {
-	APIKey  string `json:"api_key"`
+	APIKey  string `json:"api_key,omitempty"`
 	BaseURL string `json:"base_url,omitempty"` // optional endpoint override
+
+	// UseCLI marks providers whose auth and invocation are delegated to
+	// an external CLI binary (currently only claude-code). It's a
+	// documentation marker rather than a switch — the actual detection
+	// uses exec.LookPath at runtime via KeylessProviderAvailable. The
+	// wizard writes UseCLI:true so the user sees their selection
+	// persisted in config.json instead of an empty {} object.
+	UseCLI bool `json:"use_cli,omitempty"`
 }
 
 // ProviderConfigFor returns the ProviderConfig for the given provider name, if any.
@@ -160,11 +168,13 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: invalid fast_model: %w", err)
 	}
 
-	// Check API keys exist for each provider used
-	if cfg.APIKeyFor(strongRef.Provider) == "" {
+	// Check API keys exist for each provider used. Keyless providers
+	// (e.g. claude-code, which authenticates via its own CLI keychain)
+	// are exempt from this check.
+	if !IsKeylessProvider(strongRef.Provider) && cfg.APIKeyFor(strongRef.Provider) == "" {
 		return nil, fmt.Errorf("config: no API key for provider %q (used by strong_model %q). Add it under providers.%s.api_key", strongRef.Provider, cfg.StrongModel, strongRef.Provider)
 	}
-	if cfg.APIKeyFor(fastRef.Provider) == "" {
+	if !IsKeylessProvider(fastRef.Provider) && cfg.APIKeyFor(fastRef.Provider) == "" {
 		return nil, fmt.Errorf("config: no API key for provider %q (used by fast_model %q). Add it under providers.%s.api_key", fastRef.Provider, cfg.FastModel, fastRef.Provider)
 	}
 
@@ -337,7 +347,18 @@ func LoadRawFrom(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// ConfiguredProviders returns providers that have API keys set.
+// KeylessProviderAvailable is set by other packages (e.g. internal/ai for
+// claude-code) to report whether a keyless provider is usable on the
+// current machine. Keys not in this map are treated as unavailable.
+//
+// Using a hook here avoids an import cycle: internal/config does not
+// depend on internal/ai, but ConfiguredProviders needs to know whether
+// claude-code is detected. Callers register their detector at init time.
+var KeylessProviderAvailable = map[string]func() bool{}
+
+// ConfiguredProviders returns providers that are usable. A provider is
+// usable if it has an API key set, or if it is a keyless provider (e.g.
+// claude-code) whose detector reports it as available.
 func (c *Config) ConfiguredProviders() []string {
 	var result []string
 	if c.Providers != nil {
@@ -345,6 +366,23 @@ func (c *Config) ConfiguredProviders() []string {
 			if pc.APIKey != "" {
 				result = append(result, name)
 			}
+		}
+	}
+	for name, detect := range KeylessProviderAvailable {
+		if detect == nil || !detect() {
+			continue
+		}
+		// De-dupe in case the keyless provider also has an entry in the
+		// providers map (e.g. user manually added a placeholder).
+		already := false
+		for _, n := range result {
+			if n == name {
+				already = true
+				break
+			}
+		}
+		if !already {
+			result = append(result, name)
 		}
 	}
 	return result

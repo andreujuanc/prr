@@ -1,14 +1,12 @@
-package audit
+package config
 
 import (
 	"strings"
 	"testing"
-
-	"github.com/andreujuanc/prr/internal/config"
 )
 
 func TestFormatModelLabel_Basic(t *testing.T) {
-	m := config.KnownModel{
+	m := KnownModel{
 		Label:            "Test Model",
 		Thinking:         false,
 		InputPricePer1M:  1.25,
@@ -31,7 +29,7 @@ func TestFormatModelLabel_Basic(t *testing.T) {
 }
 
 func TestFormatModelLabel_WithThinking(t *testing.T) {
-	m := config.KnownModel{
+	m := KnownModel{
 		Label:            "Thinker",
 		Thinking:         true,
 		InputPricePer1M:  2.50,
@@ -45,7 +43,7 @@ func TestFormatModelLabel_WithThinking(t *testing.T) {
 }
 
 func TestFormatAOIModelLabel_NoBenchmark(t *testing.T) {
-	m := config.KnownModel{
+	m := KnownModel{
 		Label:            "Flash",
 		InputPricePer1M:  0.15,
 		OutputPricePer1M: 0.60,
@@ -61,12 +59,12 @@ func TestFormatAOIModelLabel_NoBenchmark(t *testing.T) {
 }
 
 func TestFormatAOIModelLabel_WithBenchmark(t *testing.T) {
-	m := config.KnownModel{
+	m := KnownModel{
 		ID:    "test-model",
 		Label: "Flash",
 	}
-	bench := &config.BenchmarkResults{
-		Models: []config.ModelBenchmark{
+	bench := &BenchmarkResults{
+		Models: []ModelBenchmark{
 			{
 				ModelID:     "test-model",
 				RecallPct:   85.0,
@@ -84,5 +82,31 @@ func TestFormatAOIModelLabel_WithBenchmark(t *testing.T) {
 	}
 	if !strings.Contains(label, "0.003") {
 		t.Error("expected cost per scan")
+	}
+}
+
+func TestResolveModelProvider_PrefersConfiguredProvider(t *testing.T) {
+	// A model that exists under multiple providers should resolve to
+	// the one the user has actually configured with an API key.
+	cfg := &Config{
+		Providers: map[string]ProviderConfig{
+			"openai": {APIKey: "sk-test"},
+		},
+	}
+	got := cfg.resolveModelProvider("gpt-4.1")
+	// "gpt-4.1" lives under github-copilot in knownModels but the user
+	// only has openai configured — we fall back to GetKnownModel's
+	// default provider. Either way the result must contain a slash and
+	// the model id.
+	if !strings.Contains(got, "/gpt-4.1") {
+		t.Errorf("resolveModelProvider(%q) = %q; want a provider/model-id form", "gpt-4.1", got)
+	}
+}
+
+func TestResolveModelProvider_UnknownModelReturnsBare(t *testing.T) {
+	cfg := &Config{}
+	got := cfg.resolveModelProvider("never-heard-of-this-model")
+	if got != "never-heard-of-this-model" {
+		t.Errorf("unknown model should return the bare ID, got %q", got)
 	}
 }

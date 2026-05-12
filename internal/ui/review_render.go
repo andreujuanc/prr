@@ -9,14 +9,66 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// buildSyntheticReviewFromDeepFindings produces a ReviewOutput from
+// persisted Phase 1+1c deep findings, so the Review tab can render them
+// via the existing renderStructuredReview path without needing
+// synthesis to have run.
+//
+// Mapping (lossy where DeepFinding has richer info than ReviewFinding):
+//   - Severity, Category, File, Title, Suggestion: direct.
+//   - Lines (string, e.g. "45-62") → Line (int): parsed first integer.
+//   - Description → Detail.
+//   - Other DeepFinding fields (Evidence, Trigger, Subcategory,
+//     Dimension, AOIID, FindingID) are dropped — the UI doesn't render
+//     them yet and the navigable Review tab only needs the basics.
+func buildSyntheticReviewFromDeepFindings(deep []state.DeepFinding) *state.ReviewOutput {
+	out := &state.ReviewOutput{
+		Verdict:  "comment",
+		Findings: make([]state.ReviewFinding, 0, len(deep)),
+	}
+	for _, d := range deep {
+		out.Findings = append(out.Findings, state.ReviewFinding{
+			Severity:   d.Severity,
+			Category:   d.Category,
+			File:       d.File,
+			Line:       firstInt(d.Lines),
+			Title:      d.Title,
+			Detail:     d.Description,
+			Suggestion: d.Suggestion,
+		})
+	}
+	return out
+}
+
+// firstInt parses the leading integer from a string like "45" or
+// "45-62". Returns 0 if no digits start the string.
+func firstInt(s string) int {
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	n := 0
+	for i := 0; i < end; i++ {
+		n = n*10 + int(s[i]-'0')
+	}
+	return n
+}
+
 // renderStructuredReview renders a ReviewOutput as styled, grouped text
 // for display in the AI panel's Review tab.
 //
 // cursor is the index of the currently selected finding (-1 = none).
+// expanded maps finding index → true for findings whose body (file:line,
+// detail, suggestion) should be rendered. Nil/missing entries render as
+// collapsed (header only). Resolved findings are always single-line
+// regardless of the expansion map.
 // stale indicates the review was generated against a different set of diffs.
 // Returns the rendered string and a flat ordered list of findings matching
 // the render order (for navigable finding selection).
-func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, stale bool) (string, []state.ReviewFinding) {
+func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, expanded map[int]bool, stale bool) (string, []state.ReviewFinding) {
 	if review == nil {
 		return "", nil
 	}
@@ -75,7 +127,16 @@ func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, s
 
 			for _, f := range findings {
 				isSelected := findingIdx == cursor
-				renderFinding(&b, f, width, isSelected)
+				isExpanded := expanded[findingIdx]
+				renderFindingHeader(&b, f, width, isSelected, isExpanded)
+				if isExpanded {
+					renderFindingBody(&b, f, width)
+				}
+				// Trailing blank line between findings, matches the
+				// previous (non-collapsible) renderer's rhythm so the
+				// visual density when everything is expanded is
+				// unchanged.
+				b.WriteString("\n")
 				orderedFindings = append(orderedFindings, f)
 				findingIdx++
 			}
@@ -117,10 +178,17 @@ func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, s
 	return b.String(), orderedFindings
 }
 
-// renderFinding renders a single ReviewFinding as styled text.
-// When isSelected is true, the finding is highlighted with a cursor indicator.
-// Resolved findings are dimmed.
-func renderFinding(b *strings.Builder, f state.ReviewFinding, width int, isSelected bool) {
+// renderFindingHeader renders the always-visible part of a finding:
+// the meta line (cursor marker, resolved-✓, severity badge, category
+// tag, expand/collapse indicator) followed by the full title wrapped
+// across as many lines as needed.
+//
+// The earlier version composed marker+badge+cat+title into a single
+// string and truncated to viewport width — long titles got chopped
+// off-screen. lipgloss' Width().Render() handles word wrapping while
+// preserving style across continuation lines, so we now wrap cleanly
+// with the continuation indented under the title.
+func renderFindingHeader(b *strings.Builder, f state.ReviewFinding, width int, isSelected, expanded bool) {
 	sevStyle := severityStyle(f.Severity)
 	catStyle := categoryStyle(f.Category)
 
@@ -136,7 +204,17 @@ func renderFinding(b *strings.Builder, f state.ReviewFinding, width int, isSelec
 		resolvedPrefix = styleAccentGreen.Render("✓ ")
 	}
 
-	// Severity badge + category tag + title
+	// Expand/collapse indicator — only shown for non-resolved findings
+	// (resolved are always single-line). Mirrors the file tree's chevrons.
+	expandIndicator := ""
+	if !f.Resolved {
+		if expanded {
+			expandIndicator = styleTextMuted.Render("▾ ")
+		} else {
+			expandIndicator = styleTextMuted.Render("▸ ")
+		}
+	}
+
 	badge := sevStyle.Render(fmt.Sprintf("[%s]", f.Severity))
 	cat := catStyle.Render(fmt.Sprintf("[%s]", f.Category))
 	titleStyle := styleTextPrimary.Bold(true)
@@ -146,14 +224,46 @@ func renderFinding(b *strings.Builder, f state.ReviewFinding, width int, isSelec
 		cat = styleTextMuted.Render(fmt.Sprintf("[%s]", f.Category))
 		titleStyle = styleTextMuted
 	}
-	title := titleStyle.Render(f.Title)
 
-	line := fmt.Sprintf("%s%s%s %s %s", marker, resolvedPrefix, badge, cat, title)
-	// Truncate to prevent wrapping inside bordered panel (Golden Rule 2)
-	if width > 0 {
-		line = truncateToWidth(line, width)
+	// Meta prefix: cursor + resolved + expand + badge + cat. Short and
+	// predictable; safe to render on its own line if title is long.
+	prefix := fmt.Sprintf("%s%s%s%s %s", marker, resolvedPrefix, expandIndicator, badge, cat)
+
+	// Compute prefix's visible width (ANSI-aware) so we can decide
+	// whether the title fits on the same line.
+	prefixVisible := lipgloss.Width(prefix)
+	titleAvailable := width - prefixVisible - 1 // -1 for the space separator
+	if titleAvailable < 20 {
+		titleAvailable = 20
 	}
-	b.WriteString(line + "\n")
+
+	titleVisible := lipgloss.Width(f.Title)
+	if titleVisible <= titleAvailable {
+		// One-line case: fits comfortably.
+		b.WriteString(prefix + " " + titleStyle.Render(f.Title) + "\n")
+	} else {
+		// Multi-line case: prefix on its own line, then wrapped title
+		// indented to align under the badges.
+		b.WriteString(prefix + "\n")
+		indent := strings.Repeat(" ", lipgloss.Width(marker)+lipgloss.Width(resolvedPrefix))
+		wrapWidth := width - len(indent)
+		if wrapWidth < 20 {
+			wrapWidth = 20
+		}
+		wrapped := titleStyle.Width(wrapWidth).Render(f.Title)
+		for _, line := range strings.Split(wrapped, "\n") {
+			b.WriteString(indent + line + "\n")
+		}
+	}
+}
+
+// renderFindingBody renders the expand-only portion of a finding:
+// file:line reference, detail prose, and suggestion. Skipped entirely
+// for resolved findings (they're always single-line).
+func renderFindingBody(b *strings.Builder, f state.ReviewFinding, width int) {
+	if f.Resolved {
+		return
+	}
 
 	// File:line reference
 	if f.File != "" {
@@ -161,30 +271,21 @@ func renderFinding(b *strings.Builder, f state.ReviewFinding, width int, isSelec
 		if f.Line > 0 {
 			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
 		}
-		fileLine := "  " + styleFileLine.Render(loc)
-		if f.Resolved {
-			fileLine = "  " + styleTextMuted.Render(loc)
-		}
-		if width > 0 {
-			fileLine = truncateToWidth(fileLine, width)
-		}
-		b.WriteString(fileLine + "\n")
+		b.WriteString("  " + styleFileLine.Render(loc) + "\n")
 	}
 
-	// Detail — wrapped (skip for resolved to save space)
-	if f.Detail != "" && !f.Resolved {
+	// Detail — wrapped
+	if f.Detail != "" {
 		b.WriteString(wrapStyled(styleTextSecondary, "  "+f.Detail, width-2))
 		b.WriteString("\n")
 	}
 
-	// Suggestion — visually distinct (skip for resolved)
-	if f.Suggestion != "" && !f.Resolved {
+	// Suggestion — visually distinct
+	if f.Suggestion != "" {
 		b.WriteString(styleAccentGreen.Render("  > "))
 		b.WriteString(wrapStyled(styleTextSecondary, f.Suggestion, width-4))
 		b.WriteString("\n")
 	}
-
-	b.WriteString("\n")
 }
 
 // groupBySeverity groups findings by their severity level.
