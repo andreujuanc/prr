@@ -234,12 +234,18 @@ func userMessage(mode Mode) string {
 }
 
 // ParseDeepReviewResult parses the LLM's response into a DeepReviewResult.
+//
+// RawOutput is never the raw LLM string. The field's type is
+// json.RawMessage, whose MarshalJSON validates bytes as JSON — assigning
+// fenced/prose output (e.g. "```json\n{...}\n```") would make every
+// future state.Save fail and silently drop the user's findings.
+// We keep RawOutput nil until parsing succeeds, then store the cleaned
+// JSON we actually unmarshaled.
 func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult {
 	result := &state.DeepReviewResult{
 		Type:        call.Type,
 		Category:    call.Category,
 		Subcategory: call.Subcategory,
-		RawOutput:   json.RawMessage(raw),
 	}
 
 	s := strings.TrimSpace(raw)
@@ -295,6 +301,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult 
 			log.Printf("Deep review: failed to parse individual response: %v", err)
 			return result
 		}
+		result.RawOutput = json.RawMessage(s)
 		if parsed.Status == "finding" {
 			result.Findings = append(result.Findings, state.DeepFinding{
 				AOIID:       parsed.AOIID,
@@ -343,6 +350,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult 
 			log.Printf("Deep review: failed to parse grouped response: %v", err)
 			return result
 		}
+		result.RawOutput = json.RawMessage(s)
 		result.CrossCutting = parsed.CrossCutting
 		for _, r := range parsed.Results {
 			if r.Status == "finding" {
