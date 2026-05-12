@@ -1,4 +1,4 @@
-package audit
+package dbg
 
 import (
 	"bytes"
@@ -6,23 +6,32 @@ import (
 	"testing"
 )
 
-func TestNewDebugWriter_Disabled(t *testing.T) {
-	d := NewDebugWriter(false)
+func TestNew_Disabled(t *testing.T) {
+	d := New(false)
 	if d.Enabled() {
 		t.Error("expected disabled writer")
 	}
 }
 
-func TestNewDebugWriter_Enabled(t *testing.T) {
-	d := NewDebugWriter(true)
+func TestNew_Enabled(t *testing.T) {
+	d := New(true)
 	if !d.Enabled() {
 		t.Error("expected enabled writer")
 	}
 }
 
-func TestDebugWriter_DisabledNoOutput(t *testing.T) {
+func TestWriter_NilSafeEnabled(t *testing.T) {
+	// Nil *Writer must be safe to call Enabled() on so callers can
+	// guard expensive formatting without nil-checking first.
+	var d *Writer
+	if d.Enabled() {
+		t.Error("nil Writer should report disabled")
+	}
+}
+
+func TestWriter_DisabledNoOutput(t *testing.T) {
 	var buf bytes.Buffer
-	d := NewDebugWriter(false)
+	d := New(false)
 	d.SetOutput(&buf)
 
 	d.Phase("test")
@@ -37,9 +46,9 @@ func TestDebugWriter_DisabledNoOutput(t *testing.T) {
 	}
 }
 
-func TestDebugWriter_Phase(t *testing.T) {
+func TestWriter_Phase(t *testing.T) {
 	var buf bytes.Buffer
-	d := NewDebugWriter(true)
+	d := New(true)
 	d.SetOutput(&buf)
 
 	d.Phase("Phase 1")
@@ -52,9 +61,9 @@ func TestDebugWriter_Phase(t *testing.T) {
 	}
 }
 
-func TestDebugWriter_Section(t *testing.T) {
+func TestWriter_Section(t *testing.T) {
 	var buf bytes.Buffer
-	d := NewDebugWriter(true)
+	d := New(true)
 	d.SetOutput(&buf)
 
 	d.Section("My Section")
@@ -67,9 +76,9 @@ func TestDebugWriter_Section(t *testing.T) {
 	}
 }
 
-func TestDebugWriter_Text(t *testing.T) {
+func TestWriter_Text(t *testing.T) {
 	var buf bytes.Buffer
-	d := NewDebugWriter(true)
+	d := New(true)
 	d.SetOutput(&buf)
 
 	d.Text("count: %d", 42)
@@ -78,9 +87,9 @@ func TestDebugWriter_Text(t *testing.T) {
 	}
 }
 
-func TestDebugWriter_Prompt(t *testing.T) {
+func TestWriter_Prompt(t *testing.T) {
 	var buf bytes.Buffer
-	d := NewDebugWriter(true)
+	d := New(true)
 	d.SetOutput(&buf)
 
 	d.Prompt("system prompt", "user message")
@@ -93,9 +102,9 @@ func TestDebugWriter_Prompt(t *testing.T) {
 	}
 }
 
-func TestDebugWriter_Response(t *testing.T) {
+func TestWriter_Response(t *testing.T) {
 	var buf bytes.Buffer
-	d := NewDebugWriter(true)
+	d := New(true)
 	d.SetOutput(&buf)
 
 	d.Response("raw response")
@@ -108,9 +117,9 @@ func TestDebugWriter_Response(t *testing.T) {
 	}
 }
 
-func TestDebugWriter_Separator(t *testing.T) {
+func TestWriter_Separator(t *testing.T) {
 	var buf bytes.Buffer
-	d := NewDebugWriter(true)
+	d := New(true)
 	d.SetOutput(&buf)
 
 	d.Separator()

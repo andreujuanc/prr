@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/classify"
 	"github.com/andreujuanc/prr/internal/config"
+	"github.com/andreujuanc/prr/internal/dbg"
 	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/prcontext"
 	"github.com/andreujuanc/prr/internal/project"
@@ -177,6 +180,7 @@ func RunPRReview(
 		RepoRoot:           opts.RepoRoot,
 		NoSynthesis:        opts.NoSynthesis,
 		PR:                 pr,
+		Debug:              opts.Debug,
 	}, rr)
 	if err != nil {
 		return nil, err
@@ -232,17 +236,30 @@ type progressReporter struct {
 	onProgress func(phase, message string)
 }
 
-func (p *progressReporter) AOIProgress(status string, done bool, aoiCount int) {
-	p.onProgress("phase0", status)
+func (p *progressReporter) DiscoveryProgress(status string) {
+	p.onProgress("discovery", status)
+}
+func (p *progressReporter) ClassifyProgress(status string) {
+	p.onProgress("classify", status)
+}
+func (p *progressReporter) AOIPrescanProgress(status string, done bool, aoiCount int) {
+	p.onProgress("aoi", status)
 }
 func (p *progressReporter) InitBatches(batches []BatchInfo) {
 	p.onProgress("phase1", fmt.Sprintf("Initialized %d batches", len(batches)))
 }
 func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
+	// Skip StatusActive: with parallel batches, "active" messages
+	// flip the detail line chaotically (Batch 12: active → Batch 8:
+	// active → Batch 14: active …) without conveying real progress.
+	// The inline counter "X/Y" plus terminal-status messages give
+	// users an honest read of how much is done. The watchdog still
+	// taps on all BatchProgress calls via WatchdogReporter, so
+	// in-flight activity continues to reset the idle timer.
 	label := "done"
 	switch status {
 	case StatusActive:
-		label = "active"
+		return
 	case StatusCached:
 		label = "cached"
 	case StatusFailed:
@@ -418,6 +435,12 @@ type CoreOptions struct {
 	// the PR-brief discovery step in Phase 0 to gather comments, prior
 	// AI reviews, and CI status from gh. Nil for audit mode (no PR).
 	PR *git.PullRequest
+
+	// Debug, when true, prints every LLM prompt and response to stderr
+	// via internal/dbg. Covers the AOI pre-scan, deep review calls,
+	// and recheck. Synthesis is not yet instrumented (no OnLLMCall
+	// hook on RunSynthesis).
+	Debug bool
 }
 
 // CoreResult holds the output of the shared review pipeline core.
@@ -442,15 +465,16 @@ func RunReviewCore(
 	}
 
 	reviewState := opts.ReviewState
+	dbgw := dbg.New(opts.Debug)
 
 	// Emit a cache-resume summary so the user can see what's being
 	// reused on this run. Reduces the "did my re-run skip work?"
 	// anxiety, especially after a failed/cancelled previous attempt.
 	if msg := summarizeCacheState(reviewState, opts.RawDiffs); msg != "" {
-		rr.AOIProgress("Resuming: "+msg, false, 0)
+		rr.DiscoveryProgress("Resuming: " + msg)
 	}
 
-	// ── Phase 0: Project context + AOI pre-scan ──────────────────
+	// ── Discovery: project context + PR brief ────────────────────
 	var securityDigest string
 	var aoiScanResults []security.AOIScanResult
 
@@ -458,7 +482,7 @@ func RunReviewCore(
 	var projectContext string
 	if opts.RepoRoot != "" {
 		pctx, err := DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, reviewState, func(status string) {
-			rr.AOIProgress("Project context: "+status, false, 0)
+			rr.DiscoveryProgress("Project context: " + status)
 		})
 		if err != nil {
 			log.Printf("Project context discovery failed (non-fatal): %v", err)
@@ -471,7 +495,7 @@ func RunReviewCore(
 	// prompt sees it. Non-fatal: failure leaves PRMeta unchanged.
 	if opts.PR != nil {
 		brief, err := DiscoverPRBrief(ctx, aoiClient, opts.PR, reviewState, func(status string) {
-			rr.AOIProgress("PR brief: "+status, false, 0)
+			rr.DiscoveryProgress("PR brief: " + status)
 		})
 		if err != nil {
 			log.Printf("PR brief discovery failed (non-fatal): %v", err)
@@ -494,6 +518,17 @@ func RunReviewCore(
 		}
 	}
 
+	// ── Classification: narrow per-file dimensions ───────────────
+	// Each diffed file gets classified by the fast model (handler /
+	// test / repository / model / …). The result drives the AOI
+	// pre-scan: a test file doesn't get a cryptography pass, a
+	// handler does get input-validation, etc. Cached per file path
+	// in state.FileType; --no-cache forces re-classification.
+	// Cache invalidation: RunPRReview already calls ClearAllCaches
+	// when --no-cache is set, so the FileType lookups below find no
+	// entries on a forced re-run. No need to thread the flag through.
+	fileDimensions := classifyChangedFiles(ctx, aoiClient, reviewState, opts.RepoRoot, opts.RawDiffs, rr.ClassifyProgress)
+
 	// AOI pre-scan
 	aoiContextLines := opts.AOIContextLines
 	if aoiContextLines <= 0 {
@@ -501,11 +536,11 @@ func RunReviewCore(
 	}
 
 	if aoiClient != nil {
-		rr.AOIProgress("starting security pre-scan...", false, 0)
+		rr.AOIPrescanProgress("starting security pre-scan...", false, 0)
 
 		aoiDiffs := opts.RawDiffs
 		if aoiContextLines > 3 && opts.Base != "" && opts.Head != "" {
-			rr.AOIProgress(fmt.Sprintf("re-diffing with %d context lines...", aoiContextLines), false, 0)
+			rr.AOIPrescanProgress(fmt.Sprintf("re-diffing with %d context lines...", aoiContextLines), false, 0)
 			aoiDiffs = make(map[string]string, len(opts.RawDiffs))
 			for filePath := range opts.RawDiffs {
 				d, err := git.GetRawDiffWithContext(opts.Base, opts.Head, filePath, aoiContextLines)
@@ -535,12 +570,22 @@ func RunReviewCore(
 			}
 		}
 
-		aoiReport, err := security.ScanAreasOfInterest(ctx, aoiClient, aoiDiffs, aoiCache, func(status string) {
-			rr.AOIProgress(status, false, 0)
-		})
+		var aoiDebugHook security.AOIDebugHook
+		if dbgw.Enabled() {
+			dbgw.Phase("AOI Pre-scan")
+			aoiDebugHook = func(files []string, systemPrompt string, userMessage string, response string) {
+				dbgw.Section(fmt.Sprintf("AOI Scan: %v", files))
+				dbgw.Prompt(systemPrompt, userMessage)
+				dbgw.Response(response)
+				dbgw.Separator()
+			}
+		}
+		aoiReport, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, aoiDiffs, aoiCache, fileDimensions, func(status string) {
+			rr.AOIPrescanProgress(status, false, 0)
+		}, aoiDebugHook, false)
 		if err != nil {
 			log.Printf("AOI scan failed (non-fatal): %v", err)
-			rr.AOIProgress("security pre-scan failed (continuing without)", true, 0)
+			rr.AOIPrescanProgress("security pre-scan failed (continuing without)", true, 0)
 		} else if aoiReport != nil {
 			// Save AOI results to state
 			if reviewState != nil {
@@ -570,15 +615,15 @@ func RunReviewCore(
 			if aoiReport.TotalAOIs > 0 {
 				securityDigest = aoiReport.SecurityDigest
 				aoiScanResults = aoiReport.Files
-				rr.AOIProgress(
+				rr.AOIPrescanProgress(
 					fmt.Sprintf("found %d areas of interest", aoiReport.TotalAOIs),
 					true, aoiReport.TotalAOIs,
 				)
 			} else {
-				rr.AOIProgress("no security areas of interest found", true, 0)
+				rr.AOIPrescanProgress("no security areas of interest found", true, 0)
 			}
 		} else {
-			rr.AOIProgress("no security areas of interest found", true, 0)
+			rr.AOIPrescanProgress("no security areas of interest found", true, 0)
 		}
 	}
 
@@ -676,6 +721,19 @@ func RunReviewCore(
 				}
 			},
 		}
+		if dbgw.Enabled() {
+			dbgw.Phase("Deep Review")
+			execOpts.OnLLMCall = func(index int, call ReviewCall, systemPrompt string, userMsg string, response string) {
+				label := call.Subcategory
+				if label == "" {
+					label = call.Category
+				}
+				dbgw.Section(fmt.Sprintf("Review Call %d [%s]: %s (%v)", index+1, call.Type, label, call.Files))
+				dbgw.Prompt(systemPrompt, userMsg)
+				dbgw.Response(response)
+				dbgw.Separator()
+			}
+		}
 
 		// Wire up deep review caching to review state
 		if reviewState != nil {
@@ -736,7 +794,17 @@ func RunReviewCore(
 	}
 
 	// ── Phase 1c: Recheck ────────────────────────────────────────
-	rechecked, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext, nil, nil)
+	var recheckDebugHook func(systemPrompt, userMsg, response string)
+	if dbgw.Enabled() {
+		dbgw.Phase("Recheck")
+		recheckDebugHook = func(systemPrompt, userMsg, response string) {
+			dbgw.Section("Recheck LLM Call")
+			dbgw.Prompt(systemPrompt, userMsg)
+			dbgw.Response(response)
+			dbgw.Separator()
+		}
+	}
+	rechecked, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext, nil, recheckDebugHook)
 	if changed {
 		deepFindings = rechecked
 		// Rebuild synthesis input from rechecked findings
@@ -784,4 +852,84 @@ func RunReviewCore(
 		DeepFindings:     deepFindings,
 		FileFindings:     allFileFindings,
 	}, nil
+}
+
+// classifyChangedFiles classifies each diffed file by architectural
+// role (handler / test / repository / …) so the AOI pre-scan can be
+// narrowed to relevant dimensions per file. Returns a map of
+// filepath → dimension slugs suitable for
+// security.ScanAreasOfInterestClassified.
+//
+// File contents are read from the working tree relative to repoRoot.
+// This matches what `prr audit` does via CollectFiles — by the time
+// prr is invoked the user has already checked out the head ref we
+// want to review. Files that can't be read (deleted, outside repo,
+// perm error) are skipped — they get all dimensions (unknown
+// classification) when the AOI scan runs.
+//
+// Classifications are cached in state.FileType. Diff-driven
+// invalidation happens via state.SyncWithDiffs upstream (it clears
+// AOI results when the diff hash changes but intentionally keeps
+// FileType, since architectural role rarely shifts with a small
+// diff). --no-cache is handled at the RunPRReview boundary by
+// ClearAllCaches, which empties FileType too — so we don't need to
+// thread the flag through here.
+//
+// Failures are non-fatal: a classifier error means we fall back to
+// nil (all dimensions for all files), which is the same as the
+// pre-classification behavior.
+func classifyChangedFiles(
+	ctx context.Context,
+	aoiClient ai.Client,
+	reviewState *state.State,
+	repoRoot string,
+	rawDiffs map[string]string,
+	onProgress func(string),
+) map[string][]string {
+	if onProgress == nil {
+		onProgress = func(string) {}
+	}
+	if aoiClient == nil || repoRoot == "" || len(rawDiffs) == 0 {
+		return nil
+	}
+
+	files := make([]classify.File, 0, len(rawDiffs))
+	for path := range rawDiffs {
+		full := filepath.Join(repoRoot, path)
+		content, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		files = append(files, classify.File{Path: path, Content: string(content)})
+	}
+	if len(files) == 0 {
+		return nil
+	}
+
+	var cached map[string]classify.FileType
+	if reviewState != nil {
+		cached = make(map[string]classify.FileType, len(files))
+		for _, f := range files {
+			if ft := reviewState.GetFileType(f.Path); ft != "" {
+				cached[f.Path] = classify.FileType(ft)
+			}
+		}
+	}
+
+	classifications, err := classify.Classify(ctx, aoiClient, files, cached, onProgress)
+	if err != nil {
+		log.Printf("Classification partial/failed (non-fatal): %v — affected files fall back to all dimensions", err)
+	}
+
+	if reviewState != nil {
+		for path, ft := range classifications {
+			reviewState.SetFileType(path, string(ft))
+		}
+	}
+
+	dims := make(map[string][]string, len(classifications))
+	for path, ft := range classifications {
+		dims[path] = classify.DimensionsForType(ft)
+	}
+	return dims
 }

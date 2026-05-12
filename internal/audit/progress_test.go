@@ -2,146 +2,88 @@ package audit
 
 import (
 	"testing"
+
+	"github.com/andreujuanc/prr/internal/progress"
 )
 
-func TestTruncate_Short(t *testing.T) {
-	if got := truncate("hello", 10); got != "hello" {
-		t.Errorf("expected 'hello', got %q", got)
+// These tests pin the audit-specific contract for the shared TUI:
+// what message formats the audit pipeline emits, what counters they
+// populate, and how those counters drive the per-phase progress bar.
+//
+// Generic phase lifecycle (waiting → active → done, warning banner,
+// applyEvent dispatch) is covered in internal/progress/tui_test.go and
+// not duplicated here.
+
+func newState() *progress.State {
+	return &progress.State{Counters: make(map[string]int)}
+}
+
+// ── parseAuditEvent ─────────────────────────────────────────────────────
+
+func TestParseAuditEvent_Phase1Files(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase1", "Phase 1 complete: 42 files to audit")
+	if got := s.Counters["aoi_total"]; got != 42 {
+		t.Errorf("aoi_total = %d, want 42", got)
 	}
 }
 
-func TestTruncate_Exact(t *testing.T) {
-	if got := truncate("hello", 5); got != "hello" {
-		t.Errorf("expected 'hello', got %q", got)
+func TestParseAuditEvent_Phase2ScanProgress(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase2", "AOI scan 3/5 complete")
+	if s.Counters["aoi_scanned"] != 3 {
+		t.Errorf("aoi_scanned = %d, want 3", s.Counters["aoi_scanned"])
+	}
+	if s.Counters["aoi_total"] != 5 {
+		t.Errorf("aoi_total = %d, want 5", s.Counters["aoi_total"])
 	}
 }
 
-func TestTruncate_Long(t *testing.T) {
-	got := truncate("hello world", 6)
-	if got != "hello…" {
-		t.Errorf("expected 'hello…', got %q", got)
+func TestParseAuditEvent_Phase3ReviewTotal(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase3", "Executing 10 review calls...")
+	if s.Counters["review_total"] != 10 {
+		t.Errorf("review_total = %d, want 10", s.Counters["review_total"])
 	}
 }
 
-func TestTruncate_Empty(t *testing.T) {
-	if got := truncate("", 5); got != "" {
-		t.Errorf("expected empty string, got %q", got)
+func TestParseAuditEvent_Phase3ReviewProgress(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase3", "review 7/12")
+	if s.Counters["review_done"] != 7 {
+		t.Errorf("review_done = %d, want 7", s.Counters["review_done"])
+	}
+	if s.Counters["review_total"] != 12 {
+		t.Errorf("review_total = %d, want 12", s.Counters["review_total"])
 	}
 }
 
-func makeProgressUI() *ProgressUI {
-	return &ProgressUI{
-		phases: []phaseInfo{
-			{name: "phase1", label: "Filter", status: "waiting"},
-			{name: "phase2", label: "AOI Scan", status: "waiting"},
-			{name: "phase3", label: "Deep Review", status: "waiting"},
-			{name: "phase4", label: "Synthesis", status: "waiting"},
-		},
+// ── ProgressFn ─────────────────────────────────────────────────────────
+
+func TestAOIProgress_RatioOfCounters(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{"aoi_scanned": 5, "aoi_total": 10}}
+	if got := aoiProgress(s); got != 0.5 {
+		t.Errorf("aoiProgress = %f, want 0.5", got)
 	}
 }
 
-func TestUpdateProgress_ActivatesPhase(t *testing.T) {
-	m := makeProgressUI()
-	m.updateProgress("phase1", "starting")
-
-	if m.phases[0].status != "active" {
-		t.Errorf("expected phase1 active, got %q", m.phases[0].status)
-	}
-	if m.phases[0].detail != "starting" {
-		t.Errorf("expected detail 'starting', got %q", m.phases[0].detail)
+func TestAOIProgress_ZeroTotal(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{"aoi_total": 0}}
+	if got := aoiProgress(s); got != 0 {
+		t.Errorf("aoiProgress with zero total = %f, want 0", got)
 	}
 }
 
-func TestUpdateProgress_MarksPreviousDone(t *testing.T) {
-	m := makeProgressUI()
-	m.updateProgress("phase1", "go")
-	m.updateProgress("phase2", "scanning")
-
-	if m.phases[0].status != "done" {
-		t.Errorf("expected phase1 done, got %q", m.phases[0].status)
-	}
-	if m.phases[1].status != "active" {
-		t.Errorf("expected phase2 active, got %q", m.phases[1].status)
+func TestReviewProgress_RatioOfCounters(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{"review_done": 3, "review_total": 4}}
+	if got := reviewProgress(s); got != 0.75 {
+		t.Errorf("reviewProgress = %f, want 0.75", got)
 	}
 }
 
-func TestUpdateProgress_ParsesPhase1Files(t *testing.T) {
-	m := makeProgressUI()
-	m.updateProgress("phase1", "Phase 1 complete: 42 files to audit")
-
-	if m.totalFiles != 42 {
-		t.Errorf("expected totalFiles 42, got %d", m.totalFiles)
-	}
-}
-
-func TestUpdateProgress_ParsesPhase2ScanProgress(t *testing.T) {
-	m := makeProgressUI()
-	m.updateProgress("phase2", "AOI scan 3/5 complete")
-
-	if m.scannedFiles != 3 {
-		t.Errorf("expected scannedFiles 3, got %d", m.scannedFiles)
-	}
-	if m.totalFiles != 5 {
-		t.Errorf("expected totalFiles 5, got %d", m.totalFiles)
-	}
-}
-
-func TestUpdateProgress_ParsesPhase3Reviews(t *testing.T) {
-	m := makeProgressUI()
-	m.updateProgress("phase3", "Executing 10 review calls...")
-
-	if m.totalReviews != 10 {
-		t.Errorf("expected totalReviews 10, got %d", m.totalReviews)
-	}
-}
-
-func TestUpdateProgress_ParsesPhase3Progress(t *testing.T) {
-	m := makeProgressUI()
-	m.updateProgress("phase3", "review 7/12")
-
-	if m.doneReviews != 7 {
-		t.Errorf("expected doneReviews 7, got %d", m.doneReviews)
-	}
-	if m.totalReviews != 12 {
-		t.Errorf("expected totalReviews 12, got %d", m.totalReviews)
-	}
-}
-
-func TestActiveProgress_NoActivePhase(t *testing.T) {
-	m := makeProgressUI()
-	if got := m.activeProgress(); got != 0 {
-		t.Errorf("expected 0, got %f", got)
-	}
-}
-
-func TestActiveProgress_Phase2(t *testing.T) {
-	m := makeProgressUI()
-	m.phases[1].status = "active"
-	m.totalFiles = 10
-	m.scannedFiles = 5
-
-	if got := m.activeProgress(); got != 0.5 {
-		t.Errorf("expected 0.5, got %f", got)
-	}
-}
-
-func TestActiveProgress_Phase3(t *testing.T) {
-	m := makeProgressUI()
-	m.phases[2].status = "active"
-	m.totalReviews = 4
-	m.doneReviews = 3
-
-	if got := m.activeProgress(); got != 0.75 {
-		t.Errorf("expected 0.75, got %f", got)
-	}
-}
-
-func TestActiveProgress_Phase2_ZeroTotal(t *testing.T) {
-	m := makeProgressUI()
-	m.phases[1].status = "active"
-	m.totalFiles = 0
-
-	if got := m.activeProgress(); got != 0 {
-		t.Errorf("expected 0 for zero total, got %f", got)
+func TestReviewProgress_ZeroTotal(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{"review_total": 0}}
+	if got := reviewProgress(s); got != 0 {
+		t.Errorf("reviewProgress with zero total = %f, want 0", got)
 	}
 }

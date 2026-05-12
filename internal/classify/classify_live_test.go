@@ -1,4 +1,4 @@
-package audit
+package classify
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/andreujuanc/prr/internal/config"
 )
 
-// Run with: PRR_LIVE_TESTS=1 go test ./internal/audit/ -run TestLiveClassify -v
+// Run with: PRR_LIVE_TESTS=1 go test ./internal/classify/ -run TestLiveClassify -v
 
 func skipWithoutAPIKey(t *testing.T) *config.Config {
 	t.Helper()
@@ -61,7 +61,7 @@ func TestLiveClassify_MixedFiles(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	files := []AuditFile{
+	files := []File{
 		{
 			Path: "internal/auth/handler.go",
 			Content: `package auth
@@ -150,11 +150,11 @@ func main() {
 		},
 	}
 
-	result, err := ClassifyFiles(ctx, client, files, nil, func(status string) {
+	result, err := Classify(ctx, client, files, nil, func(status string) {
 		t.Logf("progress: %s", status)
 	})
 	if err != nil {
-		t.Fatalf("ClassifyFiles error: %v", err)
+		t.Fatalf("Classify error: %v", err)
 	}
 
 	// Verify we got a classification for every file
@@ -190,7 +190,7 @@ func TestLiveClassify_BusinessLogicAndClient(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	files := []AuditFile{
+	files := []File{
 		{
 			Path: "internal/billing/invoice.go",
 			Content: `package billing
@@ -320,11 +320,11 @@ func sendEmail(job EmailJob) error {
 		},
 	}
 
-	result, err := ClassifyFiles(ctx, client, files, nil, func(status string) {
+	result, err := Classify(ctx, client, files, nil, func(status string) {
 		t.Logf("progress: %s", status)
 	})
 	if err != nil {
-		t.Fatalf("ClassifyFiles error: %v", err)
+		t.Fatalf("Classify error: %v", err)
 	}
 
 	expectations := map[string]FileType{
@@ -349,7 +349,7 @@ func TestLiveClassify_Unknown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	files := []AuditFile{
+	files := []File{
 		{
 			Path: "data/schema.sql",
 			Content: `CREATE TABLE users (
@@ -375,11 +375,11 @@ echo "Done."
 		},
 	}
 
-	result, err := ClassifyFiles(ctx, client, files, nil, func(status string) {
+	result, err := Classify(ctx, client, files, nil, func(status string) {
 		t.Logf("progress: %s", status)
 	})
 	if err != nil {
-		t.Fatalf("ClassifyFiles error: %v", err)
+		t.Fatalf("Classify error: %v", err)
 	}
 
 	for _, f := range files {

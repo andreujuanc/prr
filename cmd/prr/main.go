@@ -499,11 +499,25 @@ func runReview(debug bool, args []string) {
 		WatchdogTap: watchdogTap,
 	}
 
-	result, err := review.RunPRReview(ctx, reviewClient, aoiClient, opts, func(phase, msg string) {
+	// Default: shared progress TUI (same as `prr audit`). Falls back
+	// to plain stderr lines in --quiet (no UI) or --debug (so debug
+	// output isn't clobbered by alt-screen animations).
+	var result *review.PRReviewResult
+	if quiet || reviewDebug {
 		if !quiet {
-			fmt.Fprintf(os.Stderr, "[%s] %s\n", phase, msg)
+			// Mirror `prr audit`'s RunPlain header so the stderr
+			// stream is self-describing — useful when piping to logs.
+			fmt.Fprintf(os.Stderr, "\n  review: %s  aoi: %s\n\n", cfg.StrongModel, cfg.FastModel)
 		}
-	})
+		result, err = review.RunPRReview(ctx, reviewClient, aoiClient, opts, func(phase, msg string) {
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "[%s] %s\n", phase, msg)
+			}
+		})
+	} else {
+		headerInfo := fmt.Sprintf("review: %s  aoi: %s", cfg.StrongModel, cfg.FastModel)
+		result, err = review.RunWithUI(ctx, reviewClient, aoiClient, opts, "PR #"+prNumber, headerInfo)
+	}
 	if err != nil {
 		printError(err)
 		os.Exit(1)

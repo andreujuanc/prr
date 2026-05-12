@@ -70,11 +70,23 @@ const maxDiffLines = review.MaxDiffLines
 const maxRetries = review.MaxRetries
 
 // reviewReporterAdapter wraps a TUI ReviewReporter as a review.Reporter.
+//
+// review.Reporter splits pre-AOI work (project context + PR brief) from
+// the AOI pre-scan into separate methods. The in-app TUI doesn't make
+// that distinction today — both fan into the same AIReviewAOIMsg via
+// the inner ReviewReporter.AOIProgress so the existing TUI rendering
+// keeps working unchanged.
 type reviewReporterAdapter struct {
 	rr ReviewReporter
 }
 
-func (a *reviewReporterAdapter) AOIProgress(status string, done bool, aoiCount int) {
+func (a *reviewReporterAdapter) DiscoveryProgress(status string) {
+	a.rr.AOIProgress(status, false, 0)
+}
+func (a *reviewReporterAdapter) ClassifyProgress(status string) {
+	a.rr.AOIProgress(status, false, 0)
+}
+func (a *reviewReporterAdapter) AOIPrescanProgress(status string, done bool, aoiCount int) {
 	a.rr.AOIProgress(status, done, aoiCount)
 }
 func (a *reviewReporterAdapter) InitBatches(batches []review.BatchInfo) {

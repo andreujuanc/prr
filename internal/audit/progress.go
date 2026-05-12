@@ -9,242 +9,118 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/progress"
 )
 
-// ── Styles ──────────────────────────────────────────────────────────────
+// ── Audit-specific styling (used in the summary footer only) ───────────
 
 var (
-	pTitle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	pSubtle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
-	pInfo      = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
-	pSuccess   = lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
-	pWarn      = lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF"))
-	pPhaseOn   = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	pPhaseDone = lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
-	pPhaseWait = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
-	pBox       = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#45475A")).
-			Padding(1, 2)
+	pTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
+	pInfo  = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
 )
 
-// ── Messages ────────────────────────────────────────────────────────────
+// ── Phase list ─────────────────────────────────────────────────────────
 
-type progressMsg struct {
-	phase   string
-	message string
-}
-
-type phaseCompleteMsg struct {
-	phase string
-}
-
-type auditDoneMsg struct {
-	result    *Result
-	synthesis *SynthesisResult
-	err       error
-}
-
-type tickMsg time.Time
-
-// ── Phase tracking ──────────────────────────────────────────────────────
-
-type phaseInfo struct {
-	name   string
-	label  string
-	status string // "waiting", "active", "done", "error"
-	detail string
-}
-
-// ── Model ───────────────────────────────────────────────────────────────
-
-// ProgressUI is a bubbletea model that displays audit progress.
-type ProgressUI struct {
-	// Config
-	reviewModel string
-	aoiModel    string
-
-	// Audit execution
-	ctx          context.Context
-	reviewClient ai.Client
-	aoiClient    ai.Client
-	opts         Options
-
-	// UI state
-	phases   []phaseInfo
-	spinner  spinner.Model
-	progress progress.Model
-	elapsed  time.Duration
-	startAt  time.Time
-	done     bool
-	err      error
-
-	// Result
-	result    *Result
-	synthesis *SynthesisResult
-
-	// Config
-	noSynthesis bool
-
-	// Progress tracking
-	totalFiles    int
-	scannedFiles  int
-	totalReviews  int
-	doneReviews   int
-	findingsCount int
-
-	// Warning message (e.g. large file count)
-	warning string
-
-	// send dispatches messages back to the Bubble Tea event loop. Set by
-	// RunWithUI before p.Run() so background goroutines (e.g. runAudit) can
-	// hand off state mutations to Update instead of touching m directly.
-	send func(tea.Msg)
-}
-
-// NewProgressUI creates a new progress UI for an audit run.
-func NewProgressUI(
-	ctx context.Context,
-	reviewClient ai.Client,
-	aoiClient ai.Client,
-	opts Options,
-	reviewModel, aoiModel string,
-) *ProgressUI {
-	s := spinner.New(spinner.WithSpinner(spinner.Dot),
-		spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA"))))
-	p := progress.New(
-		progress.WithDefaultGradient(),
-		progress.WithWidth(40),
-		progress.WithoutPercentage(),
-	)
-
-	return &ProgressUI{
-		ctx:          ctx,
-		reviewClient: reviewClient,
-		aoiClient:    aoiClient,
-		opts:         opts,
-		reviewModel:  reviewModel,
-		aoiModel:     aoiModel,
-		spinner:      s,
-		progress:     p,
-		phases: []phaseInfo{
-			{name: "phase0", label: "Project Discovery", status: "waiting"},
-			{name: "phase1", label: "File Collection", status: "waiting"},
-			{name: "phase1b", label: "Classification", status: "waiting"},
-			{name: "phase2", label: "AOI Pre-scan", status: "waiting"},
-			{name: "phase3", label: "Deep Review", status: "waiting"},
-			{name: "recheck", label: "Recheck", status: "waiting"},
-			{name: "phase4", label: "Synthesis", status: "waiting"},
-		},
+// auditPhases is the audit pipeline's phase order shown in the TUI.
+// Names must match the strings passed to OnProgress at runtime
+// (internal/audit/pipeline.go).
+func auditPhases() []progress.PhaseDef {
+	return []progress.PhaseDef{
+		{Name: "phase0", Label: "Project Discovery"},
+		{Name: "phase1", Label: "File Collection"},
+		{Name: "phase1b", Label: "Classification"},
+		{Name: "phase2", Label: "AOI Pre-scan",
+			ProgressFn: aoiProgress,
+			Counter:    aoiCounter},
+		{Name: "phase3", Label: "Deep Review",
+			ProgressFn: reviewProgress,
+			Counter:    reviewCounter},
+		{Name: "recheck", Label: "Recheck"},
+		{Name: "phase4", Label: "Synthesis", ProgressFn: synthesisPulse},
 	}
 }
 
-func (m *ProgressUI) Init() tea.Cmd {
-	return tea.Batch(
-		m.spinner.Tick,
-		m.runAudit(),
-		m.tickTimer(),
-	)
+// aoiCounter / reviewCounter expose the same counters that drive the
+// progress bar so the TUI can render an inline "X/Y" alongside the
+// phase label.
+func aoiCounter(s *progress.State) (done, total int) {
+	return s.Counters["aoi_scanned"], s.Counters["aoi_total"]
 }
 
-func (m *ProgressUI) tickTimer() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
+func reviewCounter(s *progress.State) (done, total int) {
+	return s.Counters["review_done"], s.Counters["review_total"]
 }
 
-func (m *ProgressUI) runAudit() tea.Cmd {
-	return func() tea.Msg {
-		// emit hands progress updates to the Bubble Tea event loop so the
-		// model is only mutated from Update (main goroutine).
-		emit := func(phase, message string) {
-			if m.send != nil {
-				m.send(progressMsg{phase: phase, message: message})
-			}
-		}
-
-		result, err := Run(m.ctx, m.reviewClient, m.aoiClient, m.opts, emit)
-		if err != nil {
-			return auditDoneMsg{result: result, err: err}
-		}
-
-		// Phase 4: Synthesis
-		var synth *SynthesisResult
-		if len(result.Findings) > 0 && !m.noSynthesis {
-			emit("phase4", "Synthesizing executive summary...")
-			synth, err = SynthesizeCached(m.ctx, m.reviewClient, result.Findings, result.CrossCuttingObservations, result.ProjectContext, nil, m.opts.NoCache)
-			if err != nil {
-				emit("phase4", "Synthesis failed: "+err.Error())
-				// Non-fatal — continue without synthesis
-				err = nil
-			} else {
-				emit("phase4", "Synthesis complete")
-			}
-			// Track synthesis usage. Safe to mutate result here because no
-			// other goroutine holds a reference until auditDoneMsg below.
-			result.Usage.Synth = ai.SnapshotUsage(m.reviewClient)
-		}
-
-		return auditDoneMsg{result: result, synthesis: synth, err: err}
+// aoiProgress reports the AOI pre-scan progress bar value.
+func aoiProgress(s *progress.State) float64 {
+	total := s.Counters["aoi_total"]
+	if total == 0 {
+		return 0
 	}
+	return float64(s.Counters["aoi_scanned"]) / float64(total)
 }
 
-func (m *ProgressUI) updateProgress(phase, message string) {
-	// Handle warning messages (not tied to a phase)
-	if phase == "warning" {
-		m.warning = message
-		return
+// reviewProgress reports the deep-review progress bar value.
+func reviewProgress(s *progress.State) float64 {
+	total := s.Counters["review_total"]
+	if total == 0 {
+		return 0
 	}
+	return float64(s.Counters["review_done"]) / float64(total)
+}
 
-	for i := range m.phases {
-		if m.phases[i].name == phase {
-			if m.phases[i].status == "waiting" {
-				m.phases[i].status = "active"
-				// Mark previous phases as done
-				for j := 0; j < i; j++ {
-					if m.phases[j].status == "active" {
-						m.phases[j].status = "done"
-					}
-				}
-			}
-			m.phases[i].detail = message
-		}
-	}
+// synthesisPulse animates a pulsing bar — synthesis is a single LLM
+// call without granular sub-steps, so we show motion to signal liveness.
+// Oscillates between 0.05 and 0.95 with ~4s period.
+func synthesisPulse(s *progress.State) float64 {
+	return 0.5 + 0.45*math.Sin(s.Elapsed.Seconds()*math.Pi/2)
+}
 
-	// Parse counters from progress messages. Each branch matches a specific
-	// known format string; if Sscanf fails, log it so format drift is
-	// visible during development instead of silently zeroing the counter.
+// ── Event parsing ──────────────────────────────────────────────────────
+
+// parseAuditEvent extracts progress-bar counters from the audit's
+// (phase, message) event stream. Each branch matches a known format
+// string; format drift surfaces as a log warning via scanCounter
+// instead of silently zeroing the counter.
+//
+// If audit pipeline message formats change, update the format strings
+// here. Tests in this package pin the contracts.
+func parseAuditEvent(s *progress.State, phase, message string) {
 	switch {
 	case phase == "phase1" && strings.Contains(message, "files to audit"):
-		scanCounter(phase, message, "Phase 1 complete: %d files to audit", &m.totalFiles)
+		var n int
+		if scanCounter(phase, message, "Phase 1 complete: %d files to audit", &n) {
+			s.Counters["aoi_total"] = n
+		}
 	case phase == "phase2" && strings.Contains(message, "Scanning"):
-		scanCounter(phase, message, "Scanning %d files", &m.scannedFiles)
+		var n int
+		if scanCounter(phase, message, "Scanning %d files", &n) {
+			s.Counters["aoi_total"] = n
+		}
 	case phase == "phase2" && strings.Contains(message, "complete"):
 		var done, total int
 		if scanCounter(phase, message, "AOI scan %d/%d complete", &done, &total) {
-			m.scannedFiles = done
-			m.totalFiles = total
+			s.Counters["aoi_scanned"] = done
+			s.Counters["aoi_total"] = total
 		}
 	case phase == "phase3" && strings.Contains(message, "Executing"):
-		scanCounter(phase, message, "Executing %d review calls...", &m.totalReviews)
+		var n int
+		if scanCounter(phase, message, "Executing %d review calls...", &n) {
+			s.Counters["review_total"] = n
+		}
 	case phase == "phase3" && strings.Contains(message, "review") && strings.Contains(message, "/"):
 		var done, total int
 		if scanCounter(phase, message, "review %d/%d", &done, &total) {
-			m.doneReviews = done
-			m.totalReviews = total
+			s.Counters["review_done"] = done
+			s.Counters["review_total"] = total
 		}
 	}
 }
 
-// scanCounter wraps fmt.Sscanf with a logged warning on format mismatch so
-// progress-string drift surfaces during development rather than silently
-// dropping counter updates.
+// scanCounter wraps fmt.Sscanf with a logged warning on format mismatch.
 func scanCounter(phase, message, format string, dest ...interface{}) bool {
 	n, err := fmt.Sscanf(message, format, dest...)
 	if err != nil || n != len(dest) {
@@ -255,193 +131,31 @@ func scanCounter(phase, message, format string, dest ...interface{}) bool {
 	return true
 }
 
-func (m *ProgressUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || msg.String() == "q" {
-			return m, tea.Quit
-		}
+// ── Summary footer ─────────────────────────────────────────────────────
 
-	case tickMsg:
-		if !m.done {
-			m.elapsed = time.Since(m.startAt)
-			return m, m.tickTimer()
-		}
-
-	case spinner.TickMsg:
-		if !m.done {
-			var cmd tea.Cmd
-			m.spinner, cmd = m.spinner.Update(msg)
-			return m, cmd
-		}
-
-	case progressMsg:
-		// Apply state changes on the main goroutine to avoid racing with
-		// Update/View. The runAudit goroutine sends these via p.Send.
-		m.updateProgress(msg.phase, msg.message)
-		return m, nil
-
-	case auditDoneMsg:
-		m.done = true
-		m.result = msg.result
-		m.synthesis = msg.synthesis
-		m.err = msg.err
-		m.elapsed = time.Since(m.startAt)
-
-		// Mark all phases as done
-		for i := range m.phases {
-			if m.phases[i].status == "active" {
-				m.phases[i].status = "done"
-			}
-		}
-
-		return m, tea.Quit
+// renderAuditSummary builds the post-run summary box. The closure passed
+// to progress.Run captures the *Result so we can pull live numbers
+// without smuggling them through the shared TUI.
+func renderAuditSummary(result *Result, elapsed time.Duration) string {
+	if result == nil {
+		return ""
 	}
-
-	return m, nil
-}
-
-func (m *ProgressUI) View() string {
-	if m.startAt.IsZero() {
-		m.startAt = time.Now()
-	}
-
 	var b strings.Builder
-
-	// Header
-	b.WriteString("\n")
-	b.WriteString(pTitle.Render("  prr audit"))
-	repoName := filepath.Base(m.opts.RepoRoot)
-	if repoName != "" && repoName != "." {
-		b.WriteString(pSubtle.Render("  " + repoName))
-	}
-	b.WriteString(pSubtle.Render(fmt.Sprintf("  %s", m.elapsed.Truncate(100*time.Millisecond))))
-	b.WriteString("\n")
-
-	// Model info
-	b.WriteString(pSubtle.Render(fmt.Sprintf("  review: %s  aoi: %s", m.reviewModel, m.aoiModel)))
-	b.WriteString("\n")
-
-	// Warning banner
-	if m.warning != "" {
-		b.WriteString("\n")
-		b.WriteString(pWarn.Render("  "+m.warning) + "\n")
-	}
-
-	b.WriteString("\n")
-
-	// Phase list
-	for i, phase := range m.phases {
-		icon := m.phaseIcon(phase)
-		label := m.phaseLabel(phase)
-		step := pSubtle.Render(fmt.Sprintf("%d/5", i+1))
-
-		b.WriteString(fmt.Sprintf("  %s %s %s", icon, step, label))
-
-		if phase.detail != "" && (phase.status == "active" || phase.status == "done") {
-			b.WriteString(pSubtle.Render("  " + truncate(phase.detail, 60)))
-		}
-
-		b.WriteString("\n")
-	}
-
-	// Progress bar for active phase
-	if !m.done {
-		b.WriteString("\n")
-		pct := m.activeProgress()
-		if pct > 0 {
-			b.WriteString("  " + m.progress.ViewAs(pct) + "\n")
-		}
-	}
-
-	// Summary when done
-	if m.done {
-		b.WriteString("\n")
-		if m.err != nil {
-			b.WriteString(pWarn.Render(fmt.Sprintf("  Error: %v", m.err)))
-			b.WriteString("\n")
-		} else if m.result != nil {
-			b.WriteString(m.renderSummary())
-		}
-	}
-
-	b.WriteString("\n")
-	return b.String()
-}
-
-func (m *ProgressUI) phaseIcon(p phaseInfo) string {
-	switch p.status {
-	case "done":
-		return pPhaseDone.Render("✓")
-	case "active":
-		return m.spinner.View()
-	case "error":
-		return pWarn.Render("✗")
-	default:
-		return pPhaseWait.Render("○")
-	}
-}
-
-func (m *ProgressUI) phaseLabel(p phaseInfo) string {
-	switch p.status {
-	case "done":
-		return pPhaseDone.Render(p.label)
-	case "active":
-		return pPhaseOn.Render(p.label)
-	default:
-		return pPhaseWait.Render(p.label)
-	}
-}
-
-func (m *ProgressUI) activeProgress() float64 {
-	for _, p := range m.phases {
-		if p.status != "active" {
-			continue
-		}
-		switch p.name {
-		case "phase2":
-			if m.totalFiles > 0 {
-				return float64(m.scannedFiles) / float64(m.totalFiles)
-			}
-		case "phase3":
-			if m.totalReviews > 0 {
-				return float64(m.doneReviews) / float64(m.totalReviews)
-			}
-		case "phase4":
-			// Synthesis is a single LLM call without granular sub-steps.
-			// Animate a pulsing progress bar based on elapsed time so the
-			// user sees activity.  The value oscillates between 0.05 and 0.95
-			// with a period of ~4 seconds.
-			secs := m.elapsed.Seconds()
-			return 0.5 + 0.45*math.Sin(secs*math.Pi/2)
-		}
-	}
-	return 0
-}
-
-func (m *ProgressUI) renderSummary() string {
-	r := m.result
-	var b strings.Builder
-
 	b.WriteString(pTitle.Render("  Results"))
 	b.WriteString("\n\n")
-
-	b.WriteString(fmt.Sprintf("  Files      %s\n", pInfo.Render(fmt.Sprintf("%d", r.FilesScanned))))
-	b.WriteString(fmt.Sprintf("  AOIs       %s\n", pInfo.Render(fmt.Sprintf("%d", r.AOIsGenerated))))
-	b.WriteString(fmt.Sprintf("  Reviews    %s\n", pInfo.Render(fmt.Sprintf("%d (%d individual, %d grouped)", r.ReviewCalls, r.IndividualReviews, r.GroupedReviews))))
-	b.WriteString(fmt.Sprintf("  Findings   %s\n", pInfo.Render(fmt.Sprintf("%d", len(r.Findings)))))
-	b.WriteString(fmt.Sprintf("  Dismissed  %s\n", pInfo.Render(fmt.Sprintf("%d", r.Dismissals))))
-	b.WriteString(fmt.Sprintf("  Time       %s\n", pInfo.Render(m.elapsed.Truncate(time.Second).String())))
-
+	b.WriteString(fmt.Sprintf("  Files      %s\n", pInfo.Render(fmt.Sprintf("%d", result.FilesScanned))))
+	b.WriteString(fmt.Sprintf("  AOIs       %s\n", pInfo.Render(fmt.Sprintf("%d", result.AOIsGenerated))))
+	b.WriteString(fmt.Sprintf("  Reviews    %s\n", pInfo.Render(fmt.Sprintf("%d (%d individual, %d grouped)",
+		result.ReviewCalls, result.IndividualReviews, result.GroupedReviews))))
+	b.WriteString(fmt.Sprintf("  Findings   %s\n", pInfo.Render(fmt.Sprintf("%d", len(result.Findings)))))
+	b.WriteString(fmt.Sprintf("  Dismissed  %s\n", pInfo.Render(fmt.Sprintf("%d", result.Dismissals))))
+	b.WriteString(fmt.Sprintf("  Time       %s\n", pInfo.Render(elapsed.Truncate(time.Second).String())))
 	return b.String()
 }
 
-// Results returns the audit result and synthesis after the UI finishes.
-func (m *ProgressUI) Results() (*Result, *SynthesisResult, error) {
-	return m.result, m.synthesis, m.err
-}
+// ── Entry point ────────────────────────────────────────────────────────
 
-// RunWithUI executes the audit with the interactive progress UI.
+// RunWithUI executes the audit with the shared progress TUI.
 // Returns the audit result and synthesis after completion.
 func RunWithUI(
 	ctx context.Context,
@@ -451,25 +165,48 @@ func RunWithUI(
 	reviewModel, aoiModel string,
 	noSynthesis bool,
 ) (*Result, *SynthesisResult, error) {
-	ui := NewProgressUI(ctx, reviewClient, aoiClient, opts, reviewModel, aoiModel)
-	ui.noSynthesis = noSynthesis
-	p := tea.NewProgram(ui, tea.WithAltScreen())
-	// Set send before p.Run() so runAudit's goroutine never sees a nil
-	// callback. p.Send is safe to call concurrently with the program loop.
-	ui.send = p.Send
+	var (
+		result    *Result
+		synthesis *SynthesisResult
+	)
 
-	finalModel, err := p.Run()
-	if err != nil {
-		return nil, nil, fmt.Errorf("progress UI error: %w", err)
+	header := progress.Header{
+		Title:    "  prr audit",
+		Subtitle: filepath.Base(opts.RepoRoot),
+		Info:     fmt.Sprintf("review: %s  aoi: %s", reviewModel, aoiModel),
 	}
 
-	final := finalModel.(*ProgressUI)
-	return final.Results()
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
+	cfg := progress.Config{
+		Header:     header,
+		Phases:     auditPhases(),
+		ParseEvent: parseAuditEvent,
+		Summary: func(_ error, elapsed time.Duration) string {
+			return renderAuditSummary(result, elapsed)
+		},
+		RunTask: func(emit func(phase, message string)) error {
+			r, err := Run(ctx, reviewClient, aoiClient, opts, emit)
+			result = r
+			if err != nil {
+				return err
+			}
+			if r != nil && len(r.Findings) > 0 && !noSynthesis {
+				emit("phase4", "Synthesizing executive summary...")
+				s, synthErr := SynthesizeCached(ctx, reviewClient, r.Findings, r.CrossCuttingObservations, r.ProjectContext, nil, opts.NoCache)
+				if synthErr != nil {
+					emit("phase4", "Synthesis failed: "+synthErr.Error())
+					// Non-fatal — continue without synthesis
+				} else {
+					emit("phase4", "Synthesis complete")
+					synthesis = s
+				}
+				r.Usage.Synth = ai.SnapshotUsage(reviewClient)
+			}
+			return nil
+		},
 	}
-	return s[:max-1] + "…"
+
+	if err := progress.Run(cfg); err != nil {
+		return result, synthesis, err
+	}
+	return result, synthesis, nil
 }

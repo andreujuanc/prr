@@ -12,6 +12,8 @@ import (
 	"sort"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/classify"
+	"github.com/andreujuanc/prr/internal/dbg"
 	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/state"
@@ -145,12 +147,6 @@ func (u PhaseUsage) Total() ai.TokenUsage {
 // OnProgress is called with status updates during the audit.
 type OnProgress func(phase string, message string)
 
-// AuditFile holds a file path and its content for auditing.
-type AuditFile struct {
-	Path    string
-	Content string
-}
-
 // Run executes the full audit pipeline (Phases 0-3).
 // Phase 4 (synthesis) is handled separately by the caller.
 func Run(
@@ -164,7 +160,7 @@ func Run(
 		onProgress = func(_, _ string) {}
 	}
 
-	dbg := NewDebugWriter(opts.Debug)
+	dbgw := dbg.New(opts.Debug)
 
 	// Load or create audit state
 	auditState, err := state.Load("audit")
@@ -178,7 +174,7 @@ func Run(
 
 	// Apply configured per-phase concurrency. Each setter accepts <=0 as
 	// "reset to default", so leaving fields zero preserves baseline behavior.
-	SetClassifyConcurrency(opts.Concurrency.Classify)
+	classify.SetMaxConcurrency(opts.Concurrency.Classify)
 	security.SetAOIConcurrency(opts.Concurrency.AOIScan)
 	SetHierarchicalSynthConcurrency(opts.Concurrency.HierarchicalSynth)
 
@@ -186,7 +182,7 @@ func Run(
 	// Phase 0 (project discovery) is one LLM call; Phase 1 (file collection)
 	// is `git ls-files` plus filters. They have no dependency on each other,
 	// and Phase 0 only feeds Phase 3 prompts and Phase 4 synthesis.
-	dbg.Phase("PHASE 0+1: Project Discovery + File Collection (parallel)")
+	dbgw.Phase("PHASE 0+1: Project Discovery + File Collection (parallel)")
 
 	type p0Result struct {
 		ctx string
@@ -222,11 +218,11 @@ func Run(
 		log.Printf("Phase 0 (project context) failed: %v", p0.err)
 		// Non-fatal — continue without project context.
 	}
-	dbg.Section("Project Context Result")
+	dbgw.Section("Project Context Result")
 	if projectContext != "" {
-		dbg.Text("%s", projectContext)
+		dbgw.Text("%s", projectContext)
 	} else {
-		dbg.Text("(no project context discovered)")
+		dbgw.Text("(no project context discovered)")
 	}
 
 	if p1.err != nil {
@@ -255,12 +251,12 @@ func Run(
 		if len(filtered) == 0 {
 			return nil, fmt.Errorf("--file %q not found in collected files (%d files scanned)", opts.DebugFile, len(filePaths))
 		}
-		dbg.Text("Filtered to single file: %s", opts.DebugFile)
+		dbgw.Text("Filtered to single file: %s", opts.DebugFile)
 		filePaths = filtered
 	}
 
 	// Load file contents
-	files := make([]AuditFile, 0, len(filePaths))
+	files := make([]classify.File, 0, len(filePaths))
 	for _, fp := range filePaths {
 		absPath := filepath.Join(opts.RepoRoot, fp)
 		content, readErr := os.ReadFile(absPath)
@@ -268,12 +264,12 @@ func Run(
 			log.Printf("Warning: skipping %s: %v", fp, readErr)
 			continue
 		}
-		files = append(files, AuditFile{Path: fp, Content: string(content)})
+		files = append(files, classify.File{Path: fp, Content: string(content)})
 	}
 
 	onProgress("phase1", fmt.Sprintf("Phase 1 complete: %d files to audit", len(files)))
 	for _, f := range files {
-		dbg.Text("  %s (%d bytes)", f.Path, len(f.Content))
+		dbgw.Text("  %s (%d bytes)", f.Path, len(f.Content))
 	}
 
 	if len(files) == 0 {
@@ -282,26 +278,26 @@ func Run(
 
 	// ── Phase 1b: File Classification ───────────────────────────────────
 
-	dbg.Phase("PHASE 1b: File Classification")
+	dbgw.Phase("PHASE 1b: File Classification")
 	onProgress("phase1b", fmt.Sprintf("Classifying %d file(s)...", len(files)))
 
 	classifications, err := runPhase1b(ctx, aoiClient, opts, auditState, files, onProgress)
 	if err != nil {
 		log.Printf("Phase 1b (classification) failed: %v — all files will use all dimensions", err)
-		classifications = make(map[string]FileType, len(files))
+		classifications = make(map[string]classify.FileType, len(files))
 		for _, f := range files {
-			classifications[f.Path] = FileTypeUnknown
+			classifications[f.Path] = classify.FileTypeUnknown
 		}
 	}
 
-	if dbg.Enabled() {
-		dbg.Section("File Classifications")
-		typeCounts := make(map[FileType]int)
+	if dbgw.Enabled() {
+		dbgw.Section("File Classifications")
+		typeCounts := make(map[classify.FileType]int)
 		for _, ft := range classifications {
 			typeCounts[ft]++
 		}
 		for ft, count := range typeCounts {
-			dbg.Text("  %s: %d file(s)", ft, count)
+			dbgw.Text("  %s: %d file(s)", ft, count)
 		}
 	}
 
@@ -312,17 +308,17 @@ func Run(
 
 	// ── Phase 2: AOI Generation ─────────────────────────────────────────
 
-	dbg.Phase("PHASE 2: AOI Pre-scan")
+	dbgw.Phase("PHASE 2: AOI Pre-scan")
 	onProgress("phase2", fmt.Sprintf("Scanning %d files for areas of interest...", len(files)))
 
 	// Build AOI debug hook
 	var aoiDebugHook security.AOIDebugHook
-	if dbg.Enabled() {
+	if dbgw.Enabled() {
 		aoiDebugHook = func(batchFiles []string, systemPrompt string, userMessage string, response string) {
-			dbg.Section(fmt.Sprintf("AOI Scan: %v", batchFiles))
-			dbg.Prompt(systemPrompt, userMessage)
-			dbg.Response(response)
-			dbg.Separator()
+			dbgw.Section(fmt.Sprintf("AOI Scan: %v", batchFiles))
+			dbgw.Prompt(systemPrompt, userMessage)
+			dbgw.Response(response)
+			dbgw.Separator()
 		}
 	}
 
@@ -332,17 +328,17 @@ func Run(
 	}
 
 	// Debug: show parsed AOIs
-	if dbg.Enabled() {
-		dbg.Section("Parsed AOIs")
+	if dbgw.Enabled() {
+		dbgw.Section("Parsed AOIs")
 		totalAOIs := 0
 		for _, r := range aoiResults {
 			for _, aoi := range r.AreasOfInterest {
 				totalAOIs++
-				dbg.Text("  %s:%d [%s] %s/%s — %s",
+				dbgw.Text("  %s:%d [%s] %s/%s — %s",
 					aoi.File, aoi.Line, aoi.Urgency, aoi.Category, aoi.Subcategory, aoi.Concern)
 			}
 		}
-		dbg.Text("\n  Total: %d AOIs", totalAOIs)
+		dbgw.Text("\n  Total: %d AOIs", totalAOIs)
 	}
 
 	// Save state after Phase 2
@@ -353,10 +349,10 @@ func Run(
 
 	// ── Phase 3: Deep Review (routing + execution) ──────────────────────
 
-	dbg.Phase("PHASE 3: Deep Review")
+	dbgw.Phase("PHASE 3: Deep Review")
 	routing := review.RouteAOIs(aoiResults, opts.Focus, 10)
 	onProgress("phase3", routing.FormatSummary())
-	dbg.Text("Routing: %s", routing.FormatSummary())
+	dbgw.Text("Routing: %s", routing.FormatSummary())
 
 	result := &Result{
 		FilesScanned:         len(files),
@@ -377,22 +373,22 @@ func Run(
 	// Build Phase 3 debug hook
 	var phase3DebugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string)
 	var phase3ToolHook func(callIndex int, toolName string, args string, status string, duration string)
-	if dbg.Enabled() {
+	if dbgw.Enabled() {
 		phase3DebugHook = func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string) {
 			label := call.Category
 			if call.Subcategory != "" {
 				label += "/" + call.Subcategory
 			}
-			dbg.Section(fmt.Sprintf("Review Call %d [%s]: %s (%v)", index+1, call.Type, label, call.Files))
-			dbg.Prompt(systemPrompt, userMsg)
-			dbg.Response(response)
-			dbg.Separator()
+			dbgw.Section(fmt.Sprintf("Review Call %d [%s]: %s (%v)", index+1, call.Type, label, call.Files))
+			dbgw.Prompt(systemPrompt, userMsg)
+			dbgw.Response(response)
+			dbgw.Separator()
 		}
 		phase3ToolHook = func(callIndex int, toolName string, args string, status string, duration string) {
 			if status == "start" {
-				dbg.Text("  [call %d] tool: %s(%s)", callIndex+1, toolName, args)
+				dbgw.Text("  [call %d] tool: %s(%s)", callIndex+1, toolName, args)
 			} else {
-				dbg.Text("  [call %d] tool done: %s → %s (%s)", callIndex+1, toolName, status, duration)
+				dbgw.Text("  [call %d] tool done: %s → %s (%s)", callIndex+1, toolName, status, duration)
 			}
 		}
 	}
@@ -414,7 +410,7 @@ func Run(
 	reviewUsage := ai.SnapshotUsage(reviewClient)
 
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
-	dbg.Phase("PHASE 3b: Recheck")
+	dbgw.Phase("PHASE 3b: Recheck")
 	if len(findings) > 0 {
 		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit")
 		if !opts.NoCache {
@@ -431,12 +427,12 @@ func Run(
 
 		// Build recheck debug hook
 		var recheckDebugHook func(systemPrompt string, userMsg string, response string)
-		if dbg.Enabled() {
+		if dbgw.Enabled() {
 			recheckDebugHook = func(systemPrompt string, userMsg string, response string) {
-				dbg.Section("Recheck LLM Call")
-				dbg.Prompt(systemPrompt, userMsg)
-				dbg.Response(response)
-				dbg.Separator()
+				dbgw.Section("Recheck LLM Call")
+				dbgw.Prompt(systemPrompt, userMsg)
+				dbgw.Response(response)
+				dbgw.Separator()
 			}
 		}
 
@@ -478,21 +474,21 @@ func runPhase1b(
 	client ai.Client,
 	opts Options,
 	auditState *state.State,
-	files []AuditFile,
+	files []classify.File,
 	onProgress OnProgress,
-) (map[string]FileType, error) {
+) (map[string]classify.FileType, error) {
 	// Build cached types from state
-	cachedTypes := make(map[string]FileType)
+	cachedTypes := make(map[string]classify.FileType)
 	if !opts.NoCache {
 		for _, f := range files {
 			contentHash := hashContent(f.Content)
 			if fs, ok := auditState.Files[f.Path]; ok && fs.DiffHash == contentHash && fs.FileType != "" {
-				cachedTypes[f.Path] = FileType(fs.FileType)
+				cachedTypes[f.Path] = classify.FileType(fs.FileType)
 			}
 		}
 	}
 
-	result, err := ClassifyFiles(ctx, client, files, cachedTypes, func(status string) {
+	result, err := classify.Classify(ctx, client, files, cachedTypes, func(status string) {
 		onProgress("phase1b", status)
 	})
 	if err != nil {
@@ -517,8 +513,8 @@ func runPhase2(
 	aoiClient ai.Client,
 	opts Options,
 	auditState *state.State,
-	files []AuditFile,
-	classifications map[string]FileType,
+	files []classify.File,
+	classifications map[string]classify.FileType,
 	onProgress OnProgress,
 	debugHook security.AOIDebugHook,
 ) ([]security.AOIScanResult, error) {
@@ -566,7 +562,7 @@ func runPhase2(
 	fileDimensions := make(map[string][]string, len(fileContents))
 	for path := range fileContents {
 		ft := classifications[path]
-		fileDimensions[path] = DimensionsForType(ft)
+		fileDimensions[path] = classify.DimensionsForType(ft)
 	}
 
 	// Run AOI scan on uncached files

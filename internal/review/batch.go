@@ -178,8 +178,20 @@ type BatchInfo struct {
 // Reporter decouples review orchestration from the UI layer.
 // The TUI implements this to send Bubble Tea messages;
 // the headless CLI implements it to print to stderr.
+//
+// DiscoveryProgress covers context-gathering status — project-context
+// discovery, PR-brief discovery, and "Resuming" notices when those
+// results are loaded from cache. The TUI routes these to its
+// pre-scan / discovery phase row.
+//
+// AOIPrescanProgress is the security AOI pre-scan itself. Separated
+// from DiscoveryProgress so the TUI can show AOI as its own phase row
+// — discovery is usually cache-hit fast, while AOI scan is what users
+// actually wait through.
 type Reporter interface {
-	AOIProgress(status string, done bool, aoiCount int)
+	DiscoveryProgress(status string)
+	ClassifyProgress(status string)
+	AOIPrescanProgress(status string, done bool, aoiCount int)
 	InitBatches(batches []BatchInfo)
 	BatchProgress(batch int, status BatchStatus)
 	SynthesisStarted()
@@ -189,11 +201,13 @@ type Reporter interface {
 // NopReporter is a Reporter that does nothing.
 type NopReporter struct{}
 
-func (NopReporter) AOIProgress(string, bool, int)  {}
-func (NopReporter) InitBatches([]BatchInfo)        {}
-func (NopReporter) BatchProgress(int, BatchStatus) {}
-func (NopReporter) SynthesisStarted()              {}
-func (NopReporter) Token(string)                   {}
+func (NopReporter) DiscoveryProgress(string)             {}
+func (NopReporter) ClassifyProgress(string)              {}
+func (NopReporter) AOIPrescanProgress(string, bool, int) {}
+func (NopReporter) InitBatches([]BatchInfo)              {}
+func (NopReporter) BatchProgress(int, BatchStatus)       {}
+func (NopReporter) SynthesisStarted()                    {}
+func (NopReporter) Token(string)                         {}
 
 // WatchdogReporter wraps an existing Reporter and calls `tap` on every
 // method invocation. Used to feed an ai.IdleWatch — any progress event
@@ -205,11 +219,23 @@ type WatchdogReporter struct {
 	Tap   func(string)
 }
 
-func (r *WatchdogReporter) AOIProgress(status string, done bool, aoiCount int) {
+func (r *WatchdogReporter) DiscoveryProgress(status string) {
 	if r.Tap != nil {
 		r.Tap(status)
 	}
-	r.Inner.AOIProgress(status, done, aoiCount)
+	r.Inner.DiscoveryProgress(status)
+}
+func (r *WatchdogReporter) ClassifyProgress(status string) {
+	if r.Tap != nil {
+		r.Tap(status)
+	}
+	r.Inner.ClassifyProgress(status)
+}
+func (r *WatchdogReporter) AOIPrescanProgress(status string, done bool, aoiCount int) {
+	if r.Tap != nil {
+		r.Tap(status)
+	}
+	r.Inner.AOIPrescanProgress(status, done, aoiCount)
 }
 func (r *WatchdogReporter) InitBatches(batches []BatchInfo) {
 	if r.Tap != nil {
@@ -242,8 +268,14 @@ type OffsetReporter struct {
 	Offset int
 }
 
-func (o *OffsetReporter) AOIProgress(status string, done bool, aoiCount int) {
-	o.RR.AOIProgress(status, done, aoiCount)
+func (o *OffsetReporter) DiscoveryProgress(status string) {
+	o.RR.DiscoveryProgress(status)
+}
+func (o *OffsetReporter) ClassifyProgress(status string) {
+	o.RR.ClassifyProgress(status)
+}
+func (o *OffsetReporter) AOIPrescanProgress(status string, done bool, aoiCount int) {
+	o.RR.AOIPrescanProgress(status, done, aoiCount)
 }
 func (o *OffsetReporter) InitBatches(batches []BatchInfo) {}
 func (o *OffsetReporter) BatchProgress(batch int, status BatchStatus) {

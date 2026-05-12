@@ -190,11 +190,13 @@ type countingReporter struct {
 	tokens    int64
 }
 
-func (c *countingReporter) AOIProgress(string, bool, int)  { atomic.AddInt64(&c.aoi, 1) }
-func (c *countingReporter) InitBatches([]BatchInfo)        { atomic.AddInt64(&c.init, 1) }
-func (c *countingReporter) BatchProgress(int, BatchStatus) { atomic.AddInt64(&c.batch, 1) }
-func (c *countingReporter) SynthesisStarted()              { atomic.AddInt64(&c.synthesis, 1) }
-func (c *countingReporter) Token(string)                   { atomic.AddInt64(&c.tokens, 1) }
+func (c *countingReporter) DiscoveryProgress(string)             { atomic.AddInt64(&c.aoi, 1) }
+func (c *countingReporter) ClassifyProgress(string)              { atomic.AddInt64(&c.aoi, 1) }
+func (c *countingReporter) AOIPrescanProgress(string, bool, int) { atomic.AddInt64(&c.aoi, 1) }
+func (c *countingReporter) InitBatches([]BatchInfo)              { atomic.AddInt64(&c.init, 1) }
+func (c *countingReporter) BatchProgress(int, BatchStatus)       { atomic.AddInt64(&c.batch, 1) }
+func (c *countingReporter) SynthesisStarted()                    { atomic.AddInt64(&c.synthesis, 1) }
+func (c *countingReporter) Token(string)                         { atomic.AddInt64(&c.tokens, 1) }
 
 // TestWatchdogReporter_ConcurrentCalls pins the race-free guarantee
 // that matters most in production: when parallel batch goroutines fire
@@ -222,7 +224,7 @@ func TestWatchdogReporter_ConcurrentCalls(t *testing.T) {
 				rr.Token("tok")
 				rr.BatchProgress(id, StatusActive)
 				if j%10 == 0 {
-					rr.AOIProgress("progress", false, 0)
+					rr.AOIPrescanProgress("progress", false, 0)
 				}
 			}
 		}(i)

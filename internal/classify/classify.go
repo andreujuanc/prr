@@ -1,4 +1,12 @@
-package audit
+// Package classify groups changed files by their architectural role
+// (handler, repository, model, test, …) so each file's AOI pre-scan
+// can be narrowed to the dimensions that actually apply. A test file
+// doesn't need a cryptography review; a handler does need an
+// input-validation pass.
+//
+// Shared by `prr audit` (whole-repo) and `prr review` (PR diffs) —
+// both feed the result into security.ScanAreasOfInterestClassified.
+package classify
 
 import (
 	"context"
@@ -13,7 +21,7 @@ import (
 	"github.com/andreujuanc/prr/internal/ai"
 )
 
-// FileType represents the classification of a source file.
+// FileType is the architectural role of a source file.
 type FileType string
 
 const (
@@ -66,51 +74,65 @@ func DimensionsForType(ft FileType) []string {
 	}
 }
 
+// File is the classifier input: a path and (a snippet of) its content.
+// Audit reads full file content from disk via CollectFiles; review
+// reads the head-of-branch version of each diffed file. Either way
+// only the first ~50 lines are sent to the model — enough for imports
+// and top-level declarations.
+type File struct {
+	Path    string
+	Content string
+}
+
 // FileClassification holds a file path and its LLM-determined type.
 type FileClassification struct {
 	File string   `json:"file"`
 	Type FileType `json:"type"`
 }
 
-// classifyBatchMaxFiles caps how many files we send per classification call.
-const classifyBatchMaxFiles = 50
+// batchMaxFiles caps how many files we send per classification call.
+const batchMaxFiles = 50
 
-// defaultClassifyMaxConcurrency is the default cap on parallel classification
-// calls. SetClassifyConcurrency overrides this for the lifetime of the process.
-const defaultClassifyMaxConcurrency = 5
+// defaultMaxConcurrency is the default cap on parallel classification
+// calls. SetMaxConcurrency overrides this for the lifetime of the process.
+const defaultMaxConcurrency = 5
 
-var classifyMaxConcurrency = defaultClassifyMaxConcurrency
+var maxConcurrency = defaultMaxConcurrency
 
-// SetClassifyConcurrency sets the max number of classification batches run in
-// parallel. Values <= 0 reset to the default. Not safe to call concurrently
-// with classification in flight; intended to be called once at startup.
-func SetClassifyConcurrency(n int) {
+// SetMaxConcurrency sets the max number of classification batches run
+// in parallel. Values <= 0 reset to the default. Not safe to call
+// concurrently with classification in flight; intended to be called
+// once at startup.
+func SetMaxConcurrency(n int) {
 	if n <= 0 {
-		classifyMaxConcurrency = defaultClassifyMaxConcurrency
+		maxConcurrency = defaultMaxConcurrency
 		return
 	}
-	classifyMaxConcurrency = n
+	maxConcurrency = n
 }
 
 //go:embed prompts/classify.md
 var classifyPrompt string
 
-// ClassifyFiles runs the LLM classifier on the given files using the cheap model.
-// Returns a map of file path → FileType.
+// Classify runs the LLM classifier on the given files using the cheap
+// model. Returns a map of file path → FileType.
 //
-// cachedTypes maps file paths to previously cached classifications. Files with
-// cached results are skipped. Pass nil to classify everything.
-func ClassifyFiles(
+// cachedTypes maps file paths to previously cached classifications.
+// Files with cached results are skipped. Pass nil to classify everything.
+//
+// Returns partial results plus errors.Join of any batch errors, so the
+// caller can decide whether to fail or proceed with unknowns.
+func Classify(
 	ctx context.Context,
 	client ai.Client,
-	files []AuditFile,
+	files []File,
 	cachedTypes map[string]FileType,
 	onProgress func(status string),
 ) (map[string]FileType, error) {
 	result := make(map[string]FileType, len(files))
 
-	// Separate cached vs uncached
-	var uncached []AuditFile
+	// Separate cached vs uncached.
+	var uncached []File
 	for _, f := range files {
 		if ft, ok := cachedTypes[f.Path]; ok {
 			result[f.Path] = ft
@@ -130,8 +152,7 @@ func ClassifyFiles(
 		onProgress(fmt.Sprintf("classifying %d file(s) (%d cached)...", len(uncached), len(files)-len(uncached)))
 	}
 
-	// Build batches
-	batches := buildClassifyBatches(uncached)
+	batches := buildBatches(uncached)
 
 	type batchResult struct {
 		index   int
@@ -140,12 +161,12 @@ func ClassifyFiles(
 	}
 
 	resultsCh := make(chan batchResult, len(batches))
-	sem := make(chan struct{}, classifyMaxConcurrency)
+	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 
 	for i, batch := range batches {
 		wg.Add(1)
-		go func(i int, batch []AuditFile) {
+		go func(i int, batch []File) {
 			defer wg.Done()
 
 			select {
@@ -179,6 +200,7 @@ func ClassifyFiles(
 	}
 
 	// Files not classified (errors or missing from response) get "unknown"
+	// so downstream code can safely look up every input.
 	for _, f := range uncached {
 		if _, ok := result[f.Path]; !ok {
 			result[f.Path] = FileTypeUnknown
@@ -189,17 +211,14 @@ func ClassifyFiles(
 		onProgress(fmt.Sprintf("classified %d file(s)", len(uncached)))
 	}
 
-	// Return partial results alongside any batch errors so callers can decide
-	// whether to fail or proceed with unknowns. errors.Join returns nil when
-	// the slice is empty.
 	return result, errors.Join(batchErrs...)
 }
 
-// buildClassifyBatches splits files into batches of classifyBatchMaxFiles.
-func buildClassifyBatches(files []AuditFile) [][]AuditFile {
-	var batches [][]AuditFile
-	for i := 0; i < len(files); i += classifyBatchMaxFiles {
-		end := i + classifyBatchMaxFiles
+// buildBatches splits files into batches of batchMaxFiles.
+func buildBatches(files []File) [][]File {
+	var batches [][]File
+	for i := 0; i < len(files); i += batchMaxFiles {
+		end := i + batchMaxFiles
 		if end > len(files) {
 			end = len(files)
 		}
@@ -209,13 +228,13 @@ func buildClassifyBatches(files []AuditFile) [][]AuditFile {
 }
 
 // classifyBatch sends a batch of files to the LLM for classification.
-func classifyBatch(ctx context.Context, client ai.Client, files []AuditFile) ([]FileClassification, error) {
+func classifyBatch(ctx context.Context, client ai.Client, files []File) ([]FileClassification, error) {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Classify these %d file(s):\n\n", len(files)))
 
 	for _, f := range files {
 		sb.WriteString(fmt.Sprintf("=== %s ===\n", f.Path))
-		// Send first 50 lines only — enough for imports + initial declarations
+		// Send first 50 lines only — enough for imports + initial declarations.
 		lines := strings.SplitN(f.Content, "\n", 51)
 		if len(lines) > 50 {
 			lines = lines[:50]
@@ -233,11 +252,11 @@ func classifyBatch(ctx context.Context, client ai.Client, files []AuditFile) ([]
 		return nil, fmt.Errorf("classify LLM call: %w", err)
 	}
 
-	return parseClassifyResult(raw)
+	return parseResult(raw)
 }
 
-// parseClassifyResult parses the LLM classification response.
-func parseClassifyResult(raw string) ([]FileClassification, error) {
+// parseResult parses the LLM classification response.
+func parseResult(raw string) ([]FileClassification, error) {
 	s := strings.TrimSpace(raw)
 
 	// Strip markdown fences
@@ -264,7 +283,7 @@ func parseClassifyResult(raw string) ([]FileClassification, error) {
 		return nil, fmt.Errorf("parse classification JSON: %w", err)
 	}
 
-	// Validate types — replace invalid with unknown
+	// Validate types — replace invalid with unknown.
 	for i := range results {
 		if !isValidFileType(results[i].Type) {
 			results[i].Type = FileTypeUnknown

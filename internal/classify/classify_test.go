@@ -1,4 +1,4 @@
-package audit
+package classify
 
 import (
 	"fmt"
@@ -9,8 +9,8 @@ import (
 	"github.com/andreujuanc/prr/internal/aitesting"
 )
 
-// TestClassifyPrompt_NoToolNamesLeakIntoClaudeCode is the audit-package
-// mirror of the leak-prevention test in internal/ai. It catches future
+// TestClassifyPrompt_NoToolNamesLeakIntoClaudeCode mirrors the leak-
+// prevention tests in internal/ai and internal/security: catches future
 // regressions where someone adds a prr-specific tool name (read_file,
 // git_diff, etc.) to classify.md without rephrasing or adding the
 // {{TOOLS}} placeholder. Currently classify.md doesn't mention tools
@@ -35,7 +35,7 @@ func TestClassifyPrompt_NoToolNamesLeakIntoClaudeCode(t *testing.T) {
 func TestDimensionsForType(t *testing.T) {
 	tests := []struct {
 		ft       FileType
-		wantMin  int // minimum number of dimensions
+		wantMin  int
 		mustHave []string
 		mustNot  []string
 	}{
@@ -89,7 +89,7 @@ func TestDimensionsForType(t *testing.T) {
 		},
 		{
 			ft:      FileTypeUnknown,
-			wantMin: 10, // should return all dimensions
+			wantMin: 10,
 		},
 	}
 
@@ -139,7 +139,7 @@ func TestIsValidFileType(t *testing.T) {
 	}
 }
 
-func TestParseClassifyResult(t *testing.T) {
+func TestParseResult(t *testing.T) {
 	tests := []struct {
 		name    string
 		raw     string
@@ -189,7 +189,7 @@ func TestParseClassifyResult(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseClassifyResult(tt.raw)
+			got, err := parseResult(tt.raw)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -214,27 +214,25 @@ func TestParseClassifyResult(t *testing.T) {
 	}
 }
 
-func TestBuildClassifyBatches(t *testing.T) {
-	// Pick a count that exercises a partial trailing batch regardless of
-	// what classifyBatchMaxFiles is set to.
+func TestBuildBatches(t *testing.T) {
 	const remainder = 20
-	totalFiles := classifyBatchMaxFiles*2 + remainder
+	totalFiles := batchMaxFiles*2 + remainder
 
-	var files []AuditFile
+	var files []File
 	for i := 0; i < totalFiles; i++ {
-		files = append(files, AuditFile{
+		files = append(files, File{
 			Path:    fmt.Sprintf("file%d.go", i),
 			Content: "package main",
 		})
 	}
 
-	batches := buildClassifyBatches(files)
+	batches := buildBatches(files)
 
 	wantBatches := 3
 	if len(batches) != wantBatches {
 		t.Fatalf("got %d batches, want %d", len(batches), wantBatches)
 	}
-	wantSizes := []int{classifyBatchMaxFiles, classifyBatchMaxFiles, remainder}
+	wantSizes := []int{batchMaxFiles, batchMaxFiles, remainder}
 	for i, want := range wantSizes {
 		if got := len(batches[i]); got != want {
 			t.Errorf("batch %d: got %d files, want %d", i, got, want)
@@ -242,13 +240,13 @@ func TestBuildClassifyBatches(t *testing.T) {
 	}
 }
 
-func TestBuildClassifyBatches_SingleBatch(t *testing.T) {
-	files := []AuditFile{
+func TestBuildBatches_SingleBatch(t *testing.T) {
+	files := []File{
 		{Path: "a.go", Content: "package a"},
 		{Path: "b.go", Content: "package b"},
 	}
 
-	batches := buildClassifyBatches(files)
+	batches := buildBatches(files)
 	if len(batches) != 1 {
 		t.Fatalf("got %d batches, want 1", len(batches))
 	}
@@ -257,8 +255,8 @@ func TestBuildClassifyBatches_SingleBatch(t *testing.T) {
 	}
 }
 
-func TestBuildClassifyBatches_Empty(t *testing.T) {
-	batches := buildClassifyBatches(nil)
+func TestBuildBatches_Empty(t *testing.T) {
+	batches := buildBatches(nil)
 	if len(batches) != 0 {
 		t.Errorf("got %d batches, want 0", len(batches))
 	}
