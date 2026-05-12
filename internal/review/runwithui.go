@@ -43,6 +43,7 @@ func reviewPhases() []progress.PhaseDef {
 		{Name: "phase1", Label: "Deep Review",
 			ProgressFn: batchProgress,
 			Counter:    batchCounter},
+		{Name: "recheck", Label: "Recheck"},
 		{Name: "phase2", Label: "Synthesis", ProgressFn: synthesisPulse},
 	}
 }
@@ -180,6 +181,13 @@ func RunWithUI(
 	opts PRReviewOptions,
 	headerSubtitle, headerInfo string,
 ) (*PRReviewResult, error) {
+	// Derived cancellable ctx so the TUI's OnCancel can stop the
+	// in-flight LLM call when the user Ctrl+Cs. Without this the
+	// background goroutine orphans on the synthesis call until it
+	// completes — wasting tokens and leaking the goroutine.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var result *PRReviewResult
 
 	header := progress.Header{
@@ -195,8 +203,9 @@ func RunWithUI(
 		Summary: func(_ error, elapsed time.Duration) string {
 			return renderReviewSummary(result, elapsed)
 		},
+		OnCancel: cancel,
 		RunTask: func(emit func(phase, message string)) error {
-			r, err := RunPRReview(ctx, reviewClient, aoiClient, opts, emit)
+			r, err := RunPRReview(runCtx, reviewClient, aoiClient, opts, emit)
 			result = r
 			return err
 		},

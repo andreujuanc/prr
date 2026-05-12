@@ -1,8 +1,11 @@
 package review
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/andreujuanc/prr/internal/security"
 )
 
 // Pins the contract that progressReporter (the adapter that converts
@@ -18,6 +21,53 @@ import (
 // progressReporter and taps on every BatchProgress call regardless of
 // status — that's covered by TestWatchdogReporter_ConcurrentCalls in
 // batch_test.go.
+
+// TestRunReviewCalls_NoDoubleCountedBatchProgress pins the contract
+// that RunReviewCalls emits exactly one terminal BatchProgress per
+// review call. Earlier the pipeline ALSO ran a "Mark all AOI call
+// batches as done" loop after RunReviewCalls returned, double-counting
+// every call (and clobbering cached/failed statuses with done). The
+// shared TUI then showed nonsense like "Deep Review 16/10".
+func TestRunReviewCalls_NoDoubleCountedBatchProgress(t *testing.T) {
+	calls := []ReviewCall{
+		{Type: "individual", AOIs: []security.AreaOfInterest{{ID: "aoi-1", File: "x.go", Line: 1}}},
+		{Type: "individual", AOIs: []security.AreaOfInterest{{ID: "aoi-2", File: "y.go", Line: 2}}},
+		{Type: "individual", AOIs: []security.AreaOfInterest{{ID: "aoi-3", File: "z.go", Line: 3}}},
+	}
+
+	client := &fakeAIClient{
+		Responder: func(systemPrompt, _ string) string {
+			return pinDeepFindingsResponse(extractAOIID(systemPrompt), "x.go", "42")
+		},
+	}
+
+	// Count BatchProgress calls per status type. The pipeline's
+	// OnProgress closure dispatches to BatchProgress with the real
+	// terminal status — we count it here directly.
+	var done, cached, failed int
+	opts := ExecuteOptions{
+		Mode: ModePR,
+		OnProgress: func(completed, total int, fromCache bool, err error) {
+			switch {
+			case err != nil:
+				failed++
+			case fromCache:
+				cached++
+			default:
+				done++
+			}
+		},
+	}
+
+	if _, err := RunReviewCalls(context.Background(), client, calls, opts); err != nil {
+		t.Fatalf("RunReviewCalls: %v", err)
+	}
+
+	if got := done + cached + failed; got != len(calls) {
+		t.Fatalf("OnProgress fired %d times for %d calls (%d done, %d cached, %d failed); want %d total",
+			got, len(calls), done, cached, failed, len(calls))
+	}
+}
 
 func TestProgressReporter_SuppressesActiveBatch(t *testing.T) {
 	var events []string

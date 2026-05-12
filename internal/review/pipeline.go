@@ -267,6 +267,9 @@ func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
 	}
 	p.onProgress("phase1", fmt.Sprintf("Batch %d: %s", batch+1, label))
 }
+func (p *progressReporter) RecheckProgress(status string) {
+	p.onProgress("recheck", status)
+}
 func (p *progressReporter) SynthesisStarted() {
 	p.onProgress("phase2", "Synthesizing review...")
 }
@@ -768,11 +771,12 @@ func RunReviewCore(
 				log.Printf("Warning: failed to persist deep findings after Phase 1a: %v", err)
 			}
 		}
-
-		// Mark all AOI call batches as done
-		for i := range reviewCalls {
-			rr.BatchProgress(i, StatusDone)
-		}
+		// Note: do NOT emit another round of BatchProgress(StatusDone)
+		// here. RunReviewCalls already fired the terminal events via
+		// execOpts.OnProgress as each call completed, with the real
+		// status (done / cached / failed). A second pass would
+		// double-count completions and overwrite cached/failed with
+		// done — both wrong.
 	}
 
 	aoiCallOffset := len(reviewCalls)
@@ -804,7 +808,8 @@ func RunReviewCore(
 			dbgw.Separator()
 		}
 	}
-	rechecked, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext, nil, recheckDebugHook)
+	rechecked, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext,
+		func(status string) { rr.RecheckProgress(status) }, recheckDebugHook)
 	if changed {
 		deepFindings = rechecked
 		// Rebuild synthesis input from rechecked findings

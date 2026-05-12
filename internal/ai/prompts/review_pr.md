@@ -122,10 +122,19 @@ Find callers of modified functions and verify compatibility.
 
 Quality bar:
 - A "low" or "nit" finding should be the exception, not the rule.
-- If you are uncertain whether something is a bug, mark it as a question for
-  the author rather than asserting a finding.
+- Uncertain findings without a concrete trigger scenario belong in
+  `questions_for_author`, not `findings`. If you cannot describe the
+  specific input or state that triggers the bug, ask instead of asserting.
 - Suggestions should be concrete (a code snippet or a precise instruction),
   not vague ("consider improving X").
+- Suggestion scope is absolute: do NOT propose new utilities, helper
+  functions, abstractions, refactors of adjacent code, or pattern changes
+  not already in the codebase. Fix the issue, nothing more.
+- `missing_tests`: populate this when the PR adds new behavior without
+  test coverage. Don't leave it empty out of caution — listing missing
+  tests is the job, not scope creep.
+- `questions_for_author`: populate this when something is genuinely
+  uncertain or needs author input. Don't leave it empty out of caution.
 
 ## Examples
 

@@ -194,6 +194,7 @@ type Reporter interface {
 	AOIPrescanProgress(status string, done bool, aoiCount int)
 	InitBatches(batches []BatchInfo)
 	BatchProgress(batch int, status BatchStatus)
+	RecheckProgress(status string)
 	SynthesisStarted()
 	Token(token string)
 }
@@ -206,6 +207,7 @@ func (NopReporter) ClassifyProgress(string)              {}
 func (NopReporter) AOIPrescanProgress(string, bool, int) {}
 func (NopReporter) InitBatches([]BatchInfo)              {}
 func (NopReporter) BatchProgress(int, BatchStatus)       {}
+func (NopReporter) RecheckProgress(string)               {}
 func (NopReporter) SynthesisStarted()                    {}
 func (NopReporter) Token(string)                         {}
 
@@ -249,6 +251,12 @@ func (r *WatchdogReporter) BatchProgress(batch int, status BatchStatus) {
 	}
 	r.Inner.BatchProgress(batch, status)
 }
+func (r *WatchdogReporter) RecheckProgress(status string) {
+	if r.Tap != nil {
+		r.Tap(status)
+	}
+	r.Inner.RecheckProgress(status)
+}
 func (r *WatchdogReporter) SynthesisStarted() {
 	if r.Tap != nil {
 		r.Tap("synthesis started")
@@ -280,6 +288,9 @@ func (o *OffsetReporter) AOIPrescanProgress(status string, done bool, aoiCount i
 func (o *OffsetReporter) InitBatches(batches []BatchInfo) {}
 func (o *OffsetReporter) BatchProgress(batch int, status BatchStatus) {
 	o.RR.BatchProgress(batch+o.Offset, status)
+}
+func (o *OffsetReporter) RecheckProgress(status string) {
+	o.RR.RecheckProgress(status)
 }
 func (o *OffsetReporter) SynthesisStarted()  { o.RR.SynthesisStarted() }
 func (o *OffsetReporter) Token(token string) { o.RR.Token(token) }
@@ -923,7 +934,17 @@ func RunBatchesOnly(
 // and indexes them by file in the fileFindings map.
 func AppendDeepFindings(b *strings.Builder, fileFindings map[string]string, findings []state.DeepFinding) {
 	for _, f := range findings {
-		b.WriteString(fmt.Sprintf("### %s: %s\n", f.Severity, f.Title))
+		// Header includes the finding ID so synthesis can echo it back
+		// in `source_ids`. Without this synthesis findings can't be
+		// linked to their source deep findings in the output JSON.
+		header := f.Severity
+		if f.FindingID != "" {
+			header = f.FindingID + " · " + f.Severity
+		}
+		b.WriteString(fmt.Sprintf("### %s: %s\n", header, f.Title))
+		if f.FindingID != "" {
+			b.WriteString(fmt.Sprintf("**ID:** %s\n", f.FindingID))
+		}
 		b.WriteString(fmt.Sprintf("**File:** %s:%s\n", f.File, f.Lines))
 		b.WriteString(fmt.Sprintf("**Category:** %s/%s\n", f.Category, f.Subcategory))
 		b.WriteString(fmt.Sprintf("**Description:** %s\n", f.Description))

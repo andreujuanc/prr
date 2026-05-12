@@ -20,6 +20,7 @@
 package progress
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -97,11 +98,23 @@ type Config struct {
 	// Summary renders the final box after the run completes.
 	// Optional. err is the RunTask return value; elapsed is wall time.
 	Summary func(err error, elapsed time.Duration) string
+
+	// OnCancel is called when the user exits the TUI (Ctrl+C / q)
+	// before the background task signals done. The task's goroutine
+	// is still in flight at this point; the canonical use is for the
+	// caller to cancel the context it passed to RunTask so the
+	// in-flight LLM call returns quickly instead of orphaning. Optional.
+	OnCancel func()
 }
+
+// ErrCancelled is returned from Run when the user exits the TUI before
+// the background task signals done.
+var ErrCancelled = errors.New("cancelled by user")
 
 // Run executes the TUI to completion. The returned error is the task's
 // error, not the TUI's — a TUI startup failure surfaces wrapped as
-// "progress UI error: ...".
+// "progress UI error: ...". User-cancelled (Ctrl+C before doneMsg
+// arrived) returns ErrCancelled.
 func Run(cfg Config) error {
 	ui := newUI(cfg)
 	p := tea.NewProgram(ui, tea.WithAltScreen())
@@ -113,7 +126,20 @@ func Run(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("progress UI error: %w", err)
 	}
-	return final.(*model).err
+	m := final.(*model)
+	if !m.done {
+		// User exited the TUI before the task signaled done — the
+		// background goroutine is still in flight. Notify the caller
+		// so it can cancel the context driving the LLM call, and
+		// surface a sentinel error so the caller doesn't try to use
+		// a half-built result (which would nil-deref on result.PR.Title
+		// or similar).
+		if cfg.OnCancel != nil {
+			cfg.OnCancel()
+		}
+		return ErrCancelled
+	}
+	return m.err
 }
 
 // ── Internal model ──────────────────────────────────────────────────────

@@ -116,7 +116,7 @@ You MUST return ONLY a JSON object matching this exact schema — no prose befor
       "line": 42,
       "title": "short title",
       "detail": "what's wrong and why it matters",
-      "suggestion": "concrete fix, code snippet preferred",
+      "suggestion": "smallest change that resolves the issue, matching the codebase's existing patterns; code snippet preferred",
       "cwe": "CWE-XXX (for security findings only, omit for non-security)"
     }
   ],
@@ -129,6 +129,8 @@ Guidelines:
 - "findings" array MUST be sorted by severity: critical first, nit last
 - Every finding MUST include file and line
 - "suggestion" may be empty string if no concrete fix is obvious
-- "missing_tests" and "questions_for_author" may be empty arrays
+- "suggestion" scope is absolute: do NOT propose new utilities, helper functions, abstractions, refactors of adjacent code, or pattern changes not already in the codebase. Fix the issue, nothing more
+- "missing_tests": populate when the PR adds new behavior without test coverage. Don't leave empty out of caution — listing missing tests is the job, not scope creep
+- "questions_for_author": populate when something is genuinely uncertain or needs author input. Don't leave empty out of caution
 - If the PR is clean, return verdict "approve" with an empty findings array
 - Return ONLY the JSON — no markdown, no prose, no explanation`

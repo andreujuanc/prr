@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 // fakeSynthesisClient lets tests stage a sequence of responses (each
@@ -195,6 +196,7 @@ func (c *countingReporter) ClassifyProgress(string)              { atomic.AddInt
 func (c *countingReporter) AOIPrescanProgress(string, bool, int) { atomic.AddInt64(&c.aoi, 1) }
 func (c *countingReporter) InitBatches([]BatchInfo)              { atomic.AddInt64(&c.init, 1) }
 func (c *countingReporter) BatchProgress(int, BatchStatus)       { atomic.AddInt64(&c.batch, 1) }
+func (c *countingReporter) RecheckProgress(string)               { atomic.AddInt64(&c.aoi, 1) }
 func (c *countingReporter) SynthesisStarted()                    { atomic.AddInt64(&c.synthesis, 1) }
 func (c *countingReporter) Token(string)                         { atomic.AddInt64(&c.tokens, 1) }
 
@@ -412,5 +414,31 @@ func TestBatchFindings_EmptyArray(t *testing.T) {
 	}
 	if results[0].Findings.Text() != "" {
 		t.Errorf("Text() should be empty; got %q", results[0].Findings.Text())
+	}
+}
+
+// TestAppendDeepFindings_EmitsFindingIDs pins the contract that
+// AppendDeepFindings exposes each finding's ID in the prompt text fed
+// to synthesis. Without this, the synthesis model can't fill the
+// `source_ids` field on its output findings.
+func TestAppendDeepFindings_EmitsFindingIDs(t *testing.T) {
+	var b strings.Builder
+	ff := make(map[string]string)
+	findings := []state.DeepFinding{
+		{FindingID: "F-001", Severity: "high", Title: "Auth bypass", File: "auth.go", Lines: "42-50",
+			Category: "security", Subcategory: "auth", Description: "Missing check"},
+		{FindingID: "F-002", Severity: "medium", Title: "N+1 query", File: "repo.go", Lines: "88",
+			Category: "performance", Subcategory: "io", Description: "Queries inside loop"},
+	}
+	AppendDeepFindings(&b, ff, findings)
+	out := b.String()
+	for _, id := range []string{"F-001", "F-002"} {
+		if !strings.Contains(out, id) {
+			t.Errorf("synthesis input missing %s; synthesis can't echo source_ids without it.\nGot:\n%s", id, out)
+		}
+	}
+	// Headers should also be IDable so the model can spot per-finding boundaries.
+	if !strings.Contains(out, "**ID:** F-001") {
+		t.Errorf("expected explicit **ID:** F-001 marker in synthesis input; got:\n%s", out)
 	}
 }

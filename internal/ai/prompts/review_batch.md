@@ -24,7 +24,7 @@ Evaluate EVERY dimension. Report all findings, including ones you are uncertain 
 1. **Design & Architecture**
    - **Abstraction level**: Is this over-engineered (unnecessary interfaces, premature abstraction) or under-abstracted (copy-pasted logic that should be shared)?
    - **Responsibility separation**: Does each component do one thing? Are concerns mixed (e.g., business logic in HTTP handlers, presentation in data layer)?
-   - **Codebase consistency**: Does this follow the project's existing patterns? Check how similar problems are solved elsewhere. Introducing a new pattern where an established one exists creates confusion.
+   - **Codebase consistency**: Does this follow the project's existing patterns? Check how similar problems are solved elsewhere. Introducing a new pattern where an established one exists creates confusion. The same rule binds your suggestions: if you recommend a pattern that doesn't appear elsewhere in the codebase, you are creating new inconsistency, not fixing it.
    - **Coupling**: Does this create tight coupling between packages/modules that should be independent? Can this be tested in isolation?
    - **API surface**: Are new public functions/types necessary? Could they be unexported? Is the API intuitive or surprising?
    
@@ -149,7 +149,7 @@ Return a JSON array. One element per file in this batch — include every file, 
         "title": "short title",
         "line": 42,
         "detail": "what's wrong and why it matters",
-        "suggestion": "concrete fix; empty string if none is obvious",
+        "suggestion": "smallest change that resolves the issue, matching the codebase's existing patterns; empty string if none is obvious",
         "cwe": "CWE-XXX (security findings only; omit otherwise)",
         "exploitability": "trivial | moderate | difficult (security findings only)",
         "impact": "critical | high | medium | low (security findings only)"
@@ -164,6 +164,7 @@ Rules:
 - `findings` is an array (possibly empty `[]`); never a string.
 - `line` is a single integer pointing to the most relevant line — only cite lines you have read.
 - Omit `cwe`/`exploitability`/`impact` for non-security findings rather than setting them to empty strings.
+- Suggestions must not propose refactors of adjacent code, new abstractions the codebase doesn't already use, or stylistic changes to existing lines. Fix the issue, nothing more.
 - Return ONLY the JSON array. No markdown fences, no prose.
 
 Example finding (good — concrete, actionable):

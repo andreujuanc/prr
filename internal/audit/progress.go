@@ -165,6 +165,11 @@ func RunWithUI(
 	reviewModel, aoiModel string,
 	noSynthesis bool,
 ) (*Result, *SynthesisResult, error) {
+	// Derived cancellable ctx so the TUI's OnCancel can stop the
+	// in-flight LLM call when the user Ctrl+Cs.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var (
 		result    *Result
 		synthesis *SynthesisResult
@@ -183,15 +188,16 @@ func RunWithUI(
 		Summary: func(_ error, elapsed time.Duration) string {
 			return renderAuditSummary(result, elapsed)
 		},
+		OnCancel: cancel,
 		RunTask: func(emit func(phase, message string)) error {
-			r, err := Run(ctx, reviewClient, aoiClient, opts, emit)
+			r, err := Run(runCtx, reviewClient, aoiClient, opts, emit)
 			result = r
 			if err != nil {
 				return err
 			}
 			if r != nil && len(r.Findings) > 0 && !noSynthesis {
 				emit("phase4", "Synthesizing executive summary...")
-				s, synthErr := SynthesizeCached(ctx, reviewClient, r.Findings, r.CrossCuttingObservations, r.ProjectContext, nil, opts.NoCache)
+				s, synthErr := SynthesizeCached(runCtx, reviewClient, r.Findings, r.CrossCuttingObservations, r.ProjectContext, nil, opts.NoCache)
 				if synthErr != nil {
 					emit("phase4", "Synthesis failed: "+synthErr.Error())
 					// Non-fatal — continue without synthesis

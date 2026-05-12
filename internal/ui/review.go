@@ -99,6 +99,11 @@ func (a *reviewReporterAdapter) InitBatches(batches []review.BatchInfo) {
 func (a *reviewReporterAdapter) BatchProgress(batch int, status review.BatchStatus) {
 	a.rr.BatchProgress(batch, batchStatusFromReview(status))
 }
+func (a *reviewReporterAdapter) RecheckProgress(status string) {
+	// In-app TUI doesn't distinguish recheck from other pre-AOI status today;
+	// fan into the existing AOIProgress channel to keep behavior unchanged.
+	a.rr.AOIProgress(status, false, 0)
+}
 func (a *reviewReporterAdapter) SynthesisStarted() {
 	a.rr.SynthesisStarted()
 }

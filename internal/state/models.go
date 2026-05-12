@@ -47,6 +47,18 @@ type ReviewFinding struct {
 	CWE        string `json:"cwe,omitempty"`      // e.g. "CWE-89" — populated for security findings
 	Resolved   bool   `json:"resolved,omitempty"` // user-toggled or auto-resolved by task completion
 
+	// SourceIDs lists the deep-finding IDs (e.g. "F-001", "F-007") this
+	// synthesis finding derives from. One synthesis finding can cite
+	// multiple deep findings when synthesis consolidates a systemic
+	// pattern across files. Consumers should dereference these against
+	// the top-level `deep_findings` list for evidence / trigger / per-
+	// site file:line ranges — synthesis findings keep only a single
+	// representative file/line and a short narrative.
+	//
+	// Empty/omitted when synthesis ran without deep findings as input
+	// (single-pass review path).
+	SourceIDs []string `json:"source_ids,omitempty"`
+
 	// Revalidation — populated by the security revalidation pass (Phase 4).
 	Revalidation *FindingRevalidation `json:"revalidation,omitempty"`
 }
