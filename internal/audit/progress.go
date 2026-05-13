@@ -57,10 +57,20 @@ func auditPhases() []progress.PhaseDef {
 // reaches `done` state. Empty string falls back to the live detail.
 
 func fileCollectionSummary(s *progress.State) string {
-	if n := s.Counters["aoi_total"]; n > 0 {
+	n := s.Counters["aoi_total"]
+	if n == 0 {
+		return ""
+	}
+	skipped := s.Counters["file_skipped_binary"] +
+		s.Counters["file_skipped_large"] +
+		s.Counters["file_skipped_empty"] +
+		s.Counters["file_skipped_symlink"] +
+		s.Counters["file_skipped_missing"] +
+		s.Counters["file_skipped_errored"]
+	if skipped == 0 {
 		return fmt.Sprintf("%d files", n)
 	}
-	return ""
+	return fmt.Sprintf("%d files · %d skipped", n, skipped)
 }
 
 func classifySummary(s *progress.State) string {
@@ -178,6 +188,21 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 		var n int
 		if scanCounter(phase, message, "Phase 1 complete: %d files to audit", &n) {
 			s.Counters["aoi_total"] = n
+		}
+	case phase == "phase1" && strings.HasPrefix(message, "Phase 1 skip breakdown:"):
+		// Pipeline emits "Phase 1 skip breakdown: %d binary, %d large,
+		// %d empty, %d symlink, %d missing, %d errored". Capture each
+		// counter so fileCollectionSummary can render the skip total.
+		var binary, large, empty, symlink, missing, errored int
+		if scanCounter(phase, message,
+			"Phase 1 skip breakdown: %d binary, %d large, %d empty, %d symlink, %d missing, %d errored",
+			&binary, &large, &empty, &symlink, &missing, &errored) {
+			s.Counters["file_skipped_binary"] = binary
+			s.Counters["file_skipped_large"] = large
+			s.Counters["file_skipped_empty"] = empty
+			s.Counters["file_skipped_symlink"] = symlink
+			s.Counters["file_skipped_missing"] = missing
+			s.Counters["file_skipped_errored"] = errored
 		}
 	case phase == "phase2" && strings.Contains(message, "Scanning"):
 		var n int

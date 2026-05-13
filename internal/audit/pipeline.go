@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -52,6 +51,11 @@ type Options struct {
 	// LargeFileThreshold is the file count above which a warning is
 	// displayed. Defaults to 200 when zero.
 	LargeFileThreshold int
+
+	// MaxFileBytes caps per-file size during Phase 1 ingestion. Files
+	// exceeding the cap are skipped with a warning (not loaded into
+	// prompts). Zero falls back to MaxAuditFileBytes.
+	MaxFileBytes int
 
 	// Concurrency tunes per-phase concurrency caps. Each zero field falls
 	// back to the package default (currently 5).
@@ -296,19 +300,67 @@ func Run(
 		filePaths = filtered
 	}
 
-	// Load file contents
+	// Load file contents with per-file guards (symlink, size cap,
+	// binary detection, empty check) and aggregate-fail on read errors.
+	maxBytes := int64(opts.MaxFileBytes)
+	if maxBytes <= 0 {
+		maxBytes = int64(MaxAuditFileBytes)
+	}
+
 	files := make([]classify.File, 0, len(filePaths))
+	var skipCounts struct {
+		symlink, binary, empty, large, notFound, errored int
+	}
 	for _, fp := range filePaths {
 		absPath := filepath.Join(opts.RepoRoot, fp)
-		content, readErr := os.ReadFile(absPath)
-		if readErr != nil {
-			log.Printf("Warning: skipping %s: %v", fp, readErr)
-			continue
+		res := loadAuditFile(absPath, fp, maxBytes)
+		switch res.Outcome {
+		case loadedOK:
+			files = append(files, res.File)
+		case skippedSymlink:
+			skipCounts.symlink++
+			dbgw.Text("  skipped %s (symlink/non-regular)", fp)
+		case skippedTooLarge:
+			skipCounts.large++
+			onProgress("warning", fmt.Sprintf("⚠ skipped %s (%d KB exceeds %d KB cap)",
+				fp, res.Size/1024, maxBytes/1024))
+			dbgw.Text("  skipped %s (%d bytes > %d cap)", fp, res.Size, maxBytes)
+		case skippedBinary:
+			skipCounts.binary++
+			dbgw.Text("  skipped %s (binary content)", fp)
+		case skippedEmpty:
+			skipCounts.empty++
+			dbgw.Text("  skipped %s (empty)", fp)
+		case skippedNotFound:
+			skipCounts.notFound++
+			log.Printf("audit: %s vanished between ls-files and read (likely git rm race); skipping", fp)
+		case loadErrored:
+			skipCounts.errored++
+			log.Printf("audit: read error on %s: %v", fp, res.Err)
 		}
-		files = append(files, classify.File{Path: fp, Content: string(content)})
+	}
+
+	// Aggregate-fail: a handful of transient read errors is acceptable,
+	// but if >20% of reads fail something structural is wrong and we
+	// should abort rather than ship a degraded audit.
+	attempted := len(filePaths)
+	if shouldAggregateFail(skipCounts.errored, attempted) {
+		return nil, fmt.Errorf("phase 1: %d/%d files failed to read (>%.0f%% threshold) — aborting; check working directory and permissions",
+			skipCounts.errored, attempted, aggregateFailRatio*100)
+	}
+
+	totalSkipped := skipCounts.symlink + skipCounts.binary + skipCounts.empty +
+		skipCounts.large + skipCounts.notFound + skipCounts.errored
+
+	if totalSkipped > 0 {
+		onProgress("phase1", fmt.Sprintf(
+			"Phase 1 skip breakdown: %d binary, %d large, %d empty, %d symlink, %d missing, %d errored",
+			skipCounts.binary, skipCounts.large, skipCounts.empty,
+			skipCounts.symlink, skipCounts.notFound, skipCounts.errored))
 	}
 
 	onProgress("phase1", fmt.Sprintf("Phase 1 complete: %d files to audit", len(files)))
+
 	for _, f := range files {
 		dbgw.Text("  %s (%d bytes)", f.Path, len(f.Content))
 	}
