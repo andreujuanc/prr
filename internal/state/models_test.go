@@ -173,12 +173,20 @@ func TestClearAllCaches(t *testing.T) {
 		BatchFindings: "other findings",
 	}
 	s.Review = &AIReview{Summary: "looks good"}
+	s.DeepFindings = []DeepFinding{{AOIID: "x", Severity: "high"}}
 
 	s.ClearAllCaches()
 
 	// Review should be cleared
 	if s.Review != nil {
 		t.Error("Review should be nil after ClearAllCaches")
+	}
+
+	// DeepFindings should be cleared — NoCache callers expect a clean
+	// slate, and stale findings from a prior run would otherwise leak
+	// through into reports.
+	if s.DeepFindings != nil {
+		t.Error("DeepFindings should be nil after ClearAllCaches")
 	}
 
 	// Per-file cache fields cleared, but Status and DiffHash preserved

@@ -307,6 +307,7 @@ func (s *State) ClearAllCaches() {
 	}
 	s.Review = nil
 	s.DeepReviews = nil
+	s.DeepFindings = nil
 	s.RecheckCache = nil
 	s.SynthesisCache = nil
 	s.ProjectContext = ""
