@@ -3,10 +3,13 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/state"
@@ -129,6 +132,61 @@ func SynthesizeCached(
 	return result, nil
 }
 
+// errSynthesisParse marks parse-shape failures (no JSON object, bad
+// JSON unmarshal). Distinguished from transport errors so retry can
+// short-circuit — re-running the same prompt against a model emitting
+// prose won't fix it, just doubles the token spend on the most
+// expensive single call in the pipeline.
+var errSynthesisParse = errors.New("synthesis: parse failure")
+
+// synthesisRetryBackoff is the wait before the single retry of a
+// transient synthesis failure. Matches deep review's 1.5s — synthesis
+// uses the strong model with a large input prompt, so when it fails
+// the cause is more often rate-limiting (which needs longer to
+// recover) than a brief disconnect.
+const synthesisRetryBackoff = 1500 * time.Millisecond
+
+// hierarchicalPartialFloor is the minimum fraction of per-category
+// syntheses that must succeed for the hierarchical merge to proceed.
+// Previously a single category failure aborted the whole synthesis,
+// throwing away successful work on the other N-1 categories. 50%
+// strikes a balance: a tiny dip is tolerated, a structural breakdown
+// still aborts.
+const hierarchicalPartialFloor = 0.5
+
+// runSynthesisChatStreamWithRetry wraps a single ChatStream call with
+// one retry after synthesisRetryBackoff for transient errors. Parse
+// failures (errSynthesisParse) and context cancellation short-circuit
+// immediately — neither benefits from retry.
+//
+// Returns the raw LLM response on success. The caller still parses
+// the response separately so parse-error wrapping happens close to
+// the parse site (not buried under a retry helper).
+func runSynthesisChatStreamWithRetry(
+	ctx context.Context,
+	client ai.Client,
+	systemPrompt string,
+	messages []ai.Message,
+	onToken func(string),
+	label string,
+) (string, error) {
+	raw, err := client.ChatStream(ctx, systemPrompt, messages, onToken)
+	if err == nil {
+		return raw, nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "", err
+	}
+
+	select {
+	case <-time.After(synthesisRetryBackoff):
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	log.Printf("synthesis: retrying %s after transient error: %v", label, err)
+	return client.ChatStream(ctx, systemPrompt, messages, onToken)
+}
+
 // synthesizeDirect sends all findings in a single LLM call.
 func synthesizeDirect(
 	ctx context.Context,
@@ -144,14 +202,14 @@ func synthesizeDirect(
 		{Role: "user", Content: userMsg},
 	}
 
-	raw, err := client.ChatStream(ctx, ai.AuditSynthesisPrompt, messages, onToken)
+	raw, err := runSynthesisChatStreamWithRetry(ctx, client, ai.AuditSynthesisPrompt, messages, onToken, "direct call")
 	if err != nil {
 		return nil, fmt.Errorf("synthesis LLM call: %w", err)
 	}
 
 	result, err := ParseSynthesisResult(raw)
 	if err != nil {
-		return nil, fmt.Errorf("parsing synthesis result: %w", err)
+		return nil, err
 	}
 	result.RawOutput = raw
 	return result, nil
@@ -223,18 +281,49 @@ func synthesizeHierarchical(
 	}
 	wg.Wait()
 
-	var categorySummaries []string
+	// Partial-failure tolerance: previously a single category-synthesis
+	// error aborted the whole hierarchical run, throwing away successful
+	// work on the other N-1 categories. Now we collect successes and
+	// errors separately, and only abort if too few categories survived
+	// for the merge to be meaningful.
+	var (
+		categorySummaries []string
+		failedCategories  []string
+	)
 	for _, r := range results {
 		if r.err != nil {
-			return nil, fmt.Errorf("category %q synthesis: %w", r.category, r.err)
+			log.Printf("synthesis: category %q failed (%d findings): %v — proceeding without it",
+				r.category, r.count, r.err)
+			failedCategories = append(failedCategories, r.category)
+			continue
 		}
 		categorySummaries = append(categorySummaries,
 			fmt.Sprintf("## Category: %s (%d findings)\n%s", r.category, r.count, r.summary))
 	}
 
+	if len(cats) == 0 {
+		// Shouldn't happen — we entered hierarchical because we had
+		// >50 findings, which means at least one category — but guard
+		// anyway so we don't divide by zero below.
+		return nil, fmt.Errorf("hierarchical synthesis: no categories to merge")
+	}
+	survivalRatio := float64(len(categorySummaries)) / float64(len(cats))
+	if survivalRatio < hierarchicalPartialFloor {
+		return nil, fmt.Errorf("hierarchical synthesis aborted: %d/%d categories failed (>%.0f%% threshold); failed: %v",
+			len(failedCategories), len(cats), (1-hierarchicalPartialFloor)*100, failedCategories)
+	}
+
 	// Final merge: use category summaries as input.
 	mergeInput := fmt.Sprintf("The following are per-category summaries from a large audit with %d total findings.\n\n%s",
 		len(findings), strings.Join(categorySummaries, "\n\n"))
+
+	if len(failedCategories) > 0 {
+		// Tell the merging model about the gap so the executive
+		// summary can mention degraded coverage in those categories
+		// rather than confidently summarizing complete results.
+		mergeInput += fmt.Sprintf("\n\n## Note\n%d category synthesis call(s) failed and are NOT represented above: %s. Mention this gap in the executive summary so readers know coverage was degraded for these areas.",
+			len(failedCategories), strings.Join(failedCategories, ", "))
+	}
 
 	if len(crossCutting) > 0 {
 		mergeInput += "\n\n## Cross-Cutting Observations\n- " + strings.Join(crossCutting, "\n- ")
@@ -244,14 +333,14 @@ func synthesizeHierarchical(
 		{Role: "user", Content: mergeInput},
 	}
 
-	raw, err := client.ChatStream(ctx, ai.AuditSynthesisPrompt, messages, onToken)
+	raw, err := runSynthesisChatStreamWithRetry(ctx, client, ai.AuditSynthesisPrompt, messages, onToken, "hierarchical merge")
 	if err != nil {
 		return nil, fmt.Errorf("final synthesis merge: %w", err)
 	}
 
 	result, err := ParseSynthesisResult(raw)
 	if err != nil {
-		return nil, fmt.Errorf("parsing final synthesis: %w", err)
+		return nil, err
 	}
 	result.RawOutput = raw
 	return result, nil
@@ -309,15 +398,20 @@ func BuildSynthesisUserMessage(findings []state.DeepFinding, crossCutting []stri
 // ParseSynthesisResult extracts a SynthesisResult from the LLM's raw response.
 // Uses ai.ExtractJSON so trailing prose, embedded fences, and multi-round
 // agent output don't break parsing.
+//
+// Returns errSynthesisParse-wrapped errors on parse-shape failures so
+// callers (and the retry wrapper) can distinguish "model output was
+// malformed" from "transport error" — the former won't be fixed by
+// retrying the same prompt.
 func ParseSynthesisResult(raw string) (*SynthesisResult, error) {
 	s := ai.ExtractJSON(raw)
 	if s == "" {
-		return nil, fmt.Errorf("no JSON object found in synthesis response")
+		return nil, fmt.Errorf("%w: no JSON object found in synthesis response", errSynthesisParse)
 	}
 
 	var result SynthesisResult
 	if err := json.Unmarshal([]byte(s), &result); err != nil {
-		return nil, fmt.Errorf("unmarshaling synthesis JSON: %w", err)
+		return nil, fmt.Errorf("%w: %v", errSynthesisParse, err)
 	}
 
 	return &result, nil
