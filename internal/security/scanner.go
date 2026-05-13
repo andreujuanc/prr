@@ -217,19 +217,21 @@ func ScanAreasOfInterestClassified(
 	allResults := make([][]AOIScanResult, len(batches))
 	completed := 0
 	var (
-		batchErrors  []string
-		totalDropped int      // files in successful batches that the LLM omitted
-		droppedFiles []string // paths of those silently-dropped files
+		batchErrors      []string
+		failedInputPaths []string // file paths whose batch errored (no AOIs)
+		totalDropped     int      // files in successful batches that the LLM omitted
+		droppedFiles     []string // paths of those silently-dropped files
 	)
 	for br := range resultsCh {
 		completed++
 		if br.err != nil {
 			errMsg := fmt.Sprintf("AOI scan batch %d/%d failed: %v", br.index+1, len(batches), br.err)
+			// Log the per-batch error to disk for diagnostics, but
+			// don't blast it to onProgress — the consolidated
+			// terminal message below is what the user reads.
 			log.Printf("%s", errMsg)
 			batchErrors = append(batchErrors, errMsg)
-			if onProgress != nil {
-				onProgress(errMsg)
-			}
+			failedInputPaths = append(failedInputPaths, br.inputs...)
 		} else {
 			allResults[br.index] = br.results
 
@@ -267,14 +269,38 @@ func ScanAreasOfInterestClassified(
 		}
 	}
 
-	// If all batches failed, return an error so the caller knows no scanning occurred
-	if len(batchErrors) == len(batches) {
-		return nil, fmt.Errorf("all %d AOI scan batch(es) failed:\n  %s", len(batches), strings.Join(batchErrors, "\n  "))
+	// If ALL batches failed there's nothing to return — abort with
+	// the full error list regardless of count. The 2-batch floor
+	// below doesn't cover this: a single-batch run that fails 1/1
+	// has no useful results to ship.
+	if len(batchErrors) == len(batches) && len(batches) > 0 {
+		return nil, fmt.Errorf("all %d AOI scan batch(es) failed:\n  %s",
+			len(batches), strings.Join(batchErrors, "\n  "))
 	}
 
-	// Log partial failures as a warning
+	// Aggregate-fail: abort when too many batches fail. Previously
+	// only a 100% failure aborted (handled above), so 4-of-5 batches
+	// failing (80% of files unscanned) still returned "success" with
+	// whatever the one surviving batch produced. Same shape as
+	// Phase 1's file-read aggregate-fail.
+	if shouldAggregateFailAOI(len(batchErrors), len(batches)) {
+		return nil, fmt.Errorf(
+			"phase 2: %d/%d AOI scan batches failed (>%.0f%% threshold) — aborting; %d file(s) had no AOIs scanned:\n  %s",
+			len(batchErrors), len(batches), aoiAggregateFailRatio*100,
+			len(failedInputPaths), strings.Join(batchErrors, "\n  "))
+	}
+
+	// Partial failure under the threshold: surface ONCE so the user
+	// knows recall is degraded, instead of burying it in per-batch
+	// log lines. Per-batch errors are still in the log for forensics.
 	if len(batchErrors) > 0 {
-		log.Printf("WARNING: %d/%d AOI scan batches failed", len(batchErrors), len(batches))
+		log.Printf("aoi: %d/%d batches failed; %d file(s) have no AOIs and will not be reviewed: %v",
+			len(batchErrors), len(batches), len(failedInputPaths), failedInputPaths)
+		if onProgress != nil {
+			onProgress(fmt.Sprintf(
+				"⚠ %d/%d AOI batches failed; %d file(s) will not be deep-reviewed (see log for paths)",
+				len(batchErrors), len(batches), len(failedInputPaths)))
+		}
 	}
 
 	// Flatten in batch order, then append cached results
@@ -456,6 +482,29 @@ var errAOIParse = errors.New("aoi: parse failure")
 // batches are larger (more tokens to retransmit) so the API is more
 // likely to be rate-limiting us.
 const aoiRetryBackoff = 1 * time.Second
+
+// Aggregate-fail thresholds for Phase 2 AOI batches.
+//
+// Previously a Phase 2 scan only aborted when 100% of batches failed.
+// 4 of 5 failing (20% recall) was "successful". With a >20% threshold
+// and a 2-batch floor, a handful of transient failures still proceed
+// with a clear warning, but a structural breakdown aborts cleanly.
+const (
+	aoiAggregateFailRatio    = 0.20
+	aoiAggregateFailMinBatch = 2
+)
+
+// shouldAggregateFailAOI reports whether the (failed, total) batch
+// counts cross the abort threshold.
+func shouldAggregateFailAOI(failed, total int) bool {
+	if failed < aoiAggregateFailMinBatch {
+		return false
+	}
+	if total <= 0 {
+		return false
+	}
+	return float64(failed)/float64(total) > aoiAggregateFailRatio
+}
 
 // scanBatchWithRetry runs scanBatch and retries ONCE on transient
 // errors. Parse failures and context cancellation short-circuit. The
