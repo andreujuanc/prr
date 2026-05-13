@@ -3,6 +3,7 @@ package classify
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -387,15 +388,99 @@ echo "Done."
 		t.Logf("%s → %s", f.Path, ft)
 	}
 
-	// schema.sql is borderline — repository (DB schema) or unknown are both valid
+	// schema.sql should now be classified as `sql` — that's the
+	// dedicated type added for raw SQL files. `repository` was the
+	// old fallback before FileTypeSQL existed; accepting it would
+	// hide a regression where the new SQL prompt language gets
+	// dropped or weakened.
 	sqlType := result["data/schema.sql"]
-	if sqlType != FileTypeUnknown && sqlType != FileTypeInfrastructure && sqlType != FileTypeRepository {
-		t.Errorf("data/schema.sql: got %q, want unknown, infrastructure, or repository", sqlType)
+	if sqlType != FileTypeSQL {
+		t.Errorf("data/schema.sql: got %q, want %q", sqlType, FileTypeSQL)
 	}
 
 	// deploy.sh is clearly infrastructure or unknown
 	shType := result["scripts/deploy.sh"]
 	if shType != FileTypeUnknown && shType != FileTypeInfrastructure {
 		t.Errorf("scripts/deploy.sh: got %q, want unknown or infrastructure", shType)
+	}
+}
+
+// TestLiveClassify_SQL verifies the new FileTypeSQL classification
+// holds end-to-end for multiple SQL flavors: schema definitions
+// (CREATE TABLE), migrations (ALTER TABLE with index changes), and
+// standalone query files. All three are reviewed for the same set
+// of concerns (data integrity, migration safety, performance), so
+// they share one type — but they look different enough that any
+// one of them passing while another fails would surface a real
+// prompt or model regression.
+//
+// schema.sql is already covered by TestLiveClassify_Unknown; this
+// test adds the migration + query patterns the prompt should also
+// recognize.
+func TestLiveClassify_SQL(t *testing.T) {
+	cfg := skipWithoutAPIKey(t)
+	client := newLiveClassifyAgent(t, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	files := []File{
+		{
+			Path: "db/migrations/0042_add_user_phone.sql",
+			Content: `-- Adds optional phone column to users.
+-- Backfill is handled by the deploy script; column is nullable
+-- so this migration is safe to apply during a rolling deploy.
+
+ALTER TABLE users ADD COLUMN phone VARCHAR(20);
+ALTER TABLE users ADD COLUMN phone_verified_at TIMESTAMP NULL;
+
+CREATE INDEX CONCURRENTLY idx_users_phone ON users(phone)
+    WHERE phone IS NOT NULL;
+`,
+		},
+		{
+			Path: "internal/queries/find_active_users.sql",
+			Content: `-- Returns up to 100 users active in the last 30 days.
+SELECT id, email, last_login_at
+FROM users
+WHERE deleted_at IS NULL
+  AND last_login_at > NOW() - INTERVAL '30 days'
+ORDER BY last_login_at DESC
+LIMIT 100;
+`,
+		},
+	}
+
+	result, err := Classify(ctx, client, files, nil, func(status string) {
+		t.Logf("progress: %s", status)
+	})
+	if err != nil {
+		t.Fatalf("Classify error: %v", err)
+	}
+
+	for _, f := range files {
+		t.Logf("%s → %s", f.Path, result[f.Path])
+	}
+
+	for path := range result {
+		if result[path] != FileTypeSQL {
+			t.Errorf("%s: got %q, want %q (a .sql file with %s pattern must classify as sql, "+
+				"not the legacy `repository` fallback or `unknown`)",
+				path, result[path], FileTypeSQL, sqlPatternFor(path))
+		}
+	}
+}
+
+// sqlPatternFor describes a path's expected SQL pattern for use in
+// test failure messages. Helps point at WHICH SQL case failed when
+// a regression hits.
+func sqlPatternFor(path string) string {
+	switch {
+	case strings.Contains(path, "migrations/"):
+		return "schema migration"
+	case strings.Contains(path, "queries/"):
+		return "standalone query"
+	default:
+		return "schema definition"
 	}
 }
