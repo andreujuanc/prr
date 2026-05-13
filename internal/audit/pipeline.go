@@ -196,7 +196,8 @@ func Run(
 	p0Ch := make(chan p0Result, 1)
 	p1Ch := make(chan p1Result, 1)
 
-	onProgress("phase0", "Discovering project context...")
+	// project.Discover emits its own "Discovering project context..."
+	// inside, so we don't duplicate it here.
 	go func() {
 		ctxOut, err := review.DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, auditState, func(status string) {
 			onProgress("phase0", status)
@@ -217,7 +218,7 @@ func Run(
 	if p0.err != nil {
 		// Phase 0 is load-bearing: every downstream prompt embeds the
 		// project context. A failure here usually means the configured
-		// fast model is unreachable (invalid model, expired key,
+		// fast model is unreachable (invalid model name, expired key,
 		// network). Continuing with empty context would produce
 		// findings that ignore project conventions; previously we
 		// silently degraded to a 600-line raw-doc dump which made

@@ -54,16 +54,44 @@ func TestHashInputs_DifferentInputs(t *testing.T) {
 }
 
 func TestSynthesizeFromDocs_Empty(t *testing.T) {
+	// synthesizeFromDocs now returns body only; the "## Project Context"
+	// header is added by assembleContext in Discover. Verify an empty
+	// input produces an empty body (no sections to emit).
 	inputs := &discoveredInputs{
 		docs:      map[string]string{},
 		manifests: map[string]string{},
 	}
 	got := synthesizeFromDocs(inputs)
-	if !strings.Contains(got, "## Project Context") {
-		t.Error("expected project context header")
-	}
 	if strings.Contains(got, "### Documentation") {
 		t.Error("should not have documentation section when empty")
+	}
+}
+
+// TestAssembleContext_AddsHeaderOnce verifies the assemble wrapper
+// adds the `## Project Context` header exactly once and includes both
+// summary and conventions when present.
+func TestAssembleContext_AddsHeaderOnce(t *testing.T) {
+	out := assembleContext("### Purpose\nthe project does X", "### Conventions\n- uses Y")
+	if strings.Count(out, "## Project Context") != 1 {
+		t.Errorf("expected header exactly once; got:\n%s", out)
+	}
+	if !strings.Contains(out, "### Purpose") {
+		t.Errorf("missing summary section; got:\n%s", out)
+	}
+	if !strings.Contains(out, "### Conventions") {
+		t.Errorf("missing conventions section; got:\n%s", out)
+	}
+}
+
+func TestAssembleContext_OnlyConventions(t *testing.T) {
+	// If summarization fell through (no LLM, no docs) but the
+	// conventions extraction ran, the output should still be valid.
+	out := assembleContext("", "### Conventions\n- uses Y")
+	if !strings.Contains(out, "## Project Context") {
+		t.Errorf("expected header; got:\n%s", out)
+	}
+	if !strings.Contains(out, "### Conventions") {
+		t.Errorf("missing conventions; got:\n%s", out)
 	}
 }
 
@@ -187,3 +215,84 @@ func (f failingAIClient) ChatStream(_ context.Context, _ string, _ []ai.Message,
 }
 
 var errLLMFailed = errors.New("models/gemini-3.1-flash is not found")
+
+// ── AI-config conventions extraction ──────────────────────────────────
+//
+// The extraction passes AI-assistant config files through an LLM
+// instructed to keep project FACTS and drop behavioral INSTRUCTIONS.
+// We can't unit-test the LLM's filtering directly (that's an integration
+// concern), but we can pin:
+//   1. The function asks the LLM (no extraction when client is nil-equivalent).
+//   2. The prompt construction includes both an examples-of-facts and an
+//      examples-of-instructions block, plus the literal AGENTS.md content.
+//   3. LLM errors surface (loud-fail).
+//   4. Empty config input short-circuits to empty output (no LLM call).
+
+// promptCapturingClient records the systemPrompt and userMessage passed
+// to ChatStream so tests can inspect what the LLM was actually asked.
+type promptCapturingClient struct {
+	systemPrompt string
+	userMessage  string
+	response     string
+	err          error
+}
+
+func (c *promptCapturingClient) ChatStream(_ context.Context, systemPrompt string, msgs []ai.Message, _ func(string)) (string, error) {
+	c.systemPrompt = systemPrompt
+	if len(msgs) > 0 {
+		c.userMessage = msgs[0].Content
+	}
+	return c.response, c.err
+}
+
+func TestExtractConventionsFromAIConfigs_EmptyShortCircuits(t *testing.T) {
+	client := &promptCapturingClient{response: "should not be called"}
+	got, err := extractConventionsFromAIConfigs(context.Background(), client, nil)
+	if err != nil {
+		t.Fatalf("empty configs should not error; got %v", err)
+	}
+	if got != "" {
+		t.Errorf("empty configs should return empty string; got %q", got)
+	}
+	if client.systemPrompt != "" {
+		t.Errorf("empty configs should not invoke ChatStream; systemPrompt=%q", client.systemPrompt)
+	}
+}
+
+func TestExtractConventionsFromAIConfigs_PromptHasFactsAndInstructionsExamples(t *testing.T) {
+	client := &promptCapturingClient{response: "### Conventions\n- Errors use fmt.Errorf"}
+	configs := map[string]string{
+		"AGENTS.md": "## Rule 1 — Think Before Coding\nState assumptions explicitly.",
+	}
+	_, err := extractConventionsFromAIConfigs(context.Background(), client, configs)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	// The prompt must EXPLICITLY contrast facts vs. instructions so the
+	// LLM has the dividing line. Without this, behavioral rules from
+	// AGENTS.md would leak into the conventions output and conflict
+	// with the reviewer's own instructions.
+	if !strings.Contains(client.userMessage, "PROJECT FACTS") {
+		t.Errorf("prompt missing PROJECT FACTS guidance; user msg excerpt: %s", client.userMessage[:min(len(client.userMessage), 400)])
+	}
+	if !strings.Contains(client.userMessage, "BEHAVIORAL INSTRUCTIONS") {
+		t.Errorf("prompt missing BEHAVIORAL INSTRUCTIONS guidance; user msg excerpt: %s", client.userMessage[:min(len(client.userMessage), 400)])
+	}
+	// The AI-config content must reach the model verbatim (it's the
+	// input being filtered).
+	if !strings.Contains(client.userMessage, "Think Before Coding") {
+		t.Errorf("AGENTS.md content not passed to LLM; user msg missing rule body")
+	}
+}
+
+func TestExtractConventionsFromAIConfigs_LLMErrorSurfaces(t *testing.T) {
+	client := &promptCapturingClient{err: errLLMFailed}
+	configs := map[string]string{"AGENTS.md": "Some content here, plenty of it"}
+	_, err := extractConventionsFromAIConfigs(context.Background(), client, configs)
+	if err == nil {
+		t.Fatal("expected LLM error to surface; got nil")
+	}
+	if !strings.Contains(err.Error(), "conventions extraction") {
+		t.Errorf("error should mention conventions extraction for diagnostic clarity; got: %v", err)
+	}
+}
