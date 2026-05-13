@@ -191,3 +191,140 @@ func TestRecheckProgress_ZeroTotal(t *testing.T) {
 		t.Errorf("recheckProgress with zero total = %f, want 0", got)
 	}
 }
+
+// ── Summary functions ─────────────────────────────────────────────────
+
+func TestFileCollectionSummary_FilledFromCounter(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{"aoi_total": 42}}
+	if got := fileCollectionSummary(s); got != "42 files" {
+		t.Errorf("fileCollectionSummary = %q, want %q", got, "42 files")
+	}
+}
+
+func TestClassifySummary_BreakdownFromCounters(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{
+		"classify_total": 42, "classify_cached": 35, "classify_uncached": 7,
+	}}
+	want := "42 classified · 35 cached · 7 fresh"
+	if got := classifySummary(s); got != want {
+		t.Errorf("classifySummary = %q, want %q", got, want)
+	}
+}
+
+func TestAOISummary_BreakdownFromCounters(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{
+		"aoi_total": 40, "aoi_count": 32, "aoi_cached": 10,
+	}}
+	want := "32 AOIs across 40 files · 10 cached"
+	if got := aoiSummary(s); got != want {
+		t.Errorf("aoiSummary = %q, want %q", got, want)
+	}
+}
+
+func TestReviewSummary_BreakdownFromCounters(t *testing.T) {
+	// review_done is the cumulative position; cached/failed are
+	// per-status counts. fresh = done - cached - failed.
+	s := &progress.State{Counters: map[string]int{
+		"review_total":  96,
+		"review_done":   96,
+		"review_cached": 58,
+		"review_failed": 3,
+	}}
+	want := "35 done · 58 cached · 3 failed"
+	if got := reviewSummary(s); got != want {
+		t.Errorf("reviewSummary = %q, want %q", got, want)
+	}
+}
+
+func TestRecheckSummary_BreakdownFromCounters(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{
+		"recheck_kept": 11, "recheck_dismissed": 4,
+		"recheck_consolidated": 2, "recheck_modified": 1,
+	}}
+	want := "kept 11 · dismissed 4 · consolidated 2 · modified 1"
+	if got := recheckSummary(s); got != want {
+		t.Errorf("recheckSummary = %q, want %q", got, want)
+	}
+}
+
+func TestSummaries_EmptyBeforeAnyData(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{}}
+	for name, fn := range map[string]func(*progress.State) string{
+		"fileCollection": fileCollectionSummary,
+		"classify":       classifySummary,
+		"aoi":            aoiSummary,
+		"review":         reviewSummary,
+		"recheck":        recheckSummary,
+	} {
+		if got := fn(s); got != "" {
+			t.Errorf("%sSummary with empty state = %q, want empty", name, got)
+		}
+	}
+}
+
+// ── parseAuditEvent for the new summary captures ───────────────────
+
+func TestParseAuditEvent_ClassifyCachedCounter(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase1b", "classifying 7 file(s) (35 cached)...")
+	if got := s.Counters["classify_uncached"]; got != 7 {
+		t.Errorf("classify_uncached = %d, want 7", got)
+	}
+	if got := s.Counters["classify_cached"]; got != 35 {
+		t.Errorf("classify_cached = %d, want 35", got)
+	}
+	if got := s.Counters["classify_total"]; got != 42 {
+		t.Errorf("classify_total = %d, want 42", got)
+	}
+}
+
+func TestParseAuditEvent_AOICachedFiles(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase2", "using cached AOI results for 10 file(s)")
+	if got := s.Counters["aoi_cached"]; got != 10 {
+		t.Errorf("aoi_cached = %d, want 10", got)
+	}
+}
+
+func TestParseAuditEvent_AOIFoundCount(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase2", "found 32 areas of interest")
+	if got := s.Counters["aoi_count"]; got != 32 {
+		t.Errorf("aoi_count = %d, want 32", got)
+	}
+}
+
+func TestParseAuditEvent_ReviewCachedAndFailedCounters(t *testing.T) {
+	// Cumulative position (review_done) plus per-status sub-counters
+	// so the Summary can render the breakdown.
+	s := newState()
+	parseAuditEvent(s, "phase3", "Review 1/3 complete")
+	parseAuditEvent(s, "phase3", "Review 2/3 complete (cached)")
+	parseAuditEvent(s, "phase3", "Review 3/3 failed: timeout")
+	if got := s.Counters["review_done"]; got != 3 {
+		t.Errorf("review_done = %d, want 3", got)
+	}
+	if got := s.Counters["review_cached"]; got != 1 {
+		t.Errorf("review_cached = %d, want 1", got)
+	}
+	if got := s.Counters["review_failed"]; got != 1 {
+		t.Errorf("review_failed = %d, want 1", got)
+	}
+}
+
+func TestParseAuditEvent_RecheckCompleteBreakdown(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "recheck", "Recheck complete: kept 11, dismissed 4, consolidated 2, modified 1")
+	if got := s.Counters["recheck_kept"]; got != 11 {
+		t.Errorf("recheck_kept = %d, want 11", got)
+	}
+	if got := s.Counters["recheck_dismissed"]; got != 4 {
+		t.Errorf("recheck_dismissed = %d, want 4", got)
+	}
+	if got := s.Counters["recheck_consolidated"]; got != 2 {
+		t.Errorf("recheck_consolidated = %d, want 2", got)
+	}
+	if got := s.Counters["recheck_modified"]; got != 1 {
+		t.Errorf("recheck_modified = %d, want 1", got)
+	}
+}

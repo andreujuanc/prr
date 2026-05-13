@@ -63,6 +63,17 @@ type PhaseDef struct {
 	// it completes (so users can see the final tally per phase).
 	// Skipped when total <= 0. Optional.
 	Counter func(s *State) (done, total int)
+
+	// Summary returns a stable description of what this phase
+	// accomplished. Rendered as the row's detail line when the phase
+	// reaches `done` state, replacing the last-write-wins live detail.
+	// Falls back to live detail when this returns "" or is nil.
+	//
+	// Use this to surface structured information that would otherwise
+	// be lost as the live detail line flips between transient status
+	// messages — e.g., "kept 11 · dismissed 4" for Recheck or
+	// "35 done · 58 cached · 3 failed" for Deep Review.
+	Summary func(s *State) string
 }
 
 // State exposes live counters and metadata to ProgressFn / ParseEvent
@@ -350,8 +361,18 @@ func (m *model) View() string {
 			}
 		}
 
-		if p.detail != "" && (p.status == "active" || p.status == "done") {
-			b.WriteString(sSubtle.Render("  " + truncate(p.detail, 60)))
+		// Detail line resolution:
+		//   - done phase + Summary fn returning non-empty → use Summary
+		//     (stable, structured readout of what the phase accomplished)
+		//   - otherwise → use the live detail (last-write-wins)
+		detail := p.detail
+		if p.status == "done" && p.def.Summary != nil {
+			if s := p.def.Summary(m.state); s != "" {
+				detail = s
+			}
+		}
+		if detail != "" && (p.status == "active" || p.status == "done") {
+			b.WriteString(sSubtle.Render("  " + truncate(detail, 60)))
 		}
 
 		b.WriteString("\n")

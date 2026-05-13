@@ -30,19 +30,87 @@ var (
 func auditPhases() []progress.PhaseDef {
 	return []progress.PhaseDef{
 		{Name: "phase0", Label: "Project Discovery"},
-		{Name: "phase1", Label: "File Collection"},
-		{Name: "phase1b", Label: "Classification"},
+		{Name: "phase1", Label: "File Collection",
+			Summary: fileCollectionSummary},
+		{Name: "phase1b", Label: "Classification",
+			Summary: classifySummary},
 		{Name: "phase2", Label: "AOI Pre-scan",
 			ProgressFn: aoiProgress,
-			Counter:    aoiCounter},
+			Counter:    aoiCounter,
+			Summary:    aoiSummary},
 		{Name: "phase3", Label: "Deep Review",
 			ProgressFn: reviewProgress,
-			Counter:    reviewCounter},
+			Counter:    reviewCounter,
+			Summary:    reviewSummary},
 		{Name: "recheck", Label: "Recheck",
 			ProgressFn: recheckProgress,
-			Counter:    recheckCounter},
+			Counter:    recheckCounter,
+			Summary:    recheckSummary},
 		{Name: "phase4", Label: "Synthesis", ProgressFn: synthesisPulse},
 	}
+}
+
+// ── Summary functions ──────────────────────────────────────────────────
+//
+// Each returns a stable, structured description of what the phase
+// accomplished, rendered as the row's detail line when the phase
+// reaches `done` state. Empty string falls back to the live detail.
+
+func fileCollectionSummary(s *progress.State) string {
+	if n := s.Counters["aoi_total"]; n > 0 {
+		return fmt.Sprintf("%d files", n)
+	}
+	return ""
+}
+
+func classifySummary(s *progress.State) string {
+	total := s.Counters["classify_total"]
+	if total == 0 {
+		return ""
+	}
+	cached := s.Counters["classify_cached"]
+	uncached := s.Counters["classify_uncached"]
+	return fmt.Sprintf("%d classified · %d cached · %d fresh", total, cached, uncached)
+}
+
+func aoiSummary(s *progress.State) string {
+	files := s.Counters["aoi_total"]
+	aois := s.Counters["aoi_count"]
+	cached := s.Counters["aoi_cached"]
+	if files == 0 && aois == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d AOIs across %d files · %d cached", aois, files, cached)
+}
+
+func reviewSummary(s *progress.State) string {
+	total := s.Counters["review_total"]
+	done := s.Counters["review_done"]
+	if total == 0 || done == 0 {
+		return ""
+	}
+	cached := s.Counters["review_cached"]
+	failed := s.Counters["review_failed"]
+	fresh := done - cached - failed
+	if fresh < 0 {
+		fresh = 0
+	}
+	return fmt.Sprintf("%d done · %d cached · %d failed", fresh, cached, failed)
+}
+
+func recheckSummary(s *progress.State) string {
+	// Use the four counters captured from "Recheck complete: ..." event.
+	// Only render once at least one is non-zero — otherwise the phase
+	// just hadn't emitted a terminal summary yet.
+	kept := s.Counters["recheck_kept"]
+	dismissed := s.Counters["recheck_dismissed"]
+	consolidated := s.Counters["recheck_consolidated"]
+	modified := s.Counters["recheck_modified"]
+	if kept == 0 && dismissed == 0 && consolidated == 0 && modified == 0 {
+		return ""
+	}
+	return fmt.Sprintf("kept %d · dismissed %d · consolidated %d · modified %d",
+		kept, dismissed, consolidated, modified)
 }
 
 // aoiCounter / reviewCounter expose the same counters that drive the
@@ -131,11 +199,19 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 		// Pipeline emits "Review X/Y complete" / "Review X/Y complete (cached)"
 		// / "Review X/Y failed: <err>". All three are terminal events that
 		// should tick the done counter — Sscanf with "Review %d/%d" matches
-		// the prefix and ignores the trailing suffix.
+		// the prefix and ignores the trailing suffix. Cached and failed
+		// occurrences also increment separate sub-counters so the Summary
+		// can break down the final mix (e.g. "35 done · 58 cached · 3 failed").
 		var done, total int
 		if scanCounter(phase, message, "Review %d/%d", &done, &total) {
 			s.Counters["review_done"] = done
 			s.Counters["review_total"] = total
+			switch {
+			case strings.Contains(message, "complete (cached)"):
+				s.Counters["review_cached"]++
+			case strings.Contains(message, "failed:"):
+				s.Counters["review_failed"]++
+			}
 		}
 	case phase == "recheck" && strings.HasPrefix(message, "rechecked "):
 		// Pipeline emits "rechecked X/Y findings" via RunRecheck's
@@ -144,6 +220,38 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 		if scanCounter(phase, message, "rechecked %d/%d", &done, &total) {
 			s.Counters["recheck_done"] = done
 			s.Counters["recheck_total"] = total
+		}
+	case phase == "recheck" && strings.HasPrefix(message, "Recheck complete:"):
+		// Pipeline emits "Recheck complete: kept X, dismissed Y, consolidated Z, modified W"
+		// as the final terminal event. Capture the breakdown for the Summary row.
+		var kept, dismissed, consolidated, modified int
+		if scanCounter(phase, message,
+			"Recheck complete: kept %d, dismissed %d, consolidated %d, modified %d",
+			&kept, &dismissed, &consolidated, &modified) {
+			s.Counters["recheck_kept"] = kept
+			s.Counters["recheck_dismissed"] = dismissed
+			s.Counters["recheck_consolidated"] = consolidated
+			s.Counters["recheck_modified"] = modified
+		}
+	case phase == "phase1b" && strings.Contains(message, "classifying") && strings.Contains(message, "cached"):
+		// classify package emits "classifying N file(s) (M cached)..." early in the phase.
+		var uncached, cached int
+		if scanCounter(phase, message, "classifying %d file(s) (%d cached)...", &uncached, &cached) {
+			s.Counters["classify_uncached"] = uncached
+			s.Counters["classify_cached"] = cached
+			s.Counters["classify_total"] = uncached + cached
+		}
+	case phase == "phase2" && strings.HasPrefix(message, "using cached AOI results"):
+		// security scanner emits "using cached AOI results for N file(s)".
+		var n int
+		if scanCounter(phase, message, "using cached AOI results for %d file(s)", &n) {
+			s.Counters["aoi_cached"] = n
+		}
+	case phase == "phase2" && strings.HasPrefix(message, "found ") && strings.Contains(message, "areas of interest"):
+		// security scanner emits "found N areas of interest" at end of phase.
+		var n int
+		if scanCounter(phase, message, "found %d areas of interest", &n) {
+			s.Counters["aoi_count"] = n
 		}
 	}
 }

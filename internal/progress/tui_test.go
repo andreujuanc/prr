@@ -212,6 +212,76 @@ func TestView_CounterHiddenWhenTotalZero(t *testing.T) {
 	}
 }
 
+// ── Summary rendering on done state ─────────────────────────────────
+//
+// Pin that PhaseDef.Summary replaces the live detail line when the
+// phase reaches done — and that it falls back to the live detail
+// when Summary returns "" or is unset.
+
+func renderWithSummary(t *testing.T, status string, summary func(*State) string, liveDetail string) string {
+	t.Helper()
+	cfg := Config{
+		Phases: []PhaseDef{{
+			Name:    "p1",
+			Label:   "P1",
+			Summary: summary,
+		}},
+	}
+	m := newUI(cfg)
+	m.phases[0].status = status
+	m.phases[0].detail = liveDetail
+	return m.View()
+}
+
+func TestView_SummaryReplacesDetailWhenDone(t *testing.T) {
+	out := renderWithSummary(t, "done",
+		func(*State) string { return "kept 11 · dismissed 4" },
+		"Recheck complete: kept 11, dismissed 4, consolidated 2, modified 1")
+	if !contains(out, "kept 11 · dismissed 4") {
+		t.Errorf("done phase should render Summary instead of live detail; got:\n%s", out)
+	}
+	// Live detail should not also appear — Summary replaces it.
+	if contains(out, "Recheck complete: kept 11, dismissed 4, consolidated 2, modified 1") {
+		t.Errorf("live detail should be suppressed when Summary is non-empty; got:\n%s", out)
+	}
+}
+
+func TestView_SummaryNotShownWhileActive(t *testing.T) {
+	// Active phase keeps the live, last-write-wins detail so users see
+	// liveness. Summary is only for the done state.
+	out := renderWithSummary(t, "active",
+		func(*State) string { return "kept 11 · dismissed 4" },
+		"Rechecking 18 findings...")
+	if !contains(out, "Rechecking 18 findings...") {
+		t.Errorf("active phase should still render live detail; got:\n%s", out)
+	}
+	if contains(out, "kept 11 · dismissed 4") {
+		t.Errorf("active phase should not render Summary; got:\n%s", out)
+	}
+}
+
+func TestView_SummaryEmptyFallsBackToDetail(t *testing.T) {
+	// When Summary returns "" (e.g. no data captured yet), the row
+	// keeps showing whatever the live detail was at done time.
+	out := renderWithSummary(t, "done",
+		func(*State) string { return "" },
+		"Project context ready")
+	if !contains(out, "Project context ready") {
+		t.Errorf("empty Summary should fall back to live detail; got:\n%s", out)
+	}
+}
+
+func TestView_NoSummaryFnFallsBackToDetail(t *testing.T) {
+	// When PhaseDef.Summary is nil, current behavior preserved.
+	cfg := Config{Phases: []PhaseDef{{Name: "p1", Label: "P1"}}}
+	m := newUI(cfg)
+	m.phases[0].status = "done"
+	m.phases[0].detail = "Phase 1 complete: 42 files to audit"
+	if !contains(m.View(), "Phase 1 complete: 42 files to audit") {
+		t.Errorf("nil Summary should preserve current detail rendering")
+	}
+}
+
 // contains is a strings.Contains shim that keeps imports tight.
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {

@@ -34,20 +34,80 @@ var (
 // row that flashes past in milliseconds.
 func reviewPhases() []progress.PhaseDef {
 	return []progress.PhaseDef{
-		{Name: "fetch", Label: "Fetch PR"},
+		{Name: "fetch", Label: "Fetch PR",
+			Summary: fetchSummary},
 		{Name: "discovery", Label: "Discovery"},
-		{Name: "classify", Label: "Classification"},
+		{Name: "classify", Label: "Classification",
+			Summary: classifySummary},
 		{Name: "aoi", Label: "AOI Pre-scan",
 			ProgressFn: aoiProgress,
-			Counter:    aoiCounter},
+			Counter:    aoiCounter,
+			Summary:    aoiSummary},
 		{Name: "phase1", Label: "Deep Review",
 			ProgressFn: batchProgress,
-			Counter:    batchCounter},
+			Counter:    batchCounter,
+			Summary:    deepReviewSummary},
 		{Name: "recheck", Label: "Recheck",
 			ProgressFn: recheckProgress,
-			Counter:    recheckCounter},
+			Counter:    recheckCounter,
+			Summary:    recheckSummary},
 		{Name: "phase2", Label: "Synthesis", ProgressFn: synthesisPulse},
 	}
+}
+
+// ── Summary functions ──────────────────────────────────────────────────
+
+func fetchSummary(s *progress.State) string {
+	if n := s.Counters["fetch_files"]; n > 0 {
+		return fmt.Sprintf("%d files", n)
+	}
+	return ""
+}
+
+func classifySummary(s *progress.State) string {
+	total := s.Counters["classify_total"]
+	if total == 0 {
+		return ""
+	}
+	cached := s.Counters["classify_cached"]
+	uncached := s.Counters["classify_uncached"]
+	return fmt.Sprintf("%d classified · %d cached · %d fresh", total, cached, uncached)
+}
+
+func aoiSummary(s *progress.State) string {
+	files := s.Counters["aoi_total"]
+	aois := s.Counters["aoi_count"]
+	cached := s.Counters["aoi_cached"]
+	if files == 0 && aois == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d AOIs across %d files · %d cached", aois, files, cached)
+}
+
+func deepReviewSummary(s *progress.State) string {
+	total := s.Counters["batches_total"]
+	if total == 0 {
+		return ""
+	}
+	done := s.Counters["batches_done"]
+	cached := s.Counters["batches_cached"]
+	failed := s.Counters["batches_failed"]
+	if done == 0 && cached == 0 && failed == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d done · %d cached · %d failed", done, cached, failed)
+}
+
+func recheckSummary(s *progress.State) string {
+	kept := s.Counters["recheck_kept"]
+	dismissed := s.Counters["recheck_dismissed"]
+	consolidated := s.Counters["recheck_consolidated"]
+	modified := s.Counters["recheck_modified"]
+	if kept == 0 && dismissed == 0 && consolidated == 0 && modified == 0 {
+		return ""
+	}
+	return fmt.Sprintf("kept %d · dismissed %d · consolidated %d · modified %d",
+		kept, dismissed, consolidated, modified)
 }
 
 // aoiCounter / batchCounter expose the same counters that drive the
@@ -58,7 +118,12 @@ func aoiCounter(s *progress.State) (done, total int) {
 }
 
 func batchCounter(s *progress.State) (done, total int) {
-	return s.Counters["batches_done"], s.Counters["batches_total"]
+	// "done" for the inline X/Y is the sum of all terminal-status
+	// counters (fresh done + cached + failed). The breakdown is
+	// preserved in the individual counters for the Summary row.
+	return s.Counters["batches_done"] +
+		s.Counters["batches_cached"] +
+		s.Counters["batches_failed"], s.Counters["batches_total"]
 }
 
 // recheckCounter / recheckProgress drive the Recheck row's "X/Y" and
@@ -87,13 +152,17 @@ func aoiProgress(s *progress.State) float64 {
 
 // batchProgress reports the deep-review batch ratio. The pipeline emits
 // "Initialized N batches" (total) and "Batch K: done/cached/failed"
-// (each completion).
+// (each completion). The done numerator sums all three terminal-status
+// sub-counters; see batchCounter for the rationale.
 func batchProgress(s *progress.State) float64 {
 	total := s.Counters["batches_total"]
 	if total == 0 {
 		return 0
 	}
-	return float64(s.Counters["batches_done"]) / float64(total)
+	done := s.Counters["batches_done"] +
+		s.Counters["batches_cached"] +
+		s.Counters["batches_failed"]
+	return float64(done) / float64(total)
 }
 
 // synthesisPulse animates the synthesis bar — a single LLM call, no
@@ -135,14 +204,20 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 			s.Counters["batches_total"] = n
 		}
 	case phase == "phase1" && strings.HasPrefix(message, "Batch "):
-		// "Batch K: done|cached|failed|active" — increment done on
-		// terminal statuses, ignore "active".
+		// "Batch K: done|cached|failed|active" — increment per-status
+		// sub-counters on terminal statuses; ignore "active".
+		// batches_done is fresh-successful only; the inline counter
+		// callback sums all three so the "X/Y" shows total progress.
 		var k int
 		var status string
 		if scanCounter(phase, message, "Batch %d: %s", &k, &status) {
 			switch status {
-			case "done", "cached", "failed":
+			case "done":
 				s.Counters["batches_done"]++
+			case "cached":
+				s.Counters["batches_cached"]++
+			case "failed":
+				s.Counters["batches_failed"]++
 			}
 		}
 
@@ -153,6 +228,48 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 		if scanCounter(phase, message, "rechecked %d/%d", &done, &total) {
 			s.Counters["recheck_done"] = done
 			s.Counters["recheck_total"] = total
+		}
+
+	case phase == "recheck" && strings.HasPrefix(message, "Recheck complete:"):
+		// Final terminal event with the breakdown for the Summary row.
+		var kept, dismissed, consolidated, modified int
+		if scanCounter(phase, message,
+			"Recheck complete: kept %d, dismissed %d, consolidated %d, modified %d",
+			&kept, &dismissed, &consolidated, &modified) {
+			s.Counters["recheck_kept"] = kept
+			s.Counters["recheck_dismissed"] = dismissed
+			s.Counters["recheck_consolidated"] = consolidated
+			s.Counters["recheck_modified"] = modified
+		}
+
+	case phase == "classify" && strings.Contains(message, "classifying") && strings.Contains(message, "cached"):
+		// classify package emits "classifying N file(s) (M cached)...".
+		var uncached, cached int
+		if scanCounter(phase, message, "classifying %d file(s) (%d cached)...", &uncached, &cached) {
+			s.Counters["classify_uncached"] = uncached
+			s.Counters["classify_cached"] = cached
+			s.Counters["classify_total"] = uncached + cached
+		}
+
+	case phase == "aoi" && strings.HasPrefix(message, "using cached AOI results"):
+		// "using cached AOI results for N file(s)".
+		var n int
+		if scanCounter(phase, message, "using cached AOI results for %d file(s)", &n) {
+			s.Counters["aoi_cached"] = n
+		}
+
+	case phase == "aoi" && strings.HasPrefix(message, "found ") && strings.Contains(message, "areas of interest"):
+		// "found N areas of interest".
+		var n int
+		if scanCounter(phase, message, "found %d areas of interest", &n) {
+			s.Counters["aoi_count"] = n
+		}
+
+	case phase == "fetch" && strings.HasPrefix(message, "Collected diffs for "):
+		// "Collected diffs for N files".
+		var n int
+		if scanCounter(phase, message, "Collected diffs for %d files", &n) {
+			s.Counters["fetch_files"] = n
 		}
 	}
 }
