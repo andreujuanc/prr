@@ -71,7 +71,7 @@ func TestSynthesizeDirect_RetriesTransient(t *testing.T) {
 	}
 	findings := []state.DeepFinding{mkFinding("F-1", "correctness", "high")}
 
-	result, err := Synthesize(context.Background(), client, findings, nil, "", nil)
+	result, err := Synthesize(context.Background(), client, findings, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error after retry: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSynthesizeDirect_DoesNotRetryCanceled(t *testing.T) {
 	}
 	findings := []state.DeepFinding{mkFinding("F-1", "correctness", "high")}
 
-	_, err := Synthesize(ctx, client, findings, nil, "", nil)
+	_, err := Synthesize(ctx, client, findings, nil, "", 0, nil)
 	if err == nil {
 		t.Fatal("expected cancellation to propagate")
 	}
@@ -112,7 +112,7 @@ func TestSynthesizeDirect_BothAttemptsFailTransiently(t *testing.T) {
 	}
 	findings := []state.DeepFinding{mkFinding("F-1", "correctness", "high")}
 
-	_, err := Synthesize(context.Background(), client, findings, nil, "", nil)
+	_, err := Synthesize(context.Background(), client, findings, nil, "", 0, nil)
 	if err == nil {
 		t.Fatal("expected error after both attempts failed")
 	}
@@ -225,7 +225,7 @@ func TestSynthesizeHierarchical_ToleratesPartialFailures(t *testing.T) {
 
 	findings := mkHierarchicalFindings(15) // 4 × 15 = 60 findings → hierarchical
 
-	result, err := Synthesize(context.Background(), client, findings, nil, "", nil)
+	result, err := Synthesize(context.Background(), client, findings, nil, "", 0, nil)
 	if err != nil {
 		// Tolerable: scheduling could cause 2 categories to fail (e.g.
 		// if the first two slots both land on failure-prone categories),
@@ -259,7 +259,7 @@ func TestSynthesizeHierarchical_AbortsBelowFloor(t *testing.T) {
 
 	findings := mkHierarchicalFindings(15)
 
-	_, err := Synthesize(context.Background(), client, findings, nil, "", nil)
+	_, err := Synthesize(context.Background(), client, findings, nil, "", 0, nil)
 	if err == nil {
 		t.Fatal("expected abort when most categories fail")
 	}
@@ -282,7 +282,7 @@ func TestSynthesizeHierarchical_AllCategoriesPassNoAbort(t *testing.T) {
 	}
 	findings := mkHierarchicalFindings(15)
 
-	result, err := Synthesize(context.Background(), client, findings, nil, "", nil)
+	result, err := Synthesize(context.Background(), client, findings, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("happy path errored: %v", err)
 	}
@@ -306,5 +306,67 @@ func TestHierarchicalPartialFloor_PinsConstant(t *testing.T) {
 	// abort behavior on flaky synthesis runs.
 	if hierarchicalPartialFloor != 0.5 {
 		t.Errorf("hierarchicalPartialFloor = %g, want 0.5", hierarchicalPartialFloor)
+	}
+}
+
+// ── Recall-gap surfacing (failedAOICount) ─────────────────────────────
+
+func TestBuildSynthesisUserMessage_RecallGapMentionedWhenFailedAOICountSet(t *testing.T) {
+	// When failedAOICount > 0, the user message must include a
+	// "## Audit Recall Gap" section telling the model to mention
+	// the gap in the executive summary. Without this, synthesis
+	// produces a confident-sounding summary on top of degraded
+	// inputs and the user never knows their recall was incomplete.
+	findings := []state.DeepFinding{mkFinding("F-1", "correctness", "high")}
+	msg := BuildSynthesisUserMessage(findings, nil, "", 7)
+
+	if !strings.Contains(msg, "Audit Recall Gap") {
+		t.Errorf("expected '## Audit Recall Gap' section when failedAOICount > 0; got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "7 ") {
+		t.Errorf("expected the count (7) to appear in the recall-gap section; got:\n%s", msg)
+	}
+}
+
+func TestBuildSynthesisUserMessage_NoRecallGapSectionWhenZero(t *testing.T) {
+	// failedAOICount == 0 → no recall gap section. Otherwise every
+	// synthesis prompt would have boilerplate noise.
+	findings := []state.DeepFinding{mkFinding("F-1", "correctness", "high")}
+	msg := BuildSynthesisUserMessage(findings, nil, "", 0)
+
+	if strings.Contains(msg, "Audit Recall Gap") {
+		t.Errorf("recall gap section should NOT appear when failedAOICount = 0; got:\n%s", msg)
+	}
+}
+
+func TestSynthesize_EmptyFindingsWithFailedAOIs_NotesGapInSummary(t *testing.T) {
+	// The most user-misleading case: zero findings + N failed AOIs.
+	// Without this, the empty-findings short-circuit returns a
+	// confident "no findings identified" message, hiding the fact
+	// that most of the audit didn't actually run.
+	result, err := Synthesize(context.Background(), &stubClient{}, nil, nil, "", 12, nil)
+	if err != nil {
+		t.Fatalf("unexpected error on empty findings: %v", err)
+	}
+	if !strings.Contains(result.ExecutiveSummary, "12") {
+		t.Errorf("executive_summary should mention the count of failed AOIs; got: %q",
+			result.ExecutiveSummary)
+	}
+	if !strings.Contains(result.ExecutiveSummary, "degraded") {
+		t.Errorf("executive_summary should say 'degraded'; got: %q",
+			result.ExecutiveSummary)
+	}
+}
+
+func TestSynthesize_EmptyFindingsZeroFailed_CleanSummary(t *testing.T) {
+	// Sanity: zero findings AND zero failed AOIs is a legitimate
+	// "clean audit" result; should not falsely claim degradation.
+	result, err := Synthesize(context.Background(), &stubClient{}, nil, nil, "", 0, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result.ExecutiveSummary, "degraded") {
+		t.Errorf("clean audit should not mention degradation; got: %q",
+			result.ExecutiveSummary)
 	}
 }

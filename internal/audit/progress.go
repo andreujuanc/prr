@@ -358,7 +358,7 @@ func RunWithUI(
 			}
 			if r != nil && len(r.Findings) > 0 && !noSynthesis {
 				emit("phase4", "Synthesizing executive summary...")
-				s, synthErr := SynthesizeCached(runCtx, reviewClient, r.Findings, r.CrossCuttingObservations, r.ProjectContext, nil, opts.NoCache)
+				s, synthErr := SynthesizeCached(runCtx, reviewClient, r.Findings, r.CrossCuttingObservations, r.ProjectContext, len(r.FailedAOIIDs), nil, opts.NoCache)
 				if synthErr != nil {
 					emit("phase4", "Synthesis failed: "+synthErr.Error())
 					// Non-fatal — continue without synthesis

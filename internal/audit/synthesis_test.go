@@ -64,7 +64,7 @@ func TestBuildSynthesisUserMessage(t *testing.T) {
 	findings := makeFindings(4)
 	crossCutting := []string{"Pattern A observed", "Pattern B observed"}
 
-	msg := BuildSynthesisUserMessage(findings, crossCutting, "Test project context")
+	msg := BuildSynthesisUserMessage(findings, crossCutting, "Test project context", 0)
 
 	// Check project context included
 	if !strings.Contains(msg, "Test project context") {
@@ -100,7 +100,7 @@ func TestBuildSynthesisUserMessage(t *testing.T) {
 
 func TestBuildSynthesisUserMessageNoContext(t *testing.T) {
 	findings := makeFindings(1)
-	msg := BuildSynthesisUserMessage(findings, nil, "")
+	msg := BuildSynthesisUserMessage(findings, nil, "", 0)
 
 	if strings.Contains(msg, "## Project Context") {
 		t.Error("should not include project context header when empty")
@@ -157,7 +157,7 @@ func TestNeedsHierarchical(t *testing.T) {
 }
 
 func TestSynthesizeEmptyFindings(t *testing.T) {
-	result, err := Synthesize(context.Background(), nil, nil, nil, "", nil)
+	result, err := Synthesize(context.Background(), nil, nil, nil, "", 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestSynthesizeDirect(t *testing.T) {
 	client := &mockSynthesisClient{response: mockResp}
 
 	findings := makeFindings(3)
-	result, err := Synthesize(context.Background(), client, findings, []string{"obs1"}, "ctx", nil)
+	result, err := Synthesize(context.Background(), client, findings, []string{"obs1"}, "ctx", 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestSynthesizeDirect(t *testing.T) {
 
 func TestSynthesizeLLMError(t *testing.T) {
 	client := &mockSynthesisClient{err: fmt.Errorf("api error")}
-	_, err := Synthesize(context.Background(), client, makeFindings(1), nil, "", nil)
+	_, err := Synthesize(context.Background(), client, makeFindings(1), nil, "", 0, nil)
 	if err == nil {
 		t.Error("expected error")
 	}

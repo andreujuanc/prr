@@ -57,25 +57,40 @@ const hierarchicalThreshold = 50
 
 // Synthesize runs Phase 4: takes all findings and produces an executive summary.
 // onToken is called for streaming output (can be nil).
+//
+// failedAOICount is the number of AOIs whose Phase 3 review failed
+// (so they have no finding/dismissal verdict). When > 0, synthesis is
+// told to mention the recall gap in the executive summary — otherwise
+// the user reads a confident summary on top of degraded inputs and
+// has no way to know.
 func Synthesize(
 	ctx context.Context,
 	client ai.Client,
 	findings []state.DeepFinding,
 	crossCutting []string,
 	projectContext string,
+	failedAOICount int,
 	onToken func(string),
 ) (*SynthesisResult, error) {
 	if len(findings) == 0 {
-		return &SynthesisResult{
-			ExecutiveSummary: "No findings were identified during the audit.",
-		}, nil
+		summary := "No findings were identified during the audit."
+		if failedAOICount > 0 {
+			// Don't claim "clean audit" when N AOIs never got reviewed.
+			// This is the most user-misleading case: an empty findings
+			// list could mean "code is fine" OR "we failed to review
+			// most of it". Make the difference visible.
+			summary = fmt.Sprintf(
+				"No findings were identified during the audit, but %d area(s) of interest had failed deep reviews — recall is degraded. See the audit log for failed AOI IDs.",
+				failedAOICount)
+		}
+		return &SynthesisResult{ExecutiveSummary: summary}, nil
 	}
 
 	if len(findings) > hierarchicalThreshold {
-		return synthesizeHierarchical(ctx, client, findings, crossCutting, projectContext, onToken)
+		return synthesizeHierarchical(ctx, client, findings, crossCutting, projectContext, failedAOICount, onToken)
 	}
 
-	return synthesizeDirect(ctx, client, findings, crossCutting, projectContext, onToken)
+	return synthesizeDirect(ctx, client, findings, crossCutting, projectContext, failedAOICount, onToken)
 }
 
 // SynthesizeCached wraps Synthesize with persistent cache lookup against the
@@ -90,19 +105,24 @@ func SynthesizeCached(
 	findings []state.DeepFinding,
 	crossCutting []string,
 	projectContext string,
+	failedAOICount int,
 	onToken func(string),
 	noCache bool,
 ) (*SynthesisResult, error) {
 	if len(findings) == 0 {
-		return Synthesize(ctx, client, findings, crossCutting, projectContext, onToken)
+		return Synthesize(ctx, client, findings, crossCutting, projectContext, failedAOICount, onToken)
 	}
 
-	key := computeSynthesisCacheKey(findings, crossCutting, projectContext)
+	// Include failedAOICount in the cache key. A re-run that resolves
+	// the transient errors (failedAOICount drops to zero) should NOT
+	// return the previous "recall degraded" synthesis from cache —
+	// the new run has different coverage so the summary is different.
+	key := computeSynthesisCacheKey(findings, crossCutting, projectContext, failedAOICount)
 
 	auditState, loadErr := state.Load("audit")
 	if loadErr != nil {
 		// Cache disabled — run synthesis as usual.
-		return Synthesize(ctx, client, findings, crossCutting, projectContext, onToken)
+		return Synthesize(ctx, client, findings, crossCutting, projectContext, failedAOICount, onToken)
 	}
 
 	if !noCache {
@@ -115,7 +135,7 @@ func SynthesizeCached(
 		}
 	}
 
-	result, err := Synthesize(ctx, client, findings, crossCutting, projectContext, onToken)
+	result, err := Synthesize(ctx, client, findings, crossCutting, projectContext, failedAOICount, onToken)
 	if err != nil {
 		return nil, err
 	}
@@ -194,9 +214,10 @@ func synthesizeDirect(
 	findings []state.DeepFinding,
 	crossCutting []string,
 	projectContext string,
+	failedAOICount int,
 	onToken func(string),
 ) (*SynthesisResult, error) {
-	userMsg := BuildSynthesisUserMessage(findings, crossCutting, projectContext)
+	userMsg := BuildSynthesisUserMessage(findings, crossCutting, projectContext, failedAOICount)
 
 	messages := []ai.Message{
 		{Role: "user", Content: userMsg},
@@ -223,6 +244,7 @@ func synthesizeHierarchical(
 	findings []state.DeepFinding,
 	crossCutting []string,
 	projectContext string,
+	failedAOICount int,
 	onToken func(string),
 ) (*SynthesisResult, error) {
 	// Group findings by category.
@@ -267,7 +289,10 @@ func synthesizeHierarchical(
 				return
 			}
 			catFindings := byCategory[cat]
-			r, err := synthesizeDirect(ctx, client, catFindings, nil, projectContext, nil)
+			// Per-category calls don't carry the recall-gap line —
+			// that's a property of the audit as a whole, surfaced
+			// once in the final merge below.
+			r, err := synthesizeDirect(ctx, client, catFindings, nil, projectContext, 0, nil)
 			if err != nil {
 				results[i] = catResult{category: cat, count: len(catFindings), err: err}
 				return
@@ -325,6 +350,15 @@ func synthesizeHierarchical(
 			len(failedCategories), strings.Join(failedCategories, ", "))
 	}
 
+	if failedAOICount > 0 {
+		// Separate gap from above: upstream Phase 3 reviews failed
+		// for N AOIs, so the findings list itself is incomplete (not
+		// just the per-category summaries). Surface this in the
+		// merge prompt so the executive summary can mention it.
+		mergeInput += fmt.Sprintf("\n\n## Audit Recall Gap\n%d area(s) of interest had failed Phase 3 reviews and produced no finding or dismissal. They are NOT in the findings above. Mention this gap explicitly in the executive summary so readers know the audit's recall was degraded.",
+			failedAOICount)
+	}
+
 	if len(crossCutting) > 0 {
 		mergeInput += "\n\n## Cross-Cutting Observations\n- " + strings.Join(crossCutting, "\n- ")
 	}
@@ -348,7 +382,12 @@ func synthesizeHierarchical(
 
 // BuildSynthesisUserMessage formats findings and context into the user message
 // sent to the LLM for synthesis.
-func BuildSynthesisUserMessage(findings []state.DeepFinding, crossCutting []string, projectContext string) string {
+//
+// failedAOICount > 0 appends a "## Audit Recall Gap" section asking
+// the model to mention the gap in the executive summary. Synthesis
+// otherwise can produce a confident-sounding summary on top of
+// degraded inputs with no way for the reader to know.
+func BuildSynthesisUserMessage(findings []state.DeepFinding, crossCutting []string, projectContext string, failedAOICount int) string {
 	var sb strings.Builder
 
 	if projectContext != "" {
@@ -389,6 +428,12 @@ func BuildSynthesisUserMessage(findings []state.DeepFinding, crossCutting []stri
 			sb.WriteString("- " + obs + "\n")
 		}
 		sb.WriteString("\n")
+	}
+
+	if failedAOICount > 0 {
+		sb.WriteString("## Audit Recall Gap\n")
+		sb.WriteString(fmt.Sprintf("%d area(s) of interest had failed Phase 3 reviews and produced no finding or dismissal. They are NOT in the findings above — the audit's recall is degraded. Mention this gap explicitly in the executive summary so readers know coverage is incomplete.\n\n",
+			failedAOICount))
 	}
 
 	sb.WriteString("Produce the JSON executive summary now.")

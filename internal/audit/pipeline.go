@@ -108,6 +108,13 @@ type Result struct {
 	// dropping them means the audit's recall is lower than it appears.
 	FailedReviews int
 
+	// FailedAOIIDs is the list of AOI IDs whose Phase 3 review call
+	// failed (and therefore produced no finding or dismissal). Carries
+	// the per-call FailedAOIIDs from review.ExecuteResult so synthesis
+	// can mention recall gaps in the executive summary and the reporter
+	// can name exactly which areas of the codebase didn't get reviewed.
+	FailedAOIIDs []string
+
 	// Findings is all confirmed findings from Phase 3.
 	Findings []state.DeepFinding
 
@@ -489,7 +496,7 @@ func Run(
 	if mi, ok := reviewClient.(ai.ModelInfo); ok {
 		log.Printf("Phase 3: using review model %s/%s", mi.ProviderName(), mi.ModelName())
 	}
-	findings, dismissals, crossCutting, failed, err := runPhase3(
+	findings, dismissals, crossCutting, failed, failedAOIIDs, err := runPhase3(
 		ctx, reviewClient, opts, auditState, projectContext, calls, onProgress, phase3DebugHook, phase3ToolHook,
 	)
 	if err != nil {
@@ -551,6 +558,7 @@ afterRecheck:
 	result.IndividualReviews = len(routing.Individual)
 	result.GroupedReviews = len(routing.Grouped)
 	result.FailedReviews = failed
+	result.FailedAOIIDs = failedAOIIDs
 	result.Usage = PhaseUsage{
 		AOI:     aoiUsage,
 		Review:  reviewUsage,
@@ -695,7 +703,7 @@ func runPhase3(
 	onProgress OnProgress,
 	debugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string),
 	toolHook func(callIndex int, toolName string, args string, status string, duration string),
-) (findings []state.DeepFinding, dismissals int, crossCutting []string, failed int, err error) {
+) (findings []state.DeepFinding, dismissals int, crossCutting []string, failed int, failedAOIIDs []string, err error) {
 	execOpts := review.ExecuteOptions{
 		Mode:            review.ModeAudit,
 		ProjectContext:  projectContext,
@@ -729,10 +737,19 @@ func runPhase3(
 
 	execResult, execErr := review.RunReviewCalls(ctx, reviewClient, calls, execOpts)
 	if execErr != nil {
-		return nil, 0, nil, 0, execErr
+		// Even on error, RunReviewCalls may return a non-nil ExecuteResult
+		// with partial findings + the FailedAOIIDs list. Surface those to
+		// callers so they can see what was lost; the error still bubbles
+		// up to abort the run.
+		if execResult != nil {
+			return execResult.Findings, execResult.Dismissals, execResult.CrossCutting,
+				execResult.Failed, execResult.FailedAOIIDs, execErr
+		}
+		return nil, 0, nil, 0, nil, execErr
 	}
 
-	return execResult.Findings, execResult.Dismissals, execResult.CrossCutting, execResult.Failed, nil
+	return execResult.Findings, execResult.Dismissals, execResult.CrossCutting,
+		execResult.Failed, execResult.FailedAOIIDs, nil
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -761,7 +778,12 @@ func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode s
 }
 
 // computeSynthesisCacheKey hashes the synthesis inputs into a stable key.
-func computeSynthesisCacheKey(findings []state.DeepFinding, crossCutting []string, projectContext string) string {
+//
+// failedAOICount is part of the key so a re-run that resolves the
+// transient errors (count drops to zero) regenerates synthesis
+// instead of returning the stale "recall degraded" summary from
+// the prior run.
+func computeSynthesisCacheKey(findings []state.DeepFinding, crossCutting []string, projectContext string, failedAOICount int) string {
 	sortedFindings := make([]state.DeepFinding, len(findings))
 	copy(sortedFindings, findings)
 	sort.Slice(sortedFindings, func(i, j int) bool { return sortedFindings[i].FindingID < sortedFindings[j].FindingID })
@@ -780,6 +802,8 @@ func computeSynthesisCacheKey(findings []state.DeepFinding, crossCutting []strin
 	if data, err := json.Marshal(sortedCC); err == nil {
 		h.Write(data)
 	}
+	h.Write([]byte{0})
+	fmt.Fprintf(h, "failedAOIs=%d", failedAOICount)
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 

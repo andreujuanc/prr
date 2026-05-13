@@ -39,8 +39,34 @@ Produce a JSON object with these fields:
 - If findings span multiple categories, note which has the most issues.
 - Keep `executive_summary` under 300 words.
 - Keep each list item under 100 words.
+- If the input contains an `## Audit Recall Gap` section noting failed
+  Phase 3 reviews, the `executive_summary` MUST explicitly mention
+  that recall was degraded. The reader needs to know the audit is
+  incomplete; a confident summary on top of partial inputs is worse
+  than a clear caveat. Example: "Recall is degraded — N areas of
+  interest had failed deep reviews and are not represented below."
 - Return ONLY the JSON object. No markdown fences, no prose, no
   preamble, no tool calls.
+
+## Severity definitions (for reference; do not re-grade)
+
+Severities come from upstream Phase 3 findings — do not adjust them.
+But when summarizing risks in `executive_summary` and `top_risks`,
+use the severity to anchor language: a critical finding warrants
+"urgent" framing, a low finding warrants "minor" framing.
+
+- **critical**: Data loss/corruption, RCE, auth bypass, SQL injection
+  on sensitive data, SSRF to internal services, crashes in production,
+  breaking API changes without migration, money-handling errors.
+- **high**: XSS, privilege escalation, hardcoded secrets, insecure
+  deserialization, missing authorization, significant correctness
+  bugs producing wrong results silently.
+- **medium**: Open redirect, weak crypto, missing rate limiting,
+  info disclosure, race conditions in hot paths, logic bugs in
+  auth/permission, missing tests for critical behavior.
+- **low**: Defense-in-depth gaps, minor readability, cold-path perf,
+  missing observability, doc gaps.
+- **nit**: Cosmetic, formatting, naming preferences.
 
 ## Example `executive_summary` (style anchor)
 
