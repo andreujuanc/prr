@@ -311,6 +311,22 @@ func ScanAreasOfInterestClassified(
 	flat = append(flat, cachedAOIs...)
 
 	report := buildReport(flat)
+
+	// Empty-audit warning: in audit mode, zero AOIs across all files
+	// almost always indicates the model is broken or the prompt isn't
+	// landing — real codebases have something to flag in audit mode
+	// (the "be recall-biased" rule should ensure even nits surface).
+	// PR mode is different: a clean PR diff legitimately yields zero
+	// AOIs, so we don't warn there.
+	if auditMode && report.TotalAOIs == 0 && len(batches) > 0 {
+		log.Printf("aoi: audit returned 0 AOIs across %d batch(es) — model may be broken or prompt may not be landing", len(batches))
+		if onProgress != nil {
+			onProgress(fmt.Sprintf(
+				"⚠ audit returned 0 AOIs across %d batch(es) — review prompt may not be landing",
+				len(batches)))
+		}
+	}
+
 	return report, nil
 }
 
@@ -477,6 +493,52 @@ func countFiles(batches []aoiBatch) int {
 // the token spend.
 var errAOIParse = errors.New("aoi: parse failure")
 
+// validateAOIs surfaces semantic issues with parsed AOI results that
+// would silently propagate into Phase 3 routing:
+//
+//   - Empty or out-of-taxonomy `category` values. Phase 3 buckets AOIs
+//     by subcategory; a category like "shitposting" or "" would still
+//     be bucketed somewhere and pollute that bucket's review.
+//   - Dimension slugs not in the partial taxonomy. Used by --focus
+//     filtering; an unknown dim is silently dropped from filtering.
+//   - Duplicate IDs within a single file. IDs feed caching and
+//     cross-referencing; duplicates corrupt those.
+//
+// All issues are logged (no coercion). The model's output is left
+// intact so the user can see what the LLM emitted vs what we wanted.
+// Coercion would hide prompt-drift problems that need human attention.
+func validateAOIs(results []AOIScanResult) {
+	for _, r := range results {
+		seen := make(map[string]int, len(r.AreasOfInterest))
+		for _, aoi := range r.AreasOfInterest {
+			if aoi.Category == "" {
+				log.Printf("aoi: %s [id=%s] missing category (model output, not coerced)",
+					r.File, aoi.ID)
+			} else if !ai.DimensionExists(aoi.Category) {
+				log.Printf("aoi: %s [id=%s] uses out-of-taxonomy category %q (not coerced; Phase 3 routing may be off)",
+					r.File, aoi.ID, aoi.Category)
+			}
+
+			for _, d := range aoi.Dimensions {
+				if !ai.DimensionExists(d) {
+					log.Printf("aoi: %s [id=%s] uses unknown dimension %q (will be ignored by --focus filtering)",
+						r.File, aoi.ID, d)
+				}
+			}
+
+			if aoi.ID != "" {
+				seen[aoi.ID]++
+				if seen[aoi.ID] == 2 {
+					// Log the SECOND occurrence so we don't spam for triples,
+					// while still surfacing the collision.
+					log.Printf("aoi: %s has duplicate AOI id %q (caching and cross-referencing will collide)",
+						r.File, aoi.ID)
+				}
+			}
+		}
+	}
+}
+
 // aoiRetryBackoff is the wait before the single retry of a transient
 // AOI batch failure. Slightly longer than classify's 750ms because AOI
 // batches are larger (more tokens to retransmit) so the API is more
@@ -582,6 +644,13 @@ func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook 
 	}
 
 	log.Printf("[aoi-debug] parsed %d file results", len(parsed))
+
+	// Surface semantic issues in the parsed results (invalid categories,
+	// unknown dimensions, duplicate IDs). Informational only — output
+	// is not modified, so the caller can still see what the model
+	// emitted.
+	validateAOIs(parsed)
+
 	return parsed, nil
 }
 
