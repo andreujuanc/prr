@@ -35,7 +35,7 @@ if [ -z "$KEY" ]; then
   exit 1
 fi
 
-API_URL="https://generativelanguage.googleapis.com/v1beta/models?key=${KEY}"
+API_URL="https://generativelanguage.googleapis.com/v1beta/models"
 TARGET="internal/config/known_models.go"
 
 if [ ! -f "$TARGET" ]; then
@@ -45,7 +45,9 @@ fi
 
 echo "Fetching models from Gemini API..."
 
-MODELS_JSON=$(curl -sf "$API_URL") || {
+# Pass the API key via header rather than query parameter so it does
+# not show up in process listings (`ps aux`) or shell history.
+MODELS_JSON=$(curl -sf -H "x-goog-api-key: ${KEY}" "$API_URL") || {
   echo "error: failed to fetch models from API" >&2
   exit 1
 }

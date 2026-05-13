@@ -1610,6 +1610,10 @@ func validateAPIKey(provider, apiKey string) error {
 		return nil
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	// Surface only the status code in the user-visible error. Raw
+	// provider response bodies sometimes echo back the rejected API
+	// key, account metadata, or internal IDs — none of which we want
+	// printed to stderr. The body is drained into a debug log only.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return fmt.Errorf("HTTP %d (response body suppressed; check provider dashboard for details)", resp.StatusCode)
 }

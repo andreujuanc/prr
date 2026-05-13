@@ -390,7 +390,7 @@ func (c *Config) ConfiguredProviders() []string {
 
 // createDefault writes a template config file with placeholder values.
 func createDefault(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
 
@@ -471,7 +471,11 @@ func SaveTo(cfg *Config, path string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	// 0700 — the directory holds the config.json which contains API
+	// keys (mode 0600). A world-readable directory would let other
+	// local users enumerate that the file exists and observe its
+	// mtime even though they cannot read it.
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
