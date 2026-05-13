@@ -4,11 +4,13 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
@@ -174,6 +176,7 @@ func ScanAreasOfInterestClassified(
 	// Run batches in parallel with bounded concurrency.
 	type batchResult struct {
 		index   int
+		inputs  []string // file paths the batch was asked to scan
 		results []AOIScanResult
 		err     error
 	}
@@ -192,12 +195,12 @@ func ScanAreasOfInterestClassified(
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				resultsCh <- batchResult{index: i, err: ctx.Err()}
+				resultsCh <- batchResult{index: i, inputs: batch.files, err: ctx.Err()}
 				return
 			}
 
-			results, err := scanBatch(ctx, client, batch, debugHook, auditMode)
-			resultsCh <- batchResult{index: i, results: results, err: err}
+			results, err := scanBatchWithRetry(ctx, client, batch, debugHook, auditMode)
+			resultsCh <- batchResult{index: i, inputs: batch.files, results: results, err: err}
 		}(i, batch)
 	}
 
@@ -207,10 +210,17 @@ func ScanAreasOfInterestClassified(
 		close(resultsCh)
 	}()
 
-	// Collect results in order of completion, report sequential progress
+	// Collect results in order of completion, report sequential progress.
+	// Track silent LLM drops separately from outright batch failures —
+	// a batch that returned 5 of 8 input files looks "successful" but
+	// actually lost AOIs for 3 files.
 	allResults := make([][]AOIScanResult, len(batches))
 	completed := 0
-	var batchErrors []string
+	var (
+		batchErrors  []string
+		totalDropped int      // files in successful batches that the LLM omitted
+		droppedFiles []string // paths of those silently-dropped files
+	)
 	for br := range resultsCh {
 		completed++
 		if br.err != nil {
@@ -222,9 +232,38 @@ func ScanAreasOfInterestClassified(
 			}
 		} else {
 			allResults[br.index] = br.results
+
+			// Drop detection: every input path must appear in the
+			// output. Missing files are silent data loss — the model
+			// truncated the response, hit a token limit, or dropped
+			// files for no clear reason. Those files end up with NO
+			// AOIs and won't be reviewed in Phase 3.
+			returned := make(map[string]bool, len(br.results))
+			for _, r := range br.results {
+				returned[r.File] = true
+			}
+			for _, in := range br.inputs {
+				if !returned[in] {
+					totalDropped++
+					droppedFiles = append(droppedFiles, in)
+				}
+			}
 		}
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("AOI scan %d/%d complete", completed, len(batches)))
+		}
+	}
+
+	if totalDropped > 0 {
+		// Surface ONCE at the end — emitting per-batch would
+		// out-shout the regular progress line. The full path list
+		// goes to the log; the progress message keeps it terse.
+		log.Printf("aoi: %d file(s) silently dropped by LLM (no AOIs scanned): %v",
+			totalDropped, droppedFiles)
+		if onProgress != nil {
+			onProgress(fmt.Sprintf(
+				"⚠ %d file(s) silently dropped by LLM during AOI scan (no AOIs — see log for paths)",
+				totalDropped))
 		}
 	}
 
@@ -405,6 +444,45 @@ func countFiles(batches []aoiBatch) int {
 	return n
 }
 
+// errAOIParse marks errors that come from the response shape (bad JSON,
+// missing array, empty response). Distinguished from transport-side
+// errors (network, rate-limit, 5xx) so retry can short-circuit: re-
+// running the same prompt twice won't fix a parse failure, just doubles
+// the token spend.
+var errAOIParse = errors.New("aoi: parse failure")
+
+// aoiRetryBackoff is the wait before the single retry of a transient
+// AOI batch failure. Slightly longer than classify's 750ms because AOI
+// batches are larger (more tokens to retransmit) so the API is more
+// likely to be rate-limiting us.
+const aoiRetryBackoff = 1 * time.Second
+
+// scanBatchWithRetry runs scanBatch and retries ONCE on transient
+// errors. Parse failures and context cancellation short-circuit. The
+// retry catches the common rate-limit/5xx cases that currently
+// silently lose AOIs for entire batches (8-15 files at a time).
+func scanBatchWithRetry(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
+	res, err := scanBatch(ctx, client, batch, debugHook, auditMode)
+	if err == nil {
+		return res, nil
+	}
+	if errors.Is(err, errAOIParse) {
+		return res, err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return res, err
+	}
+
+	select {
+	case <-time.After(aoiRetryBackoff):
+	case <-ctx.Done():
+		return res, ctx.Err()
+	}
+	log.Printf("aoi: retrying batch %q (%d files) after transient error: %v",
+		batch.label, len(batch.files), err)
+	return scanBatch(ctx, client, batch, debugHook, auditMode)
+}
+
 // scanBatch sends a single batch of diffs to the AOI scanner.
 func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
 	systemPrompt := buildAOIScanPromptWithDimensions(auditMode, batch.dimensions)
@@ -437,7 +515,11 @@ func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook 
 	}
 
 	if strings.TrimSpace(result) == "" {
-		return nil, fmt.Errorf("LLM returned empty response for batch %q (%d files)", batch.label, len(batch.files))
+		// Empty response is a parse-shape failure — retry won't make
+		// a silent model start emitting JSON. Wrap with errAOIParse
+		// so scanBatchWithRetry short-circuits.
+		return nil, fmt.Errorf("%w: LLM returned empty response for batch %q (%d files)",
+			errAOIParse, batch.label, len(batch.files))
 	}
 
 	parsed, parseErr := parseAOIResult(result)
@@ -487,7 +569,7 @@ func parseAOIResult(raw string) ([]AOIScanResult, error) {
 	if !strings.HasPrefix(s, "[") {
 		start := strings.Index(s, "[")
 		if start == -1 {
-			return nil, fmt.Errorf("no JSON array found in AOI response")
+			return nil, fmt.Errorf("%w: no JSON array found in AOI response", errAOIParse)
 		}
 		s = s[start:]
 	}
@@ -495,7 +577,7 @@ func parseAOIResult(raw string) ([]AOIScanResult, error) {
 	var results []AOIScanResult
 	s = sanitizeJSON(s)
 	if err := json.Unmarshal([]byte(s), &results); err != nil {
-		return nil, fmt.Errorf("parse AOI JSON: %w", err)
+		return nil, fmt.Errorf("%w: parse AOI JSON: %v", errAOIParse, err)
 	}
 
 	// Normalize: merge Areas into AreasOfInterest for backward compat,
