@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/state"
@@ -30,6 +31,17 @@ type RecheckOptions struct {
 
 	// OnLLMCall is called with the prompt and response for debugging. Can be nil.
 	OnLLMCall func(systemPrompt string, userMsg string, response string)
+
+	// OnProgress reports per-batch completion. done counts findings
+	// successfully processed (batch.size summed across completed
+	// batches); total is len(findings). Called once at start
+	// (0, total) and once after each batch completes. Optional.
+	//
+	// The cross-batch dedup pass that runs when len(findings) >
+	// MaxFindingsPerBatch does not advance the counter — done stays
+	// at total during that final pass. It's typically fast (<2s)
+	// and treating it as overhead simplifies the contract.
+	OnProgress func(done, total int)
 }
 
 // RecheckResult holds the output of the recheck phase.
@@ -72,6 +84,14 @@ func RecheckFindings(
 	// Assign IDs
 	AssignFindingIDs(findings)
 
+	total := len(findings)
+	emit := func(done int) {
+		if opts.OnProgress != nil {
+			opts.OnProgress(done, total)
+		}
+	}
+	emit(0)
+
 	maxPerBatch := opts.MaxFindingsPerBatch
 	if maxPerBatch <= 0 {
 		maxPerBatch = 50
@@ -79,7 +99,9 @@ func RecheckFindings(
 
 	// If within batch limit, do a single call
 	if len(findings) <= maxPerBatch {
-		return recheckBatch(ctx, client, findings, opts)
+		result, err := recheckBatch(ctx, client, findings, opts)
+		emit(total)
+		return result, err
 	}
 
 	// Split by file, recheck each batch in parallel, then merge and do a
@@ -102,11 +124,21 @@ func RecheckFindings(
 	outcomes := make([]batchOutcome, len(batches))
 	sem := make(chan struct{}, maxConc)
 	var wg sync.WaitGroup
+	var doneCount int64 // atomic, summed-batch-size
 
 	for i, batch := range batches {
 		wg.Add(1)
 		go func(i int, batch []state.DeepFinding) {
 			defer wg.Done()
+			// Tick the progress counter even on error / cancellation
+			// paths — the user cares about "this batch's findings are
+			// no longer in flight", not whether they were dropped or
+			// processed. Without this a failed batch leaves the bar
+			// stuck below 100%.
+			defer func() {
+				d := atomic.AddInt64(&doneCount, int64(len(batch)))
+				emit(int(d))
+			}()
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()

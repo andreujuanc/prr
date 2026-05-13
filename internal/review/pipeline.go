@@ -392,6 +392,12 @@ func RunRecheck(
 		ProjectContext: projectContext,
 		MaxConcurrency: s.MaxConcurrency,
 		OnLLMCall:      debugHook,
+		OnProgress: func(done, total int) {
+			// Forward the counter as a formatted string on the same
+			// (phase, message) channel the TUI parses. parseEvent
+			// extracts done/total back out via "rechecked %d/%d".
+			onProgress(fmt.Sprintf("rechecked %d/%d findings", done, total))
+		},
 	})
 	if recheckErr != nil {
 		log.Printf("Recheck failed (non-fatal): %v — keeping all findings", recheckErr)

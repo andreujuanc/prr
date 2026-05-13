@@ -96,3 +96,30 @@ func TestBatchProgress_ZeroTotal(t *testing.T) {
 		t.Errorf("batchProgress with zero total = %f, want 0", got)
 	}
 }
+
+// ── Recheck ────────────────────────────────────────────────────────────
+
+func TestParseReviewEvent_RecheckProgress(t *testing.T) {
+	s := newState()
+	parseReviewEvent(s, "recheck", "rechecked 50/200 findings")
+	if s.Counters["recheck_done"] != 50 {
+		t.Errorf("recheck_done = %d, want 50", s.Counters["recheck_done"])
+	}
+	if s.Counters["recheck_total"] != 200 {
+		t.Errorf("recheck_total = %d, want 200", s.Counters["recheck_total"])
+	}
+}
+
+func TestRecheckProgress_RatioOfCounters(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{"recheck_done": 50, "recheck_total": 200}}
+	if got := recheckProgress(s); got != 0.25 {
+		t.Errorf("recheckProgress = %f, want 0.25", got)
+	}
+}
+
+func TestRecheckProgress_ZeroTotal(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{"recheck_total": 0}}
+	if got := recheckProgress(s); got != 0 {
+		t.Errorf("recheckProgress with zero total = %f, want 0", got)
+	}
+}

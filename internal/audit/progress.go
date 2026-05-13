@@ -38,7 +38,9 @@ func auditPhases() []progress.PhaseDef {
 		{Name: "phase3", Label: "Deep Review",
 			ProgressFn: reviewProgress,
 			Counter:    reviewCounter},
-		{Name: "recheck", Label: "Recheck"},
+		{Name: "recheck", Label: "Recheck",
+			ProgressFn: recheckProgress,
+			Counter:    recheckCounter},
 		{Name: "phase4", Label: "Synthesis", ProgressFn: synthesisPulse},
 	}
 }
@@ -52,6 +54,20 @@ func aoiCounter(s *progress.State) (done, total int) {
 
 func reviewCounter(s *progress.State) (done, total int) {
 	return s.Counters["review_done"], s.Counters["review_total"]
+}
+
+// recheckCounter / recheckProgress drive the Recheck row's "X/Y" and
+// progress bar from "rechecked X/Y findings" emit events.
+func recheckCounter(s *progress.State) (done, total int) {
+	return s.Counters["recheck_done"], s.Counters["recheck_total"]
+}
+
+func recheckProgress(s *progress.State) float64 {
+	total := s.Counters["recheck_total"]
+	if total == 0 {
+		return 0
+	}
+	return float64(s.Counters["recheck_done"]) / float64(total)
 }
 
 // aoiProgress reports the AOI pre-scan progress bar value.
@@ -111,11 +127,23 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 		if scanCounter(phase, message, "Executing %d review calls...", &n) {
 			s.Counters["review_total"] = n
 		}
-	case phase == "phase3" && strings.Contains(message, "review") && strings.Contains(message, "/"):
+	case phase == "phase3" && strings.HasPrefix(message, "Review "):
+		// Pipeline emits "Review X/Y complete" / "Review X/Y complete (cached)"
+		// / "Review X/Y failed: <err>". All three are terminal events that
+		// should tick the done counter — Sscanf with "Review %d/%d" matches
+		// the prefix and ignores the trailing suffix.
 		var done, total int
-		if scanCounter(phase, message, "review %d/%d", &done, &total) {
+		if scanCounter(phase, message, "Review %d/%d", &done, &total) {
 			s.Counters["review_done"] = done
 			s.Counters["review_total"] = total
+		}
+	case phase == "recheck" && strings.HasPrefix(message, "rechecked "):
+		// Pipeline emits "rechecked X/Y findings" via RunRecheck's
+		// OnProgress callback forwarding.
+		var done, total int
+		if scanCounter(phase, message, "rechecked %d/%d", &done, &total) {
+			s.Counters["recheck_done"] = done
+			s.Counters["recheck_total"] = total
 		}
 	}
 }

@@ -1,6 +1,9 @@
 package review
 
 import (
+	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/andreujuanc/prr/internal/state"
@@ -192,5 +195,110 @@ func TestSplitFindingsByFile(t *testing.T) {
 		if len(batch) != 4 {
 			t.Errorf("batch %d: expected 4 findings, got %d", i, len(batch))
 		}
+	}
+}
+
+// ── OnProgress wiring ──────────────────────────────────────────────────
+//
+// Pin the contract that RecheckFindings fires OnProgress on every
+// batch completion. Without per-batch ticks the TUI's recheck row
+// would show "0/N" the entire phase and the user would see the
+// black hole that motivated this feature.
+
+// recheckProgressTick records each (done, total) tuple OnProgress
+// receives. Safe under the goroutine concurrency inside RecheckFindings.
+type recheckProgressTick struct {
+	done, total int
+}
+
+func recordRecheckProgress() (*[]recheckProgressTick, func(done, total int)) {
+	var mu sync.Mutex
+	var ticks []recheckProgressTick
+	return &ticks, func(done, total int) {
+		mu.Lock()
+		defer mu.Unlock()
+		ticks = append(ticks, recheckProgressTick{done, total})
+	}
+}
+
+// fakeAIClient lives in pipeline_persistence_test.go (same package).
+// Both tests below use it via &fakeAIClient{Responder: ...}.
+
+func TestRecheckFindings_OnProgress_SingleBatch(t *testing.T) {
+	// Findings <= MaxFindingsPerBatch (50) take the single-call path.
+	// Expect: emit(0, N) at start, emit(N, N) at end.
+	findings := make([]state.DeepFinding, 5)
+	for i := range findings {
+		findings[i] = state.DeepFinding{File: fmt.Sprintf("f%d.go", i), Severity: "low", Title: "x"}
+	}
+
+	ticks, onProgress := recordRecheckProgress()
+	_, err := RecheckFindings(context.Background(), &fakeAIClient{
+		Responder: func(_, _ string) string {
+			return `{"kept": ["F-001","F-002","F-003","F-004","F-005"], "modified":[], "consolidated":[], "dismissed":[]}`
+		},
+	}, findings, RecheckOptions{
+		Mode:                ModePR,
+		MaxFindingsPerBatch: 50,
+		OnProgress:          onProgress,
+	})
+	if err != nil {
+		t.Fatalf("RecheckFindings: %v", err)
+	}
+
+	if len(*ticks) < 2 {
+		t.Fatalf("expected at least 2 progress ticks (start + end); got %d: %v", len(*ticks), *ticks)
+	}
+	if first := (*ticks)[0]; first != (recheckProgressTick{0, 5}) {
+		t.Errorf("first tick = %+v, want (0, 5)", first)
+	}
+	last := (*ticks)[len(*ticks)-1]
+	if last != (recheckProgressTick{5, 5}) {
+		t.Errorf("last tick = %+v, want (5, 5)", last)
+	}
+}
+
+func TestRecheckFindings_OnProgress_MultipleBatches(t *testing.T) {
+	// Findings > MaxFindingsPerBatch trigger the parallel batched path.
+	// Expect: emit(0, N) at start, then one emit per batch completion,
+	// ending at (N, N).
+	const total = 12
+	findings := make([]state.DeepFinding, total)
+	for i := range findings {
+		// Span 4 files so splitFindingsByFile produces multiple batches
+		// at MaxFindingsPerBatch=4.
+		findings[i] = state.DeepFinding{
+			File:     fmt.Sprintf("file%d.go", i/3),
+			Severity: "low",
+			Title:    "x",
+		}
+	}
+
+	ticks, onProgress := recordRecheckProgress()
+	_, err := RecheckFindings(context.Background(), &fakeAIClient{
+		Responder: func(_, _ string) string {
+			return `{"kept": [], "modified":[], "consolidated":[], "dismissed":[]}`
+		},
+	}, findings, RecheckOptions{
+		Mode:                ModePR,
+		MaxFindingsPerBatch: 4, // force multi-batch
+		MaxConcurrency:      2,
+		OnProgress:          onProgress,
+	})
+	if err != nil {
+		t.Fatalf("RecheckFindings: %v", err)
+	}
+
+	// Must have at least: 1 start tick + 1 tick per batch.
+	// Final tick must reach (total, total).
+	if len(*ticks) < 2 {
+		t.Fatalf("expected multiple progress ticks; got %d", len(*ticks))
+	}
+	if first := (*ticks)[0]; first != (recheckProgressTick{0, total}) {
+		t.Errorf("first tick = %+v, want (0, %d)", first, total)
+	}
+	last := (*ticks)[len(*ticks)-1]
+	if last.done != total || last.total != total {
+		t.Errorf("final tick = %+v, want (%d, %d)", last, total, total)
 	}
 }

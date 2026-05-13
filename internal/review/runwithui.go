@@ -43,7 +43,9 @@ func reviewPhases() []progress.PhaseDef {
 		{Name: "phase1", Label: "Deep Review",
 			ProgressFn: batchProgress,
 			Counter:    batchCounter},
-		{Name: "recheck", Label: "Recheck"},
+		{Name: "recheck", Label: "Recheck",
+			ProgressFn: recheckProgress,
+			Counter:    recheckCounter},
 		{Name: "phase2", Label: "Synthesis", ProgressFn: synthesisPulse},
 	}
 }
@@ -57,6 +59,20 @@ func aoiCounter(s *progress.State) (done, total int) {
 
 func batchCounter(s *progress.State) (done, total int) {
 	return s.Counters["batches_done"], s.Counters["batches_total"]
+}
+
+// recheckCounter / recheckProgress drive the Recheck row's "X/Y" and
+// progress bar from "rechecked X/Y findings" emit events.
+func recheckCounter(s *progress.State) (done, total int) {
+	return s.Counters["recheck_done"], s.Counters["recheck_total"]
+}
+
+func recheckProgress(s *progress.State) float64 {
+	total := s.Counters["recheck_total"]
+	if total == 0 {
+		return 0
+	}
+	return float64(s.Counters["recheck_done"]) / float64(total)
 }
 
 // aoiProgress reports the AOI pre-scan ratio. The pipeline emits
@@ -128,6 +144,15 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 			case "done", "cached", "failed":
 				s.Counters["batches_done"]++
 			}
+		}
+
+	case phase == "recheck" && strings.HasPrefix(message, "rechecked "):
+		// Pipeline emits "rechecked X/Y findings" via RunRecheck's
+		// OnProgress callback forwarding.
+		var done, total int
+		if scanCounter(phase, message, "rechecked %d/%d", &done, &total) {
+			s.Counters["recheck_done"] = done
+			s.Counters["recheck_total"] = total
 		}
 	}
 }
