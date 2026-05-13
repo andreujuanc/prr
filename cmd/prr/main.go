@@ -1083,27 +1083,31 @@ func ensureSSHHostKeys() {
 		return
 	}
 
-	// Ensure ~/.ssh exists
+	// Ensure ~/.ssh exists. Each failure is surfaced to stderr (not
+	// just log.Printf) so the user can see WHY the host was not
+	// added — otherwise they retry git, get the same prompt, and
+	// have no idea the previous attempt failed on permissions or a
+	// read-only home.
 	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Printf("SSH known_hosts: failed to get home dir: %v", err)
+		fmt.Fprintf(os.Stderr, "  %s could not resolve home dir: %v\n", warn.Render("err:"), err)
 		return
 	}
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
-		log.Printf("SSH known_hosts: failed to create %s: %v", sshDir, err)
+		fmt.Fprintf(os.Stderr, "  %s could not create %s: %v\n", warn.Render("err:"), sshDir, err)
 		return
 	}
 
 	knownHosts := filepath.Join(sshDir, "known_hosts")
 	f, err := os.OpenFile(knownHosts, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
-		log.Printf("SSH known_hosts: failed to open %s: %v", knownHosts, err)
+		fmt.Fprintf(os.Stderr, "  %s could not open %s: %v\n", warn.Render("err:"), knownHosts, err)
 		return
 	}
 	defer f.Close()
 	if _, err := f.Write(keys); err != nil {
-		log.Printf("SSH known_hosts: failed to write to %s: %v", knownHosts, err)
+		fmt.Fprintf(os.Stderr, "  %s could not write %s: %v\n", warn.Render("err:"), knownHosts, err)
 		return
 	}
 

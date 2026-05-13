@@ -38,11 +38,18 @@ type OpenAIProvider struct {
 	}
 }
 
+// defaultHTTPClient is shared across providers so connection pooling
+// works — every doHTTPRequest call previously allocated a fresh
+// http.Client which threw away the keep-alive connection. The
+// 10-minute timeout is intentionally generous: streaming completions
+// from large models genuinely take several minutes.
+var defaultHTTPClient = &http.Client{Timeout: 10 * time.Minute}
+
 func (o *OpenAIProvider) httpClient() *http.Client {
 	if o.HTTPClient != nil {
 		return o.HTTPClient
 	}
-	return &http.Client{}
+	return defaultHTTPClient
 }
 
 func (o *OpenAIProvider) Name() string {

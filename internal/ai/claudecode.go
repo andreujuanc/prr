@@ -239,9 +239,17 @@ func spawnClaudeCode(ctx context.Context, args []string, stdin string) (io.ReadC
 	success = true
 
 	// Write prompt asynchronously and close stdin so the CLI sees EOF.
+	// If the write or close fails the subprocess will see a short/no
+	// prompt and exit with an error from Wait — but without a log
+	// line here that root cause is invisible. Surface it so support
+	// triage doesn't end up chasing a confused stderr trail.
 	go func() {
-		_, _ = io.WriteString(stdinPipe, stdin)
-		_ = stdinPipe.Close()
+		if _, err := io.WriteString(stdinPipe, stdin); err != nil {
+			log.Printf("claude-code: stdin write: %v", err)
+		}
+		if err := stdinPipe.Close(); err != nil {
+			log.Printf("claude-code: stdin close: %v", err)
+		}
 	}()
 
 	wait := func() error {

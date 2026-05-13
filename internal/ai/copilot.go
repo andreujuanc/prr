@@ -22,6 +22,12 @@ const (
 	oauthPollingMargin = 3 * time.Second
 )
 
+// copilotHTTPClient is used for OAuth and token-validation requests.
+// The default http.Client has no timeout, so a single hung GitHub
+// API call would freeze the device-flow loop forever even when the
+// caller has no context deadline.
+var copilotHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // CopilotClientID returns the OAuth app client ID for the device flow.
 // It reads from the PRR_COPILOT_CLIENT_ID environment variable.
 func CopilotClientID() string {
@@ -55,7 +61,7 @@ func CopilotRequestDeviceCode(ctx context.Context) (*CopilotDeviceAuth, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "prr")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := copilotHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("copilot: device code request: %w", err)
 	}
@@ -98,7 +104,7 @@ func CopilotPollForToken(ctx context.Context, deviceCode string, interval int) (
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", "prr")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := copilotHTTPClient.Do(req)
 		if err != nil {
 			return "", fmt.Errorf("copilot: token poll: %w", err)
 		}
@@ -108,8 +114,15 @@ func CopilotPollForToken(ctx context.Context, deviceCode string, interval int) (
 			Error       string `json:"error"`
 			Interval    int    `json:"interval"`
 		}
-		json.NewDecoder(resp.Body).Decode(&result)
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
 		resp.Body.Close()
+		// Without this check a malformed response leaves result
+		// zero-valued, the switch below falls through to the empty
+		// case, and the poll loop spins forever pretending GitHub
+		// answered "authorization_pending".
+		if decodeErr != nil {
+			return "", fmt.Errorf("copilot: token poll: decode response: %w", decodeErr)
+		}
 
 		if result.AccessToken != "" {
 			return result.AccessToken, nil
@@ -143,7 +156,7 @@ func CopilotValidateToken(ctx context.Context, token string) error {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "prr")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := copilotHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("copilot: validation request failed: %w", err)
 	}
