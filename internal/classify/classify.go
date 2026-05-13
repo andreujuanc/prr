@@ -17,6 +17,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
 )
@@ -167,6 +168,7 @@ func Classify(
 
 	type batchResult struct {
 		index   int
+		inputs  []File // the files this batch was asked to classify
 		results []FileClassification
 		err     error
 	}
@@ -184,12 +186,12 @@ func Classify(
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				resultsCh <- batchResult{index: i, err: ctx.Err()}
+				resultsCh <- batchResult{index: i, inputs: batch, err: ctx.Err()}
 				return
 			}
 
-			classifications, err := classifyBatch(ctx, client, batch)
-			resultsCh <- batchResult{index: i, results: classifications, err: err}
+			classifications, err := classifyBatchWithRetry(ctx, client, batch)
+			resultsCh <- batchResult{index: i, inputs: batch, results: classifications, err: err}
 		}(i, batch)
 	}
 
@@ -198,15 +200,35 @@ func Classify(
 		close(resultsCh)
 	}()
 
-	var batchErrs []error
+	var (
+		batchErrs       []error
+		totalDroppedLLM int // files the LLM omitted from a SUCCESSFUL batch
+	)
 	for br := range resultsCh {
 		if br.err != nil {
 			log.Printf("Classification batch %d failed: %v", br.index+1, br.err)
 			batchErrs = append(batchErrs, fmt.Errorf("batch %d: %w", br.index+1, br.err))
 			continue
 		}
+
+		// Track which input paths came back in the response. Files
+		// missing from a SUCCESSFUL batch are silent data loss — the
+		// model truncated, dropped, or skipped them.
+		returnedSet := make(map[string]bool, len(br.results))
 		for _, fc := range br.results {
 			result[fc.File] = fc.Type
+			returnedSet[fc.File] = true
+		}
+		var droppedFromBatch []string
+		for _, f := range br.inputs {
+			if !returnedSet[f.Path] {
+				droppedFromBatch = append(droppedFromBatch, f.Path)
+			}
+		}
+		if len(droppedFromBatch) > 0 {
+			totalDroppedLLM += len(droppedFromBatch)
+			log.Printf("classify: batch %d returned %d of %d files; missing: %v (will use unknown)",
+				br.index+1, len(br.results), len(br.inputs), droppedFromBatch)
 		}
 	}
 
@@ -219,7 +241,13 @@ func Classify(
 	}
 
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("classified %d file(s)", len(uncached)))
+		if totalDroppedLLM > 0 {
+			onProgress(fmt.Sprintf(
+				"classified %d file(s); %d silently dropped by LLM (using unknown — see log for paths)",
+				len(uncached), totalDroppedLLM))
+		} else {
+			onProgress(fmt.Sprintf("classified %d file(s)", len(uncached)))
+		}
 	}
 
 	return result, errors.Join(batchErrs...)
@@ -302,6 +330,47 @@ func buildBatches(files []File) [][]File {
 	return batches
 }
 
+// errClassifyParse marks errors that come from the response shape
+// (bad JSON, missing array, etc.) — distinguished from transport-side
+// errors so the retry logic knows NOT to retry: re-running the same
+// prompt with no change will produce the same parse failure twice.
+var errClassifyParse = errors.New("classify: parse failure")
+
+// classifyRetryBackoff is the wait before the single retry of a
+// transient classification batch error. Long enough to absorb rate-
+// limit ramps and brief network blips; short enough that one retry
+// doesn't visibly stall the audit.
+const classifyRetryBackoff = 750 * time.Millisecond
+
+// classifyBatchWithRetry runs classifyBatch and retries ONCE on
+// non-parse errors. Parse failures (bad JSON, missing types, model
+// returned prose, etc.) and context cancellation are returned
+// immediately — retrying parses just duplicates token spend without
+// changing the outcome.
+func classifyBatchWithRetry(ctx context.Context, client ai.Client, files []File) ([]FileClassification, error) {
+	res, err := classifyBatch(ctx, client, files)
+	if err == nil {
+		return res, nil
+	}
+	if errors.Is(err, errClassifyParse) {
+		return res, err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return res, err
+	}
+
+	// Transient error — back off and retry once. A second failure
+	// surfaces to the caller (which collects batch errors and
+	// proceeds with unknowns for affected files).
+	select {
+	case <-time.After(classifyRetryBackoff):
+	case <-ctx.Done():
+		return res, ctx.Err()
+	}
+	log.Printf("classify: retrying batch after transient error: %v", err)
+	return classifyBatch(ctx, client, files)
+}
+
 // classifyBatch sends a batch of files to the LLM for classification.
 func classifyBatch(ctx context.Context, client ai.Client, files []File) ([]FileClassification, error) {
 	var sb strings.Builder
@@ -343,19 +412,26 @@ func parseResult(raw string) ([]FileClassification, error) {
 	if !strings.HasPrefix(s, "[") {
 		start := strings.Index(s, "[")
 		if start == -1 {
-			return nil, fmt.Errorf("no JSON array found in classification response")
+			// Wrap with errClassifyParse so classifyBatchWithRetry
+			// knows this won't be fixed by retrying the same prompt.
+			return nil, fmt.Errorf("%w: no JSON array found in response", errClassifyParse)
 		}
 		s = s[start:]
 	}
 
 	var results []FileClassification
 	if err := json.Unmarshal([]byte(s), &results); err != nil {
-		return nil, fmt.Errorf("parse classification JSON: %w", err)
+		return nil, fmt.Errorf("%w: %v", errClassifyParse, err)
 	}
 
-	// Validate types — replace invalid with unknown.
+	// Validate types — replace invalid with unknown. Log the coercion
+	// so prompt drift (e.g. model emits "controller" or "service")
+	// surfaces. Silent coercion was hiding cases where the model was
+	// confidently producing types not in our schema.
 	for i := range results {
 		if !isValidFileType(results[i].Type) {
+			log.Printf("classify: invalid type %q for %q — coerced to unknown",
+				results[i].Type, results[i].File)
 			results[i].Type = FileTypeUnknown
 		}
 	}
