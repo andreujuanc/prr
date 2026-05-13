@@ -350,7 +350,97 @@ func doReviewCall(
 		opts.OnLLMCall(callIndex, call, systemPrompt, messages[0].Content, raw)
 	}
 
-	return ParseDeepReviewResult(call, raw)
+	result, parseErr := ParseDeepReviewResult(call, raw)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	validateReviewResult(call, result)
+	return result, nil
+}
+
+// validateReviewResult surfaces semantic issues in a parsed review
+// result that would otherwise propagate silently into synthesis and
+// reporting. All issues are logged; the result is NOT mutated. This
+// matches the same logging-only pattern as security.validateAOIs —
+// the model's actual output is preserved so prompt drift remains
+// visible rather than masked.
+//
+// Surfaced issues:
+//
+//   - Grouped-call drops: a grouped call asked for N AOIs but the
+//     response only addressed M. The missing AOIs end up with no
+//     verdict (no finding, no dismissal). Without this log, those
+//     AOIs vanish from the audit silently.
+//   - Empty AOI ID in a finding: breaks the source_ids linkage
+//     synthesis uses to tie findings back to AOIs.
+//   - Empty file path or lines: finding cannot be located in the
+//     codebase; renders to the user as a floating sentence.
+//   - Severity outside the canonical set: severityRank falls through
+//     to "4" (last), so an invalid severity quietly buries the
+//     finding at the bottom of the sorted list.
+func validateReviewResult(call ReviewCall, result *state.DeepReviewResult) {
+	if result == nil {
+		return
+	}
+
+	// Drop detection: grouped calls only. Individual calls have
+	// exactly one input AOI by construction, so "dropped" is the
+	// same as "parse failed" — already surfaced via errReviewParse.
+	if call.Type == "grouped" {
+		seen := make(map[string]bool, len(result.Findings)+len(result.Dismissals))
+		for _, f := range result.Findings {
+			if f.AOIID != "" {
+				seen[f.AOIID] = true
+			}
+		}
+		for _, d := range result.Dismissals {
+			if d.AOIID != "" {
+				seen[d.AOIID] = true
+			}
+		}
+		var dropped []string
+		for _, aoi := range call.AOIs {
+			if aoi.ID != "" && !seen[aoi.ID] {
+				dropped = append(dropped, aoi.ID)
+			}
+		}
+		if len(dropped) > 0 {
+			log.Printf("review: grouped call %s/%s dropped %d of %d AOI(s) from response: %v (no verdict — synthesis will be missing these)",
+				call.Category, call.Subcategory, len(dropped), len(call.AOIs), dropped)
+		}
+	}
+
+	// Per-finding field validation. Skip dismissals — they have
+	// fewer required fields and a missing one is less load-bearing.
+	for _, f := range result.Findings {
+		if f.AOIID == "" {
+			log.Printf("review: finding without aoi_id in %s/%s (file=%s lines=%s) — cannot link to AOI in synthesis",
+				call.Category, call.Subcategory, f.File, f.Lines)
+		}
+		if f.File == "" {
+			log.Printf("review: finding without file path in %s/%s [aoi_id=%s] — cannot locate",
+				call.Category, call.Subcategory, f.AOIID)
+		}
+		if f.Lines == "" {
+			log.Printf("review: finding without lines in %s/%s [aoi_id=%s file=%s]",
+				call.Category, call.Subcategory, f.AOIID, f.File)
+		}
+		if !isValidSeverity(f.Severity) {
+			log.Printf("review: finding with invalid severity %q in %s/%s [aoi_id=%s] — will sort last in priority list",
+				f.Severity, call.Category, call.Subcategory, f.AOIID)
+		}
+	}
+}
+
+// isValidSeverity reports whether s is one of the canonical severity
+// strings the reviewer is supposed to emit. Anything else is silently
+// sorted to position 4 (last) by severityRank — which buries findings.
+func isValidSeverity(s string) bool {
+	switch s {
+	case "critical", "high", "medium", "low":
+		return true
+	}
+	return false
 }
 
 // ComputeCacheKey returns the cache key for a review call.
