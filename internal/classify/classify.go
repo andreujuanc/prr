@@ -225,6 +225,70 @@ func Classify(
 	return result, errors.Join(batchErrs...)
 }
 
+// Classification windowing.
+//
+// Small files (≤ classifyWindowThreshold lines) are sent in full —
+// the model gets every signal there is.
+//
+// Large files are sampled as TOP + MIDDLE rather than just TOP:
+// imports (top) give strong signal but miss the "what does this
+// file actually do" content that often lives in the middle.
+// Sending the middle window catches handler bodies, business logic,
+// query patterns, registration calls, etc. that imports alone
+// don't reveal.
+//
+// The two windows never overlap — for a 110-line file, top = 1-50
+// and middle would natively center at 30-80, so we shift middle
+// down to start at line 51. For a 1000-line file, top = 1-50 and
+// middle = 476-525 (centered on total/2 = 500).
+const (
+	classifyTopWindow       = 50
+	classifyMidWindow       = 50
+	classifyWindowThreshold = 100
+)
+
+// windowForClassify returns the slice of file content sent to the
+// classifier. See the windowing constants above for the strategy.
+func windowForClassify(content string) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) <= classifyWindowThreshold {
+		return content
+	}
+
+	total := len(lines)
+	top := lines[:classifyTopWindow]
+
+	// Center the middle window on total/2, but never let it overlap
+	// the top window.
+	midStart := total/2 - classifyMidWindow/2
+	if midStart < classifyTopWindow {
+		midStart = classifyTopWindow
+	}
+	midEnd := midStart + classifyMidWindow
+	if midEnd > total {
+		midEnd = total
+	}
+	middle := lines[midStart:midEnd]
+
+	omitted := midStart - classifyTopWindow
+
+	var b strings.Builder
+	b.WriteString(strings.Join(top, "\n"))
+	b.WriteString("\n")
+	if omitted > 0 {
+		// Marker only when there's a real gap. For a 110-line file
+		// (top 1-50 + middle 51-100), top and middle are contiguous;
+		// inserting a marker would confuse the model into thinking
+		// content was elided when it wasn't.
+		fmt.Fprintf(&b, "... [%d lines omitted] ...\n", omitted)
+	}
+	b.WriteString(strings.Join(middle, "\n"))
+	// Anything after midEnd is intentionally dropped — for classification
+	// the role signal is already strong from top + middle. Sending the
+	// tail too would double the per-file cost without changing accuracy.
+	return b.String()
+}
+
 // buildBatches splits files into batches of batchMaxFiles.
 func buildBatches(files []File) [][]File {
 	var batches [][]File
@@ -245,12 +309,7 @@ func classifyBatch(ctx context.Context, client ai.Client, files []File) ([]FileC
 
 	for _, f := range files {
 		sb.WriteString(fmt.Sprintf("=== %s ===\n", f.Path))
-		// Send first 50 lines only — enough for imports + initial declarations.
-		lines := strings.SplitN(f.Content, "\n", 51)
-		if len(lines) > 50 {
-			lines = lines[:50]
-		}
-		sb.WriteString(strings.Join(lines, "\n"))
+		sb.WriteString(windowForClassify(f.Content))
 		sb.WriteString("\n\n")
 	}
 
