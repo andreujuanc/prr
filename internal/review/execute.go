@@ -64,6 +64,13 @@ type ExecuteResult struct {
 	// Failed is the count of review calls that errored. The caller should
 	// surface this — failed calls drop their AOIs from the result.
 	Failed int
+	// FailedAOIIDs is the list of AOI IDs whose review call failed (and
+	// therefore produced no finding or dismissal verdict). Synthesis
+	// and reporting can use this to tell the user WHICH areas of the
+	// codebase lost their deep review attention — previously this info
+	// only existed implicitly in "N reviews failed" with no path back
+	// to the affected AOIs.
+	FailedAOIIDs []string
 }
 
 // RunReviewCalls executes all review calls concurrently with bounded concurrency.
@@ -154,6 +161,15 @@ func RunReviewCalls(
 		if cr.err != nil {
 			log.Printf("Review call %d failed: %v", cr.index+1, cr.err)
 			execResult.Failed++
+			// Track which AOI IDs were in the failed call. Synthesis
+			// and reports can then tell the user precisely which
+			// areas of the codebase didn't get reviewed — instead of
+			// just "N reviews failed" with no recovery path.
+			for _, aoi := range calls[cr.index].AOIs {
+				if aoi.ID != "" {
+					execResult.FailedAOIIDs = append(execResult.FailedAOIIDs, aoi.ID)
+				}
+			}
 			if opts.OnProgress != nil {
 				opts.OnProgress(completed, len(calls), cr.fromCache, cr.err)
 			}
@@ -176,7 +192,49 @@ func RunReviewCalls(
 		return severityRank(execResult.Findings[i].Severity) < severityRank(execResult.Findings[j].Severity)
 	})
 
+	// All-failed: even below the 2-call floor, a single-call run that
+	// fails has nothing useful to return. Keep parity with the AOI
+	// scanner which treats this as an unconditional abort.
+	if execResult.Failed == len(calls) && len(calls) > 0 {
+		return execResult, fmt.Errorf("all %d deep review call(s) failed; %d AOI(s) had no review",
+			len(calls), len(execResult.FailedAOIIDs))
+	}
+
+	// Aggregate-fail: too many calls failed for the audit's recall to
+	// be trustworthy. Surface this as an error instead of silently
+	// returning a partial result that looks complete.
+	if shouldAggregateFailReview(execResult.Failed, len(calls)) {
+		return execResult, fmt.Errorf(
+			"phase 3: %d/%d review call(s) failed (>%.0f%% threshold) — aborting; %d AOI(s) had no deep review",
+			execResult.Failed, len(calls), reviewAggregateFailRatio*100,
+			len(execResult.FailedAOIIDs))
+	}
+
 	return execResult, nil
+}
+
+// Aggregate-fail thresholds for Phase 3 deep review.
+//
+// Phase 3 previously had no fail-fast at all — RunReviewCalls always
+// returned success regardless of how many calls failed. An audit with
+// 8 of 10 calls failing would still report "found N findings" as if
+// it were complete. Same pattern as Phase 1 file load and Phase 2 AOI:
+// >20% failures with a 2-call floor aborts the run.
+const (
+	reviewAggregateFailRatio    = 0.20
+	reviewAggregateFailMinCalls = 2
+)
+
+// shouldAggregateFailReview reports whether the (failed, total) call
+// counts cross the abort threshold for deep review.
+func shouldAggregateFailReview(failed, total int) bool {
+	if failed < reviewAggregateFailMinCalls {
+		return false
+	}
+	if total <= 0 {
+		return false
+	}
+	return float64(failed)/float64(total) > reviewAggregateFailRatio
 }
 
 // reviewRetryBackoff is the wait before the single retry of a transient

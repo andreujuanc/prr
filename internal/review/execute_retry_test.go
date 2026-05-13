@@ -245,10 +245,13 @@ func TestRunReviewCalls_ParseFailureDoesNotPoisonCache(t *testing.T) {
 	}
 
 	exec, err := RunReviewCalls(context.Background(), client, []ReviewCall{buildIndivCall()}, opts)
-	if err != nil {
-		t.Fatalf("RunReviewCalls: %v", err)
+	// With 1/1 failure, RunReviewCalls returns an "all failed" error
+	// (Commit B aggregate-fail). The cache-poisoning fix is the
+	// load-bearing assertion here: exec is still returned alongside
+	// the error so we can verify cacheSets == 0.
+	if err == nil {
+		t.Fatal("expected aggregate-fail error for 1/1 failure")
 	}
-
 	if exec.Failed != 1 {
 		t.Errorf("expected Failed=1 (the parse failure); got %d", exec.Failed)
 	}
@@ -312,8 +315,10 @@ func TestRunReviewCalls_TransientErrorDoesNotPoisonCache(t *testing.T) {
 	}
 
 	exec, err := RunReviewCalls(context.Background(), client, []ReviewCall{buildIndivCall()}, opts)
-	if err != nil {
-		t.Fatalf("RunReviewCalls: %v", err)
+	// 1/1 failure → aggregate-fail error returned. Assert cache
+	// behavior via exec, which is returned alongside the error.
+	if err == nil {
+		t.Fatal("expected aggregate-fail error for 1/1 failure")
 	}
 	if exec.Failed != 1 {
 		t.Errorf("expected Failed=1; got %d", exec.Failed)
