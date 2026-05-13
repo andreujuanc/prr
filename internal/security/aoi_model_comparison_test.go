@@ -694,7 +694,11 @@ func TestAOIModelComparison(t *testing.T) {
 		})
 	}
 	if err := config.SaveBenchmarkResults(benchmarks); err != nil {
-		t.Logf("  WARNING: failed to save benchmark results: %v", err)
+		// Treat as a test failure rather than a Logf — silently
+		// losing benchmark output makes "everything passes" reads
+		// of the suite misleading, and a broken persistence layer
+		// is exactly the kind of regression this test ought to catch.
+		t.Errorf("failed to save benchmark results: %v", err)
 	} else {
 		p, _ := config.BenchmarkPath()
 		t.Logf("  Benchmark results saved to %s", p)
