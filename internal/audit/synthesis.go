@@ -55,6 +55,30 @@ type SynthesisResult struct {
 // synthesis into per-category passes followed by a final merge.
 const hierarchicalThreshold = 50
 
+// EstimateSynthesisChars returns the expected total output character
+// count for synthesis given the finding count. Used to drive a
+// truthful streaming progress bar.
+//
+// The estimate is bounded:
+//   - 3000 chars minimum (clean audit: executive_summary + 1-2 risks)
+//   - 10000 chars maximum (lots of findings hit the prompt's per-item
+//     word caps, so output stops growing past a point)
+//
+// 100 chars per finding is the slope: each finding contributes ~1
+// short risk/pattern/recommendation entry on average (≤100 words ≈
+// 400 chars per entry, but only a fraction of findings generate one).
+//
+// The estimate intentionally errs HIGH so the streaming bar fills
+// slower than reality — better to see a bar that holds at 95% for a
+// moment than to claim 100% before the response actually ends.
+func EstimateSynthesisChars(findingCount int) int {
+	est := 3000 + 100*findingCount
+	if est > 10000 {
+		return 10000
+	}
+	return est
+}
+
 // Synthesize runs Phase 4: takes all findings and produces an executive summary.
 // onToken is called for streaming output (can be nil).
 //
@@ -292,7 +316,13 @@ func synthesizeHierarchical(
 			// Per-category calls don't carry the recall-gap line —
 			// that's a property of the audit as a whole, surfaced
 			// once in the final merge below.
-			r, err := synthesizeDirect(ctx, client, catFindings, nil, projectContext, 0, nil)
+			//
+			// Pass the SAME onToken through so streamed chars from
+			// every per-category call (and the final merge) contribute
+			// to the shared progress bar. Without this, the bar would
+			// sit at 0 through the parallel per-category phase and
+			// only move during the merge.
+			r, err := synthesizeDirect(ctx, client, catFindings, nil, projectContext, 0, onToken)
 			if err != nil {
 				results[i] = catResult{category: cat, count: len(catFindings), err: err}
 				return

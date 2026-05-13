@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -46,7 +45,7 @@ func auditPhases() []progress.PhaseDef {
 			ProgressFn: recheckProgress,
 			Counter:    recheckCounter,
 			Summary:    recheckSummary},
-		{Name: "phase4", Label: "Synthesis", ProgressFn: synthesisPulse},
+		{Name: "phase4", Label: "Synthesis", ProgressFn: synthesisProgress},
 	}
 }
 
@@ -166,11 +165,58 @@ func reviewProgress(s *progress.State) float64 {
 	return float64(s.Counters["review_done"]) / float64(total)
 }
 
-// synthesisPulse animates a pulsing bar — synthesis is a single LLM
-// call without granular sub-steps, so we show motion to signal liveness.
-// Oscillates between 0.05 and 0.95 with ~4s period.
-func synthesisPulse(s *progress.State) float64 {
-	return 0.5 + 0.45*math.Sin(s.Elapsed.Seconds()*math.Pi/2)
+// synthesisProgress drives the synthesis row's progress bar from the
+// streamed-token counters. The previous synthesisPulse oscillated
+// between 0.05 and 0.95 to "show liveness" — the user saw the
+// percentage going both up and down, which read as broken.
+//
+// Now: bar fills monotonically as content streams in from the LLM,
+// capped at 95% so it never claims done before the response actually
+// ends. When `complete` arrives the parser will have already pushed
+// received past estimated, lifting the bar to 100%.
+//
+// Before the estimate is set (first emit before the LLM call), we
+// return a tiny non-zero value so the bar shows SOMETHING — a hard
+// zero would briefly look like the phase isn't running.
+func synthesisProgress(s *progress.State) float64 {
+	estimated := s.Counters["synthesis_chars_estimated"]
+	received := s.Counters["synthesis_chars_received"]
+	if estimated == 0 {
+		// Just kicked off — show a slim bar so the row doesn't read
+		// as "stuck at 0".
+		return 0.03
+	}
+	pct := float64(received) / float64(estimated)
+	if pct >= 1.0 {
+		return 1.0
+	}
+	if pct > 0.95 {
+		// Cap below 100% until the explicit "complete" arrives, so
+		// the bar never claims done while the LLM is still streaming.
+		return 0.95
+	}
+	return pct
+}
+
+// newSynthesisStreamCounter builds an onToken callback that counts
+// non-control bytes received from the synthesis LLM and emits a
+// throttled "synthesis received N" event so the parser can update
+// the streaming progress counter. Tool / thought tokens (prefixed
+// with \x00) are excluded — they're metadata, not output.
+//
+// emitEveryChars throttles the event rate (one emit per ~N chars)
+// to avoid flooding the TUI with one event per token.
+func newSynthesisStreamCounter(received, lastEmitAt *int, emitEveryChars int, emit func(phase, message string)) func(string) {
+	return func(tok string) {
+		if len(tok) > 0 && tok[0] == 0x00 {
+			return
+		}
+		*received += len(tok)
+		if *received-*lastEmitAt >= emitEveryChars {
+			emit("phase4", fmt.Sprintf("synthesis received %d", *received))
+			*lastEmitAt = *received
+		}
+	}
 }
 
 // ── Event parsing ──────────────────────────────────────────────────────
@@ -261,6 +307,23 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 			s.Counters["recheck_dismissed"] = dismissed
 			s.Counters["recheck_consolidated"] = consolidated
 			s.Counters["recheck_modified"] = modified
+		}
+	case phase == "phase4" && strings.HasPrefix(message, "synthesis estimate "):
+		// Seeded once at synthesis start so synthesisProgress can compute
+		// a ratio. Sent before the first token streams in.
+		var n int
+		if scanCounter(phase, message, "synthesis estimate %d", &n) {
+			s.Counters["synthesis_chars_estimated"] = n
+			// Reset received in case this is a re-run within the same
+			// session (e.g. --no-cache replay).
+			s.Counters["synthesis_chars_received"] = 0
+		}
+	case phase == "phase4" && strings.HasPrefix(message, "synthesis received "):
+		// Throttled emit from the streaming onToken counter. The value
+		// is cumulative bytes-of-content received so far.
+		var n int
+		if scanCounter(phase, message, "synthesis received %d", &n) {
+			s.Counters["synthesis_chars_received"] = n
 		}
 	case phase == "phase1b" && strings.Contains(message, "classifying") && strings.Contains(message, "cached"):
 		// classify package emits "classifying N file(s) (M cached)..." early in the phase.
@@ -362,11 +425,33 @@ func RunWithUI(
 			}
 			if r != nil && len(r.Findings) > 0 && !noSynthesis {
 				emit("phase4", "Synthesizing executive summary...")
-				s, synthErr := SynthesizeCached(runCtx, reviewClient, r.Findings, r.CrossCuttingObservations, r.ProjectContext, len(r.FailedAOIIDs), nil, opts.NoCache)
+
+				// Estimate output size from the finding count and seed
+				// the progress bar counters BEFORE the LLM call starts.
+				// Without the estimate, the first few hundred streamed
+				// chars produce a wildly inaccurate percentage.
+				estimated := EstimateSynthesisChars(len(r.Findings))
+				emit("phase4", fmt.Sprintf("synthesis estimate %d", estimated))
+
+				// Stream-counting onToken: every received content chunk
+				// bumps a local counter and (throttled) emits a progress
+				// event so the parser can update the bar. Tool/THOUGHT
+				// tokens (prefixed with \x00) are excluded — they aren't
+				// part of the output text the user reads.
+				var received int
+				var lastEmitAt int
+				const emitEveryChars = 150 // ~1 emit per 30-50 tokens
+				onToken := newSynthesisStreamCounter(&received, &lastEmitAt, emitEveryChars, emit)
+
+				s, synthErr := SynthesizeCached(runCtx, reviewClient, r.Findings, r.CrossCuttingObservations, r.ProjectContext, len(r.FailedAOIIDs), onToken, opts.NoCache)
 				if synthErr != nil {
 					emit("phase4", "Synthesis failed: "+synthErr.Error())
 					// Non-fatal — continue without synthesis
 				} else {
+					// Final emit lifts the bar to 100% (parser will
+					// derive that from received >= estimated; emit a
+					// big "received" to guarantee it).
+					emit("phase4", fmt.Sprintf("synthesis received %d", received))
 					emit("phase4", "Synthesis complete")
 					synthesis = s
 				}

@@ -179,6 +179,120 @@ func TestParseAuditEvent_Phase3StatusEmits(t *testing.T) {
 	})
 }
 
+// ── EstimateSynthesisChars ─────────────────────────────────────────────
+
+func TestEstimateSynthesisChars(t *testing.T) {
+	tests := []struct {
+		findings int
+		wantMin  int
+		wantMax  int
+	}{
+		{0, 3000, 3000},       // clean audit floor
+		{5, 3500, 3500},       // small audit
+		{20, 5000, 5000},      // medium
+		{50, 8000, 8000},      // large
+		{80, 10000, 10000},    // hits the cap
+		{500, 10000, 10000},   // capped at 10000
+	}
+	for _, tc := range tests {
+		got := EstimateSynthesisChars(tc.findings)
+		if got < tc.wantMin || got > tc.wantMax {
+			t.Errorf("EstimateSynthesisChars(%d) = %d, want in [%d, %d]",
+				tc.findings, got, tc.wantMin, tc.wantMax)
+		}
+	}
+}
+
+func TestEstimateSynthesisChars_MonotonicUntilCap(t *testing.T) {
+	// The estimate must never decrease as findings grow — a non-monotonic
+	// function would make the bar's expected size shrink mid-run if
+	// future code re-derives it (it shouldn't, but pin the property).
+	last := EstimateSynthesisChars(0)
+	for f := 1; f <= 100; f++ {
+		cur := EstimateSynthesisChars(f)
+		if cur < last {
+			t.Errorf("estimate dropped: f=%d gave %d, f=%d gave %d", f-1, last, f, cur)
+		}
+		last = cur
+	}
+}
+
+// ── synthesisProgress ──────────────────────────────────────────────────
+
+func TestSynthesisProgress_ZeroEstimateReturnsSliver(t *testing.T) {
+	// Before the estimate is seeded, return a tiny non-zero value so
+	// the bar reads as "starting" rather than "stuck".
+	s := &progress.State{Counters: map[string]int{}}
+	got := synthesisProgress(s)
+	if got <= 0 || got > 0.1 {
+		t.Errorf("synthesisProgress with no estimate = %g, want small non-zero (0 < x ≤ 0.1)", got)
+	}
+}
+
+func TestSynthesisProgress_FillsAsCharsReceived(t *testing.T) {
+	s := &progress.State{Counters: map[string]int{
+		"synthesis_chars_estimated": 1000,
+		"synthesis_chars_received":  500,
+	}}
+	got := synthesisProgress(s)
+	if got != 0.5 {
+		t.Errorf("synthesisProgress at half = %g, want 0.5", got)
+	}
+}
+
+func TestSynthesisProgress_CapsAt95UntilFull(t *testing.T) {
+	// Above 95% but under 100%, return 0.95. This prevents the bar
+	// from claiming done while the LLM is still streaming the tail.
+	s := &progress.State{Counters: map[string]int{
+		"synthesis_chars_estimated": 1000,
+		"synthesis_chars_received":  980, // 98%
+	}}
+	got := synthesisProgress(s)
+	if got != 0.95 {
+		t.Errorf("synthesisProgress at 98%% should cap at 0.95; got %g", got)
+	}
+}
+
+func TestSynthesisProgress_HitsFullWhenReachedOrExceeded(t *testing.T) {
+	// Once received >= estimated, the bar reads full. The pipeline
+	// emits a final "synthesis received N" with the actual final
+	// count to guarantee this.
+	s := &progress.State{Counters: map[string]int{
+		"synthesis_chars_estimated": 1000,
+		"synthesis_chars_received":  1200, // exceeded estimate
+	}}
+	got := synthesisProgress(s)
+	if got != 1.0 {
+		t.Errorf("synthesisProgress at >100%% = %g, want 1.0", got)
+	}
+}
+
+// ── Parser: synthesis events ───────────────────────────────────────────
+
+func TestParseAuditEvent_SynthesisEstimateSeed(t *testing.T) {
+	// The "synthesis estimate N" emit sets the estimated counter and
+	// resets the received counter (covers a re-run within the same
+	// session).
+	s := newState()
+	s.Counters["synthesis_chars_received"] = 500 // stale from a prior run
+	parseAuditEvent(s, "phase4", "synthesis estimate 4000")
+	if s.Counters["synthesis_chars_estimated"] != 4000 {
+		t.Errorf("estimated = %d, want 4000", s.Counters["synthesis_chars_estimated"])
+	}
+	if s.Counters["synthesis_chars_received"] != 0 {
+		t.Errorf("received should reset to 0 on new estimate; got %d", s.Counters["synthesis_chars_received"])
+	}
+}
+
+func TestParseAuditEvent_SynthesisReceivedTicksBar(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase4", "synthesis estimate 1000")
+	parseAuditEvent(s, "phase4", "synthesis received 250")
+	if s.Counters["synthesis_chars_received"] != 250 {
+		t.Errorf("received = %d, want 250", s.Counters["synthesis_chars_received"])
+	}
+}
+
 // ── ProgressFn ─────────────────────────────────────────────────────────
 
 func TestAOIProgress_RatioOfCounters(t *testing.T) {

@@ -195,8 +195,12 @@ func newUI(cfg Config) *model {
 		spinner.WithSpinner(spinner.Dot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA"))),
 	)
+	// Gradient matches the rest of the TUI's palette: blue (active
+	// accent, same as the spinner) → green (done). Reads as
+	// "progressing toward complete" instead of the bubbles default
+	// magenta→purple which fights with everything else on screen.
 	pb := progress.New(
-		progress.WithDefaultGradient(),
+		progress.WithScaledGradient("#89B4FA", "#A6E3A1"),
 		progress.WithWidth(40),
 	)
 

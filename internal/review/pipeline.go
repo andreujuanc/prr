@@ -234,6 +234,12 @@ func summarizeCacheState(s *state.State, rawDiffs map[string]string) string {
 // progressReporter adapts the simple onProgress callback to the Reporter interface.
 type progressReporter struct {
 	onProgress func(phase, message string)
+
+	// Synthesis streaming counters. Used by Token to fill the
+	// synthesis progress bar based on actual content received from
+	// the LLM rather than the old sin-wave pulse.
+	synthReceived int
+	synthLastEmit int
 }
 
 func (p *progressReporter) DiscoveryProgress(status string) {
@@ -272,8 +278,33 @@ func (p *progressReporter) RecheckProgress(status string) {
 }
 func (p *progressReporter) SynthesisStarted() {
 	p.onProgress("phase2", "Synthesizing review...")
+	// Reset streaming counters in case this is a re-run within the
+	// same session (cached batches but uncached synthesis).
+	p.synthReceived = 0
+	p.synthLastEmit = 0
+	// Seed the estimate so synthesisProgress can compute a ratio.
+	// We don't have a clean per-finding count here (synthesis input
+	// is a string of formatted per-batch findings), so use a
+	// generous fixed estimate. Review syntheses are bounded similarly
+	// to audit's; erring HIGH keeps the bar honest — it fills slower
+	// than reality and never claims done early.
+	p.onProgress("phase2", "synthesis estimate 6000")
 }
-func (p *progressReporter) Token(token string) {}
+func (p *progressReporter) Token(token string) {
+	if len(token) == 0 || token[0] == 0x00 {
+		// Control tokens (\x00THOUGHT:..., \x00TOOL_*:...) aren't
+		// part of the output text — exclude them so the bar tracks
+		// only what the user reads.
+		return
+	}
+	p.synthReceived += len(token)
+	// Throttle: emit roughly every 150 chars (~30-50 tokens) so the
+	// TUI sees smooth motion without one event per token.
+	if p.synthReceived-p.synthLastEmit >= 150 {
+		p.onProgress("phase2", fmt.Sprintf("synthesis received %d", p.synthReceived))
+		p.synthLastEmit = p.synthReceived
+	}
+}
 
 // ── Shared pipeline steps ────────────────────────────────────────────────
 

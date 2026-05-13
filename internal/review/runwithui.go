@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"strings"
 	"time"
 
@@ -51,7 +50,7 @@ func reviewPhases() []progress.PhaseDef {
 			ProgressFn: recheckProgress,
 			Counter:    recheckCounter,
 			Summary:    recheckSummary},
-		{Name: "phase2", Label: "Synthesis", ProgressFn: synthesisPulse},
+		{Name: "phase2", Label: "Synthesis", ProgressFn: synthesisProgress},
 	}
 }
 
@@ -165,12 +164,28 @@ func batchProgress(s *progress.State) float64 {
 	return float64(done) / float64(total)
 }
 
-// synthesisPulse animates the synthesis bar — a single LLM call, no
-// granular sub-steps, so the value oscillates with time to signal
-// liveness rather than progress. Matches audit's pulse so both modes
-// feel the same during synthesis.
-func synthesisPulse(s *progress.State) float64 {
-	return 0.5 + 0.45*math.Sin(s.Elapsed.Seconds()*math.Pi/2)
+// synthesisProgress drives the synthesis row's bar from streamed-byte
+// counters. Replaces the previous sin-wave pulse which oscillated
+// 0.05↔0.95 and made the percentage visibly go DOWN — users read
+// that as a UI bug. Now: monotonic fill as content streams in,
+// capped at 95% until the explicit completion signal arrives.
+//
+// Before the estimate is seeded, returns 0.03 so the bar shows a
+// sliver rather than reading as "not started".
+func synthesisProgress(s *progress.State) float64 {
+	estimated := s.Counters["synthesis_chars_estimated"]
+	received := s.Counters["synthesis_chars_received"]
+	if estimated == 0 {
+		return 0.03
+	}
+	pct := float64(received) / float64(estimated)
+	if pct >= 1.0 {
+		return 1.0
+	}
+	if pct > 0.95 {
+		return 0.95
+	}
+	return pct
 }
 
 // parseReviewEvent extracts review-pipeline counters from the
@@ -241,6 +256,20 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 			s.Counters["recheck_dismissed"] = dismissed
 			s.Counters["recheck_consolidated"] = consolidated
 			s.Counters["recheck_modified"] = modified
+		}
+
+	case phase == "phase2" && strings.HasPrefix(message, "synthesis estimate "):
+		// Seed for synthesisProgress. Sent once before the LLM call.
+		var n int
+		if scanCounter(phase, message, "synthesis estimate %d", &n) {
+			s.Counters["synthesis_chars_estimated"] = n
+			s.Counters["synthesis_chars_received"] = 0
+		}
+	case phase == "phase2" && strings.HasPrefix(message, "synthesis received "):
+		// Throttled emit from the streaming onToken counter.
+		var n int
+		if scanCounter(phase, message, "synthesis received %d", &n) {
+			s.Counters["synthesis_chars_received"] = n
 		}
 
 	case phase == "classify" && strings.Contains(message, "classifying") && strings.Contains(message, "cached"):
