@@ -22,7 +22,6 @@ func TestLoadModels_EmbeddedDefaults(t *testing.T) {
 		fastBudget      int
 	}{
 		{"gemini-3.1-pro-preview", 65536, 32768, 2048, 1024},
-		{"gemini-3.1-flash-lite-preview", 65536, 8192, 2048, 2048},
 		{"gemini-3.1-flash-lite", 65536, 8192, 2048, 2048},
 	}
 

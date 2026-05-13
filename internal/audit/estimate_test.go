@@ -97,7 +97,6 @@ func TestDefaultPricing(t *testing.T) {
 	}{
 		{"gemini-3.1-pro-preview", 2.50},
 		{"gemini-3.1-flash-lite", 0.02},
-		{"gemini-3.1-flash-lite-preview", 0.02},
 		{"something-else", 2.50},
 	}
 	for _, tt := range tests {

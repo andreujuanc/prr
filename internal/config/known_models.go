@@ -31,8 +31,6 @@ var knownModels = []KnownModel{
 		InputPricePer1M: 2.50, OutputPricePer1M: 15.00, Speed: "slow"},
 	{ID: "gemini-3.1-flash-lite", Label: "Gemini 3.1 Flash Lite", Provider: "gemini", Thinking: true, Review: true, AOI: true,
 		InputPricePer1M: 0.02, OutputPricePer1M: 0.10, Speed: "fast"},
-	{ID: "gemini-3.1-flash-lite-preview", Label: "Gemini 3.1 Flash Lite Preview", Provider: "gemini", Thinking: true, Review: true, AOI: true,
-		InputPricePer1M: 0.02, OutputPricePer1M: 0.10, Speed: "fast"},
 
 	// ── Anthropic (direct API) ─────────────────────────────────────────
 	{ID: "claude-opus-4-7", Label: "Claude Opus 4.7", Provider: "anthropic", Thinking: true, Review: true,

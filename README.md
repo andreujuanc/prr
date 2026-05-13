@@ -185,7 +185,7 @@ Available models (switchable with `m`):
 | Model | Thinking |
 |-------|----------|
 | `gemini-3.1-pro-preview` | Yes (16K budget) |
-| `gemini-3.1-flash-lite-preview` | Yes (8K budget) |
+| `gemini-3.1-flash-lite` | Yes (8K budget) |
 | `gemini-2.5-flash` | Yes (8K budget) |
 
 ## Pipe Targets

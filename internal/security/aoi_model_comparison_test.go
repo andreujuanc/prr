@@ -403,9 +403,8 @@ type modelPricing struct {
 }
 
 var geminiPricing = map[string]modelPricing{
-	"gemini-3.1-flash-lite":         {0.02, 0.10},
-	"gemini-3.1-flash-lite-preview": {0.02, 0.10},
-	"gemini-3.1-pro-preview":        {2.50, 15.00},
+	"gemini-3.1-flash-lite":  {0.02, 0.10},
+	"gemini-3.1-pro-preview": {2.50, 15.00},
 }
 
 func estimateCost(model string, inputTokens, outputTokens int) float64 {
@@ -1025,7 +1024,6 @@ func TestAOIContextLineComparison(t *testing.T) {
 		}
 		models = []modelSpec{
 			mk("3.1-flash-lite", "gemini-3.1-flash-lite", mcfg("gemini-3.1-flash-lite")),
-			mk("3.1-flash-lite-preview", "gemini-3.1-flash-lite-preview", mcfg("gemini-3.1-flash-lite-preview")),
 		}
 	}
 
