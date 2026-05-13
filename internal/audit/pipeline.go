@@ -215,8 +215,15 @@ func Run(
 
 	projectContext := p0.ctx
 	if p0.err != nil {
-		log.Printf("Phase 0 (project context) failed: %v", p0.err)
-		// Non-fatal — continue without project context.
+		// Phase 0 is load-bearing: every downstream prompt embeds the
+		// project context. A failure here usually means the configured
+		// fast model is unreachable (invalid model, expired key,
+		// network). Continuing with empty context would produce
+		// findings that ignore project conventions; previously we
+		// silently degraded to a 600-line raw-doc dump which made
+		// every later prompt enormous. Fail fast with the original
+		// error so the user can fix their model config.
+		return nil, fmt.Errorf("phase 0 (project context): %w", p0.err)
 	}
 	dbgw.Section("Project Context Result")
 	if projectContext != "" {

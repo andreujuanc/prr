@@ -339,7 +339,12 @@ func DiscoverProjectContext(
 
 	result, err := project.Discover(ctx, repoRoot, client, cachedHash, onProgress)
 	if err != nil {
-		return cachedCtx, err
+		// Don't fall back to the cached context here — if Discover
+		// failed, it's because the LLM call failed on inputs whose
+		// hash didn't match the cache. The cached summary is for a
+		// different repo state and would be misleading. Surface the
+		// error so the caller can abort with a clear message.
+		return "", err
 	}
 
 	if result.FromCache {
@@ -488,13 +493,20 @@ func RunReviewCore(
 	var aoiScanResults []security.AOIScanResult
 
 	// Project context discovery
+	//
+	// Phase 0 is load-bearing: every downstream prompt embeds the
+	// project context. A failure here usually means the configured
+	// fast model is unreachable. Continuing with empty context would
+	// produce findings that ignore project conventions; previously
+	// the project package silently degraded to a raw doc dump which
+	// then bloated every later prompt. Fail fast.
 	var projectContext string
 	if opts.RepoRoot != "" {
 		pctx, err := DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, reviewState, func(status string) {
 			rr.DiscoveryProgress("Project context: " + status)
 		})
 		if err != nil {
-			log.Printf("Project context discovery failed (non-fatal): %v", err)
+			return nil, fmt.Errorf("project context discovery: %w", err)
 		}
 		projectContext = pctx
 	}

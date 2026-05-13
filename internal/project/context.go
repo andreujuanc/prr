@@ -150,35 +150,40 @@ func Discover(ctx context.Context, repoRoot string, client ai.Client, cachedHash
 	var summary string
 
 	if totalDocSize >= 200 && client != nil {
-		// We have docs — use LLM to produce a concise summary
+		// We have docs and an LLM — produce a concise summary.
+		// If the LLM call fails (invalid model, network error, key
+		// expired) we DO NOT silently fall back to raw doc concatenation:
+		// that masks the underlying problem AND produces a "summary"
+		// that's actually 600+ lines of unfiltered README/CONTRIBUTING
+		// content which then gets prepended to every later prompt,
+		// bloating token usage. Return the error and let the caller
+		// abort the run with a clear message.
 		onProgress("Summarizing project context...")
 		summary, err = summarizeWithLLM(ctx, client, inputs)
 		if err != nil {
-			// Non-fatal — fall back to raw synthesis
-			log.Printf("Project context summarization failed: %v", err)
-			summary = synthesizeFromDocs(inputs)
-		} else {
-			log.Printf("Project context: summarized from %d doc files (%d bytes), %d manifests",
-				len(inputs.docs), totalDocSize, len(inputs.manifests))
+			return nil, fmt.Errorf("project context summarization failed (LLM call): %w", err)
 		}
+		log.Printf("Project context: summarized from %d doc files (%d bytes), %d manifests",
+			len(inputs.docs), totalDocSize, len(inputs.manifests))
 	} else if totalDocSize >= 200 {
-		// Docs available but no LLM client — raw synthesis
+		// Docs available but no LLM client — raw synthesis is the only
+		// option. This branch only fires when the caller explicitly
+		// passed client == nil (e.g. for tests or offline mode).
 		onProgress("Building project context from documentation...")
 		summary = synthesizeFromDocs(inputs)
 		log.Printf("Project context: built from %d doc files (%d bytes), %d manifests",
 			len(inputs.docs), totalDocSize, len(inputs.manifests))
 	} else if client != nil {
-		// Docs are thin — use LLM to infer
+		// Docs are thin — try to infer from manifests + tree.
+		// Same loud-fail rule: a degraded "context" pretending to be
+		// real is worse than a clear error.
 		onProgress("Inferring project context via LLM...")
 		summary, err = inferWithLLM(ctx, client, inputs)
 		if err != nil {
-			// Non-fatal — fall back to whatever we have
-			log.Printf("Project context LLM inference failed: %v", err)
-			summary = synthesizeFromDocs(inputs)
-		} else {
-			log.Printf("Project context: inferred via LLM from %d manifests + dir tree",
-				len(inputs.manifests))
+			return nil, fmt.Errorf("project context inference failed (LLM call): %w", err)
 		}
+		log.Printf("Project context: inferred via LLM from %d manifests + dir tree",
+			len(inputs.manifests))
 	} else {
 		// No docs, no LLM — best effort from manifests + tree
 		summary = synthesizeFromDocs(inputs)
