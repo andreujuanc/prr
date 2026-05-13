@@ -28,6 +28,7 @@ const (
 	FileTypeTest           FileType = "test"
 	FileTypeHandler        FileType = "handler"
 	FileTypeRepository     FileType = "repository"
+	FileTypeSQL            FileType = "sql"
 	FileTypeModel          FileType = "model"
 	FileTypeClient         FileType = "client"
 	FileTypeWorker         FileType = "worker"
@@ -41,6 +42,7 @@ var AllFileTypes = []FileType{
 	FileTypeTest,
 	FileTypeHandler,
 	FileTypeRepository,
+	FileTypeSQL,
 	FileTypeModel,
 	FileTypeClient,
 	FileTypeWorker,
@@ -59,6 +61,15 @@ func DimensionsForType(ft FileType) []string {
 		return []string{"input-validation", "authentication", "authorization", "web-security", "error-handling", "api-design", "performance", "observability", "test-coverage"}
 	case FileTypeRepository:
 		return []string{"data-integrity", "input-validation", "error-handling", "resource-management", "concurrency", "observability", "test-coverage"}
+	case FileTypeSQL:
+		// Raw SQL files (migrations, query files, schema definitions)
+		// have a very different review surface from application-layer
+		// repository code. The dominant risks are schema integrity,
+		// migration safety/reversibility, query correctness, lock
+		// duration on prod-scale tables, and missing indices —
+		// NOT connection handling or error wrapping (which only
+		// exist in the calling code).
+		return []string{"data-integrity", "correctness", "performance", "design", "observability"}
 	case FileTypeModel:
 		return []string{"api-design", "input-validation", "data-integrity", "correctness", "test-coverage"}
 	case FileTypeClient:

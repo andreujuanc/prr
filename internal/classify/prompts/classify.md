@@ -10,8 +10,11 @@ Files whose primary purpose is to test other code. Includes unit tests, integrat
 **handler** — HTTP handlers, route controllers, middleware, gRPC service implementations, WebSocket handlers, GraphQL resolvers.
 Files that receive external requests and produce responses. They sit at the boundary between the outside world and application logic. Includes request parsing, response formatting, route registration, and middleware (auth, logging, CORS, rate limiting).
 
-**repository** — Database access layer, queries, ORM models, data access objects, migration files.
-Files that interact with databases or persistent storage. Includes SQL queries, ORM model definitions with query methods, repository patterns, database connection management, and schema migrations.
+**repository** — Application-layer database access code in a general-purpose language (Go, Python, TypeScript, etc.).
+Files that interact with databases through ORM calls, query builders, raw SQL strings embedded in code, connection management, repository pattern implementations, or DAOs. This is the CALLING code that wraps DB access — NOT the raw SQL itself. If a file is purely `.sql` (CREATE TABLE, ALTER TABLE, INSERT, SELECT statements), classify it as **sql** instead.
+
+**sql** — Raw SQL files: migrations, query files, schema definitions, seed scripts.
+Files whose content is SQL syntax — typically `.sql` files in `migrations/`, `db/migrate/`, `schema/`, `queries/`, or similar directories. Includes DDL (CREATE/ALTER/DROP TABLE), DML used as standalone scripts (INSERT INTO, UPDATE…WHERE), seed data, and views/procedures. Review concerns are schema integrity and migration safety — distinct from the application-layer repository code that calls them.
 
 **model** — Data transfer objects, request/response types, domain entities, serialization structs, API schemas, protobuf message definitions.
 Files that define data structures passed between layers. Pure data containers with minimal logic — validation, serialization, and type definitions.
@@ -45,7 +48,8 @@ Return ONLY a JSON array — one object per file:
 ```json
 [
   {"file": "path/to/file.go", "type": "handler"},
-  {"file": "path/to/file_test.go", "type": "test"}
+  {"file": "path/to/file_test.go", "type": "test"},
+  {"file": "migrations/0042_add_users.sql", "type": "sql"}
 ]
 ```
 

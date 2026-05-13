@@ -58,6 +58,19 @@ func TestDimensionsForType(t *testing.T) {
 			mustNot:  []string{"testing", "web-security"},
 		},
 		{
+			// SQL files have a deliberately different dimension set
+			// from FileTypeRepository — pin the contract so the two
+			// don't drift toward each other accidentally.
+			ft:       FileTypeSQL,
+			wantMin:  4,
+			mustHave: []string{"data-integrity", "correctness", "performance", "design"},
+			// SQL files have no calling-side concerns: no connection
+			// lifecycle, no error wrapping, no input-validation (that's
+			// the calling code's job). If these appear here, the
+			// mapping has regressed toward FileTypeRepository.
+			mustNot: []string{"testing", "web-security", "error-handling", "resource-management", "input-validation"},
+		},
+		{
 			ft:       FileTypeModel,
 			wantMin:  3,
 			mustHave: []string{"api-design", "input-validation", "data-integrity", "test-coverage"},
@@ -121,8 +134,8 @@ func TestDimensionsForType(t *testing.T) {
 
 func TestIsValidFileType(t *testing.T) {
 	valid := []FileType{
-		FileTypeTest, FileTypeHandler, FileTypeRepository, FileTypeModel,
-		FileTypeClient, FileTypeWorker, FileTypeBusinessLogic,
+		FileTypeTest, FileTypeHandler, FileTypeRepository, FileTypeSQL,
+		FileTypeModel, FileTypeClient, FileTypeWorker, FileTypeBusinessLogic,
 		FileTypeInfrastructure, FileTypeUnknown,
 	}
 	for _, ft := range valid {
@@ -173,6 +186,16 @@ func TestParseResult(t *testing.T) {
 			raw:  `[{"file": "weird.go", "type": "something-invalid"}]`,
 			want: []FileClassification{
 				{File: "weird.go", Type: FileTypeUnknown},
+			},
+		},
+		{
+			// Pin that "sql" round-trips through parsing without
+			// being coerced to unknown — i.e. it's a first-class
+			// member of AllFileTypes, not an alias for repository.
+			name: "sql type is preserved",
+			raw:  `[{"file": "migrations/0042_add_users.sql", "type": "sql"}]`,
+			want: []FileClassification{
+				{File: "migrations/0042_add_users.sql", Type: FileTypeSQL},
 			},
 		},
 		{
