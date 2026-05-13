@@ -10,12 +10,25 @@ import (
 )
 
 // mockClient implements ai.Client for testing.
+//
+// The prompt/messages passed into ChatStream are recorded on the
+// receiver so individual tests can assert that the scanner
+// constructed the right request (model, system prompt, message
+// list). Without that, the previous version of this mock would
+// accept any input and return the same canned response, which
+// silently masked prompt-construction regressions.
 type mockClient struct {
 	response string
 	err      error
+
+	// Captured inputs from the most recent ChatStream call.
+	gotPrompt   string
+	gotMessages []ai.Message
 }
 
-func (m *mockClient) ChatStream(_ context.Context, _ string, _ []ai.Message, onToken func(string)) (string, error) {
+func (m *mockClient) ChatStream(_ context.Context, prompt string, messages []ai.Message, onToken func(string)) (string, error) {
+	m.gotPrompt = prompt
+	m.gotMessages = messages
 	if m.err != nil {
 		return "", m.err
 	}
