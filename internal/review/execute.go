@@ -2,10 +2,13 @@ package review
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"context"
 
@@ -116,66 +119,20 @@ func RunReviewCalls(
 				return
 			}
 
-			// Build prompt
-			var systemPrompt string
-			if call.Type == "individual" {
-				systemPrompt = BuildIndividualPrompt(
-					opts.Mode, opts.ProjectContext, opts.CustomInstructions, call.AOIs[0],
-				)
-			} else {
-				systemPrompt = BuildGroupedPrompt(
-					opts.Mode, opts.ProjectContext, opts.CustomInstructions, call,
-				)
-			}
-
-			messages := []ai.Message{
-				{Role: "user", Content: userMessage(opts.Mode)},
-			}
-
-			// Build onToken callback to capture tool events for debug logging.
-			var onToken func(string)
-			if opts.OnToolCall != nil {
-				onToken = func(tok string) {
-					if strings.HasPrefix(tok, "\x00TOOL_START:") {
-						// Format: \x00TOOL_START:name(args)
-						payload := strings.TrimPrefix(tok, "\x00TOOL_START:")
-						if idx := strings.Index(payload, "("); idx >= 0 {
-							name := payload[:idx]
-							args := strings.TrimSuffix(payload[idx+1:], ")")
-							opts.OnToolCall(i, name, args, "start", "")
-						}
-					} else if strings.HasPrefix(tok, "\x00TOOL_DONE:") {
-						// Format: \x00TOOL_DONE:name|status|duration
-						payload := strings.TrimPrefix(tok, "\x00TOOL_DONE:")
-						parts := strings.SplitN(payload, "|", 3)
-						if len(parts) == 3 {
-							opts.OnToolCall(i, parts[0], "", parts[1], parts[2])
-						}
-					}
-				}
-			}
-
-			// Resolve {{TOOLS}} before ChatStream so the debug hook sees
-			// the same text the LLM sees. Agent.ChatStream resolves
-			// internally on a local copy — without this, OnLLMCall
-			// would receive the unresolved placeholder.
-			systemPrompt = ai.ResolveToolsForClient(client, systemPrompt)
-
-			raw, callErr := client.ChatStream(ctx, systemPrompt, messages, onToken)
-			if callErr != nil {
-				resultsCh <- callResult{index: i, err: callErr}
+			result, err := runReviewCallWithRetry(ctx, client, call, opts, i)
+			if err != nil {
+				resultsCh <- callResult{index: i, err: err}
 				return
 			}
-
-			// Debug hook
-			if opts.OnLLMCall != nil {
-				opts.OnLLMCall(i, call, systemPrompt, messages[0].Content, raw)
-			}
-
-			result := ParseDeepReviewResult(call, raw)
 			result.CacheKey = cacheKey
 
-			// Cache the result (individual calls only)
+			// Cache the result — individual calls only AND only on
+			// parse success (i.e. err == nil above). Previously a
+			// parse failure produced an empty result which was then
+			// written to the cache, poisoning that AOI's slot: every
+			// future run would hit "cached: no findings" until the
+			// user wiped the cache or used --no-cache. With the new
+			// retry+error path, only validated results land here.
 			if opts.CacheSet != nil && call.Type == "individual" {
 				opts.CacheSet(cacheKey, result)
 			}
@@ -222,6 +179,122 @@ func RunReviewCalls(
 	return execResult, nil
 }
 
+// reviewRetryBackoff is the wait before the single retry of a transient
+// deep-review failure. Larger than AOI's 1s and classify's 750ms because
+// deep reviews run the strong model with tool use, generating big
+// outputs over 30-60s — when they fail, the cause is more often rate-
+// limiting (which needs longer to recover) than a brief disconnect.
+const reviewRetryBackoff = 1500 * time.Millisecond
+
+// runReviewCallWithRetry executes one deep review call and retries once
+// on transient errors after reviewRetryBackoff. Parse-shape failures
+// (errReviewParse) and context cancellation short-circuit immediately —
+// retrying the same prompt won't fix prose-in-response, and a cancelled
+// context can't carry the retry anyway.
+//
+// Why retry deep reviews at all? They're the most expensive LLM calls
+// in the pipeline; losing one to a 503 after 45s of work also loses
+// every finding for that AOI (individual) or up to 10 AOIs (grouped).
+// One retry catches most transient API hiccups with a small extra-
+// latency budget.
+func runReviewCallWithRetry(
+	ctx context.Context,
+	client ai.Client,
+	call ReviewCall,
+	opts ExecuteOptions,
+	callIndex int,
+) (*state.DeepReviewResult, error) {
+	result, err := doReviewCall(ctx, client, call, opts, callIndex)
+	if err == nil {
+		return result, nil
+	}
+	if errors.Is(err, errReviewParse) {
+		return nil, err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+
+	select {
+	case <-time.After(reviewRetryBackoff):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	log.Printf("review: retrying call %d (%s %s/%s) after transient error: %v",
+		callIndex+1, call.Type, call.Category, call.Subcategory, err)
+	return doReviewCall(ctx, client, call, opts, callIndex)
+}
+
+// doReviewCall executes one review call end-to-end: builds the prompt
+// (with {{TOOLS}} resolved so the OnLLMCall debug hook sees the same
+// text the model does), invokes the LLM, parses the response. Returns
+// a populated DeepReviewResult on success or an error — wrapped with
+// errReviewParse for response-shape failures so the caller can
+// short-circuit retry and skip the cache write.
+func doReviewCall(
+	ctx context.Context,
+	client ai.Client,
+	call ReviewCall,
+	opts ExecuteOptions,
+	callIndex int,
+) (*state.DeepReviewResult, error) {
+	// Build prompt
+	var systemPrompt string
+	if call.Type == "individual" {
+		systemPrompt = BuildIndividualPrompt(
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, call.AOIs[0],
+		)
+	} else {
+		systemPrompt = BuildGroupedPrompt(
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, call,
+		)
+	}
+
+	messages := []ai.Message{
+		{Role: "user", Content: userMessage(opts.Mode)},
+	}
+
+	// Build onToken callback to capture tool events for debug logging.
+	var onToken func(string)
+	if opts.OnToolCall != nil {
+		onToken = func(tok string) {
+			if strings.HasPrefix(tok, "\x00TOOL_START:") {
+				// Format: \x00TOOL_START:name(args)
+				payload := strings.TrimPrefix(tok, "\x00TOOL_START:")
+				if idx := strings.Index(payload, "("); idx >= 0 {
+					name := payload[:idx]
+					args := strings.TrimSuffix(payload[idx+1:], ")")
+					opts.OnToolCall(callIndex, name, args, "start", "")
+				}
+			} else if strings.HasPrefix(tok, "\x00TOOL_DONE:") {
+				// Format: \x00TOOL_DONE:name|status|duration
+				payload := strings.TrimPrefix(tok, "\x00TOOL_DONE:")
+				parts := strings.SplitN(payload, "|", 3)
+				if len(parts) == 3 {
+					opts.OnToolCall(callIndex, parts[0], "", parts[1], parts[2])
+				}
+			}
+		}
+	}
+
+	// Resolve {{TOOLS}} before ChatStream so the debug hook sees the
+	// same text the LLM sees. Agent.ChatStream resolves internally on
+	// a local copy — without this, OnLLMCall would get the unresolved
+	// placeholder while the model gets the resolved version.
+	systemPrompt = ai.ResolveToolsForClient(client, systemPrompt)
+
+	raw, callErr := client.ChatStream(ctx, systemPrompt, messages, onToken)
+	if callErr != nil {
+		return nil, callErr
+	}
+
+	if opts.OnLLMCall != nil {
+		opts.OnLLMCall(callIndex, call, systemPrompt, messages[0].Content, raw)
+	}
+
+	return ParseDeepReviewResult(call, raw)
+}
+
 // ComputeCacheKey returns the cache key for a review call.
 func ComputeCacheKey(call ReviewCall, focusDimensions []string) string {
 	if call.Type == "individual" {
@@ -239,7 +312,20 @@ func userMessage(mode Mode) string {
 	}
 }
 
+// errReviewParse marks parse-shape failures (LLM emitted prose, malformed
+// JSON, missing JSON delimiter). Distinguished from transport errors so:
+//   - retry can short-circuit (re-running the same prompt won't fix it)
+//   - the caller knows NOT to cache the result (an empty result cached
+//     here would poison the cache for that AOI on every future run)
+var errReviewParse = errors.New("review: parse failure")
+
 // ParseDeepReviewResult parses the LLM's response into a DeepReviewResult.
+//
+// Returns errReviewParse-wrapped errors when the response cannot be
+// parsed (no JSON delimiter, malformed JSON). The returned result is
+// never nil — even on parse error it carries the call's Type/Category/
+// Subcategory so the caller can attribute the failure. Findings and
+// Dismissals are populated only on success.
 //
 // RawOutput is never the raw LLM string. The field's type is
 // json.RawMessage, whose MarshalJSON validates bytes as JSON — assigning
@@ -247,7 +333,7 @@ func userMessage(mode Mode) string {
 // future state.Save fail and silently drop the user's findings.
 // We keep RawOutput nil until parsing succeeds, then store the cleaned
 // JSON we actually unmarshaled.
-func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult {
+func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult, error) {
 	result := &state.DeepReviewResult{
 		Type:        call.Type,
 		Category:    call.Category,
@@ -270,8 +356,8 @@ func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult 
 	// Find JSON start
 	jsonStart := strings.IndexAny(s, "{[")
 	if jsonStart == -1 {
-		log.Printf("Deep review: no JSON found in response for %s/%s", call.Category, call.Subcategory)
-		return result
+		return result, fmt.Errorf("%w: no JSON found in response for %s/%s",
+			errReviewParse, call.Category, call.Subcategory)
 	}
 	s = s[jsonStart:]
 
@@ -304,8 +390,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult 
 			DismissedRationale string `json:"dismissed_rationale"`
 		}
 		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
-			log.Printf("Deep review: failed to parse individual response: %v", err)
-			return result
+			return result, fmt.Errorf("%w: parse individual response: %v", errReviewParse, err)
 		}
 		result.RawOutput = json.RawMessage(s)
 		if parsed.Status == "finding" {
@@ -353,8 +438,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult 
 			} `json:"results"`
 		}
 		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
-			log.Printf("Deep review: failed to parse grouped response: %v", err)
-			return result
+			return result, fmt.Errorf("%w: parse grouped response: %v", errReviewParse, err)
 		}
 		result.RawOutput = json.RawMessage(s)
 		result.CrossCutting = parsed.CrossCutting
@@ -384,7 +468,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) *state.DeepReviewResult 
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 func severityRank(s string) int {
