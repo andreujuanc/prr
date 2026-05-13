@@ -63,16 +63,16 @@ func TestRunReviewCalls_TracksFailedAOIIDs(t *testing.T) {
 	// When a call fails, ExecuteResult.FailedAOIIDs must include every
 	// AOI ID that was in that call. Downstream synthesis and reports
 	// use this to tell the user which areas had no review attention.
+	//
+	// The stub's response/error queue is consumed in goroutine-startup
+	// order, which Go does NOT guarantee even at MaxConcurrency=1 (the
+	// per-call goroutines race to acquire the semaphore). So we assert
+	// only order-independent invariants: 2 failures, 2 distinct tracked
+	// AOIs drawn from the call set. Which AOI won the success slot is
+	// scheduler-dependent and not part of the contract.
 	transient := errors.New("503 service unavailable")
 	client := &stubClient{
-		// 3 calls. Call 0 succeeds. Calls 1 + 2 both transiently fail
-		// (attempt + retry). With concurrency=1 and FIFO scheduling
-		// in the test environment, the call ordering is deterministic.
-		//
-		// Calls run in goroutines so the response/error queue gets
-		// consumed in whatever order the LLM is hit, BUT the queue is
-		// global. Each call uses 1 (success) or 2 (fail+retry) slots.
-		// Layout: [success, fail, fail-retry, fail, fail-retry].
+		// One success slot + 2 calls' worth of (attempt + retry) failures.
 		responses: []string{
 			validFindingResponse,
 			"", "", "", "",
@@ -82,7 +82,6 @@ func TestRunReviewCalls_TracksFailedAOIIDs(t *testing.T) {
 		},
 	}
 
-	// Build three distinct calls, each with a different AOI.
 	mkCall := func(id, file string) ReviewCall {
 		return ReviewCall{
 			Type:        "individual",
@@ -102,13 +101,13 @@ func TestRunReviewCalls_TracksFailedAOIIDs(t *testing.T) {
 
 	opts := ExecuteOptions{
 		Mode:           ModeAudit,
-		MaxConcurrency: 1, // serialize so the response queue maps deterministically
+		MaxConcurrency: 1,
 	}
 
 	exec, err := RunReviewCalls(context.Background(), client, calls, opts)
-	// We expect 2/3 = 66% failure → above 20% threshold AND ≥ 2-call
-	// floor → aggregate-fail abort. The ExecuteResult is still
-	// returned (not nil) so callers can see partial findings.
+	// 2/3 = 66% failure → above 20% threshold AND ≥ 2-call floor →
+	// aggregate-fail abort. ExecuteResult is still returned (not nil)
+	// so callers can see partial findings.
 	if err == nil {
 		t.Fatal("expected aggregate-fail error (2/3 failures)")
 	}
@@ -121,14 +120,16 @@ func TestRunReviewCalls_TracksFailedAOIIDs(t *testing.T) {
 	if len(exec.FailedAOIIDs) != 2 {
 		t.Errorf("FailedAOIIDs = %v, want 2 entries", exec.FailedAOIIDs)
 	}
-	// All failed IDs must be from the call set, not aoi-1 (which succeeded).
+	valid := map[string]bool{"aoi-1": true, "aoi-2": true, "aoi-3": true}
+	seen := map[string]bool{}
 	for _, id := range exec.FailedAOIIDs {
-		if id == "aoi-1" {
-			t.Errorf("aoi-1 succeeded; should not appear in FailedAOIIDs: %v", exec.FailedAOIIDs)
+		if !valid[id] {
+			t.Errorf("unexpected AOI id %q in FailedAOIIDs", id)
 		}
-		if id != "aoi-2" && id != "aoi-3" {
-			t.Errorf("unexpected AOI id in FailedAOIIDs: %q", id)
+		if seen[id] {
+			t.Errorf("duplicate AOI id %q in FailedAOIIDs: %v", id, exec.FailedAOIIDs)
 		}
+		seen[id] = true
 	}
 }
 
