@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/classify"
@@ -190,6 +191,7 @@ func Run(
 	}
 	type p1Result struct {
 		paths []string
+		stats CollectStats
 		err   error
 	}
 
@@ -207,8 +209,8 @@ func Run(
 
 	onProgress("phase1", "Collecting files...")
 	go func() {
-		paths, err := CollectFiles(opts.RepoRoot, opts.ExcludePatterns, opts.IncludePatterns)
-		p1Ch <- p1Result{paths: paths, err: err}
+		paths, stats, err := CollectFiles(opts.RepoRoot, opts.ExcludePatterns, opts.IncludePatterns)
+		p1Ch <- p1Result{paths: paths, stats: stats, err: err}
 	}()
 
 	p0 := <-p0Ch
@@ -237,6 +239,37 @@ func Run(
 		return nil, fmt.Errorf("phase 1 file collection: %w", p1.err)
 	}
 	filePaths := p1.paths
+	collectStats := p1.stats
+
+	if dbgw.Enabled() {
+		dbgw.Section("File Collection Stats")
+		dbgw.Text("  total listed:    %d", collectStats.TotalListed)
+		dbgw.Text("  included:        %d (%d tracked, %d untracked)",
+			collectStats.Included, collectStats.Tracked, collectStats.Untracked)
+		dbgw.Text("  excluded review: %d (locks, vendor, generated, etc.)", collectStats.ExcludedReview)
+		dbgw.Text("  excluded audit:  %d (docs, build artifacts, IDE, etc.)", collectStats.ExcludedAudit)
+		dbgw.Text("  excluded custom: %d (user --exclude patterns)", collectStats.ExcludedCustom)
+		if collectStats.ForceIncluded > 0 {
+			dbgw.Text("  force-included:  %d (user --include patterns)", collectStats.ForceIncluded)
+		}
+	}
+
+	// Untracked files matching transient patterns (logs, debug dumps,
+	// state snapshots) are almost always a gitignore miss. Surface
+	// them once so the user can decide; we don't auto-exclude because
+	// a legitimately-named file could match.
+	if len(collectStats.UntrackedTransients) > 0 {
+		preview := collectStats.UntrackedTransients
+		suffix := ""
+		if len(preview) > 5 {
+			preview = preview[:5]
+			suffix = ", ..."
+		}
+		onProgress("warning", fmt.Sprintf("⚠ including %d untracked file(s) that look like local tooling output (%s%s) — consider .gitignore",
+			len(collectStats.UntrackedTransients),
+			strings.Join(preview, ", "),
+			suffix))
+	}
 
 	// Warn about unexpectedly large file sets
 	threshold := opts.LargeFileThreshold
