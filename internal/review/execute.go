@@ -155,6 +155,12 @@ func RunReviewCalls(
 				}
 			}
 
+			// Resolve {{TOOLS}} before ChatStream so the debug hook sees
+			// the same text the LLM sees. Agent.ChatStream resolves
+			// internally on a local copy — without this, OnLLMCall
+			// would receive the unresolved placeholder.
+			systemPrompt = ai.ResolveToolsForClient(client, systemPrompt)
+
 			raw, callErr := client.ChatStream(ctx, systemPrompt, messages, onToken)
 			if callErr != nil {
 				resultsCh <- callResult{index: i, err: callErr}

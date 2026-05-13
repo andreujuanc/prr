@@ -146,6 +146,66 @@ func TestRuntimeHints_NoToolNamesLeakIntoClaudeCode(t *testing.T) {
 // where a nil-provider crash would be much harder to diagnose. Choosing
 // the safer default — inject tools and let the (likely nil) StreamChat
 // call surface the real error.
+// ── ResolveToolsForClient ───────────────────────────────────────────
+//
+// Pin the contract that pre-resolution at the caller-side site yields
+// the same fully-substituted text that Agent.ChatStream uses
+// internally. Without this helper, debug hooks were printing the
+// literal "{{TOOLS}}" because Agent's internal resolve happens on a
+// local copy of its parameter.
+
+func TestResolveToolsForClient_AgentWithHarnessProvider(t *testing.T) {
+	agent := NewAgent(fakeProvider{runsOwnLoop: false}, nil)
+	resolved := ResolveToolsForClient(agent, "before\n{{TOOLS}}\nafter\n")
+	if strings.Contains(resolved, "{{TOOLS}}") {
+		t.Errorf("ResolveToolsForClient left placeholder in output; got:\n%s", resolved)
+	}
+	if !strings.Contains(resolved, "read_file") {
+		t.Errorf("harness resolve missing canonical tool block; got:\n%s", resolved)
+	}
+}
+
+func TestResolveToolsForClient_AgentWithClaudeCodeProvider(t *testing.T) {
+	agent := NewAgent(fakeProvider{runsOwnLoop: true}, nil)
+	resolved := ResolveToolsForClient(agent, "before\n{{TOOLS}}\nafter\n")
+	if strings.Contains(resolved, "{{TOOLS}}") {
+		t.Errorf("ResolveToolsForClient left placeholder for Claude Code; got:\n%s", resolved)
+	}
+	// Claude Code branch substitutes with empty string — and we have
+	// a leak-prevention test elsewhere that checks no prr tool names
+	// reach this branch. Here we just confirm the placeholder is gone.
+}
+
+func TestResolveToolsForClient_NonAgentPassesThrough(t *testing.T) {
+	// Clients that aren't *Agent (e.g. test doubles) don't drive the
+	// placeholder mechanism — pass through unchanged.
+	resolved := ResolveToolsForClient(nonAgentClient{}, "before\n{{TOOLS}}\nafter\n")
+	if !strings.Contains(resolved, "{{TOOLS}}") {
+		t.Errorf("non-Agent client should pass through; expected placeholder preserved, got:\n%s", resolved)
+	}
+}
+
+// nonAgentClient is a stub ai.Client that isn't *Agent. Used to
+// verify ResolveToolsForClient's pass-through branch.
+type nonAgentClient struct{}
+
+func (nonAgentClient) ChatStream(_ context.Context, _ string, _ []Message, _ func(string)) (string, error) {
+	return "", nil
+}
+
+// ResolveToolsForClient must be idempotent: applying it to an
+// already-resolved string must not double-inject or otherwise corrupt.
+// This matters because Agent.ChatStream re-resolves internally even
+// after the caller pre-resolved — both passes must be safe.
+func TestResolveToolsForClient_IdempotentWithAgent(t *testing.T) {
+	agent := NewAgent(fakeProvider{runsOwnLoop: false}, nil)
+	once := ResolveToolsForClient(agent, "before\n{{TOOLS}}\nafter\n")
+	twice := ResolveToolsForClient(agent, once)
+	if once != twice {
+		t.Errorf("ResolveToolsForClient should be idempotent; once != twice")
+	}
+}
+
 func TestResolveTools_NilProvider_InjectsHarnessBlock(t *testing.T) {
 	resolved := ResolveTools("before\n{{TOOLS}}\nafter\n", nil)
 	if !strings.Contains(resolved, "read_file") {

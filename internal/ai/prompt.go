@@ -25,11 +25,31 @@ const toolsPlaceholder = "{{TOOLS}}"
 // ResolveTools substitutes {{TOOLS}} in a prompt. When the provider
 // runs its own internal tool loop, the placeholder is replaced with an
 // empty string. Otherwise the canonical tool block is injected.
+//
+// Idempotent — calling on an already-resolved string is a no-op
+// (no placeholders left to substitute).
 func ResolveTools(raw string, p Provider) string {
 	if p == nil || !p.Capabilities().RunsOwnToolLoop {
 		return strings.ReplaceAll(raw, toolsPlaceholder, strings.TrimRight(toolsBlock, "\n"))
 	}
 	return strings.ReplaceAll(raw, toolsPlaceholder, "")
+}
+
+// ResolveToolsForClient resolves {{TOOLS}} against the client's
+// underlying provider. For *Agent clients this matches what
+// Agent.ChatStream does internally; other Client types pass through
+// unchanged.
+//
+// Call this at the same site that invokes client.ChatStream when you
+// also need to hand the resolved prompt to a debug hook. Agent's
+// internal resolve mutates only a local copy of its parameter — the
+// caller's variable retains the placeholder unless explicitly resolved
+// here, which is why --debug output was showing literal "{{TOOLS}}".
+func ResolveToolsForClient(client Client, systemPrompt string) string {
+	if a, ok := client.(*Agent); ok {
+		return ResolveTools(systemPrompt, a.provider)
+	}
+	return systemPrompt
 }
 
 // ReviewPRSystemPrompt is the high-quality, agent-driven review prompt

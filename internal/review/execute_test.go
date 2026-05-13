@@ -1,10 +1,12 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/state"
 )
@@ -145,3 +147,99 @@ func TestParseDeepReviewResult_FencedYieldsSameParsedFields(t *testing.T) {
 		t.Errorf("severity mismatch: clean=%q fenced=%q", clean.Findings[0].Severity, fenced.Findings[0].Severity)
 	}
 }
+
+// ── OnLLMCall sees resolved prompt ─────────────────────────────────
+//
+// Pin the contract that the systemPrompt passed to OnLLMCall has
+// already had {{TOOLS}} resolved. Without the explicit pre-resolve at
+// the call site, Agent.ChatStream's internal resolve runs on a local
+// copy and the debug hook receives the unresolved placeholder. The
+// user saw this as a literal "{{TOOLS}}" string in their debug logs.
+
+// recordingAgentClient is a minimal Client that wraps a real *ai.Agent
+// just enough to assert what the OnLLMCall hook receives. We can't use
+// the fakeAIClient from pipeline_persistence_test.go because that
+// isn't an *ai.Agent — ResolveToolsForClient's pass-through branch
+// would silently let the placeholder through. We need a real Agent
+// here.
+
+func TestRunReviewCalls_OnLLMCall_SystemPromptHasNoToolsPlaceholder(t *testing.T) {
+	// Wire a real Agent with a harness-style fake provider so
+	// ResolveTools injects the canonical tool block.
+	provider := harnessProvider{}
+	agent := ai.NewAgent(provider, nil)
+
+	calls := []ReviewCall{
+		{Type: "individual", AOIs: []security.AreaOfInterest{{ID: "aoi-1", File: "src/auth.go", Line: 42}}},
+	}
+
+	var hookCalled bool
+	var capturedPrompt string
+	opts := ExecuteOptions{
+		Mode: ModePR,
+		OnLLMCall: func(_ int, _ ReviewCall, systemPrompt, _, _ string) {
+			hookCalled = true
+			capturedPrompt = systemPrompt
+		},
+	}
+
+	_, _ = RunReviewCalls(context.Background(), agent, calls, opts)
+
+	if !hookCalled {
+		t.Fatal("OnLLMCall hook was never invoked")
+	}
+	if strings.Contains(capturedPrompt, "{{TOOLS}}") {
+		t.Errorf("OnLLMCall received unresolved {{TOOLS}} placeholder; the debug log would show the literal placeholder.\n"+
+			"This regression means Agent.ChatStream's internal resolve is being hidden from the caller again.\n"+
+			"systemPrompt excerpt:\n%s", excerptAround(capturedPrompt, "{{TOOLS}}"))
+	}
+	// Positive assertion: the canonical tool block should now be there.
+	if !strings.Contains(capturedPrompt, "read_file") {
+		t.Errorf("expected resolved prompt to contain the canonical tool listing; got:\n%s", capturedPrompt[:min(len(capturedPrompt), 500)])
+	}
+}
+
+// harnessProvider implements ai.Provider as a harness-style provider
+// (doesn't run its own tool loop, so {{TOOLS}} gets the canonical block).
+// The agent never actually invokes StreamChat in this test — it errors
+// before reaching the LLM — but the path through ChatStream up to the
+// resolve happens, which is all we need.
+type harnessProvider struct{}
+
+func (harnessProvider) Name() string    { return "test-harness" }
+func (harnessProvider) ModelID() string { return "test-1" }
+func (harnessProvider) Capabilities() ai.Capabilities {
+	return ai.Capabilities{RunsOwnToolLoop: false}
+}
+func (harnessProvider) Chat(_ context.Context, _ ai.ChatRequest) (*ai.ChatResponse, error) {
+	// Agent uses StreamChat, not Chat — empty return is fine.
+	return &ai.ChatResponse{}, nil
+}
+func (harnessProvider) StreamChat(_ context.Context, _ ai.ChatRequest) (<-chan ai.ChatEvent, error) {
+	// Return a channel that emits the canned response, then closes.
+	ch := make(chan ai.ChatEvent, 2)
+	ch <- ai.ChatEvent{Type: ai.EventText, Text: validFindingJSON}
+	ch <- ai.ChatEvent{Type: ai.EventDone}
+	close(ch)
+	return ch, nil
+}
+
+// excerptAround returns a slice of s centered on the first occurrence
+// of needle, with ~40 chars of context on each side. Used to make
+// test failures actionable without dumping the whole prompt.
+func excerptAround(s, needle string) string {
+	i := strings.Index(s, needle)
+	if i < 0 {
+		return s
+	}
+	start := i - 40
+	if start < 0 {
+		start = 0
+	}
+	end := i + len(needle) + 40
+	if end > len(s) {
+		end = len(s)
+	}
+	return s[start:end]
+}
+

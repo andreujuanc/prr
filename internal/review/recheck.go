@@ -242,6 +242,11 @@ func recheckBatch(
 		)},
 	}
 
+	// Resolve {{TOOLS}} before ChatStream so the debug hook sees
+	// the same text the LLM sees (Agent.ChatStream resolves on a
+	// local copy of its parameter).
+	systemPrompt = ai.ResolveToolsForClient(client, systemPrompt)
+
 	raw, err := client.ChatStream(ctx, systemPrompt, messages, nil)
 	if err != nil {
 		return nil, fmt.Errorf("recheck call: %w", err)

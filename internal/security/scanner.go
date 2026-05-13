@@ -417,6 +417,11 @@ func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook 
 		{Role: "user", Content: userMsg},
 	}
 
+	// Resolve {{TOOLS}} before ChatStream so the debug hook sees
+	// the same text the LLM sees (Agent.ChatStream resolves on a
+	// local copy of its parameter).
+	systemPrompt = ai.ResolveToolsForClient(client, systemPrompt)
+
 	log.Printf("[aoi-debug] calling LLM for batch %q (%d files, %d chars)", batch.label, len(batch.files), len(userMsg))
 
 	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
