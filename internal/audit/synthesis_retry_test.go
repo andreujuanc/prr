@@ -212,7 +212,7 @@ func TestSynthesizeHierarchical_ToleratesPartialFailures(t *testing.T) {
 		responses: []string{
 			validSynthesisJSON, validSynthesisJSON, validSynthesisJSON,
 			"", "", // one category fails twice (attempt + retry)
-			validSynthesisJSON, // the merge call
+			validSynthesisJSON,                     // the merge call
 			validSynthesisJSON, validSynthesisJSON, // extras for scheduling slack
 		},
 		errors: []error{
@@ -248,7 +248,7 @@ func TestSynthesizeHierarchical_AbortsBelowFloor(t *testing.T) {
 	transient := errors.New("503")
 	client := &stubClient{
 		responses: []string{
-			validSynthesisJSON, // first to arrive succeeds
+			validSynthesisJSON,     // first to arrive succeeds
 			"", "", "", "", "", "", // 6 slots of failure for the other 3 categories
 		},
 		errors: []error{

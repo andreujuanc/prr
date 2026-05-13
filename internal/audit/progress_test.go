@@ -187,12 +187,12 @@ func TestEstimateSynthesisChars(t *testing.T) {
 		wantMin  int
 		wantMax  int
 	}{
-		{0, 3000, 3000},       // clean audit floor
-		{5, 3500, 3500},       // small audit
-		{20, 5000, 5000},      // medium
-		{50, 8000, 8000},      // large
-		{80, 10000, 10000},    // hits the cap
-		{500, 10000, 10000},   // capped at 10000
+		{0, 3000, 3000},     // clean audit floor
+		{5, 3500, 3500},     // small audit
+		{20, 5000, 5000},    // medium
+		{50, 8000, 8000},    // large
+		{80, 10000, 10000},  // hits the cap
+		{500, 10000, 10000}, // capped at 10000
 	}
 	for _, tc := range tests {
 		got := EstimateSynthesisChars(tc.findings)
