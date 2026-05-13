@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/state"
@@ -42,6 +43,10 @@ func buildSyntheticReviewFromDeepFindings(deep []state.DeepFinding) *state.Revie
 
 // firstInt parses the leading integer from a string like "45" or
 // "45-62". Returns 0 if no digits start the string.
+//
+// strconv.Atoi guards against integer overflow — without it, a
+// pathological "9999999999999999999" from a malformed LLM response
+// would silently wrap to a negative line number.
 func firstInt(s string) int {
 	end := 0
 	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
@@ -50,9 +55,9 @@ func firstInt(s string) int {
 	if end == 0 {
 		return 0
 	}
-	n := 0
-	for i := 0; i < end; i++ {
-		n = n*10 + int(s[i]-'0')
+	n, err := strconv.Atoi(s[:end])
+	if err != nil {
+		return 0
 	}
 	return n
 }
