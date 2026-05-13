@@ -87,18 +87,42 @@ func TestWriter_Text(t *testing.T) {
 	}
 }
 
-func TestWriter_Prompt(t *testing.T) {
+func TestWriter_Prompt_CompactSkipsSystemPrompt(t *testing.T) {
+	// Default (compact) mode skips the system prompt — it's static
+	// .md content and reprinting it on every LLM call is noise.
 	var buf bytes.Buffer
 	d := New(true)
 	d.SetOutput(&buf)
 
-	d.Prompt("system prompt", "user message")
+	d.Prompt("system prompt body", "user message")
 	out := buf.String()
-	if !strings.Contains(out, "system prompt") {
-		t.Error("expected system prompt in output")
+	if strings.Contains(out, "system prompt body") {
+		t.Errorf("compact mode should skip system prompt; got:\n%s", out)
 	}
 	if !strings.Contains(out, "user message") {
-		t.Error("expected user message in output")
+		t.Errorf("user message should always print; got:\n%s", out)
+	}
+	if strings.Contains(out, "─── System Prompt ───") {
+		t.Errorf("compact mode should not print the System Prompt section header; got:\n%s", out)
+	}
+	if !strings.Contains(out, "─── User Message ───") {
+		t.Errorf("user message section header should always print; got:\n%s", out)
+	}
+}
+
+func TestWriter_Prompt_VerboseIncludesSystemPrompt(t *testing.T) {
+	var buf bytes.Buffer
+	d := New(true)
+	d.SetVerbose(true)
+	d.SetOutput(&buf)
+
+	d.Prompt("system prompt body", "user message")
+	out := buf.String()
+	if !strings.Contains(out, "system prompt body") {
+		t.Errorf("verbose mode should include system prompt; got:\n%s", out)
+	}
+	if !strings.Contains(out, "user message") {
+		t.Errorf("user message missing; got:\n%s", out)
 	}
 }
 

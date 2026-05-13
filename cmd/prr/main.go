@@ -383,7 +383,9 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "    --no-cache           Ignore cached results, re-audit everything\n")
 	fmt.Fprintf(os.Stderr, "    --no-synthesis       Skip Phase 4 executive summary synthesis\n")
 	fmt.Fprintf(os.Stderr, "    --quiet, -q          Suppress terminal output (use with --output)\n")
-	fmt.Fprintf(os.Stderr, "    --debug              Print all LLM prompts and responses to stderr\n")
+	fmt.Fprintf(os.Stderr, "    --debug              Print LLM tool calls, user messages, and responses to stderr\n")
+	fmt.Fprintf(os.Stderr, "                         (compact by default; set PRR_DEBUG_VERBOSE=1 to include\n")
+	fmt.Fprintf(os.Stderr, "                          full system prompts and unelided file content)\n")
 	fmt.Fprintf(os.Stderr, "    --file=<path>        Restrict audit to a single file (relative to repo root)\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available dimensions:"))
@@ -660,7 +662,8 @@ func printReviewUsage() {
 	fmt.Fprintf(os.Stderr, "    --no-cache           Ignore cached results\n")
 	fmt.Fprintf(os.Stderr, "    --no-synthesis       Skip synthesis phase\n")
 	fmt.Fprintf(os.Stderr, "    --quiet, -q          Suppress terminal output (use with --output)\n")
-	fmt.Fprintf(os.Stderr, "    --debug              Print all LLM prompts and responses\n\n")
+	fmt.Fprintf(os.Stderr, "    --debug              Print LLM tool calls, user messages, and responses\n")
+	fmt.Fprintf(os.Stderr, "                         (compact by default; PRR_DEBUG_VERBOSE=1 for full prompts)\n\n")
 }
 
 func createAIClient(cfg *config.Config) ai.Client {
