@@ -248,4 +248,3 @@ func excerptAround(s, needle string) string {
 	}
 	return s[start:end]
 }
-

@@ -15,13 +15,13 @@ import (
 type loadOutcome int
 
 const (
-	loadedOK         loadOutcome = iota // file content loaded successfully
-	skippedSymlink                      // symlink — refused to follow
-	skippedTooLarge                     // exceeded MaxFileBytes cap
-	skippedBinary                       // IsBinary heuristic matched
-	skippedEmpty                        // zero-byte content
-	skippedNotFound                     // ENOENT — likely race with `git rm`
-	loadErrored                         // unexpected read error (permissions, IO, etc.)
+	loadedOK        loadOutcome = iota // file content loaded successfully
+	skippedSymlink                     // symlink — refused to follow
+	skippedTooLarge                    // exceeded MaxFileBytes cap
+	skippedBinary                      // IsBinary heuristic matched
+	skippedEmpty                       // zero-byte content
+	skippedNotFound                    // ENOENT — likely race with `git rm`
+	loadErrored                        // unexpected read error (permissions, IO, etc.)
 )
 
 // loadResult is the per-file outcome of loadAuditFile.

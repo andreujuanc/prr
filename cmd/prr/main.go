@@ -1613,4 +1613,3 @@ func validateAPIKey(provider, apiKey string) error {
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 }
-

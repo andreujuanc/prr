@@ -130,9 +130,9 @@ func TestParseAuditEvent_PipelineEmitContracts(t *testing.T) {
 // real emit matched no branch in parseAuditEvent.
 func TestParseAuditEvent_Phase3ReviewProgress(t *testing.T) {
 	cases := []string{
-		"Review 7/12 complete",            // standard terminal
-		"Review 7/12 complete (cached)",   // cached path adds suffix
-		"Review 7/12 failed: timeout",     // failed path still ticks the counter
+		"Review 7/12 complete",          // standard terminal
+		"Review 7/12 complete (cached)", // cached path adds suffix
+		"Review 7/12 failed: timeout",   // failed path still ticks the counter
 	}
 	for _, msg := range cases {
 		t.Run(msg, func(t *testing.T) {

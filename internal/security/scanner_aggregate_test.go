@@ -81,7 +81,7 @@ func TestScanAreasOfInterestClassified_AbortsAboveThreshold(t *testing.T) {
 			"", "", "", "", "", "", "", "",
 		},
 		errors: []error{
-			nil, // first call succeeds
+			nil,                  // first call succeeds
 			transient, transient, // batch 2: first attempt + retry both fail
 			transient, transient, // batch 3: first attempt + retry both fail
 			transient, transient, transient, // extras in case ordering differs

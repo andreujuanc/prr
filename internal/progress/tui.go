@@ -5,7 +5,7 @@
 // This package renders those events as a phase list with spinner /
 // per-phase detail / active-phase progress bar / final summary box.
 //
-// Design notes
+// # Design notes
 //
 // Mode-specific concerns (the phase list, the result type, how to render
 // the summary, how to extract progress-bar counters from message strings)

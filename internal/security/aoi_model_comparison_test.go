@@ -364,34 +364,34 @@ func parseModelsFromEnv(cfg *config.Config, models map[string]config.ModelConfig
 		return nil
 	}
 
-    // Fast model provider is used as the fallback when an entry omits the provider.
-    fastRef, _ := config.ParseModelRef(cfg.FastModel)
+	// Fast model provider is used as the fallback when an entry omits the provider.
+	fastRef, _ := config.ParseModelRef(cfg.FastModel)
 
-    var specs []modelSpec
-    for _, entry := range strings.Split(envModels, ",") {
-        entry = strings.TrimSpace(entry)
-        if entry == "" {
-            continue
-        }
+	var specs []modelSpec
+	for _, entry := range strings.Split(envModels, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
 
-        // Allow either "provider/model-id" or just "model-id". If the
-        // provider is omitted, fall back to the configured fast model's provider.
-        var providerName, modelID string
-        if ref, err := config.ParseModelRef(entry); err == nil {
-            providerName = ref.Provider
-            modelID = ref.ModelID
-        } else {
-            providerName = fastRef.Provider
-            modelID = entry
-        }
+		// Allow either "provider/model-id" or just "model-id". If the
+		// provider is omitted, fall back to the configured fast model's provider.
+		var providerName, modelID string
+		if ref, err := config.ParseModelRef(entry); err == nil {
+			providerName = ref.Provider
+			modelID = ref.ModelID
+		} else {
+			providerName = fastRef.Provider
+			modelID = entry
+		}
 
-        pc := cfg.ProviderConfigFor(providerName)
-        mcfg := config.GetModelConfig(models, modelID)
-        // Use the original entry as the display name so callers see the
-        // provider/model form when provided.
-        specs = append(specs, specFromConfig(entry, modelID, providerName, pc.APIKey, pc.BaseURL, mcfg))
-    }
-    return specs
+		pc := cfg.ProviderConfigFor(providerName)
+		mcfg := config.GetModelConfig(models, modelID)
+		// Use the original entry as the display name so callers see the
+		// provider/model form when provided.
+		specs = append(specs, specFromConfig(entry, modelID, providerName, pc.APIKey, pc.BaseURL, mcfg))
+	}
+	return specs
 }
 
 // ── Gemini pricing (Standard tier, per 1M tokens, text input) ─────────
@@ -498,9 +498,9 @@ func TestAOIModelComparison(t *testing.T) {
 				t.Fatalf("createProvider: %v", err)
 			}
 
-    tracker := &ai.UsageTracker{}
-    // Enable verbose debug logging for this detailed run to capture HTTP/debug info.
-    client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker), ai.WithDebugLogger(os.Stderr))
+			tracker := &ai.UsageTracker{}
+			// Enable verbose debug logging for this detailed run to capture HTTP/debug info.
+			client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker), ai.WithDebugLogger(os.Stderr))
 
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()

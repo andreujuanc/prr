@@ -16,6 +16,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install git-delta
+        run: sudo apt-get update && sudo apt-get install -y git-delta
+
       - name: Build
         run: go build ./...
 

@@ -1,10 +1,10 @@
 package state
 
 import (
-    "fmt"
-    "os"
-    "path/filepath"
-    "testing"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
 )
 
 // fakeRepoRoot replaces the git.RepoRoot lookup for the duration of a
@@ -204,71 +204,71 @@ func TestLoad_MissingFileReturnsEmptyState(t *testing.T) {
 // fileRename implementation to simulate cross-device rename errors and
 // assert the state still round-trips via the copy fallback.
 func TestSave_FallbackCopyOnRenameError(t *testing.T) {
-    root := t.TempDir()
-    fakeRepoRoot(t, root)
+	root := t.TempDir()
+	fakeRepoRoot(t, root)
 
-    // Inject a fileRename that always fails to force the fallback path.
-    prevRename := fileRename
-    fileRename = func(oldpath, newpath string) error {
-        return fmt.Errorf("simulated rename failure")
-    }
-    t.Cleanup(func() { fileRename = prevRename })
+	// Inject a fileRename that always fails to force the fallback path.
+	prevRename := fileRename
+	fileRename = func(oldpath, newpath string) error {
+		return fmt.Errorf("simulated rename failure")
+	}
+	t.Cleanup(func() { fileRename = prevRename })
 
-    s := NewState("123")
-    s.SetProjectContext("ctx", "h1")
-    if err := Save(s); err != nil {
-        t.Fatalf("Save with rename failure: %v", err)
-    }
+	s := NewState("123")
+	s.SetProjectContext("ctx", "h1")
+	if err := Save(s); err != nil {
+		t.Fatalf("Save with rename failure: %v", err)
+	}
 
-    // Load back and ensure content matches.
-    loaded, err := Load("123")
-    if err != nil {
-        t.Fatalf("Load after Save fallback: %v", err)
-    }
-    if ctx, _ := loaded.GetProjectContext(); ctx != "ctx" {
-        t.Fatalf("expected project context 'ctx', got %q", ctx)
-    }
+	// Load back and ensure content matches.
+	loaded, err := Load("123")
+	if err != nil {
+		t.Fatalf("Load after Save fallback: %v", err)
+	}
+	if ctx, _ := loaded.GetProjectContext(); ctx != "ctx" {
+		t.Fatalf("expected project context 'ctx', got %q", ctx)
+	}
 }
 
 // TestMigration_FallbackCopyOnRenameError simulates a failing rename during
 // legacy migration and asserts that the copy+remove fallback still moves
 // the legacy file into the canonical location.
 func TestMigration_FallbackCopyOnRenameError(t *testing.T) {
-    root := t.TempDir()
-    fakeRepoRoot(t, root)
+	root := t.TempDir()
+	fakeRepoRoot(t, root)
 
-    // Plant a legacy state file at the cwd-relative path.
-    legacyCwd := t.TempDir()
-    chdir(t, legacyCwd)
-    legacyDir := filepath.Join(legacyCwd, ".git/pr-tui")
-    if err := os.MkdirAll(legacyDir, 0755); err != nil {
-        t.Fatal(err)
-    }
-    legacyContents := []byte(`{"pr_number":"7","review":{"summary":"legacy review"}}`)
-    legacyPath := filepath.Join(legacyDir, "7.json")
-    if err := os.WriteFile(legacyPath, legacyContents, 0644); err != nil {
-        t.Fatal(err)
-    }
+	// Plant a legacy state file at the cwd-relative path.
+	legacyCwd := t.TempDir()
+	chdir(t, legacyCwd)
+	legacyDir := filepath.Join(legacyCwd, ".git/pr-tui")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacyContents := []byte(`{"pr_number":"7","review":{"summary":"legacy review"}}`)
+	legacyPath := filepath.Join(legacyDir, "7.json")
+	if err := os.WriteFile(legacyPath, legacyContents, 0644); err != nil {
+		t.Fatal(err)
+	}
 
-    // Force fileRename to fail so migrateOldCwdRelativeState does copy+remove.
-    prevRename := fileRename
-    fileRename = func(oldpath, newpath string) error { return fmt.Errorf("simulated rename error") }
-    t.Cleanup(func() { fileRename = prevRename })
+	// Force fileRename to fail so migrateOldCwdRelativeState does copy+remove.
+	prevRename := fileRename
+	fileRename = func(oldpath, newpath string) error { return fmt.Errorf("simulated rename error") }
+	t.Cleanup(func() { fileRename = prevRename })
 
-    // Load — should migrate
-    loaded, err := Load("7")
-    if err != nil {
-        t.Fatalf("Load with fallback migration: %v", err)
-    }
-    if loaded.Review == nil || loaded.Review.Summary != "legacy review" {
-        t.Fatalf("expected migrated review summary, got: %+v", loaded.Review)
-    }
-    newPath := filepath.Join(root, ".git/pr-tui/7.json")
-    if _, err := os.Stat(newPath); err != nil {
-        t.Fatalf("state not migrated to %q: %v", newPath, err)
-    }
-    // legacy should be gone (we removed it after copying)
-    if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-        t.Fatalf("legacy file still present after fallback migration: %v", err)
-    }
+	// Load — should migrate
+	loaded, err := Load("7")
+	if err != nil {
+		t.Fatalf("Load with fallback migration: %v", err)
+	}
+	if loaded.Review == nil || loaded.Review.Summary != "legacy review" {
+		t.Fatalf("expected migrated review summary, got: %+v", loaded.Review)
+	}
+	newPath := filepath.Join(root, ".git/pr-tui/7.json")
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("state not migrated to %q: %v", newPath, err)
+	}
+	// legacy should be gone (we removed it after copying)
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy file still present after fallback migration: %v", err)
+	}
 }
