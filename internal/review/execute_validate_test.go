@@ -26,7 +26,7 @@ func TestIsValidSeverity(t *testing.T) {
 	// it, and the user reads findings in that order. Anything outside
 	// the canonical set buries findings at position 4 (last). Pin the
 	// set so adding a new severity is an explicit decision.
-	valid := []string{"critical", "high", "medium", "low"}
+	valid := []string{"critical", "high", "medium", "low", "nit"}
 	for _, s := range valid {
 		if !isValidSeverity(s) {
 			t.Errorf("isValidSeverity(%q) = false, want true", s)

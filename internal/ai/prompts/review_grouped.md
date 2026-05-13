@@ -10,6 +10,25 @@ without verification is worthless.
 Every finding MUST be backed by at least one tool call that confirms the issue.
 Every dismissal MUST be backed by at least one tool call that confirms a mitigation exists.
 
+## Use Project Conventions
+
+The Project Context above may contain a `### Conventions` section that
+lists how THIS project intentionally does things (e.g., "errors wrapped
+with fmt.Errorf", "tests live in *_test.go alongside source",
+"Bubble Tea Elm architecture for the TUI").
+
+When a flagged concern matches an established convention, that is a
+strong DISMISSAL signal — the project chose this pattern on purpose.
+Do not flag code for adhering to its own conventions.
+
+Flag a DEVIATION from the conventions, not the convention itself. If
+several AOIs in this group all match a convention, that means the
+convention is being followed consistently — dismiss them; do NOT emit
+a `cross_cutting` entry calling out the convention as a systemic
+pattern.
+
+If no `### Conventions` section is present, this rule doesn't apply.
+
 ## Investigation Process
 
 For each AOI:
@@ -22,6 +41,34 @@ After reviewing all AOIs:
 5. Note cross-cutting observations about the codebase
 
 Do NOT skip steps. Do NOT report findings based solely on the code snippets in the prompt.
+
+## Severity Calibration
+
+Pick `severity` per finding from CONCRETE IMPACT, not feel. Anchor to these:
+
+- **critical** — exploitable RCE, auth bypass to admin/superuser, data
+  loss or persistent corruption, financial state error (lost or
+  double-charged money), or a vulnerability that lets an external
+  attacker take over.
+- **high** — privilege escalation between user tiers, sensitive data
+  exposure (PII / credentials / tokens), persistent injection
+  (XSS / SQLi) on user-controlled input, missing auth on a real
+  endpoint, correctness bug that silently produces wrong production
+  results.
+- **medium** — DoS reachable with adversarial but non-trivial input,
+  race condition in a hot path under realistic load, missing input
+  bounds with no obvious abuse path, error swallowing that hides
+  operational issues, measurable performance regression that isn't
+  user-visible.
+- **low** — inefficiency on small N, missing observability/log,
+  brittle error message that confuses operators, defensive code that
+  complicates without protecting, minor design inconsistency.
+- **nit** — style, naming, docs, harmless redundancy, "would be
+  cleaner if".
+
+If a finding's impact straddles two levels, pick the LOWER one.
+Within a group, do NOT inflate severity to make a pattern look more
+systemic — rank each AOI on its own merits.
 
 ## Output Format
 

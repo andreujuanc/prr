@@ -435,9 +435,14 @@ func validateReviewResult(call ReviewCall, result *state.DeepReviewResult) {
 // isValidSeverity reports whether s is one of the canonical severity
 // strings the reviewer is supposed to emit. Anything else is silently
 // sorted to position 4 (last) by severityRank — which buries findings.
+//
+// The vocabulary must stay in sync with the `severity` enum listed in
+// review_individual.md and review_grouped.md. "nit" is included here
+// because the prompts offer it as a valid emission; without it, every
+// well-formed nit finding would log as an "invalid severity" warning.
 func isValidSeverity(s string) bool {
 	switch s {
-	case "critical", "high", "medium", "low":
+	case "critical", "high", "medium", "low", "nit":
 		return true
 	}
 	return false
