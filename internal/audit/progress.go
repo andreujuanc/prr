@@ -209,9 +209,12 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 		if scanCounter(phase, message, "Scanning %d files", &n) {
 			s.Counters["aoi_total"] = n
 		}
-	case phase == "phase2" && strings.Contains(message, "complete"):
+	case phase == "phase2" && strings.HasPrefix(message, "AOI scan "):
+		// Counter-only emit: "AOI scan %d/%d". Previously the message
+		// trailed with "complete" which was redundant with the inline
+		// counter the TUI already shows.
 		var done, total int
-		if scanCounter(phase, message, "AOI scan %d/%d complete", &done, &total) {
+		if scanCounter(phase, message, "AOI scan %d/%d", &done, &total) {
 			s.Counters["aoi_scanned"] = done
 			s.Counters["aoi_total"] = total
 		}
@@ -221,23 +224,24 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 			s.Counters["review_total"] = n
 		}
 	case phase == "phase3" && strings.HasPrefix(message, "Review "):
-		// Pipeline emits "Review X/Y complete" / "Review X/Y complete (cached)"
-		// / "Review X/Y failed: <err>". All three are terminal events that
-		// should tick the done counter — Sscanf with "Review %d/%d" matches
-		// the prefix and ignores the trailing suffix. Cached and failed
-		// occurrences also increment separate sub-counters so the Summary
-		// can break down the final mix (e.g. "35 done · 58 cached · 3 failed").
+		// Counter-only emit: "Review %d/%d". The runPhase3 callback
+		// now emits this and a separate status string per call so the
+		// TUI detail line doesn't duplicate the counter. Cache and
+		// failure sub-counters are incremented from the status emit
+		// below.
 		var done, total int
 		if scanCounter(phase, message, "Review %d/%d", &done, &total) {
 			s.Counters["review_done"] = done
 			s.Counters["review_total"] = total
-			switch {
-			case strings.Contains(message, "complete (cached)"):
-				s.Counters["review_cached"]++
-			case strings.Contains(message, "failed:"):
-				s.Counters["review_failed"]++
-			}
 		}
+	case phase == "phase3" && message == "complete (cached)":
+		// Cache-hit status emit follows a "Review N/M" emit; tick the
+		// cached sub-counter so the Summary can break down done vs
+		// cached.
+		s.Counters["review_cached"]++
+	case phase == "phase3" && strings.HasPrefix(message, "failed:"):
+		// Failure status emit — same shape, separate sub-counter.
+		s.Counters["review_failed"]++
 	case phase == "recheck" && strings.HasPrefix(message, "rechecked "):
 		// Pipeline emits "rechecked X/Y findings" via RunRecheck's
 		// OnProgress callback forwarding.

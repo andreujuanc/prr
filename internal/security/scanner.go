@@ -252,7 +252,10 @@ func ScanAreasOfInterestClassified(
 			}
 		}
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("AOI scan %d/%d complete", completed, len(batches)))
+			// Counter-only emit. Previously this was "AOI scan X/Y
+			// complete" which the TUI rendered as the detail line —
+			// duplicating the X/Y already shown by the inline counter.
+			onProgress(fmt.Sprintf("AOI scan %d/%d", completed, len(batches)))
 		}
 	}
 

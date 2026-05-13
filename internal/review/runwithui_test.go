@@ -121,7 +121,7 @@ func TestBatchProgress_ZeroTotal(t *testing.T) {
 
 func TestParseReviewEvent_RecheckProgress(t *testing.T) {
 	s := newState()
-	parseReviewEvent(s, "recheck", "rechecked 50/200 findings")
+	parseReviewEvent(s, "recheck", "rechecked 50/200")
 	if s.Counters["recheck_done"] != 50 {
 		t.Errorf("recheck_done = %d, want 50", s.Counters["recheck_done"])
 	}

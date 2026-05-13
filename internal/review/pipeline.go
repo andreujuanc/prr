@@ -398,10 +398,10 @@ func RunRecheck(
 		MaxConcurrency: s.MaxConcurrency,
 		OnLLMCall:      debugHook,
 		OnProgress: func(done, total int) {
-			// Forward the counter as a formatted string on the same
-			// (phase, message) channel the TUI parses. parseEvent
-			// extracts done/total back out via "rechecked %d/%d".
-			onProgress(fmt.Sprintf("rechecked %d/%d findings", done, total))
+			// Counter-only emit. Previously "rechecked X/Y findings"
+			// duplicated the X/Y already shown by the inline counter.
+			// "findings" is implicit from the phase label "Recheck".
+			onProgress(fmt.Sprintf("rechecked %d/%d", done, total))
 		},
 	})
 	if recheckErr != nil {

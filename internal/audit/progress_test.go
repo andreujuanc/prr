@@ -31,7 +31,7 @@ func TestParseAuditEvent_Phase1Files(t *testing.T) {
 
 func TestParseAuditEvent_Phase2ScanProgress(t *testing.T) {
 	s := newState()
-	parseAuditEvent(s, "phase2", "AOI scan 3/5 complete")
+	parseAuditEvent(s, "phase2", "AOI scan 3/5")
 	if s.Counters["aoi_scanned"] != 3 {
 		t.Errorf("aoi_scanned = %d, want 3", s.Counters["aoi_scanned"])
 	}
@@ -79,33 +79,38 @@ func TestParseAuditEvent_PipelineEmitContracts(t *testing.T) {
 			want:    map[string]int{"review_total": 96},
 		},
 		{
-			name:    "phase3 review done (pipeline.go line ~623)",
+			// Counter-only emit: just "Review N/M". Status (complete /
+			// failed / cached) is a separate emit covered below.
+			name:    "phase3 counter-only emit",
 			phase:   "phase3",
-			message: fmt.Sprintf("Review %d/%d complete", 76, 96),
+			message: fmt.Sprintf("Review %d/%d", 76, 96),
 			want:    map[string]int{"review_done": 76, "review_total": 96},
 		},
 		{
-			name:    "phase3 review done — cached (pipeline.go line ~623)",
+			// Status emit "complete (cached)" follows the counter emit
+			// and ticks the cached sub-counter. Counter values are NOT
+			// updated by this emit — that's the counter emit's job.
+			name:    "phase3 cached status emit",
 			phase:   "phase3",
-			message: fmt.Sprintf("Review %d/%d complete%s", 77, 96, " (cached)"),
-			want:    map[string]int{"review_done": 77, "review_total": 96},
+			message: "complete (cached)",
+			want:    map[string]int{"review_cached": 1},
 		},
 		{
-			name:    "phase3 review failed (pipeline.go line ~616)",
+			name:    "phase3 failed status emit",
 			phase:   "phase3",
-			message: fmt.Sprintf("Review %d/%d failed: %v", 78, 96, fmt.Errorf("ctx cancelled")),
-			want:    map[string]int{"review_done": 78, "review_total": 96},
+			message: "failed: ctx cancelled",
+			want:    map[string]int{"review_failed": 1},
 		},
 		{
 			name:    "recheck progress (RunRecheck OnProgress forwarding)",
 			phase:   "recheck",
-			message: fmt.Sprintf("rechecked %d/%d findings", 50, 200),
+			message: fmt.Sprintf("rechecked %d/%d", 50, 200),
 			want:    map[string]int{"recheck_done": 50, "recheck_total": 200},
 		},
 		{
 			name:    "recheck progress at completion",
 			phase:   "recheck",
-			message: fmt.Sprintf("rechecked %d/%d findings", 200, 200),
+			message: fmt.Sprintf("rechecked %d/%d", 200, 200),
 			want:    map[string]int{"recheck_done": 200, "recheck_total": 200},
 		},
 	}
@@ -122,30 +127,56 @@ func TestParseAuditEvent_PipelineEmitContracts(t *testing.T) {
 	}
 }
 
-// TestParseAuditEvent_Phase3ReviewProgress pins the message format the
-// audit pipeline actually emits ("Review X/Y complete" with capital R
-// and a trailing suffix). Previously this test used "review 7/12" —
-// a synthetic format the pipeline never produces — and silently passed
-// while the production code path showed counter "0/Y" because the
-// real emit matched no branch in parseAuditEvent.
-func TestParseAuditEvent_Phase3ReviewProgress(t *testing.T) {
-	cases := []string{
-		"Review 7/12 complete",          // standard terminal
-		"Review 7/12 complete (cached)", // cached path adds suffix
-		"Review 7/12 failed: timeout",   // failed path still ticks the counter
+// TestParseAuditEvent_Phase3ReviewCounterEmit pins the counter-only
+// emit format the audit pipeline now produces per review call.
+// Previously the message was "Review X/Y complete" with status baked
+// in — that duplicated the counter on the TUI detail line. Now the
+// counter and status are separate emits; this test pins the counter.
+func TestParseAuditEvent_Phase3ReviewCounterEmit(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase3", "Review 7/12")
+	if s.Counters["review_done"] != 7 {
+		t.Errorf("review_done = %d, want 7", s.Counters["review_done"])
 	}
-	for _, msg := range cases {
-		t.Run(msg, func(t *testing.T) {
-			s := newState()
-			parseAuditEvent(s, "phase3", msg)
-			if s.Counters["review_done"] != 7 {
-				t.Errorf("review_done = %d, want 7 (msg=%q)", s.Counters["review_done"], msg)
-			}
-			if s.Counters["review_total"] != 12 {
-				t.Errorf("review_total = %d, want 12 (msg=%q)", s.Counters["review_total"], msg)
-			}
-		})
+	if s.Counters["review_total"] != 12 {
+		t.Errorf("review_total = %d, want 12", s.Counters["review_total"])
 	}
+}
+
+// TestParseAuditEvent_Phase3StatusEmits pins the per-call status emit
+// formats (cached, failed). Each is a SEPARATE emit from the counter,
+// emitted second so the TUI detail line shows the status — not a
+// duplicate of the counter.
+func TestParseAuditEvent_Phase3StatusEmits(t *testing.T) {
+	t.Run("complete (cached) increments cached sub-counter", func(t *testing.T) {
+		s := newState()
+		parseAuditEvent(s, "phase3", "complete (cached)")
+		if s.Counters["review_cached"] != 1 {
+			t.Errorf("review_cached = %d, want 1", s.Counters["review_cached"])
+		}
+		// Status emit must NOT touch the count — that's the counter
+		// emit's job. A double-touch would inflate the bar.
+		if s.Counters["review_done"] != 0 {
+			t.Errorf("status emit must not advance review_done; got %d", s.Counters["review_done"])
+		}
+	})
+	t.Run("failed: <err> increments failed sub-counter", func(t *testing.T) {
+		s := newState()
+		parseAuditEvent(s, "phase3", "failed: context cancelled")
+		if s.Counters["review_failed"] != 1 {
+			t.Errorf("review_failed = %d, want 1", s.Counters["review_failed"])
+		}
+	})
+	t.Run("plain complete is a no-op for counters", func(t *testing.T) {
+		// Plain "complete" is purely a UI detail signal — no counter
+		// effect. Pin so we don't accidentally start incrementing
+		// review_done from it (double-count with the counter emit).
+		s := newState()
+		parseAuditEvent(s, "phase3", "complete")
+		if s.Counters["review_done"] != 0 || s.Counters["review_cached"] != 0 || s.Counters["review_failed"] != 0 {
+			t.Errorf("plain 'complete' should not affect counters; got %+v", s.Counters)
+		}
+	})
 }
 
 // ── ProgressFn ─────────────────────────────────────────────────────────
@@ -295,12 +326,22 @@ func TestParseAuditEvent_AOIFoundCount(t *testing.T) {
 }
 
 func TestParseAuditEvent_ReviewCachedAndFailedCounters(t *testing.T) {
-	// Cumulative position (review_done) plus per-status sub-counters
-	// so the Summary can render the breakdown.
+	// Mirrors the two-emit-per-call sequence the pipeline now produces:
+	// counter emit first ("Review N/M"), status emit second ("complete"
+	// / "complete (cached)" / "failed: <err>"). Cumulative position
+	// comes from the counter emits; per-status sub-counters come from
+	// the status emits.
 	s := newState()
-	parseAuditEvent(s, "phase3", "Review 1/3 complete")
-	parseAuditEvent(s, "phase3", "Review 2/3 complete (cached)")
-	parseAuditEvent(s, "phase3", "Review 3/3 failed: timeout")
+	// Call 1: success.
+	parseAuditEvent(s, "phase3", "Review 1/3")
+	parseAuditEvent(s, "phase3", "complete")
+	// Call 2: cache hit.
+	parseAuditEvent(s, "phase3", "Review 2/3")
+	parseAuditEvent(s, "phase3", "complete (cached)")
+	// Call 3: failure.
+	parseAuditEvent(s, "phase3", "Review 3/3")
+	parseAuditEvent(s, "phase3", "failed: timeout")
+
 	if got := s.Counters["review_done"]; got != 3 {
 		t.Errorf("review_done = %d, want 3", got)
 	}

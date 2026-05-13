@@ -713,15 +713,23 @@ func runPhase3(
 		OnLLMCall:       debugHook,
 		OnToolCall:      toolHook,
 		OnProgress: func(completed, total int, cached bool, callErr error) {
+			// Two emits per call: counter first, then status. The TUI
+			// shows the latest message as the detail line, so emitting
+			// the counter first and the status second yields:
+			//   <phase label>  X/Y  <status>
+			// instead of the previously-redundant:
+			//   <phase label>  X/Y  Review X/Y complete
+			// where the counter was duplicated in the detail.
+			onProgress("phase3", fmt.Sprintf("Review %d/%d", completed, total))
 			if callErr != nil {
-				onProgress("phase3", fmt.Sprintf("Review %d/%d failed: %v", completed, total, callErr))
+				onProgress("phase3", fmt.Sprintf("failed: %v", callErr))
 				return
 			}
-			cacheTag := ""
 			if cached {
-				cacheTag = " (cached)"
+				onProgress("phase3", "complete (cached)")
+			} else {
+				onProgress("phase3", "complete")
 			}
-			onProgress("phase3", fmt.Sprintf("Review %d/%d complete%s", completed, total, cacheTag))
 		},
 	}
 

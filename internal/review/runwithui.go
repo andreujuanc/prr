@@ -222,8 +222,9 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 		}
 
 	case phase == "recheck" && strings.HasPrefix(message, "rechecked "):
-		// Pipeline emits "rechecked X/Y findings" via RunRecheck's
-		// OnProgress callback forwarding.
+		// Pipeline emits "rechecked X/Y" (counter-only). The earlier
+		// "rechecked X/Y findings" form duplicated the X/Y on the TUI
+		// detail line; "findings" is now implicit from the phase label.
 		var done, total int
 		if scanCounter(phase, message, "rechecked %d/%d", &done, &total) {
 			s.Counters["recheck_done"] = done
