@@ -68,9 +68,12 @@ func (m *Model) buildActionMenuItems() []actionMenuItem {
 // ── Rendering ───────────────────────────────────────────────────────────
 
 // renderConfirmModal renders the confirmation modal content.
-func (m *Model) renderConfirmModal() string {
+//
+// Returns (content, ok). ok=false when the overlay state is missing or
+// malformed (no action), so the View() dispatch can fall through.
+func (m *Model) renderConfirmModal() (string, bool) {
 	if m.confirmOverlay == nil {
-		return ""
+		return "", false
 	}
 
 	var b strings.Builder
@@ -125,13 +128,16 @@ func (m *Model) renderConfirmModal() string {
 		b.WriteString(styleTextMuted.Render("[Enter] Run   [Esc] Cancel"))
 	}
 
-	return b.String()
+	if b.Len() == 0 {
+		return "", false
+	}
+	return b.String(), true
 }
 
 // renderActionMenu renders the action menu overlay content.
-func (m *Model) renderActionMenu() string {
-	if m.actionMenuOverlay == nil {
-		return ""
+func (m *Model) renderActionMenu() (string, bool) {
+	if m.actionMenuOverlay == nil || len(m.actionMenuOverlay.items) == 0 {
+		return "", false
 	}
 
 	var b strings.Builder
@@ -139,28 +145,28 @@ func (m *Model) renderActionMenu() string {
 
 	b.WriteString(styleAccentBlueBold.Render("Actions for finding") + "\n\n")
 
+	const actionMenuW = 40
 	for i, item := range menu.items {
-		cursor := "  "
+		isSelected := i == menu.cursor
 		keyStyle := styleAccentBlueBold
 		labelStyle := styleTextSecondary
-		if i == menu.cursor {
-			cursor = styleAccentBlueBold.Render("▸ ")
+		if isSelected {
 			labelStyle = styleTextPrimary
 		}
 		// Separator before pipe targets
 		if i == 4 && len(menu.items) > 4 {
 			b.WriteString(styleTextSubtle.Render("  ─────────────────────────────────") + "\n")
 		}
-		b.WriteString(fmt.Sprintf("%s%s  %s\n",
-			cursor,
+		row := fmt.Sprintf("%s  %s",
 			keyStyle.Render(item.key),
 			labelStyle.Render(item.label),
-		))
+		)
+		b.WriteString(SelectableRow(row, actionMenuW, isSelected) + "\n")
 	}
 
 	b.WriteString("\n" + styleTextMuted.Render("  [Enter] Select   [Esc] Cancel"))
 
-	return b.String()
+	return b.String(), true
 }
 
 // ── Bottom-anchored overlay compositor ──────────────────────────────────

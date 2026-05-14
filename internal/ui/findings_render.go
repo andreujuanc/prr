@@ -7,7 +7,6 @@ import (
 
 	"github.com/andreujuanc/prr/internal/state"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // ── Severity colors ─────────────────────────────────────────────────────
@@ -41,71 +40,70 @@ type findingStyles struct {
 
 // renderInlineFinding renders a single finding as a styled box for injection
 // into the diff. Returns the lines to insert (without trailing newline).
+//
+// The box is closed on the right (Box invariant); a 2-cell left indent
+// matches the inline comment block style.
 func renderInlineFinding(f state.ReviewFinding, width int, fs findingStyles) []string {
 	borderColor := findingSeverityColor(f.Severity)
-	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
-	titleStyle := lipgloss.NewStyle().Foreground(borderColor).Bold(true)
+	titleSt := lipgloss.NewStyle().Foreground(borderColor).Bold(true)
 
-	maxW := width - 8 // account for "  │  " prefix + margin
-	if maxW < 20 {
-		maxW = 20
+	// Outer box width = viewport width minus the 2-cell left indent.
+	boxW := width - 2
+	if boxW < 20 {
+		boxW = 20
+	}
+	innerW := boxW - 4 // rails(2) + Padding L+R (2)
+	if innerW < 10 {
+		innerW = 10
 	}
 
-	var lines []string
-
-	// Top border with severity/category tag and title
-	header := fmt.Sprintf("[%s/%s] %s", f.Severity, f.Category, f.Title)
+	// Title: "[severity/category] Title [CWE] verdict-marker"
+	title := fmt.Sprintf("[%s/%s] %s", f.Severity, f.Category, f.Title)
 	if f.CWE != "" {
-		header += fmt.Sprintf(" [%s]", f.CWE)
+		title += fmt.Sprintf(" [%s]", f.CWE)
 	}
 	if f.Revalidation != nil {
 		switch f.Revalidation.Verdict {
 		case "true-positive":
-			header += " \u2718TP"
+			title += " ✘TP"
 		case "false-positive":
-			header += " ~FP"
+			title += " ~FP"
 		case "fixed":
-			header += " \u2713Fixed"
+			title += " ✓Fixed"
 		case "uncertain":
-			header += " ??"
+			title += " ??"
 		}
 	}
-	truncatedHeader := truncateToWidth(header, maxW-2)
-	headerRendered := titleStyle.Render(truncatedHeader)
 
-	// Fill remaining width with dashes: total visual width should not exceed 'width'.
-	// Prefix "  ┌──── " = 8, then header, " ", then dashes.
-	usedW := 8 + ansi.StringWidth(truncatedHeader) + 1
-	topPad := width - usedW - 1 // -1 for safety margin
-	if topPad < 1 {
-		topPad = 1
-	}
-	topLine := borderStyle.Render("  ┌──── ") + headerRendered + " " + borderStyle.Render(strings.Repeat("─", topPad))
-	lines = append(lines, topLine)
-
-	// Body: detail text, word-wrapped
+	var contentLines []string
 	if f.Detail != "" {
-		for _, wrapped := range wrapText(f.Detail, maxW) {
-			lines = append(lines, borderStyle.Render("  │  ")+fs.body.Render(wrapped))
+		for _, w := range wrapText(f.Detail, innerW) {
+			contentLines = append(contentLines, fs.body.Render(w))
 		}
 	}
-
-	// Suggestion (if present), prefixed with ">"
 	if f.Suggestion != "" {
-		lines = append(lines, borderStyle.Render("  │"))
-		for _, wrapped := range wrapText(f.Suggestion, maxW-2) {
-			lines = append(lines, borderStyle.Render("  │  ")+fs.suggest.Render("> "+wrapped))
+		if len(contentLines) > 0 {
+			contentLines = append(contentLines, "")
+		}
+		for _, w := range wrapText(f.Suggestion, innerW-2) {
+			contentLines = append(contentLines, fs.suggest.Render("> "+w))
 		}
 	}
 
-	// Bottom border: "  └" is 3 chars; fill to just under the pane width.
-	bottomW := width - 4 // 3 (prefix) + bottomW dashes ≤ width - 1
-	if bottomW < 6 {
-		bottomW = 6
+	box := Box{
+		Width:       boxW,
+		Title:       title,
+		BorderColor: borderColor,
+		TitleStyle:  &titleSt,
+		Padding:     Padding{Left: 1, Right: 1},
 	}
-	lines = append(lines, borderStyle.Render("  └"+strings.Repeat("─", bottomW)))
-
-	return lines
+	rendered := box.Render(strings.Join(contentLines, "\n"))
+	rawLines := strings.Split(rendered, "\n")
+	out := make([]string, len(rawLines))
+	for i, l := range rawLines {
+		out[i] = "  " + l
+	}
+	return out
 }
 
 // ── Injection into diff ─────────────────────────────────────────────────
@@ -135,7 +133,14 @@ func (m *Model) injectFindings(styledDiff, filePath string) string {
 		})
 	}
 
-	w := m.diffViewport.Width
+	// Use the diff pane's pre-computed width budget. inner == viewport
+	// width by construction; using the budget keeps the source-of-truth
+	// in one place (syncLayout) instead of here. Fall back to the
+	// viewport directly when the budget isn't populated (tests).
+	w := m.diffWidths.inner
+	if w <= 0 {
+		w = m.diffViewport.Width
+	}
 	if w < 40 {
 		w = 80
 	}

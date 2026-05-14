@@ -15,7 +15,10 @@ import (
 // ── PR Picker ───────────────────────────────────────────────────────────
 
 // renderPRPicker renders the pull request selection overlay.
-func (m Model) renderPRPicker() string {
+//
+// Returns (content, ok). ok=false means the modal has nothing meaningful to
+// show; the View() dispatch falls through instead of rendering an empty box.
+func (m Model) renderPRPicker() (string, bool) {
 	width := 64
 	var b strings.Builder
 
@@ -26,7 +29,7 @@ func (m Model) renderPRPicker() string {
 		b.WriteString("\n")
 		b.WriteString("  " + m.spinner.View() + " " + styleTextSecondary.Render("Fetching open pull requests..."))
 		b.WriteString("\n")
-		return b.String()
+		return b.String(), true
 	}
 
 	if m.prPickerError != "" {
@@ -34,7 +37,7 @@ func (m Model) renderPRPicker() string {
 		b.WriteString("  " + styleAccentRed.Render(m.prPickerError))
 		b.WriteString("\n\n")
 		b.WriteString(styleTextMuted.Render("  Press q to quit"))
-		return b.String()
+		return b.String(), true
 	}
 
 	b.WriteString("\n")
@@ -69,14 +72,9 @@ func (m Model) renderPRPicker() string {
 		pr := m.prPickerItems[i]
 		isSelected := i == m.prPickerCursor
 
-		marker := "  "
-		if isSelected {
-			marker = styleAccentBlueBold.Render("> ")
-		}
-
 		num := fmt.Sprintf("#%-4d", pr.Number)
 		title := pr.Title
-		maxTitle := width - 16 // room for marker + #num + author
+		maxTitle := width - 16 // room for #num + author
 		if maxTitle < 20 {
 			maxTitle = 20
 		}
@@ -88,18 +86,17 @@ func (m Model) renderPRPicker() string {
 
 		var line string
 		if isSelected {
-			line = fmt.Sprintf("%s%s %s %s", marker,
+			line = fmt.Sprintf("%s %s %s",
 				styleAccentBlueBold.Render(num),
 				styleTextPrimary.Bold(true).Render(title),
 				styleTextMuted.Render("("+author+")"))
 		} else {
-			line = fmt.Sprintf("%s%s %s %s", marker,
+			line = fmt.Sprintf("%s %s %s",
 				styleTextSecondary.Render(num),
 				styleTextSecondary.Render(title),
 				styleTextMuted.Render("("+author+")"))
 		}
-		line = truncateToWidth(line, width)
-		b.WriteString(line + "\n")
+		b.WriteString(SelectableRow(line, width, isSelected) + "\n")
 	}
 
 	if end < total {
@@ -109,7 +106,7 @@ func (m Model) renderPRPicker() string {
 	b.WriteString("\n")
 	b.WriteString(styleTextMuted.Render("  Enter select  q quit"))
 
-	return b.String()
+	return b.String(), true
 }
 
 // ── Model Picker ────────────────────────────────────────────────────────
@@ -339,8 +336,11 @@ func modelPickerItemAt(sections []pickerSection, cursor int) (section int, item 
 }
 
 // renderModelPicker renders the model selection overlay with review + AOI sections.
-func (m Model) renderModelPicker() string {
+func (m Model) renderModelPicker() (string, bool) {
 	sections := m.modelPickerSections()
+	if modelPickerTotalItems(sections) == 0 {
+		return "", false
+	}
 
 	width := 60
 	var b strings.Builder
@@ -357,11 +357,6 @@ func (m Model) renderModelPicker() string {
 			isSelected := globalIdx == m.modelPickerCursor
 			isCurrent := (si == 0 && model.id == m.aiModelName) ||
 				(si == 1 && model.id == m.aoiModelName)
-
-			marker := "  "
-			if isSelected {
-				marker = styleAccentBlueBold.Render("> ")
-			}
 
 			providerTag := styleTextMuted.Render("[" + model.provider + "] ")
 			name := model.label
@@ -395,9 +390,8 @@ func (m Model) renderModelPicker() string {
 				meta = styleTextMuted.Render("  " + strings.Join(parts, " "))
 			}
 
-			line := fmt.Sprintf("%s%s%s%s%s", marker, providerTag, name, suffix, meta)
-			line = truncateToWidth(line, width)
-			b.WriteString(line + "\n")
+			line := fmt.Sprintf("%s%s%s%s", providerTag, name, suffix, meta)
+			b.WriteString(SelectableRow(line, width, isSelected) + "\n")
 			globalIdx++
 		}
 	}
@@ -405,7 +399,7 @@ func (m Model) renderModelPicker() string {
 	b.WriteString("\n")
 	b.WriteString(styleTextMuted.Render("  Enter select  Esc cancel"))
 
-	return b.String()
+	return b.String(), true
 }
 
 // ── Help Modal ──────────────────────────────────────────────────────────
@@ -489,8 +483,11 @@ func (m Model) helpSections() []helpSection {
 }
 
 // renderHelpModal renders the full-screen help overlay.
-func (m Model) renderHelpModal() string {
+func (m Model) renderHelpModal() (string, bool) {
 	sections := m.helpSections()
+	if len(sections) == 0 {
+		return "", false
+	}
 
 	maxWidth := m.width - 8
 	if maxWidth < 40 {
@@ -522,32 +519,50 @@ func (m Model) renderHelpModal() string {
 	b.WriteString("\n")
 	b.WriteString(styleTextMuted.Render("  Press ? or Esc to close"))
 
-	return b.String()
+	return b.String(), true
 }
 
 // ── Error Modal ─────────────────────────────────────────────────────────
 
 // renderErrorModal renders an error message as a dismissable overlay.
-func (m Model) renderErrorModal() string {
+func (m Model) renderErrorModal() (string, bool) {
+	if strings.TrimSpace(m.errorMsg) == "" {
+		return "", false
+	}
 	var b strings.Builder
 	b.WriteString(styleAccentRed.Bold(true).Render("  ERROR"))
 	b.WriteString("\n\n")
 	b.WriteString(styleTextPrimary.Render("  " + strings.ReplaceAll(ansi.Strip(m.errorMsg), "\n", "\n  ")))
 	b.WriteString("\n\n")
 	b.WriteString(styleTextMuted.Render("  Press any key to dismiss"))
-	return b.String()
+	return b.String(), true
 }
 
 // ── Submit Review Modal ─────────────────────────────────────────────────
 
 // renderSubmitReviewModal renders the review submission confirmation overlay.
-func (m Model) renderSubmitReviewModal() string {
-	if m.reviewState == nil || m.reviewState.Review == nil || m.reviewState.Review.Structured == nil {
-		return ""
+//
+// Returns (content, ok). ok=false when there is no review payload at all
+// (no Structured review and no deep findings to fall back to) — the
+// View() dispatch then falls through instead of rendering an empty box.
+//
+// When Structured is nil but deep findings exist, a synthetic structured
+// review is constructed on the fly so the modal still has meaningful
+// verdict + summary content.
+func (m Model) renderSubmitReviewModal() (string, bool) {
+	if m.reviewState == nil || m.reviewState.Review == nil {
+		return "", false
+	}
+	structured := m.reviewState.Review.Structured
+	if structured == nil {
+		deep := m.reviewState.GetDeepFindings()
+		if len(deep) == 0 {
+			return "", false
+		}
+		structured = buildSyntheticReviewFromDeepFindings(deep)
 	}
 
-	verdict := m.reviewState.Review.Structured.Verdict
-	verdictLabel, verdictStyle := formatVerdict(verdict)
+	verdictLabel, verdictStyle := formatVerdict(structured.Verdict)
 
 	width := 50
 	var b strings.Builder
@@ -559,39 +574,47 @@ func (m Model) renderSubmitReviewModal() string {
 	b.WriteString(verdictStyle.Render(verdictLabel))
 	b.WriteString("\n\n")
 
-	summary := m.reviewState.Review.Structured.Summary
+	summary := structured.Summary
+	if summary == "" {
+		// Synthetic fallback (deep-only path) has no top-level summary;
+		// synthesize one from the finding count so the modal stays useful.
+		if n := len(structured.Findings); n > 0 {
+			summary = fmt.Sprintf("Submitting %d finding(s) from deep review.", n)
+		}
+	}
 	if len(summary) > 200 {
 		summary = summary[:197] + "..."
 	}
-	b.WriteString(wrapStyled(styleTextSecondary, "  "+summary, width-4))
-	b.WriteString("\n\n")
+	if summary != "" {
+		b.WriteString(wrapStyled(styleTextSecondary, "  "+summary, width-4))
+		b.WriteString("\n\n")
+	}
 
 	b.WriteString(styleTextMuted.Render("  This will submit a formal review on the PR."))
 	b.WriteString("\n\n")
 
 	for i, opt := range []string{"Submit", "Cancel"} {
 		isSelected := i == m.submitReviewCursor
-		marker := "  "
-		if isSelected {
-			marker = styleAccentBlueBold.Render("> ")
-		}
 		label := opt
 		if isSelected {
 			label = styleTextPrimary.Bold(true).Render(label)
 		} else {
 			label = styleTextSecondary.Render(label)
 		}
-		b.WriteString(marker + label + "\n")
+		b.WriteString(SelectableRow(label, width, isSelected) + "\n")
 	}
 
-	return b.String()
+	return b.String(), true
 }
 
 // ── Theme Picker ────────────────────────────────────────────────────────
 
 // renderThemePicker renders the theme selection overlay with a color swatch preview.
-func (m Model) renderThemePicker() string {
+func (m Model) renderThemePicker() (string, bool) {
 	themes := BuiltinThemes()
+	if len(themes) == 0 {
+		return "", false
+	}
 
 	width := 52
 	var b strings.Builder
@@ -602,11 +625,6 @@ func (m Model) renderThemePicker() string {
 	for i, theme := range themes {
 		isSelected := i == m.themePickerCursor
 		isCurrent := theme.ID == m.themeBeforePicker
-
-		marker := "  "
-		if isSelected {
-			marker = styleAccentBlueBold.Render("> ")
-		}
 
 		name := theme.Name
 		if isSelected {
@@ -628,15 +646,14 @@ func (m Model) renderThemePicker() string {
 			suffix = styleAccentGreen.Render(" *")
 		}
 
-		line := fmt.Sprintf("%s%s  %s%s", marker, swatch, name, suffix)
-		line = truncateToWidth(line, width)
-		b.WriteString(line + "\n")
+		line := fmt.Sprintf("%s  %s%s", swatch, name, suffix)
+		b.WriteString(SelectableRow(line, width, isSelected) + "\n")
 	}
 
 	b.WriteString("\n")
 	b.WriteString(styleTextMuted.Render("  j/k preview  Enter apply  Esc cancel"))
 
-	return b.String()
+	return b.String(), true
 }
 
 // floatOverlay composites a small floating panel on top of the base view,

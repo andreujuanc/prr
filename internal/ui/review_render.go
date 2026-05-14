@@ -197,12 +197,6 @@ func renderFindingHeader(b *strings.Builder, f state.ReviewFinding, width int, i
 	sevStyle := severityStyle(f.Severity)
 	catStyle := categoryStyle(f.Category)
 
-	// Cursor indicator
-	marker := "  "
-	if isSelected {
-		marker = styleAccentBlueBold.Render("▸ ")
-	}
-
 	// Resolved prefix
 	resolvedPrefix := ""
 	if f.Resolved {
@@ -210,7 +204,9 @@ func renderFindingHeader(b *strings.Builder, f state.ReviewFinding, width int, i
 	}
 
 	// Expand/collapse indicator — only shown for non-resolved findings
-	// (resolved are always single-line). Mirrors the file tree's chevrons.
+	// (resolved are always single-line). This chevron now signals only
+	// expand state; row selection is conveyed by SelectableRow's left bar
+	// and background fill, so the previous double-meaning of "▸" is gone.
 	expandIndicator := ""
 	if !f.Resolved {
 		if expanded {
@@ -230,35 +226,41 @@ func renderFindingHeader(b *strings.Builder, f state.ReviewFinding, width int, i
 		titleStyle = styleTextMuted
 	}
 
-	// Meta prefix: cursor + resolved + expand + badge + cat. Short and
-	// predictable; safe to render on its own line if title is long.
-	prefix := fmt.Sprintf("%s%s%s%s %s", marker, resolvedPrefix, expandIndicator, badge, cat)
+	// Meta prefix: resolved + expand + badge + cat. SelectableRow provides
+	// the cursor affordance (left bar + background), so no marker glyph.
+	prefix := fmt.Sprintf("%s%s%s %s", resolvedPrefix, expandIndicator, badge, cat)
 
-	// Compute prefix's visible width (ANSI-aware) so we can decide
-	// whether the title fits on the same line.
+	// SelectableRow consumes 2 outer cells (bar + gap). The content we
+	// hand it must fit in width-2.
+	contentW := width - 2
+	if contentW < 20 {
+		contentW = 20
+	}
 	prefixVisible := lipgloss.Width(prefix)
-	titleAvailable := width - prefixVisible - 1 // -1 for the space separator
-	if titleAvailable < 20 {
-		titleAvailable = 20
+	titleAvailable := contentW - prefixVisible - 1 // -1 for the space separator
+	if titleAvailable < 10 {
+		titleAvailable = 10
 	}
 
+	var rawLines []string
 	titleVisible := lipgloss.Width(f.Title)
 	if titleVisible <= titleAvailable {
-		// One-line case: fits comfortably.
-		b.WriteString(prefix + " " + titleStyle.Render(f.Title) + "\n")
+		rawLines = append(rawLines, prefix+" "+titleStyle.Render(f.Title))
 	} else {
-		// Multi-line case: prefix on its own line, then wrapped title
-		// indented to align under the badges.
-		b.WriteString(prefix + "\n")
-		indent := strings.Repeat(" ", lipgloss.Width(marker)+lipgloss.Width(resolvedPrefix))
-		wrapWidth := width - len(indent)
-		if wrapWidth < 20 {
-			wrapWidth = 20
+		rawLines = append(rawLines, prefix)
+		indent := strings.Repeat(" ", lipgloss.Width(resolvedPrefix))
+		wrapWidth := contentW - lipgloss.Width(indent)
+		if wrapWidth < 10 {
+			wrapWidth = 10
 		}
 		wrapped := titleStyle.Width(wrapWidth).Render(f.Title)
 		for _, line := range strings.Split(wrapped, "\n") {
-			b.WriteString(indent + line + "\n")
+			rawLines = append(rawLines, indent+line)
 		}
+	}
+
+	for _, line := range rawLines {
+		b.WriteString(SelectableRow(line, width, isSelected) + "\n")
 	}
 }
 

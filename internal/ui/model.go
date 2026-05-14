@@ -273,6 +273,13 @@ type Model struct {
 	height      int
 	ready       bool
 
+	// Width budgets per pane — computed once in syncLayout. Every call
+	// site that previously did its own "viewport.Width - N" math should
+	// read from these instead. See widthBudget and computeLayoutWidths.
+	filesWidths widthBudget
+	diffWidths  widthBudget
+	aiWidths    widthBudget
+
 	// Real data
 	pr           *git.PullRequest
 	reviewState  *state.State
@@ -2938,52 +2945,70 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 		commentsByKey[key] = append(commentsByKey[key], c)
 	}
 
-	commentStyle := lipgloss.NewStyle().
+	commentTitleSt := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#F9E2AF")).
 		Bold(true)
-	replyStyle := lipgloss.NewStyle().
+	replyHeaderSt := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#A6ADC8")).
 		Bold(true)
 	bodyStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#CDD6F4"))
-	borderStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#585B70"))
+	borderColor := lipgloss.Color("#585B70")
 
-	// Cap comment body lines to viewport width
-	maxBodyWidth := m.diffViewport.Width - 6 // account for "  │ " prefix
-	if maxBodyWidth < 20 {
-		maxBodyWidth = 20
+	// Inline boxes use the diff pane's width budget when available; we
+	// fall back to deriving from the viewport directly when the budget
+	// hasn't been populated yet (e.g. in tests that bypass syncLayout).
+	boxWidth := m.diffWidths.boxOuter
+	if boxWidth <= 0 {
+		boxWidth = m.diffViewport.Width - 2
+	}
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+	innerW := m.diffWidths.boxInner
+	if innerW <= 0 {
+		innerW = boxWidth - 4
+	}
+	if innerW < 10 {
+		innerW = 10
 	}
 
 	lines := strings.Split(styledDiff, "\n")
 	var result []string
 
+	wrapBody := func(body string) []string {
+		var out []string
+		for _, raw := range strings.Split(body, "\n") {
+			for _, w := range wrapText(raw, innerW) {
+				out = append(out, bodyStyle.Render(w))
+			}
+		}
+		return out
+	}
+
 	// renderCommentBlock appends a threaded comment block to result.
 	renderCommentBlock := func(comments []git.ReviewComment) {
-		border := borderStyle.Render("  ┌─ ")
-		author := commentStyle.Render(comments[0].Author)
-		result = append(result, border+author)
-		for _, bodyLine := range strings.Split(comments[0].Body, "\n") {
-			prefix := borderStyle.Render("  │ ")
-			if len(bodyLine) > maxBodyWidth {
-				bodyLine = bodyLine[:maxBodyWidth]
-			}
-			result = append(result, prefix+bodyStyle.Render(bodyLine))
+		if len(comments) == 0 {
+			return
 		}
-		// Render replies within the same block
+		var contentLines []string
+		contentLines = append(contentLines, wrapBody(comments[0].Body)...)
 		for _, c := range comments[1:] {
-			separator := borderStyle.Render("  ├─ ")
-			rAuthor := replyStyle.Render(c.Author)
-			result = append(result, separator+rAuthor)
-			for _, bodyLine := range strings.Split(c.Body, "\n") {
-				prefix := borderStyle.Render("  │ ")
-				if len(bodyLine) > maxBodyWidth {
-					bodyLine = bodyLine[:maxBodyWidth]
-				}
-				result = append(result, prefix+bodyStyle.Render(bodyLine))
-			}
+			contentLines = append(contentLines, "")
+			contentLines = append(contentLines, replyHeaderSt.Render("↳ "+c.Author))
+			contentLines = append(contentLines, wrapBody(c.Body)...)
 		}
-		result = append(result, borderStyle.Render("  └───"))
+		box := Box{
+			Width:       boxWidth,
+			Title:       comments[0].Author,
+			BorderColor: borderColor,
+			TitleStyle:  &commentTitleSt,
+			Padding:     Padding{Left: 1, Right: 1},
+		}
+		rendered := box.Render(strings.Join(contentLines, "\n"))
+		for _, l := range strings.Split(rendered, "\n") {
+			result = append(result, "  "+l)
+		}
 	}
 
 	for _, line := range lines {
@@ -3804,6 +3829,11 @@ func (m *Model) populateFileList(st *state.State) {
 
 	m.fileTree = newFileTree(files)
 	m.fileTree.height = m.contentHeight() - 2 // account for border
+	// newFileTree leaves width at zero; let syncLayout populate it from
+	// the current column budget so the very first render after PR load
+	// doesn't see ft.width == 0 (which makes SelectableRow truncate to
+	// ~1 cell per row and the file panel look empty).
+	m.syncLayout()
 }
 
 // schedulePreview increments the debounce sequence and schedules a preview
@@ -4276,6 +4306,12 @@ func (m *Model) syncLayout() {
 	cols := m.columns()
 	ih := m.contentHeight()
 
+	// Compute per-pane width budgets once. Everywhere else reads from
+	// these instead of doing its own "viewport.Width - N" arithmetic.
+	m.filesWidths = budgetFromPane(cols[0])
+	m.diffWidths = budgetFromPane(cols[1])
+	m.aiWidths = budgetFromPane(cols[2])
+
 	if cols[0] > 2 {
 		m.fileTree.width = cols[0] - 2
 		m.fileTree.height = ih - 2
@@ -4655,8 +4691,9 @@ func (m Model) View() string {
 
 	// PR picker modal — rendered before panes to avoid nil PR panics
 	if m.showPRPicker {
-		overlay := centerOverlay(m.renderPRPicker(), m.width, m.height)
-		return overlay
+		if content, ok := m.renderPRPicker(); ok {
+			return centerOverlay(content, m.width, m.height)
+		}
 	}
 
 	cols := m.columns()
@@ -4738,38 +4775,58 @@ func (m Model) View() string {
 	base := header + "\n" + panes + "\n" + footer
 
 	// ── Modal overlays ──────────────────────────────────────────
+	//
+	// The modal contract: each renderer returns (content, ok). ok=false
+	// means there is nothing meaningful to display, so we fall through
+	// to the base view instead of drawing an empty bordered box. (Closing
+	// the modal flag itself happens in Update() where the state actually
+	// lives — View() stays pure.)
 	if m.showHelp {
-		overlay := centerOverlay(m.renderHelpModal(), m.width, m.height)
-		return overlay
+		if content, ok := m.renderHelpModal(); ok {
+			return centerOverlay(content, m.width, m.height)
+		}
 	}
 	if m.showModelPicker {
-		overlay := centerOverlay(m.renderModelPicker(), m.width, m.height)
-		return overlay
+		if content, ok := m.renderModelPicker(); ok {
+			return centerOverlay(content, m.width, m.height)
+		}
 	}
 	if m.showSubmitReview {
-		overlay := centerOverlay(m.renderSubmitReviewModal(), m.width, m.height)
-		return overlay
+		if content, ok := m.renderSubmitReviewModal(); ok {
+			return centerOverlay(content, m.width, m.height)
+		}
 	}
 	if m.showThemePicker {
-		return floatOverlay(base, m.renderThemePicker(), m.width, m.height)
+		if content, ok := m.renderThemePicker(); ok {
+			return floatOverlay(base, content, m.width, m.height)
+		}
 	}
 	if m.errorMsg != "" {
-		overlay := centerOverlay(m.renderErrorModal(), m.width, m.height)
-		return overlay
+		if content, ok := m.renderErrorModal(); ok {
+			return centerOverlay(content, m.width, m.height)
+		}
 	}
 	// Confirm/action overlays float at bottom (no background dimming)
 	// Permission/question overlays take priority
 	if m.permissionOverlay != nil {
-		return bottomOverlay(base, m.renderPermissionModal(), m.width, m.height)
+		if content, ok := m.renderPermissionModal(); ok {
+			return bottomOverlay(base, content, m.width, m.height)
+		}
 	}
 	if m.questionOverlay != nil {
-		return bottomOverlay(base, m.renderQuestionModal(), m.width, m.height)
+		if content, ok := m.renderQuestionModal(); ok {
+			return bottomOverlay(base, content, m.width, m.height)
+		}
 	}
 	if m.confirmOverlay != nil {
-		return bottomOverlay(base, m.renderConfirmModal(), m.width, m.height)
+		if content, ok := m.renderConfirmModal(); ok {
+			return bottomOverlay(base, content, m.width, m.height)
+		}
 	}
 	if m.actionMenuOverlay != nil {
-		return bottomOverlay(base, m.renderActionMenu(), m.width, m.height)
+		if content, ok := m.renderActionMenu(); ok {
+			return bottomOverlay(base, content, m.width, m.height)
+		}
 	}
 	// Flash message: show briefly in the footer area
 	if m.flashMsg != "" {
@@ -4826,78 +4883,12 @@ func joinPanesHorizontal(panes ...string) string {
 }
 
 func (m Model) renderPane(title, content string, width, height int, focused bool) string {
-	if width < 4 {
-		return ""
-	}
-
-	var borderSt lipgloss.Style
-	var tStyle lipgloss.Style
-
-	if focused {
-		borderSt = borderStyleFocused
-		tStyle = titleFocusedStyle
-	} else {
-		borderSt = borderStyleUnfocused
-		tStyle = titleStyle
-	}
-
-	bdr := lipgloss.RoundedBorder()
-
-	// Build top border with inset title
-	titleLabel := tStyle.Render(" " + title + " ")
-	titleW := ansi.StringWidth(titleLabel)
-	topLeft := borderSt.Render(bdr.TopLeft)
-	topRight := borderSt.Render(bdr.TopRight)
-	// 2 chars for corners, 1 char gap before title
-	barBefore := borderSt.Render(strings.Repeat(bdr.Top, 2))
-	remaining := width - 2 - 2 - titleW // corners(2) + barBefore(2) + title
-	if remaining < 0 {
-		remaining = 0
-	}
-	barAfter := borderSt.Render(strings.Repeat(bdr.Top, remaining))
-	topLine := topLeft + barBefore + titleLabel + barAfter + topRight
-
-	// Build content area with side borders
-	contentW := width - 2 // subtract left + right border chars
-	if contentW < 0 {
-		contentW = 0
-	}
-	contentH := height - 2 // subtract top + bottom border lines
-	if contentH < 0 {
-		contentH = 0
-	}
-
-	// Render content lines padded/clipped to contentW
-	contentLines := strings.Split(content, "\n")
-	left := borderSt.Render(bdr.Left)
-	right := borderSt.Render(bdr.Right)
-
-	var body strings.Builder
-	body.Grow(contentH * (contentW + 20)) // pre-allocate to reduce allocations
-	for i := 0; i < contentH; i++ {
-		line := ""
-		if i < len(contentLines) {
-			line = contentLines[i]
-		}
-		vis := ansi.StringWidth(line)
-		if vis > contentW {
-			// Truncate wide lines to fit using the ansi-aware truncator
-			line = ansi.Truncate(line, contentW, "")
-			vis = ansi.StringWidth(line)
-		}
-		if vis < contentW {
-			line = line + strings.Repeat(" ", contentW-vis)
-		}
-		body.WriteString(left + line + right + "\n")
-	}
-
-	// Build bottom border
-	bottomLeft := borderSt.Render(bdr.BottomLeft)
-	bottomRight := borderSt.Render(bdr.BottomRight)
-	bottomBar := borderSt.Render(strings.Repeat(bdr.Bottom, width-2))
-	bottomLine := bottomLeft + bottomBar + bottomRight
-
-	return topLine + "\n" + body.String() + bottomLine
+	return Box{
+		Width:   width,
+		Height:  height,
+		Title:   title,
+		Focused: focused,
+	}.Render(content)
 }
 
 // ── Header ──────────────────────────────────────────────────────────────
