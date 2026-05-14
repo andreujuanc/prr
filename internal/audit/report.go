@@ -18,17 +18,18 @@ var reportSeverityOrder = []string{"critical", "high", "medium", "low", "nit"}
 
 // ReportJSON is the JSON-serializable form of an audit result.
 type ReportJSON struct {
-	FilesScanned             int                 `json:"files_scanned"`
-	AOIsGenerated            int                 `json:"aois_generated"`
-	ReviewCalls              int                 `json:"review_calls"`
-	IndividualReviews        int                 `json:"individual_reviews"`
-	GroupedReviews           int                 `json:"grouped_reviews"`
-	FailedReviews            int                 `json:"failed_reviews,omitempty"`
-	Findings                 []state.DeepFinding `json:"findings"`
-	Dismissals               int                 `json:"dismissals"`
-	CrossCuttingObservations []string            `json:"cross_cutting_observations,omitempty"`
-	SkippedSubcategories     []string            `json:"skipped_subcategories,omitempty"`
-	Synthesis                *SynthesisResult    `json:"synthesis,omitempty"`
+	FilesScanned             int                     `json:"files_scanned"`
+	AOIsGenerated            int                     `json:"aois_generated"`
+	ReviewCalls              int                     `json:"review_calls"`
+	IndividualReviews        int                     `json:"individual_reviews"`
+	GroupedReviews           int                     `json:"grouped_reviews"`
+	FailedReviews            int                     `json:"failed_reviews,omitempty"`
+	Findings                 []state.DeepFinding     `json:"findings"`
+	Dismissals               int                     `json:"dismissals"`
+	RecheckDismissals        []state.DismissedRecord `json:"recheck_dismissals,omitempty"`
+	CrossCuttingObservations []string                `json:"cross_cutting_observations,omitempty"`
+	SkippedSubcategories     []string                `json:"skipped_subcategories,omitempty"`
+	Synthesis                *SynthesisResult        `json:"synthesis,omitempty"`
 }
 
 func toReportJSON(r *Result, synthesis *SynthesisResult) ReportJSON {
@@ -45,6 +46,7 @@ func toReportJSON(r *Result, synthesis *SynthesisResult) ReportJSON {
 		FailedReviews:            r.FailedReviews,
 		Findings:                 findings,
 		Dismissals:               r.Dismissals,
+		RecheckDismissals:        r.RecheckDismissals,
 		CrossCuttingObservations: r.CrossCuttingObservations,
 		SkippedSubcategories:     r.SkippedSubcategories,
 		Synthesis:                synthesis,
@@ -127,7 +129,43 @@ func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) err
 		b.WriteString("\n")
 	}
 
+	// Recheck dismissals — show users what got dropped and why.
+	// Without this, a finding's disappearance after recheck is
+	// invisible; with it, the user can spot over-aggressive
+	// dismissals and override them in future runs.
+	if len(result.RecheckDismissals) > 0 {
+		writeRecheckDismissalsMarkdown(&b, result.RecheckDismissals)
+	}
+
 	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+// writeRecheckDismissalsMarkdown renders the per-finding dismissal log
+// from Phase 3b. Goes at the end of the report because it's an audit-
+// trail section, not a primary deliverable.
+func writeRecheckDismissalsMarkdown(b *strings.Builder, dismissals []state.DismissedRecord) {
+	fmt.Fprintf(b, "## Recheck Dismissals (%d)\n\n", len(dismissals))
+	b.WriteString("Findings the recheck pass removed, with the model's rationale. ")
+	b.WriteString("Review here to override any that look wrong on closer reading.\n\n")
+	for _, d := range dismissals {
+		loc := d.Finding.File
+		if d.Finding.Lines != "" {
+			loc += ":" + d.Finding.Lines
+		}
+		title := d.Finding.Title
+		if title == "" {
+			title = "(no title)"
+		}
+		fmt.Fprintf(b, "#### %s [%s] %s\n", d.FindingID, loc, title)
+		if d.Finding.Severity != "" {
+			fmt.Fprintf(b, "**Severity (pre-recheck):** %s  \n", d.Finding.Severity)
+		}
+		rationale := d.Rationale
+		if rationale == "" {
+			rationale = "(no rationale provided)"
+		}
+		fmt.Fprintf(b, "**Rationale:** %s  \n\n", rationale)
+	}
 }
 
 // writeSynthesisMarkdown emits the executive summary, top risks, systemic

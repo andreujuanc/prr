@@ -215,3 +215,49 @@ func TestResolveTools_NilProvider_InjectsHarnessBlock(t *testing.T) {
 		t.Errorf("nil provider should inject tool heading; got:\n%s", resolved)
 	}
 }
+
+// TestRecheckPrompt_TreatsEvidenceAsHypothesis pins the central
+// behavioral change in PR 4: re-reading the cited file is the
+// default, not an escape hatch. Without these phrases, the prompt
+// collapses back to "trust the evidence field" and the FP class it's
+// meant to catch (guard-one-line-away, F-040/F-047) returns.
+//
+// This is a content test, not a smoke test — the wording is part of
+// the contract. If you rewrite the prompt, update the assertions in
+// lockstep; don't loosen them to make the test pass.
+func TestRecheckPrompt_TreatsEvidenceAsHypothesis(t *testing.T) {
+	for _, want := range []string{
+		// The evidence field is no longer authoritative.
+		"hypothesis to verify",
+		// Re-reading the cited range is the default behavior.
+		"re-read the cited file ±20 lines",
+		// And it's explicitly NOT an escape hatch anymore.
+		"not an escape hatch",
+		// The new dismissal pattern: code refutes the conclusion.
+		"Surrounding code refutes the conclusion",
+		// The cross-file cap stays — re-reading the cited file is
+		// mandatory, but chasing more files turns into a re-audit.
+		"1-2 files per finding",
+	} {
+		if !strings.Contains(RecheckPrompt, want) {
+			t.Errorf("RecheckPrompt missing the contract phrase %q — did a rewrite drop it?\n", want)
+		}
+	}
+}
+
+// TestRecheckPrompt_OutputContractUnchanged guards the JSON shape the
+// recheck parser depends on. The behavioral rewrite in PR 4 changed
+// task framing but must leave the four output buckets alone. If this
+// fails, parseRecheckResult will silently start losing data.
+func TestRecheckPrompt_OutputContractUnchanged(t *testing.T) {
+	for _, bucket := range []string{
+		`"kept"`,
+		`"modified"`,
+		`"consolidated"`,
+		`"dismissed"`,
+	} {
+		if !strings.Contains(RecheckPrompt, bucket) {
+			t.Errorf("RecheckPrompt no longer documents the %s bucket; parser will lose data", bucket)
+		}
+	}
+}

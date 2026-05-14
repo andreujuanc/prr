@@ -174,6 +174,7 @@ func TestClearAllCaches(t *testing.T) {
 	}
 	s.Review = &AIReview{Summary: "looks good"}
 	s.DeepFindings = []DeepFinding{{AOIID: "x", Severity: "high"}}
+	s.RecheckDismissals = []DismissedRecord{{FindingID: "F-007", Rationale: "stale"}}
 
 	s.ClearAllCaches()
 
@@ -187,6 +188,14 @@ func TestClearAllCaches(t *testing.T) {
 	// through into reports.
 	if s.DeepFindings != nil {
 		t.Error("DeepFindings should be nil after ClearAllCaches")
+	}
+
+	// RecheckDismissals likewise — they're keyed to the prior
+	// finding set, which we just discarded. Leaving them in place
+	// would attach dismissal rationales to a fresh audit's findings
+	// by coincidence of FindingID.
+	if s.RecheckDismissals != nil {
+		t.Error("RecheckDismissals should be nil after ClearAllCaches")
 	}
 
 	// Per-file cache fields cleared, but Status and DiffHash preserved
@@ -534,4 +543,75 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ── RecheckDismissals accessors ─────────────────────────────────────────
+
+func TestSetRecheckDismissals_StoresCopy(t *testing.T) {
+	s := NewState("1")
+	input := []DismissedRecord{
+		{FindingID: "F-001", Rationale: "first"},
+		{FindingID: "F-002", Rationale: "second"},
+	}
+
+	s.SetRecheckDismissals(input)
+
+	if len(s.RecheckDismissals) != 2 {
+		t.Fatalf("expected 2 records persisted, got %d", len(s.RecheckDismissals))
+	}
+
+	// Mutating the input slice after the call must not affect state —
+	// SetRecheckDismissals takes a defensive copy because the caller's
+	// slice is shared across goroutines during recheck.
+	input[0].Rationale = "mutated"
+	if s.RecheckDismissals[0].Rationale != "first" {
+		t.Errorf("state must hold a copy, not a reference: got %q", s.RecheckDismissals[0].Rationale)
+	}
+}
+
+func TestSetRecheckDismissals_NilClears(t *testing.T) {
+	s := NewState("1")
+	s.SetRecheckDismissals([]DismissedRecord{{FindingID: "F-001", Rationale: "x"}})
+
+	s.SetRecheckDismissals(nil)
+
+	if s.RecheckDismissals != nil {
+		t.Errorf("nil/empty input must clear the slice, got %d entries", len(s.RecheckDismissals))
+	}
+}
+
+func TestSetRecheckDismissals_EmptyClears(t *testing.T) {
+	s := NewState("1")
+	s.SetRecheckDismissals([]DismissedRecord{{FindingID: "F-001", Rationale: "x"}})
+
+	s.SetRecheckDismissals([]DismissedRecord{})
+
+	if s.RecheckDismissals != nil {
+		t.Errorf("empty input must clear the slice, got %d entries", len(s.RecheckDismissals))
+	}
+}
+
+func TestGetRecheckDismissals_ReturnsCopy(t *testing.T) {
+	s := NewState("1")
+	s.SetRecheckDismissals([]DismissedRecord{{FindingID: "F-001", Rationale: "original"}})
+
+	out := s.GetRecheckDismissals()
+	if len(out) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(out))
+	}
+
+	// Mutating the returned slice must not affect state — Get returns
+	// a defensive copy so concurrent UI reads can't race writers.
+	out[0].Rationale = "mutated"
+	if s.RecheckDismissals[0].Rationale != "original" {
+		t.Errorf("Get must return a copy, mutation leaked into state: %q",
+			s.RecheckDismissals[0].Rationale)
+	}
+}
+
+func TestGetRecheckDismissals_EmptyReturnsNil(t *testing.T) {
+	s := NewState("1")
+	if got := s.GetRecheckDismissals(); got != nil {
+		t.Errorf("expected nil for empty state, got %d entries", len(got))
+	}
 }

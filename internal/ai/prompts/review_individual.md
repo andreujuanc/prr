@@ -81,17 +81,23 @@ Return ONLY a JSON object — no prose before or after:
   "title": "short descriptive title",
   "description": "what's wrong, why it matters, concrete impact",
   "evidence": "what you verified and what you found — summarize key tool results that support this conclusion",
+  "evidence_snippet": "verbatim copy of 1-3 lines from the cited file:lines that prove the issue",
   "trigger": "specific input or scenario that triggers this issue",
   "suggestion": "concrete fix — code snippet preferred",
   "dismissed_rationale": "if dismissed: brief explanation of why this is not a real issue"
 }
 ```
 
-- If this is a real issue: set status to "finding", fill severity/title/description/evidence/trigger/suggestion
-- If this is NOT a real issue: set status to "dismissed", fill evidence and dismissed_rationale
+- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/suggestion
+- If this is NOT a real issue: set status to "dismissed", fill evidence and dismissed_rationale (evidence_snippet not required for dismissals)
 - "evidence" is REQUIRED for both findings and dismissals — summarize what you checked and what you found
   - Good: "found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open"
   - Good: "confirmed middleware at server.go:45 validates all inputs via validateRequest() before handlers run"
   - Bad: "this looks unsafe" (no tool verification cited)
+- "evidence_snippet" is REQUIRED for every finding (status="finding") and must be a verbatim copy of 1-3 lines that actually appear in the cited file near the cited line range. The audit pipeline matches this snippet against the file before accepting the finding — paraphrasing, summarizing, or fabricating the snippet will get the finding dropped.
+  - Good: `if err := json.Decode(body, &v); err != nil {` (one literal line from the file)
+  - Good: `_ = stdinPipe.Close()` (one literal line)
+  - Bad: `the error from Close() is ignored` (description, not a snippet)
+  - Bad: `\\\\json.Decode without error check\\\\` (paraphrase)
 - For security findings: include a CWE ID in the title when applicable
 - "trigger" must be a concrete scenario, not "if an attacker..." generalities

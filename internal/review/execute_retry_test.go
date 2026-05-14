@@ -38,6 +38,42 @@ func (s *stubClient) CallCount() int { return int(atomic.LoadInt32(&s.calls)) }
 
 var _ ai.Client = (*stubClient)(nil)
 
+// recordingClient is like stubClient but also captures the prompt and
+// messages of every call so a test can assert on them. Useful for the
+// evidence corrector tests, which need to verify that the follow-up
+// message names the failing finding by index.
+type recordingClient struct {
+	responses []string
+	errors    []error
+	calls     int32
+
+	// lastPrompt / lastMessages capture the most recent call. We
+	// keep the most-recent only (not a slice of all calls) because
+	// every test that uses this only cares about the corrector's
+	// follow-up, which is the last call in a 2-call sequence.
+	lastPrompt   string
+	lastMessages []ai.Message
+}
+
+func (r *recordingClient) ChatStream(_ context.Context, systemPrompt string, messages []ai.Message, _ func(string)) (string, error) {
+	r.lastPrompt = systemPrompt
+	r.lastMessages = append([]ai.Message(nil), messages...)
+	i := int(atomic.AddInt32(&r.calls, 1)) - 1
+	var resp string
+	var err error
+	if i < len(r.responses) {
+		resp = r.responses[i]
+	}
+	if i < len(r.errors) {
+		err = r.errors[i]
+	}
+	return resp, err
+}
+
+func (r *recordingClient) CallCount() int { return int(atomic.LoadInt32(&r.calls)) }
+
+var _ ai.Client = (*recordingClient)(nil)
+
 // validFindingResponse is a complete individual-call response shape.
 // Keep tiny so tests are easy to read; the structure must match
 // ParseDeepReviewResult's individual-shape unmarshal target.

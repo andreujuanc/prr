@@ -121,6 +121,13 @@ type Result struct {
 	// Dismissals is all dismissed AOIs from Phase 3.
 	Dismissals int
 
+	// RecheckDismissals is the Phase 3b dismissal log — every finding
+	// the recheck pass removed, with the rationale the model gave.
+	// Separate from Dismissals (which counts Phase 3 AOI-level
+	// dismissals before any finding was emitted); these are findings
+	// that survived Phase 3 and were then dropped by recheck.
+	RecheckDismissals []state.DismissedRecord
+
 	// CrossCuttingObservations from grouped reviews.
 	CrossCuttingObservations []string
 
@@ -518,6 +525,13 @@ func Run(
 				var cached []state.DeepFinding
 				if err := json.Unmarshal(raw, &cached); err == nil {
 					findings = cached
+					// Restore the dismissal trail from state — the
+					// cache stores findings only, but state holds
+					// the per-finding rationales from the original
+					// recheck run. Without this, the report on a
+					// cache hit shows the deduped finding list but
+					// no audit trail of what got dropped or why.
+					result.RecheckDismissals = auditState.GetRecheckDismissals()
 					onProgress("recheck", "Using cached recheck result")
 					goto afterRecheck
 				}
@@ -537,16 +551,21 @@ func Run(
 		}
 
 		var changed bool
-		findings, changed = review.RunRecheck(ctx, reviewClient, findings, review.ModeAudit, projectContext,
+		var dismissals []state.DismissedRecord
+		findings, dismissals, changed = review.RunRecheck(ctx, reviewClient, findings, review.ModeAudit, projectContext,
 			func(status string) { onProgress("recheck", status) }, recheckDebugHook,
 			review.RecheckSettings{MaxConcurrency: opts.Concurrency.Recheck})
 
-		// Persist on success.
+		// Persist on success — both the deduped finding set (used for
+		// cache hits next run) AND the dismissal rationale log (used
+		// by the audit report).
 		if changed {
 			if raw, marshalErr := json.Marshal(findings); marshalErr == nil {
 				auditState.SetRecheckCache(recheckKey, raw)
 			}
+			auditState.SetRecheckDismissals(dismissals)
 		}
+		result.RecheckDismissals = dismissals
 	}
 afterRecheck:
 	recheckUsage := ai.SnapshotUsage(reviewClient)
@@ -710,6 +729,7 @@ func runPhase3(
 		FocusDimensions: opts.Focus,
 		MaxConcurrency:  concurrencyOr(opts.Concurrency.DeepReview, phase3MaxConcurrency),
 		NoCache:         opts.NoCache,
+		RepoRoot:        opts.RepoRoot,
 		OnLLMCall:       debugHook,
 		OnToolCall:      toolHook,
 		OnProgress: func(completed, total int, cached bool, callErr error) {
@@ -769,6 +789,11 @@ func hashContent(content string) string {
 
 // computeRecheckCacheKey hashes the recheck inputs into a stable key.
 // Findings are sorted by FindingID before hashing so order doesn't matter.
+//
+// Both recheck prompts are part of the key so tuning either one
+// invalidates stale cache entries automatically. Without this, a
+// prompt change would silently serve recheck results produced by the
+// previous prompt for the duration of the cached entry.
 func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode string) string {
 	sorted := make([]state.DeepFinding, len(findings))
 	copy(sorted, findings)
@@ -782,6 +807,11 @@ func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode s
 	if data, err := json.Marshal(sorted); err == nil {
 		h.Write(data)
 	}
+	h.Write([]byte{0})
+	consolHash := sha256.Sum256([]byte(ai.RecheckConsolidatePrompt))
+	h.Write(consolHash[:])
+	dismissHash := sha256.Sum256([]byte(ai.RecheckDismissPrompt))
+	h.Write(dismissHash[:])
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 

@@ -159,6 +159,24 @@ type State struct {
 	// reopen. The Review tab reads this when state.Review is nil — which
 	// is the default in TUI mode where synthesis is skipped.
 	DeepFindings []DeepFinding `json:"deep_findings,omitempty"`
+
+	// RecheckDismissals records every finding the Phase 3b recheck pass
+	// removed, along with the LLM's rationale. Persisted so the audit
+	// report can show users WHY a finding disappeared, and so prompt
+	// tuning can be measured (compare dismissal counts and rationales
+	// across runs). Replaces the previous "DismissedCount only" output,
+	// which routed rationales to log.Printf and lost them.
+	RecheckDismissals []DismissedRecord `json:"recheck_dismissals,omitempty"`
+}
+
+// DismissedRecord is one finding that recheck removed, with the
+// rationale the model gave for removing it. The original finding is
+// kept so the report can render it inline next to the rationale —
+// users need to see what got dismissed, not just that something did.
+type DismissedRecord struct {
+	FindingID string      `json:"finding_id"`
+	Finding   DeepFinding `json:"finding"`
+	Rationale string      `json:"rationale"`
 }
 
 // DeepReviewResult stores the cached output of a Phase 3 review call.
@@ -199,8 +217,27 @@ type DeepFinding struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Evidence    string `json:"evidence,omitempty"` // what was verified and found (tool-backed)
-	Trigger     string `json:"trigger"`
-	Suggestion  string `json:"suggestion,omitempty"`
+	// EvidenceSnippet is 1-3 verbatim lines from File at Lines that
+	// prove the finding. Phase 3's prompt requires it, and the
+	// in-loop verifier matches this against the file before the
+	// finding is accepted — anchoring every claim to text that
+	// actually exists at the cited location. Findings whose snippet
+	// doesn't match get one refinement round trip and, if still
+	// unmatched, are dropped.
+	EvidenceSnippet string `json:"evidence_snippet,omitempty"`
+	Trigger         string `json:"trigger"`
+	Suggestion      string `json:"suggestion,omitempty"`
+
+	// Systemic is set by the recheck parser when a finding came out
+	// of the `consolidated` bucket — i.e. it represents a cross-file
+	// pattern merged from multiple per-file findings, not an
+	// individual issue. The two-pass recheck pipeline uses this to
+	// route systemic findings around the per-file dismiss pass
+	// (their context is the multi-file aggregation, not any single
+	// file). Was previously inferred via an `isSystemic` heuristic
+	// (File=="multiple" / Title prefix); the flag is authoritative
+	// because the producer sets it explicitly.
+	Systemic bool `json:"systemic,omitempty"`
 }
 
 // DeepDismissal is a dismissed AOI from Phase 3 review.
@@ -308,6 +345,7 @@ func (s *State) ClearAllCaches() {
 	s.Review = nil
 	s.DeepReviews = nil
 	s.DeepFindings = nil
+	s.RecheckDismissals = nil
 	s.RecheckCache = nil
 	s.SynthesisCache = nil
 	s.ProjectContext = ""
@@ -411,6 +449,32 @@ func (s *State) ClearDeepFindings() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.DeepFindings = nil
+}
+
+// SetRecheckDismissals replaces the persisted dismissal log. Called
+// once per recheck run with the full list — recheck dismissals are
+// produced as a batch, not incrementally, so a full overwrite is the
+// right shape (vs. AppendDeepFindings which streams during Phase 3).
+func (s *State) SetRecheckDismissals(dismissals []DismissedRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(dismissals) == 0 {
+		s.RecheckDismissals = nil
+		return
+	}
+	s.RecheckDismissals = append([]DismissedRecord(nil), dismissals...)
+}
+
+// GetRecheckDismissals returns a copy of the persisted dismissal log.
+func (s *State) GetRecheckDismissals() []DismissedRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.RecheckDismissals) == 0 {
+		return nil
+	}
+	out := make([]DismissedRecord, len(s.RecheckDismissals))
+	copy(out, s.RecheckDismissals)
+	return out
 }
 
 // SetProjectContext stores a cached project context and its input hash.

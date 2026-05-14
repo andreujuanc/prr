@@ -349,3 +349,155 @@ func TestToReportJSON_FieldMapping(t *testing.T) {
 		t.Error("SkippedSubcategories not mapped")
 	}
 }
+
+// ── Recheck dismissals rendering (PR 2) ─────────────────────────────────
+//
+// These tests pin the contract that the audit report surfaces *what*
+// got dismissed and *why*. Counts alone (the old behavior) made
+// recheck regressions invisible — over-aggressive dismissals would
+// only show up as "fewer findings than expected" with no way for the
+// user to spot which findings were dropped or override the decision.
+
+func resultWithRecheckDismissals() *Result {
+	r := sampleResult()
+	r.RecheckDismissals = []state.DismissedRecord{
+		{
+			FindingID: "F-007",
+			Finding: state.DeepFinding{
+				FindingID: "F-007",
+				File:      "internal/auth/login.go",
+				Lines:     "42-58",
+				Severity:  "medium",
+				Title:     "Missing rate limit on login",
+			},
+			Rationale: "covered by upstream gateway rate limit",
+		},
+		{
+			FindingID: "F-009",
+			Finding: state.DeepFinding{
+				FindingID: "F-009",
+				File:      "internal/api/handler.go",
+				Lines:     "12",
+				Severity:  "low",
+				Title:     "Magic number in retry count",
+			},
+			Rationale: "convention is to inline these per service",
+		},
+	}
+	return r
+}
+
+func TestExportMarkdown_RendersRecheckDismissalsSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	if err := ExportMarkdown(resultWithRecheckDismissals(), nil, path); err != nil {
+		t.Fatalf("ExportMarkdown: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	md := string(data)
+
+	if !strings.Contains(md, "## Recheck Dismissals (2)") {
+		t.Errorf("report must include a Recheck Dismissals section with count, got:\n%s", md)
+	}
+	// Every dismissed finding's ID + location + title must appear.
+	for _, want := range []string{
+		"F-007",
+		"internal/auth/login.go:42-58",
+		"Missing rate limit on login",
+		"covered by upstream gateway rate limit",
+		"F-009",
+		"internal/api/handler.go:12",
+		"Magic number in retry count",
+		"convention is to inline these per service",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("recheck dismissals section missing %q", want)
+		}
+	}
+}
+
+func TestExportMarkdown_NoDismissalsSectionWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	// sampleResult() has no RecheckDismissals — the section should be
+	// suppressed entirely to keep clean audits visually clean.
+	if err := ExportMarkdown(sampleResult(), nil, path); err != nil {
+		t.Fatalf("ExportMarkdown: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "Recheck Dismissals") {
+		t.Error("Recheck Dismissals section must be omitted when there are none")
+	}
+}
+
+func TestExportMarkdown_DismissalWithEmptyRationale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	r := sampleResult()
+	r.RecheckDismissals = []state.DismissedRecord{
+		{
+			FindingID: "F-001",
+			Finding:   state.DeepFinding{FindingID: "F-001", File: "x.go", Title: "X"},
+			// No Rationale — the LLM omitted it or stripped it.
+			Rationale: "",
+		},
+	}
+
+	if err := ExportMarkdown(r, nil, path); err != nil {
+		t.Fatalf("ExportMarkdown: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	md := string(data)
+	if !strings.Contains(md, "(no rationale provided)") {
+		t.Errorf("empty rationale must render a placeholder so users see the gap, got:\n%s", md)
+	}
+}
+
+func TestExportJSON_IncludesRecheckDismissals(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.json")
+
+	if err := ExportJSON(resultWithRecheckDismissals(), nil, path); err != nil {
+		t.Fatalf("ExportJSON: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	var got ReportJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.RecheckDismissals) != 2 {
+		t.Fatalf("expected 2 dismissals in JSON, got %d", len(got.RecheckDismissals))
+	}
+	if got.RecheckDismissals[0].FindingID != "F-007" {
+		t.Errorf("first dismissal id: want F-007, got %q", got.RecheckDismissals[0].FindingID)
+	}
+	if got.RecheckDismissals[0].Rationale != "covered by upstream gateway rate limit" {
+		t.Errorf("rationale lost in JSON round trip: %q", got.RecheckDismissals[0].Rationale)
+	}
+}
+
+func TestToReportJSON_RecheckDismissalsMapped(t *testing.T) {
+	r := &Result{
+		RecheckDismissals: []state.DismissedRecord{
+			{FindingID: "F-001", Rationale: "test"},
+		},
+	}
+	rj := toReportJSON(r, nil)
+	if len(rj.RecheckDismissals) != 1 {
+		t.Fatalf("expected 1, got %d", len(rj.RecheckDismissals))
+	}
+	if rj.RecheckDismissals[0].FindingID != "F-001" {
+		t.Errorf("FindingID lost in map: %q", rj.RecheckDismissals[0].FindingID)
+	}
+}

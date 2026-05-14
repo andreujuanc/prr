@@ -65,6 +65,60 @@ func TestStateSaveAndLoad(t *testing.T) {
 	}
 }
 
+// TestStateSaveAndLoad_RecheckDismissalsSurviveRoundTrip pins that
+// the dismissal log is persisted as part of state.Save and read back
+// by state.Load. The audit pipeline's cache-hit path reads this back
+// via auditState.GetRecheckDismissals() to restore the report's
+// dismissal trail without re-running recheck. If JSON encoding ever
+// drops the field (e.g. someone changes the tag or struct), the
+// cache-hit dismissal restore breaks silently — this test prevents
+// that.
+func TestStateSaveAndLoad_RecheckDismissalsSurviveRoundTrip(t *testing.T) {
+	prNumber := "9998"
+	t.Cleanup(func() {
+		p, _ := getStateFilePath(prNumber)
+		os.Remove(p)
+	})
+
+	s := NewState(prNumber)
+	s.SetRecheckDismissals([]DismissedRecord{
+		{
+			FindingID: "F-007",
+			Finding: DeepFinding{
+				FindingID: "F-007",
+				File:      "internal/x.go",
+				Lines:     "42",
+				Severity:  "medium",
+				Title:     "Whatever",
+			},
+			Rationale: "covered by upstream guard",
+		},
+	})
+
+	if err := Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(prNumber)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	got := loaded.GetRecheckDismissals()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 dismissal round-tripped, got %d", len(got))
+	}
+	if got[0].FindingID != "F-007" {
+		t.Errorf("FindingID lost in round trip: %q", got[0].FindingID)
+	}
+	if got[0].Rationale != "covered by upstream guard" {
+		t.Errorf("Rationale lost in round trip: %q", got[0].Rationale)
+	}
+	if got[0].Finding.File != "internal/x.go" {
+		t.Errorf("Finding.File lost in round trip: %q", got[0].Finding.File)
+	}
+}
+
 func TestSyncWithDiffs(t *testing.T) {
 	state := NewState("test_123")
 	state.GlobalChat = []Message{{Role: "user", Content: "Global"}}

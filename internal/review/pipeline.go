@@ -397,7 +397,9 @@ type RecheckSettings struct {
 
 // RunRecheck validates and deduplicates deep findings. On failure, returns
 // the original findings unchanged (non-fatal). The returned bool indicates
-// whether the findings were modified by the recheck.
+// whether the findings were modified by the recheck. Dismissals carries
+// the per-finding rationale log; callers persist it on State so the
+// audit report can show users what got dismissed and why.
 func RunRecheck(
 	ctx context.Context,
 	client ai.Client,
@@ -407,9 +409,9 @@ func RunRecheck(
 	onProgress func(string),
 	debugHook func(systemPrompt, userMsg, response string),
 	settings ...RecheckSettings,
-) ([]state.DeepFinding, bool) {
+) (kept []state.DeepFinding, dismissals []state.DismissedRecord, changed bool) {
 	if len(findings) == 0 {
-		return findings, false
+		return findings, nil, false
 	}
 
 	if onProgress == nil {
@@ -438,7 +440,7 @@ func RunRecheck(
 	if recheckErr != nil {
 		log.Printf("Recheck failed (non-fatal): %v — keeping all findings", recheckErr)
 		onProgress("Recheck failed, keeping all findings")
-		return findings, false
+		return findings, nil, false
 	}
 
 	msg := fmt.Sprintf("Recheck complete: kept %d, dismissed %d, consolidated %d, modified %d",
@@ -446,7 +448,7 @@ func RunRecheck(
 		recheckResult.ConsolidatedCount, recheckResult.ModifiedCount)
 	log.Printf("Recheck: %s", msg)
 	onProgress(msg)
-	return recheckResult.Findings, true
+	return recheckResult.Findings, recheckResult.Dismissed, true
 }
 
 // ── Core review pipeline ────────────────────────────────────────────────
@@ -759,6 +761,7 @@ func RunReviewCore(
 			ProjectContext:     projectContext,
 			CustomInstructions: enhancedInstructions,
 			MaxConcurrency:     maxConc,
+			RepoRoot:           opts.RepoRoot,
 			OnProgress: func(completed, total int, cached bool, callErr error) {
 				idx := completed - 1
 				if idx < 0 || idx >= len(reviewCalls) {
@@ -857,7 +860,7 @@ func RunReviewCore(
 			dbgw.Separator()
 		}
 	}
-	rechecked, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext,
+	rechecked, dismissals, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext,
 		func(status string) { rr.RecheckProgress(status) }, recheckDebugHook)
 	if changed {
 		deepFindings = rechecked
@@ -865,9 +868,11 @@ func RunReviewCore(
 		allFindings.Reset()
 		AppendDeepFindings(&allFindings, allFileFindings, deepFindings)
 		// Persist the post-recheck findings (which may be deduped /
-		// consolidated / dismissed relative to the pre-recheck set).
+		// consolidated / dismissed relative to the pre-recheck set)
+		// alongside the dismissal rationale log.
 		if reviewState != nil {
 			reviewState.SetDeepFindings(deepFindings)
+			reviewState.SetRecheckDismissals(dismissals)
 			if err := state.Save(reviewState); err != nil {
 				log.Printf("Warning: failed to persist deep findings after recheck: %v", err)
 			}
