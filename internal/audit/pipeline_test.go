@@ -83,3 +83,128 @@ func TestPhaseUsage_Total_Zero(t *testing.T) {
 		t.Error("expected all zeros for empty usage")
 	}
 }
+
+// ── computeRecheckCacheKey ──────────────────────────────────────────────
+//
+// The cache key is load-bearing: if it collides across runs that produced
+// different recheck results, stale results get served as fresh ones. The
+// contract these tests enforce:
+//
+//  1. Same (findings, projectContext, mode, prompt) → same key.
+//  2. The key is independent of finding order.
+//  3. Each of {findings, projectContext, mode, prompt} is part of the key —
+//     changing any one of them changes the key.
+
+func recheckTestFinding(id, file, lines, severity string) state.DeepFinding {
+	return state.DeepFinding{
+		FindingID: id,
+		File:      file,
+		Lines:     lines,
+		Severity:  severity,
+		Title:     "test finding " + id,
+	}
+}
+
+func TestComputeRecheckCacheKey_DeterministicForSameInputs(t *testing.T) {
+	findings := []state.DeepFinding{
+		recheckTestFinding("F-001", "a.go", "10-20", "high"),
+		recheckTestFinding("F-002", "b.go", "30-40", "medium"),
+	}
+	k1 := computeRecheckCacheKey(findings, "ctx", "audit")
+	k2 := computeRecheckCacheKey(findings, "ctx", "audit")
+	if k1 != k2 {
+		t.Errorf("same inputs must produce the same key, got %q vs %q", k1, k2)
+	}
+	if len(k1) != 32 {
+		t.Errorf("expected 32-char key, got %d (%q)", len(k1), k1)
+	}
+}
+
+func TestComputeRecheckCacheKey_OrderIndependent(t *testing.T) {
+	a := recheckTestFinding("F-001", "a.go", "10-20", "high")
+	b := recheckTestFinding("F-002", "b.go", "30-40", "medium")
+	c := recheckTestFinding("F-003", "c.go", "50-60", "low")
+
+	k1 := computeRecheckCacheKey([]state.DeepFinding{a, b, c}, "ctx", "audit")
+	k2 := computeRecheckCacheKey([]state.DeepFinding{c, a, b}, "ctx", "audit")
+	if k1 != k2 {
+		t.Errorf("permuting findings must not change the key, got %q vs %q", k1, k2)
+	}
+}
+
+func TestComputeRecheckCacheKey_DiffersByFindings(t *testing.T) {
+	base := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
+	mutated := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "low")} // severity diff
+
+	k1 := computeRecheckCacheKey(base, "ctx", "audit")
+	k2 := computeRecheckCacheKey(mutated, "ctx", "audit")
+	if k1 == k2 {
+		t.Errorf("changing a finding field must change the key, both %q", k1)
+	}
+}
+
+func TestComputeRecheckCacheKey_DiffersByProjectContext(t *testing.T) {
+	findings := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
+
+	k1 := computeRecheckCacheKey(findings, "context one", "audit")
+	k2 := computeRecheckCacheKey(findings, "context two", "audit")
+	if k1 == k2 {
+		t.Errorf("different projectContext must change the key, both %q", k1)
+	}
+}
+
+func TestComputeRecheckCacheKey_DiffersByMode(t *testing.T) {
+	findings := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
+
+	k1 := computeRecheckCacheKey(findings, "ctx", "audit")
+	k2 := computeRecheckCacheKey(findings, "ctx", "pr")
+	if k1 == k2 {
+		t.Errorf("different mode must change the key, both %q", k1)
+	}
+}
+
+// TestComputeRecheckCacheKey_DiffersByConsolidatePrompt verifies that
+// iterating on the consolidator prompt invalidates the cache. After
+// PR 5 the recheck pipeline runs two prompts; both must contribute
+// to the key.
+func TestComputeRecheckCacheKey_DiffersByConsolidatePrompt(t *testing.T) {
+	findings := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
+
+	original := ai.RecheckConsolidatePrompt
+	t.Cleanup(func() { ai.RecheckConsolidatePrompt = original })
+
+	ai.RecheckConsolidatePrompt = "CONSOLIDATE VERSION A"
+	keyA := computeRecheckCacheKey(findings, "ctx", "audit")
+
+	ai.RecheckConsolidatePrompt = "CONSOLIDATE VERSION B"
+	keyB := computeRecheckCacheKey(findings, "ctx", "audit")
+
+	if keyA == keyB {
+		t.Errorf("changing RecheckConsolidatePrompt must change the key, both %q", keyA)
+	}
+
+	ai.RecheckConsolidatePrompt = "CONSOLIDATE VERSION A"
+	keyARestored := computeRecheckCacheKey(findings, "ctx", "audit")
+	if keyA != keyARestored {
+		t.Errorf("same consolidate prompt text must produce same key, got %q vs %q", keyA, keyARestored)
+	}
+}
+
+// TestComputeRecheckCacheKey_DiffersByDismissPrompt is the analogous
+// pin for the second prompt — both must independently change the key.
+func TestComputeRecheckCacheKey_DiffersByDismissPrompt(t *testing.T) {
+	findings := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
+
+	original := ai.RecheckDismissPrompt
+	t.Cleanup(func() { ai.RecheckDismissPrompt = original })
+
+	ai.RecheckDismissPrompt = "DISMISS VERSION A"
+	keyA := computeRecheckCacheKey(findings, "ctx", "audit")
+
+	ai.RecheckDismissPrompt = "DISMISS VERSION B"
+	keyB := computeRecheckCacheKey(findings, "ctx", "audit")
+
+	if keyA == keyB {
+		t.Errorf("changing RecheckDismissPrompt must change the key, both %q", keyA)
+	}
+}

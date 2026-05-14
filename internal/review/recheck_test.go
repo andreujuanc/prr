@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -71,6 +72,152 @@ func TestParseRecheckResult_Dismiss(t *testing.T) {
 	}
 	if result.DismissedCount != 1 {
 		t.Errorf("expected 1 dismissed, got %d", result.DismissedCount)
+	}
+
+	// Structured dismissal: every removed finding must carry its
+	// original payload plus the rationale, not just a count.
+	if len(result.Dismissed) != 1 {
+		t.Fatalf("expected 1 dismissed record, got %d", len(result.Dismissed))
+	}
+	d := result.Dismissed[0]
+	if d.FindingID != "F-002" {
+		t.Errorf("expected dismissed FindingID F-002, got %q", d.FindingID)
+	}
+	if d.Rationale != "Not a real issue" {
+		t.Errorf("expected rationale to be preserved, got %q", d.Rationale)
+	}
+	// Original finding payload must be captured so the report can
+	// render what was dropped, not just an ID stub.
+	if d.Finding.File != "b.go" {
+		t.Errorf("expected original File preserved, got %q", d.Finding.File)
+	}
+	if d.Finding.Title != "False positive" {
+		t.Errorf("expected original Title preserved, got %q", d.Finding.Title)
+	}
+	if d.Finding.Severity != "low" {
+		t.Errorf("expected original Severity preserved, got %q", d.Finding.Severity)
+	}
+}
+
+// TestParseRecheckResult_Dismiss_MultiplePreservesEachRationale checks
+// that a batch of dismissals doesn't collapse rationales — each
+// removed finding needs to surface its own reason in the report.
+func TestParseRecheckResult_Dismiss_MultiplePreservesEachRationale(t *testing.T) {
+	findings := []state.DeepFinding{
+		{FindingID: "F-001", File: "a.go", Severity: "high", Title: "Keep"},
+		{FindingID: "F-002", File: "b.go", Severity: "low", Title: "Drop one"},
+		{FindingID: "F-003", File: "c.go", Severity: "low", Title: "Drop two"},
+	}
+	raw := `{
+		"kept": ["F-001"],
+		"modified": [],
+		"consolidated": [],
+		"dismissed": [
+			{"finding_id": "F-002", "rationale": "test-only path, never runs in prod"},
+			{"finding_id": "F-003", "rationale": "framework escapes input upstream"}
+		]
+	}`
+
+	result, err := parseRecheckResult(findings, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Dismissed) != 2 {
+		t.Fatalf("expected 2 dismissed records, got %d", len(result.Dismissed))
+	}
+
+	// Index the records by ID so the test isn't order-sensitive.
+	got := make(map[string]state.DismissedRecord, len(result.Dismissed))
+	for _, d := range result.Dismissed {
+		got[d.FindingID] = d
+	}
+
+	if r, ok := got["F-002"]; !ok || r.Rationale != "test-only path, never runs in prod" {
+		t.Errorf("F-002 rationale mismatch: %+v", r)
+	}
+	if r, ok := got["F-003"]; !ok || r.Rationale != "framework escapes input upstream" {
+		t.Errorf("F-003 rationale mismatch: %+v", r)
+	}
+	if result.DismissedCount != 2 {
+		t.Errorf("DismissedCount must equal len(Dismissed), got %d vs %d",
+			result.DismissedCount, len(result.Dismissed))
+	}
+}
+
+// TestParseRecheckResult_Dismiss_UnknownIDSkipped ensures the parser
+// is robust to the LLM citing a dismissal for an ID that wasn't in
+// the input — the unknown ID is logged and skipped rather than
+// producing a record with a zero-value Finding (which would render
+// nonsense in the report).
+func TestParseRecheckResult_Dismiss_UnknownIDSkipped(t *testing.T) {
+	findings := []state.DeepFinding{
+		{FindingID: "F-001", File: "a.go", Severity: "high", Title: "Real"},
+	}
+	raw := `{
+		"kept": ["F-001"],
+		"modified": [],
+		"consolidated": [],
+		"dismissed": [{"finding_id": "F-999", "rationale": "phantom"}]
+	}`
+
+	result, err := parseRecheckResult(findings, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Dismissed) != 0 {
+		t.Errorf("dismissal for unknown ID must be dropped, got %d records", len(result.Dismissed))
+	}
+	if result.DismissedCount != 0 {
+		t.Errorf("DismissedCount must be 0 for unknown-ID dismissals, got %d", result.DismissedCount)
+	}
+	// And the real finding still passes through.
+	if len(result.Findings) != 1 || result.Findings[0].FindingID != "F-001" {
+		t.Errorf("expected F-001 to survive, got %+v", result.Findings)
+	}
+}
+
+// TestDismissedRecord_RoundTripsJSON verifies the structured dismissal
+// record survives marshal/unmarshal — recheck dismissals are persisted
+// on state.State and round-tripped through state.Save / state.Load,
+// so the JSON shape is part of the contract.
+func TestDismissedRecord_RoundTripsJSON(t *testing.T) {
+	original := state.DismissedRecord{
+		FindingID: "F-007",
+		Finding: state.DeepFinding{
+			FindingID: "F-007",
+			File:      "internal/auth/login.go",
+			Lines:     "42-58",
+			Severity:  "medium",
+			Title:     "Missing rate limit",
+			Trigger:   "user spams login",
+		},
+		Rationale: "covered by upstream gateway rate limit",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded state.DismissedRecord
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.FindingID != original.FindingID {
+		t.Errorf("FindingID lost in round trip: %q vs %q", decoded.FindingID, original.FindingID)
+	}
+	if decoded.Rationale != original.Rationale {
+		t.Errorf("Rationale lost: %q vs %q", decoded.Rationale, original.Rationale)
+	}
+	if decoded.Finding.File != original.Finding.File {
+		t.Errorf("Finding.File lost: %q vs %q", decoded.Finding.File, original.Finding.File)
+	}
+	if decoded.Finding.Lines != original.Finding.Lines {
+		t.Errorf("Finding.Lines lost: %q vs %q", decoded.Finding.Lines, original.Finding.Lines)
+	}
+	if decoded.Finding.Trigger != original.Finding.Trigger {
+		t.Errorf("Finding.Trigger lost: %q vs %q", decoded.Finding.Trigger, original.Finding.Trigger)
 	}
 }
 

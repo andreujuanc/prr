@@ -99,11 +99,30 @@ var ReviewGroupedPrompt string
 //go:embed prompts/audit_synthesis.md
 var AuditSynthesisPrompt string
 
-// RecheckPrompt is the system prompt for the finding recheck/deduplication phase.
-// It instructs the LLM to filter, deduplicate, consolidate, and correct findings.
+// RecheckPrompt is the system prompt for the all-in-one finding
+// recheck phase. Retained for backward compatibility and for any
+// callers that want a single-shot recheck; the modern pipeline uses
+// the split RecheckConsolidatePrompt + RecheckDismissPrompt below.
 //
 //go:embed prompts/recheck.md
 var RecheckPrompt string
+
+// RecheckConsolidatePrompt is the first pass of the split recheck
+// pipeline. Cross-file consolidation only — no dismissal, no
+// modification of individual findings. Runs on the full candidate
+// set so it can see patterns BEFORE per-file dismissal erases their
+// members.
+//
+//go:embed prompts/recheck_consolidate.md
+var RecheckConsolidatePrompt string
+
+// RecheckDismissPrompt is the second pass of the split recheck
+// pipeline. Per-file dismissal, dedup, severity adjustment, and
+// description refinement. Runs after consolidation, so by the time
+// it sees a finding the cross-file pattern check is done.
+//
+//go:embed prompts/recheck_dismiss.md
+var RecheckDismissPrompt string
 
 // ReviewPRPrompt is the system prompt for single-pass PR review.
 // Combines the embedded review instructions with structured JSON output

@@ -90,6 +90,7 @@ Return ONLY a JSON object — no prose before or after:
       "title": "short descriptive title",
       "description": "what's wrong and why it matters",
       "evidence": "what you verified and what you found — summarize key tool results",
+      "evidence_snippet": "verbatim copy of 1-3 lines from the cited file:lines that prove the issue",
       "trigger": "specific scenario that triggers this",
       "suggestion": "concrete fix",
       "dismissed_rationale": "if dismissed: why this is not a real issue"
@@ -106,5 +107,8 @@ Return ONLY a JSON object — no prose before or after:
   - Good: `found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open`
   - Good: `confirmed middleware at server.go:45 validates all inputs via validateRequest() before handlers run`
   - Bad: `this looks unsafe` (no tool verification cited)
-- For findings: fill severity/title/description/evidence/trigger/suggestion.
+- `evidence_snippet` is REQUIRED for every finding (status="finding") and must be a verbatim copy of 1-3 lines that actually appear in the cited file near the cited line range. The audit pipeline matches this snippet against the file before accepting the finding — paraphrasing, summarizing, or fabricating the snippet will get the finding dropped. Not required for dismissals.
+  - Good: `if err := json.Decode(body, &v); err != nil {` (literal line from the file)
+  - Bad: `the error from Decode() is ignored` (description, not a snippet)
+- For findings: fill severity/title/description/evidence/evidence_snippet/trigger/suggestion.
 - For dismissals: fill evidence and dismissed_rationale only.

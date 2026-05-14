@@ -36,6 +36,20 @@ type ExecuteOptions struct {
 	// NoCache disables reading from cache.
 	NoCache bool
 
+	// RepoRoot is the absolute path to the repository root. The
+	// in-loop evidence verifier needs it to resolve each finding's
+	// File field against the on-disk source. When empty, evidence
+	// verification is skipped (and findings flow through unfiltered)
+	// because we have no way to check the snippet against anything.
+	RepoRoot string
+
+	// SkipEvidenceVerify disables the in-loop evidence verification
+	// pass even when RepoRoot is set. Wired through for tests and
+	// for situations where the source tree isn't available (e.g.
+	// reviewing a PR from a fork without a checkout). Production
+	// pipelines should leave this false.
+	SkipEvidenceVerify bool
+
 	// CacheGet retrieves a cached DeepReviewResult by key. Can be nil.
 	CacheGet func(key string) *state.DeepReviewResult
 
@@ -355,7 +369,233 @@ func doReviewCall(
 		return nil, parseErr
 	}
 	validateReviewResult(call, result)
+
+	// In-loop evidence verification: every emitted finding carries
+	// a verbatim snippet (per the prompts); we match it against the
+	// cited file. Mismatches get one corrector round trip in the
+	// SAME chat thread, and findings that are still unmatched after
+	// that get dropped. This catches the F-042/F-045/F-051 class
+	// (hallucinated coordinates / paraphrased "snippets") at the
+	// producer, before they hit recheck or the user.
+	if !opts.SkipEvidenceVerify && opts.RepoRoot != "" {
+		result = verifyAndCorrectEvidence(ctx, client, call, opts, callIndex, systemPrompt, messages, raw, result)
+	}
+
 	return result, nil
+}
+
+// verifyAndCorrectEvidence runs the per-finding snippet check, asks
+// the model for corrections on any mismatches via one follow-up
+// round trip on the same chat thread, and drops findings that are
+// still unmatched after the retry. The corrector message tells the
+// model exactly which finding indexes failed and what's expected,
+// so the response stays small.
+//
+// All errors are non-fatal: if the corrector call fails, the result
+// is returned with the original (potentially-mismatched) findings
+// preserved. The audit-trail log line is enough signal — silently
+// dropping findings on infrastructure errors would be worse than
+// keeping a possibly-mismatched one.
+func verifyAndCorrectEvidence(
+	ctx context.Context,
+	client ai.Client,
+	call ReviewCall,
+	opts ExecuteOptions,
+	callIndex int,
+	systemPrompt string,
+	originalMessages []ai.Message,
+	originalRaw string,
+	result *state.DeepReviewResult,
+) *state.DeepReviewResult {
+	if result == nil || len(result.Findings) == 0 {
+		return result
+	}
+
+	verdicts := make([]evidenceVerdict, len(result.Findings))
+	mismatchedIdx := make([]int, 0, len(result.Findings))
+	for i, f := range result.Findings {
+		verdicts[i] = verifyEvidence(opts.RepoRoot, f)
+		if verdicts[i] == evidenceMismatch || verdicts[i] == evidenceFileMissing {
+			mismatchedIdx = append(mismatchedIdx, i)
+		}
+	}
+	if len(mismatchedIdx) == 0 {
+		return result
+	}
+
+	log.Printf("review: call %d (%s %s/%s) has %d/%d finding(s) with unverifiable evidence — requesting corrections",
+		callIndex+1, call.Type, call.Category, call.Subcategory,
+		len(mismatchedIdx), len(result.Findings))
+
+	// Build a corrector message keyed by the per-call finding index.
+	// We use index (not aoi_id or finding_id) because grouped calls
+	// can produce multiple findings per AOI and the model hasn't been
+	// assigned global F-NNN IDs yet at this point in the pipeline.
+	correctorMsg := buildEvidenceCorrectorMessage(result.Findings, verdicts)
+
+	followup := make([]ai.Message, 0, len(originalMessages)+2)
+	followup = append(followup, originalMessages...)
+	followup = append(followup, ai.Message{Role: "assistant", Content: originalRaw})
+	followup = append(followup, ai.Message{Role: "user", Content: correctorMsg})
+
+	correctorRaw, err := client.ChatStream(ctx, systemPrompt, followup, nil)
+	if err != nil {
+		log.Printf("review: evidence corrector call failed (call %d, non-fatal): %v — dropping unverifiable findings without retry",
+			callIndex+1, err)
+		return dropFindingsAfterCorrector(result, verdicts, nil)
+	}
+
+	corrections := parseEvidenceCorrections(correctorRaw)
+	withdrawn := applyEvidenceCorrections(result, corrections)
+
+	// Re-verify the corrected findings. Withdrawn indexes are
+	// dropped unconditionally; the rest must pass re-verification.
+	for i := range result.Findings {
+		if withdrawn[i] {
+			// Withdrawn — keep verdict at whatever it was; the drop
+			// logic checks `withdrawn` first.
+			continue
+		}
+		verdicts[i] = verifyEvidence(opts.RepoRoot, result.Findings[i])
+	}
+	return dropFindingsAfterCorrector(result, verdicts, withdrawn)
+}
+
+// buildEvidenceCorrectorMessage formats the follow-up prompt. The
+// model sees an index-by-index list of which findings failed and
+// what shape the response should take.
+func buildEvidenceCorrectorMessage(findings []state.DeepFinding, verdicts []evidenceVerdict) string {
+	var b strings.Builder
+	b.WriteString("Some of the findings you just emitted have evidence snippets that do not match the cited file.\n\n")
+	b.WriteString("For each indexed finding listed below, either:\n")
+	b.WriteString("  (a) re-read the file with read_file and return a CORRECTED snippet (and corrected file/lines if needed), or\n")
+	b.WriteString("  (b) withdraw the finding if you cannot anchor it to real code at any location in the file.\n\n")
+	b.WriteString("Findings needing correction:\n\n")
+	for i, f := range findings {
+		switch verdicts[i] {
+		case evidenceMismatch:
+			fmt.Fprintf(&b, "  - index %d: %s:%s — snippet %q not found within ±10 lines of cited range.\n",
+				i, f.File, f.Lines, f.EvidenceSnippet)
+		case evidenceFileMissing:
+			fmt.Fprintf(&b, "  - index %d: %s — file does not exist on disk.\n", i, f.File)
+		}
+	}
+	b.WriteString("\nReturn ONLY a JSON object with the corrections, no prose:\n\n")
+	b.WriteString("```json\n")
+	b.WriteString("{\n")
+	b.WriteString("  \"corrections\": [\n")
+	b.WriteString("    {\"index\": 0, \"withdraw\": false, \"file\": \"path/to/file.go\", \"lines\": \"45-47\", \"evidence_snippet\": \"verbatim line from the file\"},\n")
+	b.WriteString("    {\"index\": 1, \"withdraw\": true, \"reason\": \"brief explanation\"}\n")
+	b.WriteString("  ]\n")
+	b.WriteString("}\n")
+	b.WriteString("```\n\n")
+	b.WriteString("Only include entries for the indexes listed above. Findings not listed are accepted as-is.")
+	return b.String()
+}
+
+// evidenceCorrection is one entry from the corrector response. Fields
+// are pointers/strings so we can tell "not provided" apart from
+// "empty" (an empty new snippet means withdrawal in practice).
+type evidenceCorrection struct {
+	Index           int    `json:"index"`
+	Withdraw        bool   `json:"withdraw"`
+	File            string `json:"file,omitempty"`
+	Lines           string `json:"lines,omitempty"`
+	EvidenceSnippet string `json:"evidence_snippet,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+}
+
+// parseEvidenceCorrections extracts the corrector response. On any
+// parse failure returns nil — the caller treats nil as "no
+// corrections, proceed to drop unverifiable findings", which is the
+// safe behavior.
+func parseEvidenceCorrections(raw string) []evidenceCorrection {
+	s := strings.TrimSpace(raw)
+	if strings.HasPrefix(s, "```") {
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		}
+		if idx := strings.LastIndex(s, "```"); idx != -1 {
+			s = s[:idx]
+		}
+		s = strings.TrimSpace(s)
+	}
+	jsonStart := strings.IndexAny(s, "{")
+	if jsonStart == -1 {
+		log.Printf("review: evidence corrector response had no JSON; treating as no corrections")
+		return nil
+	}
+	s = s[jsonStart:]
+	if end := strings.LastIndex(s, "}"); end != -1 {
+		s = s[:end+1]
+	}
+	var resp struct {
+		Corrections []evidenceCorrection `json:"corrections"`
+	}
+	if err := json.Unmarshal([]byte(s), &resp); err != nil {
+		log.Printf("review: failed to parse evidence corrector response: %v", err)
+		return nil
+	}
+	return resp.Corrections
+}
+
+// applyEvidenceCorrections mutates result.Findings in place: each
+// non-withdrawn correction updates the matching finding's file /
+// lines / snippet. Returns a parallel-indexed slice marking which
+// findings the model withdrew — those get dropped unconditionally
+// at the next step, bypassing re-verification (an explicit "I can't
+// anchor this" beats any further machine inspection).
+func applyEvidenceCorrections(result *state.DeepReviewResult, corrections []evidenceCorrection) []bool {
+	withdrawn := make([]bool, len(result.Findings))
+	for _, c := range corrections {
+		if c.Index < 0 || c.Index >= len(result.Findings) {
+			log.Printf("review: corrector returned out-of-range index %d (have %d findings)",
+				c.Index, len(result.Findings))
+			continue
+		}
+		if c.Withdraw {
+			withdrawn[c.Index] = true
+			continue
+		}
+		if c.File != "" {
+			result.Findings[c.Index].File = c.File
+		}
+		if c.Lines != "" {
+			result.Findings[c.Index].Lines = c.Lines
+		}
+		if c.EvidenceSnippet != "" {
+			result.Findings[c.Index].EvidenceSnippet = c.EvidenceSnippet
+		}
+	}
+	return withdrawn
+}
+
+// dropFindingsAfterCorrector filters out findings that were
+// withdrawn or that re-verification couldn't anchor. Logs each drop
+// so the audit log shows why a finding disappeared without
+// surfacing these to the state-level dismissal record (they never
+// reached recheck — they're producer-side drops, distinct from
+// recheck dismissals which carry an LLM rationale).
+func dropFindingsAfterCorrector(result *state.DeepReviewResult, verdicts []evidenceVerdict, withdrawn []bool) *state.DeepReviewResult {
+	if result == nil || len(result.Findings) == 0 {
+		return result
+	}
+	kept := result.Findings[:0]
+	for i, f := range result.Findings {
+		if i < len(withdrawn) && withdrawn[i] {
+			log.Printf("review: finding withdrawn by corrector [aoi=%s file=%s lines=%s]",
+				f.AOIID, f.File, f.Lines)
+			continue
+		}
+		if v := verdicts[i]; v == evidenceMismatch || v == evidenceFileMissing {
+			log.Printf("review: dropping finding [aoi=%s file=%s lines=%s]: evidence snippet not anchored after corrector pass (verdict=%d)",
+				f.AOIID, f.File, f.Lines, v)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	result.Findings = kept
+	return result
 }
 
 // validateReviewResult surfaces semantic issues in a parsed review
@@ -538,6 +778,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			Title              string `json:"title"`
 			Description        string `json:"description"`
 			Evidence           string `json:"evidence"`
+			EvidenceSnippet    string `json:"evidence_snippet"`
 			Trigger            string `json:"trigger"`
 			Suggestion         string `json:"suggestion"`
 			DismissedRationale string `json:"dismissed_rationale"`
@@ -548,18 +789,19 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 		result.RawOutput = json.RawMessage(s)
 		if parsed.Status == "finding" {
 			result.Findings = append(result.Findings, state.DeepFinding{
-				AOIID:       parsed.AOIID,
-				File:        parsed.File,
-				Lines:       parsed.Lines,
-				Severity:    parsed.Severity,
-				Category:    parsed.Category,
-				Subcategory: parsed.Subcategory,
-				Dimension:   parsed.Dimension,
-				Title:       parsed.Title,
-				Description: parsed.Description,
-				Evidence:    parsed.Evidence,
-				Trigger:     parsed.Trigger,
-				Suggestion:  parsed.Suggestion,
+				AOIID:           parsed.AOIID,
+				File:            parsed.File,
+				Lines:           parsed.Lines,
+				Severity:        parsed.Severity,
+				Category:        parsed.Category,
+				Subcategory:     parsed.Subcategory,
+				Dimension:       parsed.Dimension,
+				Title:           parsed.Title,
+				Description:     parsed.Description,
+				Evidence:        parsed.Evidence,
+				EvidenceSnippet: parsed.EvidenceSnippet,
+				Trigger:         parsed.Trigger,
+				Suggestion:      parsed.Suggestion,
 			})
 		} else {
 			result.Dismissals = append(result.Dismissals, state.DeepDismissal{
@@ -585,6 +827,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				Title              string `json:"title"`
 				Description        string `json:"description"`
 				Evidence           string `json:"evidence"`
+				EvidenceSnippet    string `json:"evidence_snippet"`
 				Trigger            string `json:"trigger"`
 				Suggestion         string `json:"suggestion"`
 				DismissedRationale string `json:"dismissed_rationale"`
@@ -598,18 +841,19 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 		for _, r := range parsed.Results {
 			if r.Status == "finding" {
 				result.Findings = append(result.Findings, state.DeepFinding{
-					AOIID:       r.AOIID,
-					File:        r.File,
-					Lines:       r.Lines,
-					Severity:    r.Severity,
-					Category:    r.Category,
-					Subcategory: r.Subcategory,
-					Dimension:   r.Dimension,
-					Title:       r.Title,
-					Description: r.Description,
-					Evidence:    r.Evidence,
-					Trigger:     r.Trigger,
-					Suggestion:  r.Suggestion,
+					AOIID:           r.AOIID,
+					File:            r.File,
+					Lines:           r.Lines,
+					Severity:        r.Severity,
+					Category:        r.Category,
+					Subcategory:     r.Subcategory,
+					Dimension:       r.Dimension,
+					Title:           r.Title,
+					Description:     r.Description,
+					Evidence:        r.Evidence,
+					EvidenceSnippet: r.EvidenceSnippet,
+					Trigger:         r.Trigger,
+					Suggestion:      r.Suggestion,
 				})
 			} else {
 				result.Dismissals = append(result.Dismissals, state.DeepDismissal{
