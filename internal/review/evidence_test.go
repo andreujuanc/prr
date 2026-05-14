@@ -294,7 +294,7 @@ func TestNormalizeWhitespace_CollapsesRuns(t *testing.T) {
 
 func TestParseFindingLineRange(t *testing.T) {
 	cases := []struct {
-		in              string
+		in                 string
 		wantStart, wantEnd int
 	}{
 		{"45", 45, 45},

@@ -256,7 +256,7 @@ func TestDoReviewCall_CorrectorErrorDropsBadFindings(t *testing.T) {
 			buildFindingResponseJSON("x.go", "1", "fabricated snippet"),
 		},
 		errors: []error{
-			nil, // first call succeeds (the review)
+			nil,                               // first call succeeds (the review)
 			fmt.Errorf("transport explosion"), // corrector errors
 		},
 	}
