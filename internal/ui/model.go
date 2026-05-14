@@ -3829,6 +3829,11 @@ func (m *Model) populateFileList(st *state.State) {
 
 	m.fileTree = newFileTree(files)
 	m.fileTree.height = m.contentHeight() - 2 // account for border
+	// newFileTree leaves width at zero; let syncLayout populate it from
+	// the current column budget so the very first render after PR load
+	// doesn't see ft.width == 0 (which makes SelectableRow truncate to
+	// ~1 cell per row and the file panel look empty).
+	m.syncLayout()
 }
 
 // schedulePreview increments the debounce sequence and schedules a preview

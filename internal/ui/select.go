@@ -11,22 +11,28 @@ import (
 // convention across the TUI (findings, file tree, theme/model pickers,
 // action menu, etc.).
 //
-//   - selected   → left bar in accentBlue + accent-tinted full-row background
-//     so the active row is unmissable even when content has no
-//     glyph anchor.
-//   - unselected → plain content with a 2-cell left margin matching the bar
-//     width, so the columns line up between selected and
-//     unselected rows.
+//   - selected   → solid accent-blue left bar ("█") + 1-cell gap, then
+//     content padded to fill the remaining width.
+//   - unselected → 2-cell blank left margin matching the bar width, then
+//     content padded to fill the remaining width, so columns
+//     line up between selected and unselected rows.
 //
 // width is the *outer* row width (including the left bar). Content is
 // truncated or padded to (width - 2) so the row is always exactly width
 // cells wide.
+//
+// A full-row background fill is intentionally NOT applied: the content
+// strings passed in by call sites already contain embedded ANSI resets
+// (\x1b[0m) from their own styled segments, and those resets cancel any
+// outer Background(...) lipgloss has emitted. The bar alone is enough
+// of a selection affordance, and avoids the bg-bleed regression in
+// content-rich rows like the file tree.
 func SelectableRow(content string, width int, selected bool) string {
 	if width < 3 {
 		return ansi.Truncate(content, width, "")
 	}
 
-	contentW := width - 2 // 1 for the bar, 1 for the trailing pad cell
+	contentW := width - 2 // 1 for the bar, 1 for the gap after it
 	if contentW < 1 {
 		contentW = 1
 	}
@@ -43,13 +49,8 @@ func SelectableRow(content string, width int, selected bool) string {
 	}
 
 	if selected {
-		// Solid accent-blue bar + 1-space gap, then content + trailing
-		// space rendered against a tinted background.
 		bar := lipgloss.NewStyle().Foreground(accentBlue).Render("█")
-		rowBg := lipgloss.NewStyle().Background(overlayBg)
-		return bar + rowBg.Render(" "+body)
+		return bar + " " + body
 	}
-
-	// Unselected: 2-space left margin so columns align with selected rows.
 	return "  " + body
 }
