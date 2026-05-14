@@ -1,5 +1,64 @@
 # Changelog
 
+## [1.4.0](https://github.com/andreujuanc/prr/compare/v1.3.0...v1.4.0) (2026-05-14)
+
+
+### Features
+
+* add audit mode with AOI-driven pipeline, model picker, and progress UI ([28e4f34](https://github.com/andreujuanc/prr/commit/28e4f34fa5472df210530baf04af66648f99679b))
+* add headless 'prr review &lt;number&gt;' command and refactor review pipeline ([374b811](https://github.com/andreujuanc/prr/commit/374b811a0e583d83fafe3919ab3440b890599499))
+* add recheck phase, debug mode, AOI-driven PR review, and evidence tracking ([ef9f111](https://github.com/andreujuanc/prr/commit/ef9f111ceb8f004d6ba42dbe086109f813dc6c73))
+* audit mode with AOI-driven pipeline, file classification, and shared review infrastructure ([7be7ffa](https://github.com/andreujuanc/prr/commit/7be7ffa60301a019cb9535aff1809abc7648e304))
+* **audit:** add confirmation prompt when file count exceeds 200 ([e7ae339](https://github.com/andreujuanc/prr/commit/e7ae339eaee3584e77cff38f1023a7efeb781701))
+* **audit:** add file classification phase and include test files in audit ([0b88a20](https://github.com/andreujuanc/prr/commit/0b88a201c4b6c07c9cb6eeedb59629561fa387c6))
+* **audit:** add file-load classification helpers ([1e2dfac](https://github.com/andreujuanc/prr/commit/1e2dfacdd9ac7866be671f334d3fb9c077d37542))
+* **audit:** add severity bar and category chart to terminal report ([a20f7c8](https://github.com/andreujuanc/prr/commit/a20f7c84c2b852a073d440a61146acb61367ca5c))
+* **audit:** CollectFiles reports exclusion stats and transients ([3e022e3](https://github.com/andreujuanc/prr/commit/3e022e34e2a3f66f6bc8146fadb01c322a0c9b6b))
+* **audit:** configurable concurrency, recheck/synthesis caching ([b3b5c43](https://github.com/andreujuanc/prr/commit/b3b5c4381dd27c81b1a996ff976fb6634d3275c0))
+* **audit:** Phase 1 file-load guards + aggregate-fail ([014fe63](https://github.com/andreujuanc/prr/commit/014fe63e421597f2b87147e7b525e76072c89c50))
+* **audit:** show repo name in audit progress UI header ([190ba92](https://github.com/andreujuanc/prr/commit/190ba9248e5ce2560d831ea3dbac04727b736a3d))
+* **audit:** surface project context, synthesis, cross-cutting, and failed reviews in reports ([ccdf9e6](https://github.com/andreujuanc/prr/commit/ccdf9e6d4d8e9e125694a86546742b6f544e0611))
+* **audit:** surface recall gap in synthesis + severity anchors ([00f97ed](https://github.com/andreujuanc/prr/commit/00f97edfa6c343a7e4a171a68cc2138bae7f9218))
+* **audit:** synthesis retry + hierarchical partial tolerance ([29762bd](https://github.com/andreujuanc/prr/commit/29762bdaf03f2a612399d7e9b9c290e42399cfbd))
+* **classify:** add FileTypeSQL distinct from repository ([801be57](https://github.com/andreujuanc/prr/commit/801be578125a60b12350c00bf5e7ff0618ba9348))
+* **classify:** retry transient errors + surface silent drops ([f311e38](https://github.com/andreujuanc/prr/commit/f311e3873fb4db618d5dd7d463b94f0baca098e6))
+* **classify:** window file content as top 50 + middle 50 ([e4d8203](https://github.com/andreujuanc/prr/commit/e4d82037381596811a0ce3c53987366367fecc5e))
+* claude-code provider, PR brief, watchdog, shared model picker ([1fd4b4b](https://github.com/andreujuanc/prr/commit/1fd4b4b947dfba6c6263eaaa488f9389f79857be))
+* **dbg:** compact mode by default; skip system prompts in --debug ([b932781](https://github.com/andreujuanc/prr/commit/b932781ac0d65913304ea3754a1a45d432b8c7f5))
+* **dbg:** elide embedded file-content blocks in --debug prompts ([d44eedd](https://github.com/andreujuanc/prr/commit/d44eedd9437dc83515edc0448bccfa236b170534))
+* harden review JSON parsing, deep-review caching, synthesis recovery ([80c998d](https://github.com/andreujuanc/prr/commit/80c998dc818b2a17adec8e5f826c8ff0ea937ff7))
+* **progress:** persist phase-completion summaries on done ([f4bb52c](https://github.com/andreujuanc/prr/commit/f4bb52c130cd0a70f1c9ba63d1ea30ad12ed0128))
+* **progress:** recheck counter and progress bar ([d981f47](https://github.com/andreujuanc/prr/commit/d981f47e27c77f2f4e1f1f74154e62a71c26e846))
+* **project:** review-oriented sectioned context + AI-config extraction ([4737dbd](https://github.com/andreujuanc/prr/commit/4737dbdd49b74f1e092727314726d2b355f7ce13))
+* **prompts:** add observability and web-security dimensions, expand deps and testing ([1d5ffe6](https://github.com/andreujuanc/prr/commit/1d5ffe64c798d1b537b5bd6572e6132f0539339c))
+* **review:** aggregate-fail + per-AOI failure visibility ([d208c3f](https://github.com/andreujuanc/prr/commit/d208c3fd3b60ac3af3933cc5ee84016a0c5af1f6))
+* **review:** severity anchors + project-conventions awareness ([745f1cb](https://github.com/andreujuanc/prr/commit/745f1cb977c6960c941cb16a4729ffe1787fe9bc))
+* **review:** validate deep-review results (drops, fields, severity) ([3243974](https://github.com/andreujuanc/prr/commit/3243974045f3af8fb669a42b85f82dd24c2ad636))
+* **security:** aggregate-fail + consolidated AOI failure surfacing ([83545f6](https://github.com/andreujuanc/prr/commit/83545f65911593d51feef6165f9320841aeb17d8))
+* **security:** AOI output sanity (taxonomy, IDs, empty-audit) ([8b284a2](https://github.com/andreujuanc/prr/commit/8b284a20c9c649bf28544d9eda2a77e5c5aa9533))
+* **security:** retry transient AOI errors + surface silent drops ([c1850c1](https://github.com/andreujuanc/prr/commit/c1850c1427c626efbb5d2c00c180b9ea1303f5f4))
+
+
+### Bug Fixes
+
+* address 11 security and reliability findings from audit ([ea20ad5](https://github.com/andreujuanc/prr/commit/ea20ad5711419481f6d03ea942cd125a88abd25d))
+* **ai:** plug error handling and timeout gaps across providers ([2e15f13](https://github.com/andreujuanc/prr/commit/2e15f13424282ead30647ba4e227573e03127b29))
+* **audit:** act on findings F-001 through F-003 from self-audit ([74b4552](https://github.com/andreujuanc/prr/commit/74b4552a366b80029506feee9cb0a8c0c333e5e5))
+* **audit:** act on findings F-001 through F-004 from self-audit ([f57f79a](https://github.com/andreujuanc/prr/commit/f57f79a16461c04185fd45c84eb7b1de7c5aa8b5))
+* **audit:** replace blocking file-count prompt with non-blocking TUI warning ([5a22ffe](https://github.com/andreujuanc/prr/commit/5a22ffebd5be853fdabc5d99e505e897016da145))
+* **debug:** resolve {{TOOLS}} before invoking LLM debug hooks ([a1e04f3](https://github.com/andreujuanc/prr/commit/a1e04f346e83a24a6a7135aced64f9ad450ae181))
+* include finding ID (F-001) in audit report headings ([3a3e2f5](https://github.com/andreujuanc/prr/commit/3a3e2f51fc9c8d5c48ac9529d153cc136c952d58))
+* **project:** fail loud on LLM error; never fall back to raw doc dump ([d19f4f9](https://github.com/andreujuanc/prr/commit/d19f4f9b275ae698665915a8eca9b9c945ff47a7))
+* **review:** parse failures no longer poison the deep-review cache ([4ed2b7a](https://github.com/andreujuanc/prr/commit/4ed2b7a6cc9629f5fcfd2295bff717876b67ba86))
+* **review:** sanitize fenced LLM output before persisting to RawMessage ([e10f0b2](https://github.com/andreujuanc/prr/commit/e10f0b26e3a693bd29d7e6754797237cf04072d5))
+* **security:** tighten secret handling in update script, config, and API errors ([877842b](https://github.com/andreujuanc/prr/commit/877842b392874af2d6641db681cea956b49602d1))
+* **state:** clear DeepFindings in ClearAllCaches ([2eaedbe](https://github.com/andreujuanc/prr/commit/2eaedbe19dabe295857c25e3864e9ef073f6718f))
+
+
+### Performance Improvements
+
+* **audit:** parallelize phase 0+1, recheck batches, and hierarchical synthesis ([cd954e3](https://github.com/andreujuanc/prr/commit/cd954e3053ee86c90b463c00f5018c11ebd4832f))
+
 ## [1.3.0](https://github.com/andreujuanc/prr/compare/v1.2.0...v1.3.0) (2026-05-06)
 
 
