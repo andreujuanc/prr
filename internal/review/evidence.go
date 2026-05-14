@@ -80,7 +80,10 @@ const (
 )
 
 // verifyEvidence checks one finding's snippet against the cited file.
-// repoRoot is the absolute path the finding's File is relative to.
+// repoRoot is the absolute path the finding's File is relative to;
+// the file is opened through an os.Root rooted at repoRoot so paths
+// emitted by the model cannot escape the repository (defense-in-depth
+// against prompt-injection-driven path traversal).
 // Returns evidenceOK for findings with no snippet (verification is
 // only meaningful when the model provided one).
 func verifyEvidence(repoRoot string, f state.DeepFinding) evidenceVerdict {
@@ -91,16 +94,28 @@ func verifyEvidence(repoRoot string, f state.DeepFinding) evidenceVerdict {
 		// generic; this verifier specifically targets hallucination.
 		return evidenceOK
 	}
-	if f.File == "" {
+	if f.File == "" || repoRoot == "" {
 		return evidenceFileMissing
 	}
 
-	abs := f.File
-	if !filepath.IsAbs(abs) && repoRoot != "" {
-		abs = filepath.Join(repoRoot, f.File)
+	relPath := f.File
+	if filepath.IsAbs(relPath) {
+		// Normalize absolute paths into a path relative to repoRoot.
+		// If the path escapes the root, os.Root will reject it below.
+		rel, err := filepath.Rel(repoRoot, relPath)
+		if err != nil {
+			return evidenceFileMissing
+		}
+		relPath = rel
 	}
 
-	info, err := os.Stat(abs)
+	root, err := os.OpenRoot(repoRoot)
+	if err != nil {
+		return evidenceFileUnreadable
+	}
+	defer root.Close()
+
+	info, err := root.Stat(relPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return evidenceFileMissing
@@ -111,7 +126,7 @@ func verifyEvidence(repoRoot string, f state.DeepFinding) evidenceVerdict {
 		return evidenceFileUnreadable
 	}
 
-	fh, err := os.Open(abs)
+	fh, err := root.Open(relPath)
 	if err != nil {
 		return evidenceFileUnreadable
 	}
