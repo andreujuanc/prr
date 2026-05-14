@@ -35,6 +35,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install git-delta
+        # goreleaser's before hook runs `go test ./...`, and the
+        # internal/git styled-diff tests shell out to `delta`. Keep
+        # this pinned to the same version ci.yml uses.
+        env:
+          DELTA_VERSION: "0.17.0"
+        run: |
+          ARCH=$(dpkg --print-architecture)
+          curl -Lsf -o /tmp/git-delta.deb \
+            "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/git-delta_${DELTA_VERSION}_${ARCH}.deb"
+          sudo dpkg -i /tmp/git-delta.deb
+          rm -f /tmp/git-delta.deb
+
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
