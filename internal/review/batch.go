@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -651,7 +652,7 @@ func CollectCachedFindings(batch Batch, reviewState *state.State) (string, map[s
 
 // CountDiffStats counts added and removed lines in a unified diff.
 func CountDiffStats(diff string) (added, removed int) {
-	for _, line := range strings.Split(diff, "\n") {
+	for line := range strings.SplitSeq(diff, "\n") {
 		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
 			added++
 		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
@@ -827,9 +828,7 @@ func RunBatchesOnly(
 					cached, cachedFF := CollectCachedFindings(b, reviewState)
 					results[idx] = result{index: idx, text: cached, cached: true}
 					mu.Lock()
-					for f, findings := range cachedFF {
-						allFileFindings[f] = findings
-					}
+					maps.Copy(allFileFindings, cachedFF)
 					mu.Unlock()
 					rr.BatchProgress(idx, StatusCached)
 					return
@@ -858,9 +857,7 @@ func RunBatchesOnly(
 
 			if !res.cached {
 				parsed, batchFF := PersistBatchFindings(reviewState, batches[i], res.text)
-				for f, findings := range batchFF {
-					allFileFindings[f] = findings
-				}
+				maps.Copy(allFileFindings, batchFF)
 				if parsed != nil {
 					for _, entry := range parsed {
 						if !entry.Findings.IsEmpty() {
@@ -890,9 +887,7 @@ func RunBatchesOnly(
 				allFindings.WriteString(fmt.Sprintf("Files: %s\n\n", strings.Join(batch.Files, ", ")))
 				allFindings.WriteString(cached)
 				allFindings.WriteString("\n\n---\n\n")
-				for f, findings := range cachedFF {
-					allFileFindings[f] = findings
-				}
+				maps.Copy(allFileFindings, cachedFF)
 				continue
 			}
 
@@ -905,9 +900,7 @@ func RunBatchesOnly(
 
 			rr.BatchProgress(i, StatusDone)
 			parsed, batchFF := PersistBatchFindings(reviewState, batch, result)
-			for f, findings := range batchFF {
-				allFileFindings[f] = findings
-			}
+			maps.Copy(allFileFindings, batchFF)
 
 			allFindings.WriteString(fmt.Sprintf("### Batch %d: %s\n", i+1, batch.Label))
 			allFindings.WriteString(fmt.Sprintf("Files: %s\n\n", strings.Join(batch.Files, ", ")))

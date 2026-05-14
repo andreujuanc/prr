@@ -99,7 +99,7 @@ func TestRenderFindingHeader_LongTitleWrapsCleanly(t *testing.T) {
 	// didn't happen — which would also pass the above check
 	// trivially).
 	titleLines := 0
-	for _, line := range strings.Split(plain, "\n") {
+	for line := range strings.SplitSeq(plain, "\n") {
 		if strings.Contains(line, "Token") || strings.Contains(line, "expiring") || strings.Contains(line, "vulnerability") {
 			titleLines++
 		}
@@ -118,7 +118,7 @@ func TestRenderFindingHeader_ShortTitleSingleLine(t *testing.T) {
 
 	// Find the line containing the title; it must also contain the
 	// severity badge — meaning they're on the same line.
-	for _, line := range strings.Split(stripANSI(rendered), "\n") {
+	for line := range strings.SplitSeq(stripANSI(rendered), "\n") {
 		if strings.Contains(line, "Short title") {
 			if !strings.Contains(line, "[high]") {
 				t.Errorf("short title rendered separately from badge:\n%s\nfull: %s", line, stripANSI(rendered))

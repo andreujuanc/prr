@@ -551,11 +551,11 @@ func TestScroll_DiffPane_GotoTopBottom(t *testing.T) {
 	m.viewMode = viewModeFile
 
 	// Put some content in the viewport
-	longContent := ""
-	for i := 0; i < 200; i++ {
-		longContent += "+line of diff content\n"
+	var longContent strings.Builder
+	for range 200 {
+		longContent.WriteString("+line of diff content\n")
 	}
-	m.setDiffContent(longContent)
+	m.setDiffContent(longContent.String())
 
 	// G → go to bottom
 	m = key(m, 'G')
@@ -583,11 +583,11 @@ func TestScroll_DiffPane_HalfPage(t *testing.T) {
 	m.selectedFile = "cmd/main.go"
 	m.viewMode = viewModeFile
 
-	longContent := ""
-	for i := 0; i < 200; i++ {
-		longContent += "+line\n"
+	var longContent strings.Builder
+	for range 200 {
+		longContent.WriteString("+line\n")
 	}
-	m.setDiffContent(longContent)
+	m.setDiffContent(longContent.String())
 
 	// Ctrl+D → half page down
 	m = skey(m, tea.KeyCtrlD)

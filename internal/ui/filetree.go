@@ -339,10 +339,7 @@ func (ft *fileTree) View() string {
 	}
 
 	var lines []string
-	end := ft.offset + ft.height
-	if end > len(ft.flat) {
-		end = len(ft.flat)
-	}
+	end := min(ft.offset+ft.height, len(ft.flat))
 
 	for i := ft.offset; i < end; i++ {
 		entry := ft.flat[i]
@@ -435,10 +432,7 @@ func (ft *fileTree) View() string {
 
 		// Selection affordance: left bar + tinted background via the
 		// shared SelectableRow primitive.
-		rowW := ft.width - 1
-		if rowW < 3 {
-			rowW = 3
-		}
+		rowW := max(ft.width-1, 3)
 		line = SelectableRow(line, rowW, isSelected)
 
 		lines = append(lines, line)

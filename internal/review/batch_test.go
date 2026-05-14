@@ -217,10 +217,10 @@ func TestWatchdogReporter_ConcurrentCalls(t *testing.T) {
 	const callsPerGoroutine = 200
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < callsPerGoroutine; j++ {
+			for j := range callsPerGoroutine {
 				// Mix of methods, like a real parallel review:
 				// token streams + batch updates + AOI ticks.
 				rr.Token("tok")
@@ -260,10 +260,10 @@ func TestWatchdogReporter_NilTapIsSafe(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(8)
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for range 100 {
 				rr.Token("x")
 			}
 		}()

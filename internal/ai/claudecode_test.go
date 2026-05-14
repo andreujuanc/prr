@@ -133,14 +133,14 @@ func TestParseClaudeCodeStream_FillsResultIfTextNeverStreamed(t *testing.T) {
 	parseClaudeCodeStream(context.Background(), strings.NewReader(stream), ch)
 	close(ch)
 
-	var got string
+	var got strings.Builder
 	for evt := range ch {
 		if evt.Type == EventText {
-			got += evt.Text
+			got.WriteString(evt.Text)
 		}
 	}
-	if got != "only here" {
-		t.Errorf("text = %q, want %q", got, "only here")
+	if got.String() != "only here" {
+		t.Errorf("text = %q, want %q", got.String(), "only here")
 	}
 }
 
@@ -200,18 +200,18 @@ func TestParseClaudeCodeStream_SkipsMalformedLines(t *testing.T) {
 	parseClaudeCodeStream(context.Background(), strings.NewReader(stream), ch)
 	close(ch)
 
-	var text string
+	var text strings.Builder
 	var done bool
 	for evt := range ch {
 		switch evt.Type {
 		case EventText:
-			text += evt.Text
+			text.WriteString(evt.Text)
 		case EventDone:
 			done = true
 		}
 	}
-	if text != "ok" || !done {
-		t.Errorf("text=%q done=%v, want text=ok done=true", text, done)
+	if text.String() != "ok" || !done {
+		t.Errorf("text=%q done=%v, want text=ok done=true", text.String(), done)
 	}
 }
 
@@ -539,14 +539,14 @@ func TestLiveClaudeCode_RoundTrip(t *testing.T) {
 		t.Fatalf("Chat: %v", err)
 	}
 
-	var text string
+	var text strings.Builder
 	for _, b := range resp.Content {
 		if tb, ok := b.(TextBlock); ok {
-			text += tb.Text
+			text.WriteString(tb.Text)
 		}
 	}
-	if !strings.Contains(strings.ToUpper(text), "GREEN") {
-		t.Errorf("response %q did not contain GREEN", text)
+	if !strings.Contains(strings.ToUpper(text.String()), "GREEN") {
+		t.Errorf("response %q did not contain GREEN", text.String())
 	}
 	if resp.Usage.OutputTokens == 0 {
 		t.Error("expected non-zero output tokens in usage")

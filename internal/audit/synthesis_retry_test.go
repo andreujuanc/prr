@@ -177,7 +177,7 @@ func mkHierarchicalFindings(perCategory int) []state.DeepFinding {
 	cats := []string{"correctness", "security", "performance", "design"}
 	var findings []state.DeepFinding
 	for _, cat := range cats {
-		for i := 0; i < perCategory; i++ {
+		for i := range perCategory {
 			findings = append(findings, mkFinding(
 				cat+"-"+itoa(i), cat, "medium",
 			))

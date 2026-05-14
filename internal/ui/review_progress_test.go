@@ -121,8 +121,8 @@ func TestRenderReviewProgressView_RendersAllPhases(t *testing.T) {
 		t.Fatalf("expected active detail, got: %s", stripANSI(out))
 	}
 	// Counter and detail must NOT appear on waiting phases.
-	lines := strings.Split(stripANSI(out), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(stripANSI(out), "\n")
+	for line := range lines {
 		if strings.Contains(line, "Synthesis") && strings.Contains(line, "10") {
 			t.Fatalf("waiting phase should not show counter: %q", line)
 		}
@@ -166,7 +166,7 @@ func TestRenderReviewProgressView_TruncatesLongDetail(t *testing.T) {
 	m.reviewProgress.SetDetail("phase1", longDetail)
 
 	out := m.renderReviewProgressView(80)
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if len(stripANSI(line)) > 100 {
 			t.Fatalf("line exceeded reasonable width: len=%d %q",
 				len(stripANSI(line)), stripANSI(line))

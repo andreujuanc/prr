@@ -85,7 +85,7 @@ func (d *Writer) Section(name string) {
 }
 
 // Text prints arbitrary text.
-func (d *Writer) Text(format string, args ...interface{}) {
+func (d *Writer) Text(format string, args ...any) {
 	if !d.Enabled() {
 		return
 	}

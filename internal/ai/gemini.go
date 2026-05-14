@@ -128,14 +128,14 @@ type geminiPart struct {
 }
 
 type geminiFunctionCall struct {
-	Name string                 `json:"name"`
-	Args map[string]interface{} `json:"args"`
-	ID   string                 `json:"id,omitempty"`
+	Name string         `json:"name"`
+	Args map[string]any `json:"args"`
+	ID   string         `json:"id,omitempty"`
 }
 
 type geminiFuncResponse struct {
-	Name     string      `json:"name"`
-	Response interface{} `json:"response"`
+	Name     string `json:"name"`
+	Response any    `json:"response"`
 }
 
 // Tool declaration types
@@ -229,14 +229,14 @@ func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
 			case ThinkingBlock:
 				p := geminiPart{
 					Text:    b.Text,
-					Thought: boolPtr(true),
+					Thought: new(true),
 				}
 				if b.Signature != "" {
 					p.ThoughtSignature = b.Signature
 				}
 				parts = append(parts, p)
 			case ToolUseBlock:
-				args := make(map[string]interface{})
+				args := make(map[string]any)
 				_ = json.Unmarshal(b.Args, &args)
 				p := geminiPart{
 					FunctionCall: &geminiFunctionCall{
@@ -547,7 +547,8 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-func boolPtr(v bool) *bool { return &v }
+//go:fix inline
+func boolPtr(v bool) *bool { return new(v) }
 
 // parseRetryDelay extracts the retry delay from a Gemini error response body.
 // Falls back to 5 seconds if parsing fails.

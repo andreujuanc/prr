@@ -100,10 +100,7 @@ func reviewSummary(s *progress.State) string {
 	}
 	cached := s.Counters["review_cached"]
 	failed := s.Counters["review_failed"]
-	fresh := done - cached - failed
-	if fresh < 0 {
-		fresh = 0
-	}
+	fresh := max(done-cached-failed, 0)
 	return fmt.Sprintf("%d done · %d cached · %d failed", fresh, cached, failed)
 }
 
@@ -349,7 +346,7 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 }
 
 // scanCounter wraps fmt.Sscanf with a logged warning on format mismatch.
-func scanCounter(phase, message, format string, dest ...interface{}) bool {
+func scanCounter(phase, message, format string, dest ...any) bool {
 	n, err := fmt.Sscanf(message, format, dest...)
 	if err != nil || n != len(dest) {
 		log.Printf("progress: counter parse mismatch in phase=%q (format=%q, message=%q): %v",

@@ -38,10 +38,10 @@ func sseEvent(parts ...ssePartSpec) string {
 		pp = append(pp, pj)
 	}
 
-	resp := map[string]interface{}{
-		"candidates": []map[string]interface{}{
+	resp := map[string]any{
+		"candidates": []map[string]any{
 			{
-				"content": map[string]interface{}{
+				"content": map[string]any{
 					"parts": pp,
 				},
 			},
@@ -172,7 +172,7 @@ func TestGeminiStreamChat_SimpleText(t *testing.T) {
 }
 
 func TestGeminiStreamChat_Thinking(t *testing.T) {
-	resp := sseEvent(ssePartSpec{Text: "let me think...", Thought: boolPtr(true)}) +
+	resp := sseEvent(ssePartSpec{Text: "let me think...", Thought: new(true)}) +
 		sseEvent(ssePartSpec{Text: "The answer is 42."})
 
 	srv := newTestServer([]string{resp})
@@ -222,7 +222,7 @@ func TestGeminiStreamChat_ToolCall(t *testing.T) {
 	resp := sseEvent(ssePartSpec{
 		FunctionCall: &geminiFunctionCall{
 			Name: "list_dir",
-			Args: map[string]interface{}{"path": "src"},
+			Args: map[string]any{"path": "src"},
 		},
 	})
 
@@ -254,7 +254,7 @@ func TestGeminiStreamChat_ToolCall(t *testing.T) {
 				t.Errorf("tool name = %q, want %q", e.ToolUse.Name, "list_dir")
 			}
 			// Args should be valid JSON
-			var args map[string]interface{}
+			var args map[string]any
 			if err := json.Unmarshal(e.ToolUse.Args, &args); err != nil {
 				t.Errorf("tool args not valid JSON: %v", err)
 			}
@@ -275,12 +275,12 @@ func TestGeminiStreamChat_ToolCall(t *testing.T) {
 
 func TestGeminiStreamChat_ThinkingWithToolCall(t *testing.T) {
 	resp := sseEvent(
-		ssePartSpec{Text: "I need to check the files", Thought: boolPtr(true)},
+		ssePartSpec{Text: "I need to check the files", Thought: new(true)},
 	) + sseEvent(
 		ssePartSpec{
 			FunctionCall: &geminiFunctionCall{
 				Name: "read_file",
-				Args: map[string]interface{}{"path": "main.go"},
+				Args: map[string]any{"path": "main.go"},
 			},
 		},
 	)
@@ -341,7 +341,7 @@ func TestGeminiStreamChat_EmptyPartsFiltered(t *testing.T) {
 		ssePartSpec{
 			FunctionCall: &geminiFunctionCall{
 				Name: "list_dir",
-				Args: map[string]interface{}{"path": "."},
+				Args: map[string]any{"path": "."},
 			},
 		},
 	)
@@ -1055,7 +1055,7 @@ func TestGeminiTranslation_ResponseEvents(t *testing.T) {
 		{
 			name: "tool call → EventToolUse + EventDone(ToolUse)",
 			sse: sseEvent(ssePartSpec{
-				FunctionCall: &geminiFunctionCall{Name: "read_file", Args: map[string]interface{}{"path": "x"}},
+				FunctionCall: &geminiFunctionCall{Name: "read_file", Args: map[string]any{"path": "x"}},
 			}),
 			checks: func(t *testing.T, events []ChatEvent) {
 				var foundTool bool
@@ -1079,7 +1079,7 @@ func TestGeminiTranslation_ResponseEvents(t *testing.T) {
 		},
 		{
 			name: "thinking + text → EventThinking + EventText",
-			sse: sseEvent(ssePartSpec{Text: "think", Thought: boolPtr(true)}) +
+			sse: sseEvent(ssePartSpec{Text: "think", Thought: new(true)}) +
 				sseEvent(ssePartSpec{Text: "answer"}),
 			checks: func(t *testing.T, events []ChatEvent) {
 				var thinking, text bool
@@ -1102,7 +1102,7 @@ func TestGeminiTranslation_ResponseEvents(t *testing.T) {
 		{
 			name: "synthetic tool ID when Gemini omits it",
 			sse: sseEvent(ssePartSpec{
-				FunctionCall: &geminiFunctionCall{Name: "list_dir", Args: map[string]interface{}{}},
+				FunctionCall: &geminiFunctionCall{Name: "list_dir", Args: map[string]any{}},
 			}),
 			checks: func(t *testing.T, events []ChatEvent) {
 				for _, e := range events {
@@ -1120,8 +1120,8 @@ func TestGeminiTranslation_ResponseEvents(t *testing.T) {
 		{
 			name: "multiple tool calls in one response",
 			sse: sseEvent(
-				ssePartSpec{FunctionCall: &geminiFunctionCall{Name: "read_file", Args: map[string]interface{}{"path": "a"}}},
-				ssePartSpec{FunctionCall: &geminiFunctionCall{Name: "read_file", Args: map[string]interface{}{"path": "b"}}},
+				ssePartSpec{FunctionCall: &geminiFunctionCall{Name: "read_file", Args: map[string]any{"path": "a"}}},
+				ssePartSpec{FunctionCall: &geminiFunctionCall{Name: "read_file", Args: map[string]any{"path": "b"}}},
 			),
 			checks: func(t *testing.T, events []ChatEvent) {
 				toolCount := 0
@@ -1180,15 +1180,15 @@ func TestGeminiStreamChat_ThoughtSignatureSeparatePart(t *testing.T) {
 	// empty text after the thinking content. Verify the signature is captured
 	// and attached to the ThinkingBlock so it can be echoed back.
 	resp := sseEvent(
-		ssePartSpec{Text: "Let me analyze this", Thought: boolPtr(true)},
+		ssePartSpec{Text: "Let me analyze this", Thought: new(true)},
 	) + sseEvent(
 		// Signature-only part: thought=true, no text, just signature
-		ssePartSpec{Thought: boolPtr(true), ThoughtSignature: "opaque-sig-abc123"},
+		ssePartSpec{Thought: new(true), ThoughtSignature: "opaque-sig-abc123"},
 	) + sseEvent(
 		ssePartSpec{
 			FunctionCall: &geminiFunctionCall{
 				Name: "read_base_file",
-				Args: map[string]interface{}{"path": "main.go"},
+				Args: map[string]any{"path": "main.go"},
 			},
 		},
 	)
@@ -1261,14 +1261,14 @@ func TestGeminiStreamChat_ThoughtSignatureOnSamePart(t *testing.T) {
 	resp := sseEvent(
 		ssePartSpec{
 			Text:             "I should check the old version",
-			Thought:          boolPtr(true),
+			Thought:          new(true),
 			ThoughtSignature: "inline-sig-xyz",
 		},
 	) + sseEvent(
 		ssePartSpec{
 			FunctionCall: &geminiFunctionCall{
 				Name: "read_base_file",
-				Args: map[string]interface{}{"path": "util.go"},
+				Args: map[string]any{"path": "util.go"},
 			},
 		},
 	)
@@ -1331,11 +1331,11 @@ func TestGeminiTranslation_ThoughtSignatureEchoedBackForToolCall(t *testing.T) {
 		mu.Unlock()
 		if n == 1 {
 			fmt.Fprint(w,
-				sseEvent(ssePartSpec{Text: "checking", Thought: boolPtr(true)})+
-					sseEvent(ssePartSpec{Thought: boolPtr(true), ThoughtSignature: "echo-me-back"})+
+				sseEvent(ssePartSpec{Text: "checking", Thought: new(true)})+
+					sseEvent(ssePartSpec{Thought: new(true), ThoughtSignature: "echo-me-back"})+
 					sseEvent(ssePartSpec{FunctionCall: &geminiFunctionCall{
 						Name: "read_base_file",
-						Args: map[string]interface{}{"path": "go.mod"},
+						Args: map[string]any{"path": "go.mod"},
 					}}),
 			)
 		} else {
@@ -1383,12 +1383,12 @@ func TestGeminiTranslation_ThoughtSignatureEchoedBackForToolCall(t *testing.T) {
 
 func TestGeminiStreamChat_MultipleThinkingChunksSignatureOnLast(t *testing.T) {
 	// Multiple thinking chunks where only the last one has the signature
-	resp := sseEvent(ssePartSpec{Text: "First thought", Thought: boolPtr(true)}) +
-		sseEvent(ssePartSpec{Text: "Second thought", Thought: boolPtr(true)}) +
-		sseEvent(ssePartSpec{Thought: boolPtr(true), ThoughtSignature: "multi-sig"}) +
+	resp := sseEvent(ssePartSpec{Text: "First thought", Thought: new(true)}) +
+		sseEvent(ssePartSpec{Text: "Second thought", Thought: new(true)}) +
+		sseEvent(ssePartSpec{Thought: new(true), ThoughtSignature: "multi-sig"}) +
 		sseEvent(ssePartSpec{FunctionCall: &geminiFunctionCall{
 			Name: "grep",
-			Args: map[string]interface{}{"pattern": "func"},
+			Args: map[string]any{"pattern": "func"},
 		}})
 
 	srv := newTestServer([]string{resp})
@@ -1924,8 +1924,8 @@ func TestLive_Tool_MultiTool(t *testing.T) {
 	// Verify multiple tools were used
 	toolsUsed := map[string]bool{}
 	for _, tok := range tokens {
-		if strings.HasPrefix(tok, "\x00TOOL_START:") {
-			name := strings.SplitN(strings.TrimPrefix(tok, "\x00TOOL_START:"), "(", 2)[0]
+		if after, ok := strings.CutPrefix(tok, "\x00TOOL_START:"); ok {
+			name := strings.SplitN(after, "(", 2)[0]
 			toolsUsed[name] = true
 		}
 	}

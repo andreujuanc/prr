@@ -232,15 +232,11 @@ func renderFindingHeader(b *strings.Builder, f state.ReviewFinding, width int, i
 
 	// SelectableRow consumes 2 outer cells (bar + gap). The content we
 	// hand it must fit in width-2.
-	contentW := width - 2
-	if contentW < 20 {
-		contentW = 20
-	}
+	contentW := max(width-2, 20)
 	prefixVisible := lipgloss.Width(prefix)
-	titleAvailable := contentW - prefixVisible - 1 // -1 for the space separator
-	if titleAvailable < 10 {
-		titleAvailable = 10
-	}
+	titleAvailable := max(
+		// -1 for the space separator
+		contentW-prefixVisible-1, 10)
 
 	var rawLines []string
 	titleVisible := lipgloss.Width(f.Title)
@@ -249,12 +245,9 @@ func renderFindingHeader(b *strings.Builder, f state.ReviewFinding, width int, i
 	} else {
 		rawLines = append(rawLines, prefix)
 		indent := strings.Repeat(" ", lipgloss.Width(resolvedPrefix))
-		wrapWidth := contentW - lipgloss.Width(indent)
-		if wrapWidth < 10 {
-			wrapWidth = 10
-		}
+		wrapWidth := max(contentW-lipgloss.Width(indent), 10)
 		wrapped := titleStyle.Width(wrapWidth).Render(f.Title)
-		for _, line := range strings.Split(wrapped, "\n") {
+		for line := range strings.SplitSeq(wrapped, "\n") {
 			rawLines = append(rawLines, indent+line)
 		}
 	}

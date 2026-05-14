@@ -411,7 +411,7 @@ func (a *Agent) executeSingleTool(ctx context.Context, tc ToolUseBlock, onToken 
 	start := time.Now()
 
 	// Parse args and execute
-	args := make(map[string]interface{})
+	args := make(map[string]any)
 	_ = json.Unmarshal(tc.Args, &args)
 
 	result, isError := a.toolExecutor.ExecuteTool(tc.Name, args)
@@ -586,7 +586,7 @@ func (a *Agent) SwitchModel(cfg ProviderConfig) error {
 
 // formatToolArgs formats json.RawMessage args for display.
 func formatToolArgs(raw json.RawMessage) string {
-	var args map[string]interface{}
+	var args map[string]any
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return string(raw)
 	}
@@ -598,7 +598,7 @@ func formatToolArgs(raw json.RawMessage) string {
 }
 
 // debugf writes to the debug log if enabled.
-func (a *Agent) debugf(format string, args ...interface{}) {
+func (a *Agent) debugf(format string, args ...any) {
 	if a.debugLog != nil {
 		a.debugLog.Printf(format, args...)
 	}

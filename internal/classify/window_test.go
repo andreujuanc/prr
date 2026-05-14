@@ -11,7 +11,7 @@ import (
 // assert which exact lines were preserved.
 func makeNumberedLines(n int) string {
 	parts := make([]string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		parts[i] = fmt.Sprintf("line %d", i)
 	}
 	return strings.Join(parts, "\n")

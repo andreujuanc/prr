@@ -422,10 +422,10 @@ func TestDeepFindings_AppendIsAtomicUnderConcurrency(t *testing.T) {
 	const perWriter = 50
 	var wg sync.WaitGroup
 	wg.Add(writers)
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < perWriter; j++ {
+			for j := range perWriter {
 				s.AppendDeepFindings([]DeepFinding{
 					{FindingID: fmt.Sprintf("w%d-f%d", id, j)},
 				})
@@ -461,7 +461,7 @@ func TestCountCachedBatchFindings_RaceFree(t *testing.T) {
 
 	// Writers: keep mutating BatchFindings while readers count.
 	wg.Add(2)
-	for w := 0; w < 2; w++ {
+	for w := range 2 {
 		go func(id int) {
 			defer wg.Done()
 			for {
@@ -479,10 +479,10 @@ func TestCountCachedBatchFindings_RaceFree(t *testing.T) {
 
 	// Readers: hammer CountCachedBatchFindings.
 	wg.Add(4)
-	for r := 0; r < 4; r++ {
+	for range 4 {
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 5000; i++ {
+			for range 5000 {
 				_ = s.CountCachedBatchFindings(paths)
 			}
 		}()

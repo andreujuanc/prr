@@ -153,14 +153,14 @@ func runAudit(debug bool, args []string) {
 	noSynth := false
 	quiet := false
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "--focus=") {
-			focusStr = strings.TrimPrefix(arg, "--focus=")
-		} else if strings.HasPrefix(arg, "--exclude=") {
-			excludeStr = strings.TrimPrefix(arg, "--exclude=")
-		} else if strings.HasPrefix(arg, "--include=") {
-			includeStr = strings.TrimPrefix(arg, "--include=")
-		} else if strings.HasPrefix(arg, "--max-reviews=") {
-			fmt.Sscanf(strings.TrimPrefix(arg, "--max-reviews="), "%d", &opts.MaxReviews)
+		if after, ok := strings.CutPrefix(arg, "--focus="); ok {
+			focusStr = after
+		} else if after, ok := strings.CutPrefix(arg, "--exclude="); ok {
+			excludeStr = after
+		} else if after, ok := strings.CutPrefix(arg, "--include="); ok {
+			includeStr = after
+		} else if after, ok := strings.CutPrefix(arg, "--max-reviews="); ok {
+			fmt.Sscanf(after, "%d", &opts.MaxReviews)
 		} else if strings.HasPrefix(arg, "--concurrency=") {
 			var n int
 			fmt.Sscanf(strings.TrimPrefix(arg, "--concurrency="), "%d", &n)
@@ -171,8 +171,8 @@ func runAudit(debug bool, args []string) {
 				opts.Concurrency.Recheck = n
 				opts.Concurrency.HierarchicalSynth = n
 			}
-		} else if strings.HasPrefix(arg, "--output=") {
-			outputPath = strings.TrimPrefix(arg, "--output=")
+		} else if after, ok := strings.CutPrefix(arg, "--output="); ok {
+			outputPath = after
 		} else if arg == "--no-cache" {
 			opts.NoCache = true
 		} else if arg == "--no-synthesis" {
@@ -181,8 +181,8 @@ func runAudit(debug bool, args []string) {
 			quiet = true
 		} else if arg == "--debug" {
 			opts.Debug = true
-		} else if strings.HasPrefix(arg, "--file=") {
-			opts.DebugFile = strings.TrimPrefix(arg, "--file=")
+		} else if after, ok := strings.CutPrefix(arg, "--file="); ok {
+			opts.DebugFile = after
 		} else if arg == "--help" || arg == "-h" {
 			printAuditUsage()
 			os.Exit(0)
@@ -408,8 +408,8 @@ func runReview(debug bool, args []string) {
 	// Parse flags and find the PR number
 	var prNumber string
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "--output=") {
-			outputPath = strings.TrimPrefix(arg, "--output=")
+		if after, ok := strings.CutPrefix(arg, "--output="); ok {
+			outputPath = after
 		} else if arg == "--no-cache" {
 			noCache = true
 		} else if arg == "--no-synthesis" {
@@ -624,7 +624,7 @@ func runReview(debug bool, args []string) {
 
 // exportReviewResult writes the review result to a JSON file.
 func exportReviewResult(result *review.PRReviewResult, path string) error {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"pr_number":      result.PR.Number,
 		"pr_title":       result.PR.Title,
 		"files_reviewed": result.FilesReviewed,
@@ -1017,9 +1017,9 @@ func ensureSSHHostKeys() {
 		// git@github.com:user/repo.git
 		parts := strings.SplitN(url, ":", 2)
 		host = strings.TrimPrefix(parts[0], "git@")
-	} else if strings.HasPrefix(url, "ssh://") {
+	} else if after, ok := strings.CutPrefix(url, "ssh://"); ok {
 		// ssh://git@github.com/user/repo.git
-		trimmed := strings.TrimPrefix(url, "ssh://")
+		trimmed := after
 		if at := strings.Index(trimmed, "@"); at >= 0 {
 			trimmed = trimmed[at+1:]
 		}
@@ -1059,7 +1059,7 @@ func ensureSSHHostKeys() {
 		warn.Render("note:"), host)
 
 	// Compute and display fingerprints
-	for _, line := range strings.Split(strings.TrimSpace(string(keys)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(keys)), "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}

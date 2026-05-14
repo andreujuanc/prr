@@ -349,7 +349,7 @@ func handleToolEvent(task *Task, part *opencode.Part, batch *strings.Builder, p 
 }
 
 // formatToolInput creates a brief description of a tool call from its input.
-func formatToolInput(tool string, input map[string]interface{}) string {
+func formatToolInput(tool string, input map[string]any) string {
 	switch tool {
 	case "bash":
 		if cmd, ok := input["command"].(string); ok {

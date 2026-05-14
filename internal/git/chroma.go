@@ -149,17 +149,17 @@ func parseUnifiedDiff(raw string) []diffHunk {
 			continue
 		}
 
-		if strings.HasPrefix(line, "+") {
+		if after, ok := strings.CutPrefix(line, "+"); ok {
 			current.lines = append(current.lines, diffLine{
 				kind:    diffAdded,
-				content: strings.TrimPrefix(line, "+"),
+				content: after,
 				newNum:  newLine,
 			})
 			newLine++
-		} else if strings.HasPrefix(line, "-") {
+		} else if after, ok := strings.CutPrefix(line, "-"); ok {
 			current.lines = append(current.lines, diffLine{
 				kind:    diffRemoved,
-				content: strings.TrimPrefix(line, "-"),
+				content: after,
 				oldNum:  oldLine,
 			})
 			oldLine++

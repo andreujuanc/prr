@@ -443,7 +443,7 @@ func TestSplitFindingsByCategory_OversizeGroupGetsOwnBatch(t *testing.T) {
 	// in one batch (we don't artificially split within a category
 	// because that would lose intra-category pattern signal).
 	var findings []state.DeepFinding
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		findings = append(findings, makeFinding(
 			"F-00"+string(rune('1'+i)),
 			"f.go", "1", "A", "x", "low",

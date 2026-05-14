@@ -42,7 +42,7 @@ func TestBox_OversizedContent_TruncatesAndKeepsRightRail(t *testing.T) {
 	out := b.Render("this is way too long to fit")
 	assertUniformWidth(t, out, 10)
 	bdr := lipgloss.RoundedBorder()
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if !strings.HasSuffix(stripANSI(line), bdr.Right) &&
 			!strings.HasSuffix(stripANSI(line), bdr.TopRight) &&
 			!strings.HasSuffix(stripANSI(line), bdr.BottomRight) {

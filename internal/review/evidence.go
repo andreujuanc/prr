@@ -149,14 +149,8 @@ func verifyEvidence(repoRoot string, f state.DeepFinding) evidenceVerdict {
 	}
 
 	// Apply ±tolerance window, clamped to file bounds.
-	windowStart := start - evidenceLineTolerance
-	if windowStart < 1 {
-		windowStart = 1
-	}
-	windowEnd := end + evidenceLineTolerance
-	if windowEnd > len(lines) {
-		windowEnd = len(lines)
-	}
+	windowStart := max(start-evidenceLineTolerance, 1)
+	windowEnd := min(end+evidenceLineTolerance, len(lines))
 	if windowStart > len(lines) {
 		// Cited line is past EOF — definitely hallucinated.
 		return evidenceMismatch

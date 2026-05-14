@@ -128,10 +128,7 @@ func RouteAOIs(results []security.AOIScanResult, focusDimensions []string, maxGr
 
 		// Split into chunks if needed
 		for i := 0; i < len(aois); i += maxGroupSize {
-			end := i + maxGroupSize
-			if end > len(aois) {
-				end = len(aois)
-			}
+			end := min(i+maxGroupSize, len(aois))
 			chunk := aois[i:end]
 
 			files := uniqueFiles(chunk)
@@ -220,8 +217,8 @@ func subcategoryKey(category, subcategory string) string {
 }
 
 func parseSubcategoryKey(key string) (category, subcategory string) {
-	if idx := strings.Index(key, "/"); idx != -1 {
-		return key[:idx], key[idx+1:]
+	if before, after, ok := strings.Cut(key, "/"); ok {
+		return before, after
 	}
 	return key, ""
 }

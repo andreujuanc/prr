@@ -368,7 +368,7 @@ func parseModelsFromEnv(cfg *config.Config, models map[string]config.ModelConfig
 	fastRef, _ := config.ParseModelRef(cfg.FastModel)
 
 	var specs []modelSpec
-	for _, entry := range strings.Split(envModels, ",") {
+	for entry := range strings.SplitSeq(envModels, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue

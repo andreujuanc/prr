@@ -48,14 +48,10 @@ func renderInlineFinding(f state.ReviewFinding, width int, fs findingStyles) []s
 	titleSt := lipgloss.NewStyle().Foreground(borderColor).Bold(true)
 
 	// Outer box width = viewport width minus the 2-cell left indent.
-	boxW := width - 2
-	if boxW < 20 {
-		boxW = 20
-	}
-	innerW := boxW - 4 // rails(2) + Padding L+R (2)
-	if innerW < 10 {
-		innerW = 10
-	}
+	boxW := max(width-2, 20)
+	innerW := max(
+		// rails(2) + Padding L+R (2)
+		boxW-4, 10)
 
 	// Title: "[severity/category] Title [CWE] verdict-marker"
 	title := fmt.Sprintf("[%s/%s] %s", f.Severity, f.Category, f.Title)

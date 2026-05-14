@@ -1356,29 +1356,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AIChatDeltaMsg:
 		if m.aiStreaming {
 			token := msg.Token
-			if strings.HasPrefix(token, "\x00THOUGHT:") {
+			if after, ok := strings.CutPrefix(token, "\x00THOUGHT:"); ok {
 				// Thought text — render each line individually to prevent
 				// viewport word-wrapping from breaking ANSI escape codes
-				thought := strings.TrimPrefix(token, "\x00THOUGHT:")
-				for _, line := range strings.Split(thought, "\n") {
+				thought := after
+				for line := range strings.SplitSeq(thought, "\n") {
 					m.aiStreamBuffer += styleThought.Render(line) + "\n"
 				}
-			} else if strings.HasPrefix(token, "\x00TOOL_START:") {
+			} else if after, ok := strings.CutPrefix(token, "\x00TOOL_START:"); ok {
 				// Tool execution starting — show name and args
-				tool := strings.TrimPrefix(token, "\x00TOOL_START:")
+				tool := after
 				prefix := "  ▸ "
-				maxLen := m.width - 6
-				if maxLen < 20 {
-					maxLen = 20
-				}
+				maxLen := max(m.width-6, 20)
 				if len(tool) > maxLen {
 					tool = "…" + tool[len(tool)-(maxLen-1):]
 				}
 				m.aiStreamBuffer += "\n" + styleToolCall.Render(prefix+tool+" …") + "\n"
-			} else if strings.HasPrefix(token, "\x00TOOL_DONE:") {
+			} else if after, ok := strings.CutPrefix(token, "\x00TOOL_DONE:"); ok {
 				// Tool execution finished — show status and duration
 				// Format: name|status|duration
-				parts := strings.SplitN(strings.TrimPrefix(token, "\x00TOOL_DONE:"), "|", 3)
+				parts := strings.SplitN(after, "|", 3)
 				if len(parts) == 3 {
 					name, status, dur := parts[0], parts[1], parts[2]
 					indicator := "  ✓ "
@@ -1386,23 +1383,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						indicator = "  ✗ "
 					}
 					line := fmt.Sprintf("%s%s (%s)", indicator, name, dur)
-					maxLen := m.width - 6
-					if maxLen < 20 {
-						maxLen = 20
-					}
+					maxLen := max(m.width-6, 20)
 					if len(line) > maxLen {
 						line = line[:maxLen-1] + "…"
 					}
 					m.aiStreamBuffer += styleToolCall.Render(line) + "\n"
 				}
-			} else if strings.HasPrefix(token, "\x00TOOL:") {
+			} else if after, ok := strings.CutPrefix(token, "\x00TOOL:"); ok {
 				// Legacy tool call indicator (backward compat)
-				tool := strings.TrimPrefix(token, "\x00TOOL:")
+				tool := after
 				prefix := "  ▸ "
-				maxLen := m.width - 6
-				if maxLen < 20 {
-					maxLen = 20
-				}
+				maxLen := max(m.width-6, 20)
 				if len(tool) > maxLen {
 					tool = "…" + tool[len(tool)-(maxLen-1):]
 				}
@@ -2185,10 +2176,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Jump to bottom of diff
 				total := m.diffViewport.TotalLineCount()
 				vpH := m.diffViewport.Height
-				maxOffset := total - vpH
-				if maxOffset < 0 {
-					maxOffset = 0
-				}
+				maxOffset := max(total-vpH, 0)
 				m.diffViewport.SetYOffset(maxOffset)
 				visible := m.diffViewport.VisibleLineCount()
 				if visible > 0 {
@@ -2202,19 +2190,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "ctrl+d":
 				// Half-page down
-				half := m.diffViewport.Height / 2
-				if half < 1 {
-					half = 1
-				}
+				half := max(m.diffViewport.Height/2, 1)
 				m.diffViewport.LineDown(half)
 				m.clampDiffCursor()
 				return m, nil
 			case "ctrl+u":
 				// Half-page up
-				half := m.diffViewport.Height / 2
-				if half < 1 {
-					half = 1
-				}
+				half := max(m.diffViewport.Height/2, 1)
 				m.diffViewport.LineUp(half)
 				m.clampDiffCursor()
 				return m, nil
@@ -2818,10 +2800,7 @@ func (m Model) renderChatInputLabel(width int) string {
 		label := styleTextMuted.Render("Enter to send")
 		pw := ansi.StringWidth(prompt)
 		lw := ansi.StringWidth(label)
-		fill := width - pw - lw
-		if fill < 1 {
-			fill = 1
-		}
+		fill := max(width-pw-lw, 1)
 		return prompt + strings.Repeat(" ", fill) + label
 	}
 	// Blurred: subtle separator
@@ -2953,10 +2932,7 @@ func (m Model) renderReviewProgress(maxWidth int) string {
 	// Build progress bar: ████░░░░
 	barWidth := 10
 	if total > 0 && m.aiReviewPhase != "synthesis" {
-		filled := (completed * barWidth) / total
-		if filled > barWidth {
-			filled = barWidth
-		}
+		filled := min((completed*barWidth)/total, barWidth)
 		empty := barWidth - filled
 		bar := styleProgressBar.Render(strings.Repeat("█", filled)) +
 			styleProgressBg.Render(strings.Repeat("░", empty))
@@ -2966,10 +2942,7 @@ func (m Model) renderReviewProgress(maxWidth int) string {
 	// Synthesis phase — pulsing bar to show activity
 	secs := float64(time.Now().UnixMilli()) / 1000.0
 	pct := 0.5 + 0.45*math.Sin(secs*math.Pi/2)
-	filled := int(pct * float64(barWidth))
-	if filled < 1 {
-		filled = 1
-	}
+	filled := max(int(pct*float64(barWidth)), 1)
 	if filled > barWidth {
 		filled = barWidth
 	}
@@ -3077,7 +3050,7 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 
 	wrapBody := func(body string) []string {
 		var out []string
-		for _, raw := range strings.Split(body, "\n") {
+		for raw := range strings.SplitSeq(body, "\n") {
 			for _, w := range wrapText(raw, innerW) {
 				out = append(out, bodyStyle.Render(w))
 			}
@@ -3105,7 +3078,7 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 			Padding:     Padding{Left: 1, Right: 1},
 		}
 		rendered := box.Render(strings.Join(contentLines, "\n"))
-		for _, l := range strings.Split(rendered, "\n") {
+		for l := range strings.SplitSeq(rendered, "\n") {
 			result = append(result, "  "+l)
 		}
 	}
@@ -3147,7 +3120,7 @@ func stripANSI(s string) string {
 
 // countDiffStats counts added and removed lines in a unified diff.
 func countDiffStats(diff string) (added, removed int) {
-	for _, line := range strings.Split(diff, "\n") {
+	for line := range strings.SplitSeq(diff, "\n") {
 		if len(line) == 0 {
 			continue
 		}
@@ -3813,25 +3786,16 @@ func (m *Model) scrollDiffToLine(targetLine int) {
 	if bestOffset >= 0 {
 		// Center the target line in the viewport
 		vpHeight := m.diffViewport.Height
-		offset := bestOffset - vpHeight/2
-		if offset < 0 {
-			offset = 0
-		}
+		offset := max(bestOffset-vpHeight/2, 0)
 		// Clamp to max scroll position to keep cursor calculation consistent
-		maxOffset := m.diffViewport.TotalLineCount() - vpHeight
-		if maxOffset < 0 {
-			maxOffset = 0
-		}
+		maxOffset := max(m.diffViewport.TotalLineCount()-vpHeight, 0)
 		if offset > maxOffset {
 			offset = maxOffset
 		}
 		m.diffViewport.SetYOffset(offset)
 
 		// Set diff cursor to the target line within the visible area
-		m.diffCursor = bestOffset - offset
-		if m.diffCursor < 0 {
-			m.diffCursor = 0
-		}
+		m.diffCursor = max(bestOffset-offset, 0)
 		if m.diffCursor >= vpHeight {
 			m.diffCursor = vpHeight - 1
 		}
@@ -4139,10 +4103,7 @@ func (m *Model) renderCleanReviewPlaceholder() {
 		b.WriteString("\n\n")
 		// Wrap the error so long messages don't get truncated by the
 		// viewport's horizontal clip.
-		w := m.reviewViewport.Width - 4
-		if w < 30 {
-			w = 30
-		}
+		w := max(m.reviewViewport.Width-4, 30)
 		b.WriteString(wrapStyled(styleTextSecondary, "  "+lr.Error, w))
 		b.WriteString("\n\n")
 		when := lr.CompletedAt.Format("2006-01-02 15:04")
@@ -4357,14 +4318,10 @@ func (m *Model) scrollReviewToFinding(idx int) {
 	}
 
 	vpHeight := m.reviewViewport.Height
-	offset := targetLine - vpHeight/3 // show marker in upper third
-	if offset < 0 {
-		offset = 0
-	}
-	maxOffset := m.reviewViewport.TotalLineCount() - vpHeight
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
+	offset := max(
+		// show marker in upper third
+		targetLine-vpHeight/3, 0)
+	maxOffset := max(m.reviewViewport.TotalLineCount()-vpHeight, 0)
 	if offset > maxOffset {
 		offset = maxOffset
 	}
@@ -4471,7 +4428,7 @@ func (m Model) renderOverview() string {
 	if m.pr.Body != "" {
 		b.WriteString("\n" + styleTextSubtle.Render(strings.Repeat("─", inner)) + "\n")
 		b.WriteString(styleAccentMauveBold.Render("Description") + "\n\n")
-		for _, line := range strings.Split(m.pr.Body, "\n") {
+		for line := range strings.SplitSeq(m.pr.Body, "\n") {
 			wrapped := wrapText(line, inner)
 			for _, wl := range wrapped {
 				b.WriteString(styleTextSecondary.Render(wl) + "\n")
@@ -4615,10 +4572,7 @@ func (m *Model) syncLayout() {
 		// Review viewport always gets the full content area — Tab 0 has
 		// no input. Sized identically to chatViewport's "no input" mode
 		// so layout is consistent across tab switches.
-		reviewVpH := ih - 2
-		if reviewVpH < 1 {
-			reviewVpH = 1
-		}
+		reviewVpH := max(ih-2, 1)
 		m.reviewViewport.Width = cw
 		m.reviewViewport.Height = reviewVpH
 	}
@@ -4722,10 +4676,7 @@ func (m Model) columns() [3]int {
 		numPanes++
 	}
 	separators := numPanes - 1
-	avail := m.width - separators
-	if avail < 20 {
-		avail = 20
-	}
+	avail := max(m.width-separators, 20)
 
 	var l, mid, r int
 
@@ -4767,10 +4718,7 @@ func (m Model) columns() [3]int {
 	// Final enforcement: ensure total never exceeds available width.
 	// Shrink mid (the diff pane) as a last resort.
 	if total := l + mid + r; total > avail {
-		mid = avail - l - r
-		if mid < 1 {
-			mid = 1
-		}
+		mid = max(avail-l-r, 1)
 	}
 	return [3]int{l, mid, r}
 }
@@ -4824,19 +4772,15 @@ func (m Model) renderDiffWithCursor() (string, int) {
 			if blameStr != "" {
 				blameWidth := ansi.StringWidth(blameStr)
 				// Reserve space: 2 char gap + blame text
-				maxCode := w - blameWidth - 2
-				if maxCode < 20 {
-					maxCode = 20 // don't crush the code too much
-				}
+				maxCode := max(w-blameWidth-2,
+					// don't crush the code too much
+					20)
 				// Truncate code portion to make room for blame
 				if ansi.StringWidth(line) > maxCode {
 					line = ansi.Truncate(line, maxCode, "")
 				}
 				visible := ansi.StringWidth(line)
-				gap := w - visible - blameWidth
-				if gap < 2 {
-					gap = 2
-				}
+				gap := max(w-visible-blameWidth, 2)
 				line = line + strings.Repeat(" ", gap) + blameStr
 			}
 		}
@@ -4912,10 +4856,6 @@ func (m Model) View() string {
 		// Measure widths for centering
 		logoVisualWidth := ansi.StringWidth(logoLines[0])
 		statusWidth := ansi.StringWidth(statusLine)
-		maxWidth := logoVisualWidth
-		if statusWidth > maxWidth {
-			maxWidth = statusWidth
-		}
 
 		// Build centered content block
 		totalLines := len(logoRendered) + 1 + 1 // logo + blank + status
@@ -5260,10 +5200,7 @@ func (m Model) viewHeader() string {
 	}
 
 	left := " " + logo + repoLabel + prInfo + prTitle + meta
-	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
-	if gap < 1 {
-		gap = 1
-	}
+	gap := max(m.width-ansi.StringWidth(left)-ansi.StringWidth(right), 1)
 
 	separator := styleTextSubtle.Render(strings.Repeat("─", m.width))
 

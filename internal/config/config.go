@@ -3,8 +3,10 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/pipe"
@@ -241,9 +243,7 @@ func migrateIfNeeded(data []byte, cfg *Config) (bool, error) {
 		cfg.Providers = make(map[string]ProviderConfig)
 	}
 	if legacy.Providers != nil {
-		for name, pc := range legacy.Providers {
-			cfg.Providers[name] = pc
-		}
+		maps.Copy(cfg.Providers, legacy.Providers)
 	}
 	// If top-level api_key exists and no providers entry for this provider, add it
 	if legacy.APIKey != "" && legacy.APIKey != "YOUR_API_KEY" {
@@ -374,13 +374,7 @@ func (c *Config) ConfiguredProviders() []string {
 		}
 		// De-dupe in case the keyless provider also has an entry in the
 		// providers map (e.g. user manually added a placeholder).
-		already := false
-		for _, n := range result {
-			if n == name {
-				already = true
-				break
-			}
-		}
+		already := slices.Contains(result, name)
 		if !already {
 			result = append(result, name)
 		}
@@ -394,11 +388,11 @@ func createDefault(path string) error {
 		return err
 	}
 
-	defaultCfg := map[string]interface{}{
+	defaultCfg := map[string]any{
 		"strong_model": DefaultStrongModel,
 		"fast_model":   DefaultFastModel,
-		"providers": map[string]interface{}{
-			"gemini": map[string]interface{}{
+		"providers": map[string]any{
+			"gemini": map[string]any{
 				"api_key": "YOUR_API_KEY",
 			},
 		},
@@ -426,7 +420,7 @@ func Save(cfg *Config) error {
 // SaveTo saves config to a specific path. Exported for testing.
 func SaveTo(cfg *Config, path string) error {
 	// Read existing file to preserve unknown/extra fields and formatting
-	existing := make(map[string]interface{})
+	existing := make(map[string]any)
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &existing)
 	}
@@ -454,9 +448,9 @@ func SaveTo(cfg *Config, path string) error {
 
 	// Merge providers: preserve existing providers, add/update from cfg
 	if len(cfg.Providers) > 0 {
-		existingProviders := make(map[string]interface{})
+		existingProviders := make(map[string]any)
 		if ep, ok := existing["providers"]; ok {
-			if m, ok := ep.(map[string]interface{}); ok {
+			if m, ok := ep.(map[string]any); ok {
 				existingProviders = m
 			}
 		}

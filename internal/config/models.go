@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 )
@@ -63,9 +64,7 @@ func LoadModels() (map[string]ModelConfig, error) {
 		return defaults, nil
 	}
 
-	for model, cfg := range overrides {
-		defaults[model] = cfg
-	}
+	maps.Copy(defaults, overrides)
 
 	return defaults, nil
 }

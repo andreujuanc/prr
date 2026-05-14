@@ -18,7 +18,7 @@ type ReviewFindingComment struct {
 // SubmitReviewWithFindings creates a GitHub PR review with inline comments.
 // Uses the GitHub REST API: POST repos/{owner}/{repo}/pulls/{pr}/reviews
 func SubmitReviewWithFindings(prNumber, commitSHA, body string, comments []ReviewFindingComment) error {
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"commit_id": commitSHA,
 		"body":      body,
 		"event":     "COMMENT",

@@ -88,7 +88,7 @@ func TestIdleWatch_RespectsParentCancel(t *testing.T) {
 func TestIdleWatch_StopReleasesGoroutine(t *testing.T) {
 	before := runtime.NumGoroutine()
 
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		_, _, stop := IdleWatch(context.Background(), time.Hour, nil)
 		stop()
 	}
@@ -114,7 +114,7 @@ func TestIdleWatch_WrapperCallsUnderlyingOnToken(t *testing.T) {
 	})
 	defer stop()
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wrap("x")
 	}
 
@@ -157,10 +157,10 @@ func TestIdleWatch_ConcurrentWrapCalls(t *testing.T) {
 	const callsPer = 500
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < callsPer; j++ {
+			for range callsPer {
 				wrap("tok")
 			}
 		}()
@@ -183,10 +183,10 @@ func TestIdleWatch_ConcurrentStopAndWrap(t *testing.T) {
 	const writers = 16
 	var wg sync.WaitGroup
 	wg.Add(writers)
-	for i := 0; i < writers; i++ {
+	for range writers {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 1000; j++ {
+			for range 1000 {
 				wrap("tok")
 			}
 		}()
@@ -208,7 +208,7 @@ func TestIdleWatch_ConcurrentStopAndWrap(t *testing.T) {
 func TestIdleWatch_ConcurrentStopAndParentCancel(t *testing.T) {
 	before := runtime.NumGoroutine()
 
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		parent, parentCancel := context.WithCancel(context.Background())
 		_, _, stop := IdleWatch(parent, time.Hour, nil)
 		// Race parent cancel against stop. Either order must work.

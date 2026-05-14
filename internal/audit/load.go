@@ -33,10 +33,7 @@ const binarySniffLimit = 8192
 // Known false positives: UTF-16/UTF-32 source files (vanishingly rare
 // for code). Users can force-include via --include if needed.
 func IsBinary(content []byte) bool {
-	limit := binarySniffLimit
-	if len(content) < limit {
-		limit = len(content)
-	}
+	limit := min(len(content), binarySniffLimit)
 	return bytes.IndexByte(content[:limit], 0x00) >= 0
 }
 

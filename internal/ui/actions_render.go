@@ -39,10 +39,7 @@ func (m *Model) renderActionsView() string {
 		isSelected := row == m.actionsCursor
 
 		icon := actionStatusIcon(run.Status, run.Conclusion)
-		nameMaxW := inner - 30
-		if nameMaxW < 10 {
-			nameMaxW = 10
-		}
+		nameMaxW := max(inner-30, 10)
 		name := truncateToWidth(run.Name, nameMaxW)
 		status := actionStatusLabel(run.Status, run.Conclusion)
 		age := actionAge(run.UpdatedAt)
