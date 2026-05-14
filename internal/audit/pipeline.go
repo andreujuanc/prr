@@ -434,6 +434,18 @@ func Run(
 		return nil, fmt.Errorf("phase 2 AOI generation: %w", err)
 	}
 
+	// Emit the terminal phase-2 summary the TUI parser needs to populate
+	// aoi_count. Without this, the summary row renders "0 AOIs" forever
+	// even when the scan found dozens — the review pipeline emits the
+	// same message at the equivalent point; keep them symmetrical.
+	{
+		total := 0
+		for _, r := range aoiResults {
+			total += len(r.AreasOfInterest)
+		}
+		onProgress("phase2", fmt.Sprintf("found %d areas of interest", total))
+	}
+
 	// Debug: show parsed AOIs
 	if dbgw.Enabled() {
 		dbgw.Section("Parsed AOIs")
@@ -685,6 +697,15 @@ func runPhase2(
 		fileDimensions[path] = classify.DimensionsForType(ft)
 	}
 
+	// Surface the partial-cache hit count so the TUI's AOI summary
+	// row can render "K cached". The scanner only emits this when it
+	// sees cached entries in rawDiffs — and we filtered them out
+	// upstream, so the scanner counts 0 cached. Emit it here from
+	// the count we already have.
+	if len(cachedResults) > 0 {
+		onProgress("phase2", fmt.Sprintf("using cached AOI results for %d file(s)", len(cachedResults)))
+	}
+
 	// Run AOI scan on uncached files
 	report, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, fileContents, cachedResults, fileDimensions, func(status string) {
 		onProgress("phase2", status)
@@ -693,7 +714,8 @@ func runPhase2(
 		return nil, err
 	}
 
-	// Cache results per-file
+	// Cache results per-file (fresh results only — cached entries are
+	// already in state).
 	for _, fileResult := range report.Files {
 		data, err := json.Marshal(fileResult)
 		if err != nil {
@@ -702,6 +724,20 @@ func runPhase2(
 		auditState.SetAOIResults(fileResult.File, data, opts.AOIContextLines)
 	}
 
+	// Merge cached results into the return value. The scanner's internal
+	// merge loop iterates rawDiffs (the uncached-only map we passed in)
+	// looking up each path in cachedResults — none of those paths are
+	// in the cache, so its cachedAOIs slice stays empty and report.Files
+	// contains only fresh scans. Without this merge, Phase 3 would route
+	// only the freshly-scanned AOIs and silently lose all cache-hit ones.
+	if len(cachedResults) > 0 {
+		combined := make([]security.AOIScanResult, 0, len(report.Files)+len(cachedResults))
+		combined = append(combined, report.Files...)
+		for _, r := range cachedResults {
+			combined = append(combined, *r)
+		}
+		return combined, nil
+	}
 	return report.Files, nil
 }
 

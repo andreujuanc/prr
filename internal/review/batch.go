@@ -170,10 +170,24 @@ const (
 	StatusFailed
 )
 
+// BatchKind distinguishes AOI-driven calls (targeted by the security
+// pre-scan's findings) from generic fallback batches (cover files the
+// pre-scan didn't flag — every diffed file still gets read). The split
+// drives the breakdown shown in the Deep Review progress row; without
+// it users see "Initialized 12 batches" then "0 AOIs" and can't tell
+// what kind of work is queued.
+type BatchKind int
+
+const (
+	BatchAOIDriven BatchKind = iota
+	BatchGeneral
+)
+
 // BatchInfo describes a single batch for progress reporting.
 type BatchInfo struct {
 	Label    string
 	NumFiles int
+	Kind     BatchKind
 }
 
 // Reporter decouples review orchestration from the UI layer.

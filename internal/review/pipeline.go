@@ -294,7 +294,22 @@ func (p *progressReporter) AOIPrescanProgress(status string, done bool, aoiCount
 	p.onProgress("aoi", status)
 }
 func (p *progressReporter) InitBatches(batches []BatchInfo) {
-	p.onProgress("phase1", fmt.Sprintf("Initialized %d batches", len(batches)))
+	// Emit total + breakdown in one message so the TUI's deep-review
+	// row can show "5 AOI-driven + 7 general" instead of just a flat
+	// count. When there are no AOI-driven calls the parens are still
+	// useful — the user sees "12 batches (12 general)" and can
+	// reconcile that with the upstream "0 AOIs" they just saw.
+	var aoi, general int
+	for _, b := range batches {
+		switch b.Kind {
+		case BatchAOIDriven:
+			aoi++
+		case BatchGeneral:
+			general++
+		}
+	}
+	p.onProgress("phase1", fmt.Sprintf("Initialized %d batches (%d AOI-driven, %d general)",
+		len(batches), aoi, general))
 }
 func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
 	// Skip StatusActive: with parallel batches, "active" messages
@@ -764,7 +779,10 @@ func RunReviewCore(
 		return nil, fmt.Errorf("no files to review")
 	}
 
-	// Initialize batch list in reporter
+	// Initialize batch list in reporter. Kind lets the progress UI
+	// render the AOI-driven / general breakdown — without it the
+	// "Initialized N batches" row gives no hint that some calls are
+	// targeted on AOI findings while others are blanket diff reviews.
 	batchInfos := make([]BatchInfo, 0, totalCalls)
 	for _, call := range reviewCalls {
 		label := call.Category
@@ -777,12 +795,14 @@ func RunReviewCore(
 		batchInfos = append(batchInfos, BatchInfo{
 			Label:    label,
 			NumFiles: len(call.Files),
+			Kind:     BatchAOIDriven,
 		})
 	}
 	for _, b := range fallbackBatches {
 		batchInfos = append(batchInfos, BatchInfo{
 			Label:    b.Label,
 			NumFiles: len(b.Files),
+			Kind:     BatchGeneral,
 		})
 	}
 	rr.InitBatches(batchInfos)

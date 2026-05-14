@@ -112,6 +112,17 @@ var claudeCodeDisallowedTools = []string{
 	"Edit", "Write", "NotebookEdit",
 }
 
+// claudeCodeAppendSystemPrompt is added to every claude -p invocation via
+// --append-system-prompt. Empirically (scripts/token-bench, N=5/condition,
+// opus 4.7) this cuts review output by ~38% vs no rules and ~42% vs the
+// 12-rule AGENTS.md variant, with no quality loss (5/5 planted issues
+// caught in every run). The wins came from the numeric budget and the
+// no-preamble directive — adding more rules did not help.
+const claudeCodeAppendSystemPrompt = `## Review rules
+
+- Token budget: 4,000 tokens. Surface if approaching.
+- No preamble, no conclusion — findings only.`
+
 // ── Provider ────────────────────────────────────────────────────────────
 
 // ClaudeCodeProvider implements Provider by shelling out to the `claude`
@@ -180,6 +191,7 @@ func (c *ClaudeCodeProvider) buildArgs() []string {
 		"--allowed-tools", strings.Join(claudeCodeAllowedTools, " "),
 		"--disallowed-tools", strings.Join(claudeCodeDisallowedTools, " "),
 		"--no-session-persistence",
+		"--append-system-prompt", claudeCodeAppendSystemPrompt,
 	}
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)

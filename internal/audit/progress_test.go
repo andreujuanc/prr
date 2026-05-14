@@ -29,14 +29,22 @@ func TestParseAuditEvent_Phase1Files(t *testing.T) {
 	}
 }
 
-func TestParseAuditEvent_Phase2ScanProgress(t *testing.T) {
+func TestParseAuditEvent_Phase2ScanProgressDoesNotOverwriteFileCount(t *testing.T) {
+	// Regression: "AOI scan X/Y" carries batch counts, not file counts.
+	// Previously this branch wrote to aoi_total, stomping the file
+	// total set by phase 1 ("Phase 1 complete: N files to audit") and
+	// making the AOI summary row mis-report "N AOIs across <batch> files".
 	s := newState()
+	parseAuditEvent(s, "phase1", "Phase 1 complete: 40 files to audit")
 	parseAuditEvent(s, "phase2", "AOI scan 3/5")
-	if s.Counters["aoi_scanned"] != 3 {
-		t.Errorf("aoi_scanned = %d, want 3", s.Counters["aoi_scanned"])
+	if got := s.Counters["aoi_total"]; got != 40 {
+		t.Errorf("aoi_total = %d, want 40 (must not be overwritten by batch count)", got)
 	}
-	if s.Counters["aoi_total"] != 5 {
-		t.Errorf("aoi_total = %d, want 5", s.Counters["aoi_total"])
+	if got := s.Counters["aoi_batches_done"]; got != 3 {
+		t.Errorf("aoi_batches_done = %d, want 3", got)
+	}
+	if got := s.Counters["aoi_batches_total"]; got != 5 {
+		t.Errorf("aoi_batches_total = %d, want 5", got)
 	}
 }
 
@@ -296,14 +304,14 @@ func TestParseAuditEvent_SynthesisReceivedTicksBar(t *testing.T) {
 // ── ProgressFn ─────────────────────────────────────────────────────────
 
 func TestAOIProgress_RatioOfCounters(t *testing.T) {
-	s := &progress.State{Counters: map[string]int{"aoi_scanned": 5, "aoi_total": 10}}
+	s := &progress.State{Counters: map[string]int{"aoi_batches_done": 5, "aoi_batches_total": 10}}
 	if got := aoiProgress(s); got != 0.5 {
 		t.Errorf("aoiProgress = %f, want 0.5", got)
 	}
 }
 
 func TestAOIProgress_ZeroTotal(t *testing.T) {
-	s := &progress.State{Counters: map[string]int{"aoi_total": 0}}
+	s := &progress.State{Counters: map[string]int{"aoi_batches_total": 0}}
 	if got := aoiProgress(s); got != 0 {
 		t.Errorf("aoiProgress with zero total = %f, want 0", got)
 	}
@@ -360,9 +368,23 @@ func TestAOISummary_BreakdownFromCounters(t *testing.T) {
 	s := &progress.State{Counters: map[string]int{
 		"aoi_total": 40, "aoi_count": 32, "aoi_cached": 10,
 	}}
-	want := "32 AOIs across 40 files · 10 cached"
+	want := "32 AOIs across 40 file(s) · 10 cached"
 	if got := aoiSummary(s); got != want {
 		t.Errorf("aoiSummary = %q, want %q", got, want)
+	}
+}
+
+func TestAOISummary_ZeroAOIsNamesEndOfAudit(t *testing.T) {
+	// Audit has no fallback path, so the 0-AOI summary just states
+	// "no AOIs" without promising a follow-up pass — Phase 3 will
+	// emit "audit complete" separately.
+	s := &progress.State{Counters: map[string]int{
+		"aoi_total": 12, "aoi_count": 0, "aoi_cached": 0,
+	}}
+	got := aoiSummary(s)
+	want := "no AOIs · 12 file(s) scanned"
+	if got != want {
+		t.Errorf("aoiSummary 0-AOI case = %q, want %q", got, want)
 	}
 }
 
@@ -378,6 +400,39 @@ func TestReviewSummary_BreakdownFromCounters(t *testing.T) {
 	want := "35 done · 58 cached · 3 failed"
 	if got := reviewSummary(s); got != want {
 		t.Errorf("reviewSummary = %q, want %q", got, want)
+	}
+}
+
+func TestReviewSummary_WithRoutingBreakdown(t *testing.T) {
+	// When the routing summary line ("N AOIs → X individual + Y
+	// grouped …") has been parsed, reviewSummary appends the split.
+	s := &progress.State{Counters: map[string]int{
+		"review_total":      7,
+		"review_done":       7,
+		"review_cached":     2,
+		"review_failed":     0,
+		"review_individual": 5,
+		"review_grouped":    2,
+	}}
+	want := "5 done · 2 cached · 0 failed (5 individual + 2 grouped)"
+	if got := reviewSummary(s); got != want {
+		t.Errorf("reviewSummary = %q, want %q", got, want)
+	}
+}
+
+func TestParseAuditEvent_RoutingSummaryCapturesBreakdown(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase3",
+		"32 AOIs → 5 individual review(s) + 2 grouped review(s) across 3 subcategorie(s) = 7 total call(s)")
+	if got := s.Counters["review_individual"]; got != 5 {
+		t.Errorf("review_individual = %d, want 5", got)
+	}
+	if got := s.Counters["review_grouped"]; got != 2 {
+		t.Errorf("review_grouped = %d, want 2", got)
+	}
+	// Fallback aoi_count fill from the routing line.
+	if got := s.Counters["aoi_count"]; got != 32 {
+		t.Errorf("aoi_count = %d, want 32 (fallback from routing line)", got)
 	}
 }
 

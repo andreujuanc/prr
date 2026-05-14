@@ -1,0 +1,8 @@
+## Review rules
+
+- Max 8 findings, ordered by severity. Stop at 8.
+- One finding per issue. No alternate framings, no "additionally".
+- Don't restate what the code shows. Assume the reader sees it.
+- Skip style/nit findings unless explicitly asked.
+- No preamble, no conclusion — findings only.
+- Token budget: 4,000 tokens. Surface if approaching.
