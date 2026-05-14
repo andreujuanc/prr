@@ -35,6 +35,11 @@ const pipeTimeout = 60 * time.Second
 // Execute runs the target command with the payload piped to stdin.
 // Returns the combined stdout+stderr output.
 func Execute(target Target, payload Payload) ([]byte, error) {
+	// Validate that the command binary exists before executing
+	if _, err := exec.LookPath(target.Command); err != nil {
+		return nil, fmt.Errorf("command %q not found in PATH: %w", target.Command, err)
+	}
+
 	var input []byte
 	switch target.Format {
 	case "json":

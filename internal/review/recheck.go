@@ -1,0 +1,435 @@
+package review
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/state"
+)
+
+// RecheckOptions configures the recheck phase.
+type RecheckOptions struct {
+	// Mode is "pr" or "audit" — used in the preamble.
+	Mode Mode
+
+	// ProjectContext for additional context in the prompt.
+	ProjectContext string
+
+	// MaxFindingsPerBatch caps findings per LLM call.
+	// If total findings exceed this, they're split by file.
+	// Default: 50.
+	MaxFindingsPerBatch int
+
+	// MaxConcurrency caps parallel batch calls. Default: 5.
+	MaxConcurrency int
+
+	// OnLLMCall is called with the prompt and response for debugging. Can be nil.
+	OnLLMCall func(systemPrompt string, userMsg string, response string)
+
+	// OnProgress reports per-batch completion. done counts findings
+	// successfully processed (batch.size summed across completed
+	// batches); total is len(findings). Called once at start
+	// (0, total) and once after each batch completes. Optional.
+	//
+	// The cross-batch dedup pass that runs when len(findings) >
+	// MaxFindingsPerBatch does not advance the counter — done stays
+	// at total during that final pass. It's typically fast (<2s)
+	// and treating it as overhead simplifies the contract.
+	OnProgress func(done, total int)
+}
+
+// RecheckResult holds the output of the recheck phase.
+type RecheckResult struct {
+	// Findings is the cleaned, deduplicated list.
+	Findings []state.DeepFinding
+
+	// DismissedCount is how many findings were removed.
+	DismissedCount int
+
+	// ConsolidatedCount is how many findings were merged.
+	ConsolidatedCount int
+
+	// ModifiedCount is how many findings had severity/description adjusted.
+	ModifiedCount int
+}
+
+// AssignFindingIDs assigns sequential IDs (F-001, F-002, ...) to findings.
+// Modifies the slice in place and returns it for convenience.
+func AssignFindingIDs(findings []state.DeepFinding) []state.DeepFinding {
+	for i := range findings {
+		findings[i].FindingID = fmt.Sprintf("F-%03d", i+1)
+	}
+	return findings
+}
+
+// RecheckFindings runs the recheck/deduplication phase on a set of findings.
+// It assigns FindingIDs, sends findings to the LLM for dedup/consolidation,
+// and returns the cleaned set.
+func RecheckFindings(
+	ctx context.Context,
+	client ai.Client,
+	findings []state.DeepFinding,
+	opts RecheckOptions,
+) (*RecheckResult, error) {
+	if len(findings) == 0 {
+		return &RecheckResult{}, nil
+	}
+
+	// Assign IDs
+	AssignFindingIDs(findings)
+
+	total := len(findings)
+	emit := func(done int) {
+		if opts.OnProgress != nil {
+			opts.OnProgress(done, total)
+		}
+	}
+	emit(0)
+
+	maxPerBatch := opts.MaxFindingsPerBatch
+	if maxPerBatch <= 0 {
+		maxPerBatch = 50
+	}
+
+	// If within batch limit, do a single call
+	if len(findings) <= maxPerBatch {
+		result, err := recheckBatch(ctx, client, findings, opts)
+		emit(total)
+		return result, err
+	}
+
+	// Split by file, recheck each batch in parallel, then merge and do a
+	// final cross-batch pass.
+	batches := splitFindingsByFile(findings, maxPerBatch)
+
+	maxConc := opts.MaxConcurrency
+	if maxConc <= 0 {
+		maxConc = 5
+	}
+
+	type batchOutcome struct {
+		index    int
+		findings []state.DeepFinding
+		dismissed,
+		consolidated,
+		modified int
+	}
+
+	outcomes := make([]batchOutcome, len(batches))
+	sem := make(chan struct{}, maxConc)
+	var wg sync.WaitGroup
+	var doneCount int64 // atomic, summed-batch-size
+
+	for i, batch := range batches {
+		wg.Add(1)
+		go func(i int, batch []state.DeepFinding) {
+			defer wg.Done()
+			// Tick the progress counter even on error / cancellation
+			// paths — the user cares about "this batch's findings are
+			// no longer in flight", not whether they were dropped or
+			// processed. Without this a failed batch leaves the bar
+			// stuck below 100%.
+			defer func() {
+				d := atomic.AddInt64(&doneCount, int64(len(batch)))
+				emit(int(d))
+			}()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				outcomes[i] = batchOutcome{index: i, findings: batch}
+				return
+			}
+			log.Printf("Recheck batch %d/%d: %d findings", i+1, len(batches), len(batch))
+			result, err := recheckBatch(ctx, client, batch, opts)
+			if err != nil {
+				log.Printf("Recheck batch %d failed: %v (keeping all findings)", i+1, err)
+				outcomes[i] = batchOutcome{index: i, findings: batch}
+				return
+			}
+			outcomes[i] = batchOutcome{
+				index:        i,
+				findings:     result.Findings,
+				dismissed:    result.DismissedCount,
+				consolidated: result.ConsolidatedCount,
+				modified:     result.ModifiedCount,
+			}
+		}(i, batch)
+	}
+	wg.Wait()
+
+	var allKept []state.DeepFinding
+	totalDismissed := 0
+	totalConsolidated := 0
+	totalModified := 0
+	for _, o := range outcomes {
+		allKept = append(allKept, o.findings...)
+		totalDismissed += o.dismissed
+		totalConsolidated += o.consolidated
+		totalModified += o.modified
+	}
+
+	// If we had multiple batches, do a final cross-batch dedup
+	if len(batches) > 1 && len(allKept) > 1 {
+		log.Printf("Recheck cross-batch pass: %d findings from %d batches", len(allKept), len(batches))
+		// Re-assign IDs for the merged set
+		AssignFindingIDs(allKept)
+		crossResult, err := recheckBatch(ctx, client, allKept, opts)
+		if err != nil {
+			log.Printf("Cross-batch recheck failed: %v (keeping all)", err)
+		} else {
+			totalDismissed += crossResult.DismissedCount
+			totalConsolidated += crossResult.ConsolidatedCount
+			totalModified += crossResult.ModifiedCount
+			allKept = crossResult.Findings
+		}
+	}
+
+	return &RecheckResult{
+		Findings:          allKept,
+		DismissedCount:    totalDismissed,
+		ConsolidatedCount: totalConsolidated,
+		ModifiedCount:     totalModified,
+	}, nil
+}
+
+// recheckBatch runs a single recheck LLM call on a batch of findings.
+func recheckBatch(
+	ctx context.Context,
+	client ai.Client,
+	findings []state.DeepFinding,
+	opts RecheckOptions,
+) (*RecheckResult, error) {
+	// Build system prompt
+	systemPrompt := ai.RecheckPrompt
+
+	// Add mode-specific preamble
+	switch opts.Mode {
+	case ModePR:
+		systemPrompt = "You are rechecking findings from a pull request review.\n" +
+			"These findings were generated by examining changes in a PR.\n\n" + systemPrompt
+	case ModeAudit:
+		systemPrompt = "You are rechecking findings from a full codebase audit.\n" +
+			"These findings were generated by examining the entire source code.\n\n" + systemPrompt
+	}
+
+	if opts.ProjectContext != "" {
+		pc := opts.ProjectContext
+		// Avoid duplicating the header if the context already includes it
+		if strings.HasPrefix(strings.TrimSpace(pc), "## Project Context") {
+			systemPrompt += "\n\n" + pc
+		} else {
+			systemPrompt += "\n\n## Project Context\n\n" + pc
+		}
+	}
+
+	// Serialize findings for the user message
+	findingsJSON, err := json.MarshalIndent(findings, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal findings: %w", err)
+	}
+
+	messages := []ai.Message{
+		{Role: "user", Content: fmt.Sprintf(
+			"Here are %d findings to recheck. Review them for duplicates, false positives, and consolidation opportunities.\n\n%s",
+			len(findings), string(findingsJSON),
+		)},
+	}
+
+	// Resolve {{TOOLS}} before ChatStream so the debug hook sees
+	// the same text the LLM sees (Agent.ChatStream resolves on a
+	// local copy of its parameter).
+	systemPrompt = ai.ResolveToolsForClient(client, systemPrompt)
+
+	raw, err := client.ChatStream(ctx, systemPrompt, messages, nil)
+	if err != nil {
+		return nil, fmt.Errorf("recheck call: %w", err)
+	}
+
+	// Debug hook
+	if opts.OnLLMCall != nil {
+		opts.OnLLMCall(systemPrompt, messages[0].Content, raw)
+	}
+
+	return parseRecheckResult(findings, raw)
+}
+
+// recheckResponse is the expected JSON structure from the LLM.
+type recheckResponse struct {
+	Kept     []string `json:"kept"`
+	Modified []struct {
+		FindingID   string `json:"finding_id"`
+		Severity    string `json:"severity,omitempty"`
+		Title       string `json:"title,omitempty"`
+		Description string `json:"description,omitempty"`
+		Suggestion  string `json:"suggestion,omitempty"`
+		Rationale   string `json:"rationale,omitempty"`
+	} `json:"modified"`
+	Consolidated []struct {
+		FindingIDs []string          `json:"finding_ids"`
+		Finding    state.DeepFinding `json:"finding"`
+	} `json:"consolidated"`
+	Dismissed []struct {
+		FindingID string `json:"finding_id"`
+		Rationale string `json:"rationale"`
+	} `json:"dismissed"`
+}
+
+// parseRecheckResult parses the LLM response and applies changes to the findings.
+func parseRecheckResult(original []state.DeepFinding, raw string) (*RecheckResult, error) {
+	s := strings.TrimSpace(raw)
+
+	// Strip markdown fences
+	if strings.HasPrefix(s, "```") {
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		}
+		if idx := strings.LastIndex(s, "```"); idx != -1 {
+			s = s[:idx]
+		}
+		s = strings.TrimSpace(s)
+	}
+
+	// Find JSON start
+	jsonStart := strings.IndexAny(s, "{")
+	if jsonStart == -1 {
+		log.Printf("Recheck: no JSON found in response, keeping all findings")
+		return &RecheckResult{Findings: original}, nil
+	}
+	s = s[jsonStart:]
+
+	var resp recheckResponse
+	if err := json.Unmarshal([]byte(s), &resp); err != nil {
+		log.Printf("Recheck: failed to parse response: %v — keeping all findings", err)
+		return &RecheckResult{Findings: original}, nil
+	}
+
+	// Build lookup by FindingID
+	byID := make(map[string]*state.DeepFinding, len(original))
+	for i := range original {
+		byID[original[i].FindingID] = &original[i]
+	}
+
+	var result []state.DeepFinding
+
+	// 1. Kept — pass through unchanged
+	for _, id := range resp.Kept {
+		if f, ok := byID[id]; ok {
+			result = append(result, *f)
+			delete(byID, id)
+		} else {
+			log.Printf("Recheck: kept ID %q not found in original findings", id)
+		}
+	}
+
+	// 2. Modified — apply changes
+	modifiedCount := 0
+	for _, mod := range resp.Modified {
+		f, ok := byID[mod.FindingID]
+		if !ok {
+			log.Printf("Recheck: modified ID %q not found in original findings", mod.FindingID)
+			continue
+		}
+		if mod.Severity != "" {
+			f.Severity = mod.Severity
+		}
+		if mod.Title != "" {
+			f.Title = mod.Title
+		}
+		if mod.Description != "" {
+			f.Description = mod.Description
+		}
+		if mod.Suggestion != "" {
+			f.Suggestion = mod.Suggestion
+		}
+		result = append(result, *f)
+		delete(byID, mod.FindingID)
+		modifiedCount++
+	}
+
+	// 3. Consolidated — merge into single finding
+	consolidatedCount := 0
+	for _, cons := range resp.Consolidated {
+		// Remove all constituent findings from lookup
+		for _, id := range cons.FindingIDs {
+			delete(byID, id)
+		}
+		// Add the merged finding
+		merged := cons.Finding
+		if merged.FindingID == "" && len(cons.FindingIDs) > 0 {
+			merged.FindingID = cons.FindingIDs[0]
+		}
+		result = append(result, merged)
+		consolidatedCount += len(cons.FindingIDs) - 1 // net reduction
+	}
+
+	// 4. Dismissed — log and count
+	dismissedCount := 0
+	for _, dis := range resp.Dismissed {
+		if _, ok := byID[dis.FindingID]; ok {
+			log.Printf("Recheck dismissed %s: %s", dis.FindingID, dis.Rationale)
+			delete(byID, dis.FindingID)
+			dismissedCount++
+		} else {
+			log.Printf("Recheck: dismissed ID %q not found in original findings", dis.FindingID)
+		}
+	}
+
+	// 5. Any findings not accounted for — keep them (safety net)
+	if len(byID) > 0 {
+		log.Printf("Recheck: %d findings not referenced in response — keeping them", len(byID))
+		for _, f := range byID {
+			result = append(result, *f)
+		}
+	}
+
+	return &RecheckResult{
+		Findings:          result,
+		DismissedCount:    dismissedCount,
+		ConsolidatedCount: consolidatedCount,
+		ModifiedCount:     modifiedCount,
+	}, nil
+}
+
+// splitFindingsByFile groups findings by file and creates batches that
+// don't exceed maxPerBatch. Files with many findings may span multiple batches.
+func splitFindingsByFile(findings []state.DeepFinding, maxPerBatch int) [][]state.DeepFinding {
+	// Group by file
+	byFile := make(map[string][]state.DeepFinding)
+	var fileOrder []string
+	for _, f := range findings {
+		if _, seen := byFile[f.File]; !seen {
+			fileOrder = append(fileOrder, f.File)
+		}
+		byFile[f.File] = append(byFile[f.File], f)
+	}
+
+	var batches [][]state.DeepFinding
+	var current []state.DeepFinding
+
+	for _, file := range fileOrder {
+		fileFDs := byFile[file]
+		// If adding this file would exceed limit, flush current batch
+		if len(current) > 0 && len(current)+len(fileFDs) > maxPerBatch {
+			batches = append(batches, current)
+			current = nil
+		}
+		// If a single file exceeds the limit, it gets its own batch
+		if len(fileFDs) > maxPerBatch {
+			batches = append(batches, fileFDs)
+			continue
+		}
+		current = append(current, fileFDs...)
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+
+	return batches
+}

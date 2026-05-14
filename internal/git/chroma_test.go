@@ -181,6 +181,124 @@ func TestRenderChromaDiff_ProducesOutput(t *testing.T) {
 	}
 }
 
+func TestRenderChromaDiff(t *testing.T) {
+	rawDiff := "diff --git a/main.go b/main.go\nindex abc..def 100644\n--- a/main.go\n+++ b/main.go\n@@ -1,2 +1,2 @@\n package main\n-func old() {}\n+func new() {}\n"
+	theme := DefaultDiffTheme()
+
+	out, err := renderChromaDiff(rawDiff, "main.go", theme, 80)
+	if err != nil {
+		t.Fatalf("renderChromaDiff: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty output")
+	}
+	// Should contain file name
+	if !strings.Contains(out, "main.go") {
+		t.Error("output should contain file name")
+	}
+	// Should contain hunk header
+	if !strings.Contains(out, "@@") {
+		t.Error("output should contain hunk header")
+	}
+	// Should contain added/removed content
+	if !strings.Contains(out, "new") {
+		t.Error("output should contain added content")
+	}
+}
+
+func TestRenderChromaDiff_SmallWidth(t *testing.T) {
+	rawDiff := "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-old\n+new\n"
+	theme := DefaultDiffTheme()
+
+	// Width < 20 should fall back to 80
+	out, err := renderChromaDiff(rawDiff, "x.go", theme, 5)
+	if err != nil {
+		t.Fatalf("renderChromaDiff: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty output")
+	}
+}
+
+func TestRenderChromaDiff_UnknownFileType(t *testing.T) {
+	rawDiff := "diff --git a/data.xyz b/data.xyz\n--- a/data.xyz\n+++ b/data.xyz\n@@ -1 +1 @@\n-old\n+new\n"
+	theme := DefaultDiffTheme()
+
+	// Should fall back to fallback lexer
+	out, err := renderChromaDiff(rawDiff, "data.xyz", theme, 80)
+	if err != nil {
+		t.Fatalf("renderChromaDiff: %v", err)
+	}
+	if !strings.Contains(out, "new") {
+		t.Error("should still contain content with fallback lexer")
+	}
+}
+
+func TestRenderChromaDiff_EmptyStyle(t *testing.T) {
+	rawDiff := "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-old\n+new\n"
+	theme := DefaultDiffTheme()
+	theme.ChromaSyntaxStyle = "" // should fall back to monokai
+
+	_, err := renderChromaDiff(rawDiff, "x.go", theme, 80)
+	if err != nil {
+		t.Fatalf("renderChromaDiff with empty style: %v", err)
+	}
+}
+
+func TestFormatLineNumbers_AllKinds(t *testing.T) {
+	theme := DefaultDiffTheme()
+
+	// Added line: old should be blank, new should show number
+	added := formatLineNumbers(diffLine{kind: diffAdded, newNum: 42}, theme)
+	if !strings.Contains(added, "42") {
+		t.Error("added line should show new line number")
+	}
+
+	// Removed line: old should show number, new should be blank
+	removed := formatLineNumbers(diffLine{kind: diffRemoved, oldNum: 10}, theme)
+	if !strings.Contains(removed, "10") {
+		t.Error("removed line should show old line number")
+	}
+
+	// Context line: both numbers
+	ctx := formatLineNumbers(diffLine{kind: diffContext, oldNum: 5, newNum: 5}, theme)
+	if !strings.Contains(ctx, "5") {
+		t.Error("context line should show line numbers")
+	}
+}
+
+func TestGetChromaDiffWithContext(t *testing.T) {
+	cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	theme := DefaultDiffTheme()
+	out, err := GetChromaDiffWithContext("main", "feature", "file.go", 3, theme, 80)
+	if err != nil {
+		t.Fatalf("GetChromaDiffWithContext: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty output")
+	}
+	if !strings.Contains(out, "file.go") {
+		t.Error("output should contain file name")
+	}
+}
+
+func TestGetChromaDiffWithContext_NoChanges(t *testing.T) {
+	cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	theme := DefaultDiffTheme()
+	// Same branch = no diff
+	out, err := GetChromaDiffWithContext("main", "main", "file.go", 3, theme, 80)
+	if err != nil {
+		t.Fatalf("GetChromaDiffWithContext: %v", err)
+	}
+	if out != "" {
+		t.Errorf("expected empty output for same branch, got %q", out)
+	}
+}
+
 func TestAnsiColorize(t *testing.T) {
 	result := ansiColorize("hello", "#FF0000")
 	if !strings.Contains(result, "hello") {

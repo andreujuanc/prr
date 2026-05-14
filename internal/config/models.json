@@ -1,17 +1,52 @@
 {
   "gemini-3.1-pro-preview": {
     "max_output_tokens": 65536,
-    "temperature": 0.2,
-    "thinking_budget": 16384
+    "temperature": 0.1,
+    "thinking_budget": {
+      "review": 32768,
+      "chat": 2048,
+      "fast": 1024
+    },
+    "aoi_context_lines": 10
   },
-  "gemini-3.1-flash-lite-preview": {
+  "gemini-3.1-flash-lite": {
     "max_output_tokens": 65536,
-    "temperature": 0.2,
-    "thinking_budget": 8192
+    "temperature": 0.1,
+    "thinking_budget": {
+      "review": 8192,
+      "chat": 2048,
+      "fast": 2048
+    },
+    "aoi_context_lines": 3
   },
-  "gemini-2.5-flash": {
-    "max_output_tokens": 65536,
+  "claude-opus-4-7": {
+    "max_output_tokens": 32000,
     "temperature": 0.2,
-    "thinking_budget": 8192
+    "thinking_budget": {
+      "review": 0,
+      "chat": 0,
+      "fast": 0
+    },
+    "aoi_context_lines": 5
+  },
+  "claude-sonnet-4-6": {
+    "max_output_tokens": 32000,
+    "temperature": 0.2,
+    "thinking_budget": {
+      "review": 0,
+      "chat": 0,
+      "fast": 0
+    },
+    "aoi_context_lines": 3
+  },
+  "claude-haiku-4-5": {
+    "max_output_tokens": 32000,
+    "temperature": 0.2,
+    "thinking_budget": {
+      "review": 0,
+      "chat": 0,
+      "fast": 0
+    },
+    "aoi_context_lines": 3
   }
 }

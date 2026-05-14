@@ -19,8 +19,7 @@ func TestBuildSecuritySummary(t *testing.T) {
 	}
 
 	aoiReport := &AOIReport{
-		TotalAOIs:     5,
-		HighRiskFiles: []string{"auth.go", "api.go"},
+		TotalAOIs: 5,
 	}
 
 	summary := BuildSecuritySummary(findings, revalidations, aoiReport)
@@ -68,7 +67,6 @@ func TestFormatSecuritySummary(t *testing.T) {
 		TotalFindings:    3,
 		BySeverity:       map[string]int{"critical": 1, "high": 2},
 		ByCWE:            map[string]int{"CWE-89": 1, "CWE-918": 1, "CWE-862": 1},
-		HighRiskFiles:    []string{"auth.go", "api.go"},
 		AOIsTotal:        5,
 		RevalidatedCount: 2,
 		TruePositives:    1,

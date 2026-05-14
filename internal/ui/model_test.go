@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -59,6 +60,100 @@ func testDiffs() map[string]string {
 // newTestModel creates a fully initialized Model suitable for Update() tests.
 // It bypasses network calls (no gh/git/AI needed) by pre-populating all fields
 // that would normally come from async messages (PRFetchedMsg, DiffHashedMsg).
+// TestViewportIsolation_ReviewDoesNotTouchChat pins the contract from
+// the AI panel viewport split: streaming a review must land in
+// reviewViewport and leave chatViewport's content untouched. This is
+// the load-bearing invariant of the split — if a future refactor
+// accidentally writes review content back into chatViewport, this
+// fails loud and tells us exactly which viewport got polluted.
+func TestViewportIsolation_ReviewDoesNotTouchChat(t *testing.T) {
+	m := newTestModel(t)
+
+	// Seed chatViewport with a known marker that should NOT be touched
+	// by a review-stream update.
+	const chatMarker = "<<chat-history-marker>>"
+	m.chatViewport.SetContent(chatMarker)
+
+	// Drive a review-stream update through the dispatcher: setting
+	// aiReviewPhase routes updateChatViewWithStream to the review branch.
+	m.aiReviewPhase = "batch"
+	m.aiStreaming = true
+	m.aiStreamBuffer = "stream content from review"
+	m.updateChatViewWithStream()
+
+	// reviewViewport should contain the review stream content.
+	got := m.reviewViewport.View()
+	if !strings.Contains(got, "stream content from review") {
+		t.Errorf("reviewViewport missing review stream content; got:\n%s", got)
+	}
+
+	// chatViewport must be untouched.
+	if !strings.Contains(m.chatViewport.View(), chatMarker) {
+		t.Errorf("chatViewport was clobbered by review stream — content: %q", m.chatViewport.View())
+	}
+}
+
+// TestViewportIsolation_ChatDoesNotTouchReview is the mirror: a chat-
+// stream update must land in chatViewport and leave reviewViewport's
+// content untouched.
+func TestViewportIsolation_ChatDoesNotTouchReview(t *testing.T) {
+	m := newTestModel(t)
+
+	// Seed reviewViewport with a known marker.
+	const reviewMarker = "<<review-content-marker>>"
+	m.reviewViewport.SetContent(reviewMarker)
+
+	// Drive a chat-stream update (no review phase set → routes to chat).
+	m.aiReviewPhase = ""
+	m.aiStreaming = true
+	m.aiStreamBuffer = "stream content from chat"
+	m.updateChatViewWithStream()
+
+	// chatViewport should contain the chat stream content.
+	if !strings.Contains(m.chatViewport.View(), "stream content from chat") {
+		t.Errorf("chatViewport missing chat stream content; got:\n%s", m.chatViewport.View())
+	}
+
+	// reviewViewport must be untouched.
+	if !strings.Contains(m.reviewViewport.View(), reviewMarker) {
+		t.Errorf("reviewViewport was clobbered by chat stream — content: %q", m.reviewViewport.View())
+	}
+}
+
+// TestChatInputHiddenDuringStreaming pins the cosmetic-but-important
+// guarantee that the chat input does not show during AI streaming on
+// the Chat tab. Without this, users see an input field that looks
+// active but doesn't accept input (the handler gates on !aiStreaming).
+//
+// We assert by comparing the number of lines in View() output: when
+// the input is rendered the chat pane reserves space for the input
+// label + textarea, so the view is taller. Hiding the input shrinks it.
+func TestChatInputHiddenDuringStreaming(t *testing.T) {
+	m := newTestModel(t)
+	m.aiPanelTab = tabChat
+	m.showAIPanel = true
+	m.focusedPane = PaneChat
+	m.syncLayout()
+
+	// Sanity: when not streaming, the focused "Enter to send" label
+	// is visible (it's rendered above the input textarea).
+	m.aiStreaming = false
+	m.syncLayout()
+	out := m.View()
+	if !strings.Contains(out, "Enter to send") {
+		t.Errorf("expected 'Enter to send' label when input is visible; got:\n%s", out)
+	}
+
+	// Streaming → input must be hidden. The label renders only when
+	// the input is rendered alongside, so its absence is the signal.
+	m.aiStreaming = true
+	m.syncLayout()
+	out = m.View()
+	if strings.Contains(out, "Enter to send") {
+		t.Errorf("chat input label still visible while streaming; should be hidden\nview:\n%s", out)
+	}
+}
+
 func newTestModel(t *testing.T) Model {
 	t.Helper()
 	m := NewModel("999", nil, nil, 1, 3, false)

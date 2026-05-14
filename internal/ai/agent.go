@@ -47,6 +47,17 @@ func WithUsageTracker(tracker *UsageTracker) AgentOption {
 	}
 }
 
+// WithToolFilter restricts the agent to only the named tools.
+// Tools not in the list are omitted from the API request and cannot be called.
+func WithToolFilter(names []string) AgentOption {
+	return func(a *Agent) {
+		a.toolFilter = make(map[string]bool, len(names))
+		for _, n := range names {
+			a.toolFilter[n] = true
+		}
+	}
+}
+
 // UsageTracker accumulates token usage across multiple API calls.
 // It is safe for concurrent use.
 type UsageTracker struct {
@@ -96,8 +107,9 @@ type Agent struct {
 	provider     Provider
 	toolExecutor *ToolExecutor
 	maxRounds    int
-	debugLog     *log.Logger   // nil = no debug logging
-	usageTracker *UsageTracker // nil = don't track usage
+	debugLog     *log.Logger     // nil = no debug logging
+	usageTracker *UsageTracker   // nil = don't track usage
+	toolFilter   map[string]bool // nil = all tools; non-nil = only named tools
 }
 
 // NewAgent creates an Agent that uses the given Provider for API calls
@@ -107,11 +119,27 @@ func NewAgent(provider Provider, toolExec *ToolExecutor, opts ...AgentOption) *A
 		provider:     provider,
 		toolExecutor: toolExec,
 		maxRounds:    defaultMaxRounds,
+		usageTracker: &UsageTracker{}, // always track usage
 	}
 	for _, o := range opts {
 		o(a)
 	}
 	return a
+}
+
+// Usage returns accumulated token usage. Implements UsageReporter.
+func (a *Agent) Usage() TokenUsage {
+	s := a.usageTracker.Snapshot()
+	return TokenUsage{
+		InputTokens:  s.InputTokens,
+		OutputTokens: s.OutputTokens,
+		CacheHits:    s.CacheHits,
+	}
+}
+
+// ResetUsage zeroes the usage counters. Implements UsageReporter.
+func (a *Agent) ResetUsage() {
+	a.usageTracker.Reset()
 }
 
 // ChatStream implements Client. It runs the iterative tool-calling loop:
@@ -131,6 +159,12 @@ func NewAgent(provider Provider, toolExec *ToolExecutor, opts ...AgentOption) *A
 // substance), we tolerate this once and continue. On the second
 // occurrence, we terminate.
 func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []Message, onToken func(string)) (string, error) {
+	// Resolve {{TOOLS}} placeholder against the active provider. Harness
+	// providers get the canonical prr tool listing; providers that run
+	// their own tool loop (Claude Code) get an empty substitution so
+	// they aren't told to call tools that don't exist in their env.
+	systemPrompt = ResolveTools(systemPrompt, a.provider)
+
 	// Convert simple Messages to ProviderMessages
 	provMsgs := make([]ProviderMessage, 0, len(messages))
 	for _, m := range messages {
@@ -147,7 +181,16 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 	// Get tool definitions if executor is configured
 	var tools []ToolDef
 	if a.toolExecutor != nil {
-		tools = CanonicalToolDefs()
+		all := CanonicalToolDefs()
+		if a.toolFilter != nil {
+			for _, t := range all {
+				if a.toolFilter[t.Name] {
+					tools = append(tools, t)
+				}
+			}
+		} else {
+			tools = all
+		}
 	}
 
 	// Determine if provider supports prompt caching
@@ -446,6 +489,17 @@ func (a *Agent) ModelName() string {
 	return a.provider.ModelID()
 }
 
+// SetThinkingBudget changes the thinking budget on the current provider.
+// Used to reduce thinking for chat vs review.
+func (a *Agent) SetThinkingBudget(budget int) {
+	switch p := a.provider.(type) {
+	case *GeminiProvider:
+		p.ModelConfig.ThinkingBudget = budget
+	case *OpenAIProvider:
+		p.ModelConfig.ThinkingBudget = budget
+	}
+}
+
 // SetHeadRef configures the git ref used for file reading tools.
 func (a *Agent) SetHeadRef(ref string) {
 	if a.toolExecutor != nil {
@@ -474,16 +528,58 @@ func (a *Agent) SetReviewGetter(fn func() string) {
 	}
 }
 
-// SwitchModel changes the underlying model at runtime.
-func (a *Agent) SwitchModel(modelID string, maxOutputTokens int, temperature float64, thinkingBudget int) error {
-	if gp, ok := a.provider.(*GeminiProvider); ok {
-		gp.Model = modelID
-		gp.ModelConfig.MaxOutputTokens = maxOutputTokens
-		gp.ModelConfig.Temperature = temperature
-		gp.ModelConfig.ThinkingBudget = thinkingBudget
-		return nil
+// SwitchModel changes the underlying model (and possibly provider) at runtime.
+func (a *Agent) SwitchModel(cfg ProviderConfig) error {
+	// If the provider type is the same, just update in place
+	currentName := a.provider.Name()
+	targetName := cfg.ProviderName
+
+	// Normalize: github-copilot uses OpenAIProvider
+	sameType := currentName == targetName ||
+		(currentName == "github-copilot" && targetName == "github-copilot") ||
+		(currentName == "openai" && targetName == "openai")
+
+	if sameType {
+		switch p := a.provider.(type) {
+		case *GeminiProvider:
+			p.APIKey = cfg.APIKey
+			p.Model = cfg.ModelID
+			if cfg.BaseURL != "" {
+				p.BaseURL = cfg.BaseURL
+			}
+			p.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
+			p.ModelConfig.Temperature = cfg.Temperature
+			p.ModelConfig.ThinkingBudget = cfg.ThinkingBudget
+			return nil
+		case *OpenAIProvider:
+			p.APIKey = cfg.APIKey
+			p.Model = cfg.ModelID
+			if cfg.BaseURL != "" {
+				p.BaseURL = cfg.BaseURL
+			}
+			if cfg.ProviderName == "github-copilot" {
+				p.ProviderLabel = "github-copilot"
+				p.ExtraHeaders = map[string]string{
+					"Openai-Intent": "conversation-edits",
+					"User-Agent":    "prr",
+				}
+			}
+			p.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
+			p.ModelConfig.Temperature = cfg.Temperature
+			return nil
+		case *ClaudeCodeProvider:
+			p.Model = cfg.ModelID
+			return nil
+		}
 	}
-	return fmt.Errorf("model switching not supported for provider %s", a.provider.Name())
+
+	// Different provider type — create a new provider
+	newProvider, err := NewProvider(cfg)
+	if err != nil {
+		return err
+	}
+	a.provider = newProvider
+	return nil
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

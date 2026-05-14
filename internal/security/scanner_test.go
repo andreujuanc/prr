@@ -92,6 +92,113 @@ func TestParseAOIResult(t *testing.T) {
 	}
 }
 
+func TestParseAOIResult_NewFormat(t *testing.T) {
+	input := `[
+		{
+			"file": "internal/billing/charge.go",
+			"risk_level": "high",
+			"risk_summary": "Financial calculations with floating point",
+			"areas": [
+				{
+					"id": "charge-go-float-currency",
+					"line": 45,
+					"end_line": 78,
+					"category": "financial",
+					"subcategory": "money-arithmetic",
+					"urgency": "individual",
+					"concern": "Currency conversion with floating point arithmetic",
+					"context": "Multiplies amounts by exchange rates using float64",
+					"dimensions": ["correctness", "financial"]
+				},
+				{
+					"id": "charge-go-error-swallow",
+					"line": 88,
+					"end_line": 91,
+					"category": "error-handling",
+					"subcategory": "swallowed-errors",
+					"urgency": "grouped",
+					"concern": "Error from validateAmount() assigned to _",
+					"context": "Validation error silently ignored before creating charge",
+					"dimensions": ["error-handling"]
+				}
+			]
+		}
+	]`
+
+	results, err := parseAOIResult(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+
+	r := results[0]
+	// Areas should be normalized into AreasOfInterest
+	if len(r.AreasOfInterest) != 2 {
+		t.Fatalf("got %d AOIs, want 2", len(r.AreasOfInterest))
+	}
+	if len(r.Areas) != 0 {
+		t.Errorf("Areas should be nil after normalization, got %d", len(r.Areas))
+	}
+
+	aoi := r.AreasOfInterest[0]
+	if aoi.ID != "charge-go-float-currency" {
+		t.Errorf("got ID %q, want %q", aoi.ID, "charge-go-float-currency")
+	}
+	if aoi.Category != "financial" {
+		t.Errorf("got Category %q, want %q", aoi.Category, "financial")
+	}
+	if aoi.Subcategory != "money-arithmetic" {
+		t.Errorf("got Subcategory %q, want %q", aoi.Subcategory, "money-arithmetic")
+	}
+	if aoi.Urgency != "individual" {
+		t.Errorf("got Urgency %q, want %q", aoi.Urgency, "individual")
+	}
+	if aoi.Concern != "Currency conversion with floating point arithmetic" {
+		t.Errorf("got Concern %q", aoi.Concern)
+	}
+	if len(aoi.Dimensions) != 2 {
+		t.Errorf("got %d dimensions, want 2", len(aoi.Dimensions))
+	}
+}
+
+func TestParseAOIResult_LegacyFormatStillWorks(t *testing.T) {
+	// Ensure old cached data still deserializes correctly
+	input := `[{
+		"file": "main.go",
+		"risk_level": "high",
+		"risk_summary": "risky",
+		"areas_of_interest": [{
+			"file": "main.go",
+			"line": 42,
+			"category": "sql",
+			"snippet": "db.Query(s)",
+			"reasoning": "raw SQL",
+			"confidence": "high"
+		}]
+	}]`
+
+	results, err := parseAOIResult(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results[0].AreasOfInterest) != 1 {
+		t.Fatalf("got %d AOIs, want 1", len(results[0].AreasOfInterest))
+	}
+
+	aoi := results[0].AreasOfInterest[0]
+	if aoi.Category != "sql" {
+		t.Errorf("got Category %q, want %q", aoi.Category, "sql")
+	}
+	if aoi.Snippet != "db.Query(s)" {
+		t.Errorf("got Snippet %q, want %q", aoi.Snippet, "db.Query(s)")
+	}
+	if aoi.Reasoning != "raw SQL" {
+		t.Errorf("got Reasoning %q, want %q", aoi.Reasoning, "raw SQL")
+	}
+}
+
 func TestParseRevalidationResult(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -153,9 +260,7 @@ func TestParseRevalidationResult(t *testing.T) {
 func TestBuildReport(t *testing.T) {
 	results := []AOIScanResult{
 		{
-			File:        "auth.go",
-			RiskLevel:   "critical",
-			RiskSummary: "Authentication handler with SQL injection",
+			File: "auth.go",
 			AreasOfInterest: []AreaOfInterest{
 				{File: "auth.go", Line: 10, Category: "sql", Snippet: "db.Query(q)", Reasoning: "raw SQL", Confidence: "high"},
 				{File: "auth.go", Line: 20, Category: "auth", Snippet: "if admin", Reasoning: "auth check", Confidence: "medium"},
@@ -163,14 +268,10 @@ func TestBuildReport(t *testing.T) {
 		},
 		{
 			File:            "util.go",
-			RiskLevel:       "none",
-			RiskSummary:     "Utility functions, no security concerns",
 			AreasOfInterest: nil,
 		},
 		{
-			File:        "api.go",
-			RiskLevel:   "high",
-			RiskSummary: "API endpoint with SSRF potential",
+			File: "api.go",
 			AreasOfInterest: []AreaOfInterest{
 				{File: "api.go", Line: 5, Category: "network", Snippet: "http.Get(url)", Reasoning: "SSRF", Confidence: "high"},
 			},
@@ -179,14 +280,8 @@ func TestBuildReport(t *testing.T) {
 
 	report := buildReport(results)
 
-	if report.OverallRisk != "critical" {
-		t.Errorf("overall risk = %q, want %q", report.OverallRisk, "critical")
-	}
 	if report.TotalAOIs != 3 {
 		t.Errorf("total AOIs = %d, want %d", report.TotalAOIs, 3)
-	}
-	if len(report.HighRiskFiles) != 2 {
-		t.Errorf("high risk files = %d, want %d", len(report.HighRiskFiles), 2)
 	}
 	if report.SecurityDigest == "" {
 		t.Error("security digest should not be empty")
@@ -197,24 +292,18 @@ func TestBuildReport(t *testing.T) {
 	if !containsStr(digest, "3 Areas of Interest") {
 		t.Error("digest should mention total AOIs")
 	}
-	if !containsStr(digest, "critical") {
-		t.Error("digest should mention critical risk")
-	}
 	if !containsStr(digest, "auth.go") {
-		t.Error("digest should mention high-risk file auth.go")
+		t.Error("digest should mention file auth.go")
 	}
 }
 
 func TestBuildReport_NoAOIs(t *testing.T) {
 	results := []AOIScanResult{
-		{File: "clean.go", RiskLevel: "none", AreasOfInterest: nil},
+		{File: "clean.go", AreasOfInterest: nil},
 	}
 
 	report := buildReport(results)
 
-	if report.OverallRisk != "none" {
-		t.Errorf("overall risk = %q, want %q", report.OverallRisk, "none")
-	}
 	if report.TotalAOIs != 0 {
 		t.Errorf("total AOIs = %d, want %d", report.TotalAOIs, 0)
 	}
@@ -250,11 +339,164 @@ func TestBuildAOIBatches(t *testing.T) {
 	}
 }
 
+func TestDimensionKey(t *testing.T) {
+	tests := []struct {
+		name string
+		dims []string
+		want string
+	}{
+		{"nil dims", nil, "_all_"},
+		{"empty dims", []string{}, "_all_"},
+		{"single dim", []string{"testing"}, "testing"},
+		{"multiple dims sorted", []string{"a", "b", "c"}, "a,b,c"},
+		{"multiple dims unsorted", []string{"c", "a", "b"}, "a,b,c"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dimensionKey(tt.dims)
+			if got != tt.want {
+				t.Errorf("dimensionKey(%v) = %q, want %q", tt.dims, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildAOIBatchesClassified_GroupsByDimensions(t *testing.T) {
+	rawDiffs := map[string]string{
+		"handler.go":      "handler code",
+		"handler_test.go": "test code",
+		"repo.go":         "repo code",
+	}
+
+	fileDimensions := map[string][]string{
+		"handler.go":      {"input-validation", "error-handling"},
+		"handler_test.go": {"testing", "correctness"},
+		"repo.go":         {"input-validation", "error-handling"}, // same as handler.go
+	}
+
+	batches := buildAOIBatchesClassified(rawDiffs, fileDimensions)
+
+	// handler.go and repo.go share dimensions, so they should be in the same batch
+	// handler_test.go has different dimensions, so it should be in a separate batch
+	if len(batches) != 2 {
+		t.Fatalf("got %d batches, want 2", len(batches))
+	}
+
+	// Find which batch has the test file
+	var testBatch, handlerBatch *aoiBatch
+	for i := range batches {
+		for _, f := range batches[i].files {
+			if f == "handler_test.go" {
+				testBatch = &batches[i]
+			}
+			if f == "handler.go" {
+				handlerBatch = &batches[i]
+			}
+		}
+	}
+
+	if testBatch == nil {
+		t.Fatal("test file batch not found")
+	}
+	if handlerBatch == nil {
+		t.Fatal("handler file batch not found")
+	}
+
+	if len(testBatch.files) != 1 {
+		t.Errorf("test batch has %d files, want 1", len(testBatch.files))
+	}
+	if len(handlerBatch.files) != 2 {
+		t.Errorf("handler batch has %d files, want 2 (handler.go + repo.go)", len(handlerBatch.files))
+	}
+
+	// Verify dimensions are attached to batches
+	if len(testBatch.dimensions) != 2 {
+		t.Errorf("test batch has %d dimensions, want 2", len(testBatch.dimensions))
+	}
+	if len(handlerBatch.dimensions) != 2 {
+		t.Errorf("handler batch has %d dimensions, want 2", len(handlerBatch.dimensions))
+	}
+}
+
+func TestBuildAOIBatchesClassified_NilDimensions(t *testing.T) {
+	rawDiffs := map[string]string{
+		"a.go": "code a",
+		"b.go": "code b",
+	}
+
+	// nil fileDimensions — all files should end up in same batch (all dims)
+	batches := buildAOIBatchesClassified(rawDiffs, nil)
+
+	if len(batches) != 1 {
+		t.Fatalf("got %d batches, want 1", len(batches))
+	}
+	if len(batches[0].files) != 2 {
+		t.Errorf("batch has %d files, want 2", len(batches[0].files))
+	}
+	if batches[0].dimensions != nil {
+		t.Errorf("batch dimensions should be nil, got %v", batches[0].dimensions)
+	}
+}
+
+func TestBuildAOIBatchesClassified_ExcludesFiles(t *testing.T) {
+	rawDiffs := map[string]string{
+		"main.go": "code",
+		"go.sum":  "lock file",
+	}
+
+	batches := buildAOIBatchesClassified(rawDiffs, nil)
+
+	totalFiles := 0
+	for _, b := range batches {
+		for _, f := range b.files {
+			if f == "go.sum" {
+				t.Error("go.sum should be excluded")
+			}
+			totalFiles++
+		}
+	}
+	if totalFiles != 1 {
+		t.Errorf("got %d files, want 1", totalFiles)
+	}
+}
+
+func TestBuildAOIScanPromptWithDimensions(t *testing.T) {
+	// With specific dimensions — prompt should contain those dimensions only
+	prompt := buildAOIScanPromptWithDimensions(true, []string{"testing"})
+	if !containsSubstring(prompt, "TESTING") {
+		t.Error("prompt should contain TESTING dimension")
+	}
+	// Should NOT contain unrelated dimensions
+	if containsSubstring(prompt, "CRYPTOGRAPHY") {
+		t.Error("prompt should not contain CRYPTOGRAPHY when only testing is specified")
+	}
+
+	// With nil dimensions — prompt should contain all dimensions
+	promptAll := buildAOIScanPromptWithDimensions(true, nil)
+	if !containsSubstring(promptAll, "TESTING") {
+		t.Error("prompt with nil dims should contain TESTING")
+	}
+	if !containsSubstring(promptAll, "CRYPTOGRAPHY") {
+		t.Error("prompt with nil dims should contain CRYPTOGRAPHY")
+	}
+
+	// Audit mode rules
+	if !containsSubstring(prompt, "full-project audit") {
+		t.Error("audit mode prompt should contain audit rules")
+	}
+
+	// PR mode rules
+	promptPR := buildAOIScanPromptWithDimensions(false, []string{"testing"})
+	if !containsSubstring(promptPR, "DIFF") {
+		t.Error("PR mode prompt should contain diff rules")
+	}
+}
+
 func TestFormatDigest_ContainsCategories(t *testing.T) {
 	results := []AOIScanResult{
 		{
-			File:      "a.go",
-			RiskLevel: "high",
+			File: "a.go",
 			AreasOfInterest: []AreaOfInterest{
 				{File: "a.go", Line: 1, Category: "sql", Snippet: "q", Reasoning: "raw", Confidence: "high"},
 				{File: "a.go", Line: 2, Category: "sql", Snippet: "q2", Reasoning: "raw2", Confidence: "medium"},

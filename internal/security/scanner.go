@@ -4,12 +4,13 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/config"
@@ -21,8 +22,45 @@ var aoiScanPrompt string
 //go:embed prompts/revalidate.md
 var revalidatePrompt string
 
-// AOIScanPrompt returns the embedded AOI scan system prompt.
-func AOIScanPrompt() string { return aoiScanPrompt }
+// AOIScanPrompt returns the AOI scan system prompt for PR review mode.
+func AOIScanPrompt() string { return buildAOIScanPrompt(false) }
+
+// AOIAuditPrompt returns the AOI scan system prompt for full-project audit mode.
+func AOIAuditPrompt() string { return buildAOIScanPrompt(true) }
+
+const prModeRules = `1. ONLY flag code in the DIFF (added or modified lines, the + lines).
+2. Do NOT flag pre-existing code that was not changed.
+3. Use the CONTEXT lines (unchanged lines around the diff hunks) to understand
+   data flow — trace where variables originate and how they reach sinks.
+   The diff may include extra context lines beyond the standard 3 to help you
+   see the full picture. Use them.`
+
+const auditModeRules = `1. Scan ALL code in the file — this is a full-project audit, not a diff review.
+2. Flag any code location that could contain a bug, vulnerability, or design flaw.
+3. Use the full file context to understand data flow, variable origins, and sinks.`
+
+// buildAOIScanPrompt composes the AOI scan prompt template with all dimension
+// partials injected at the {DIMENSIONS} placeholder.
+func buildAOIScanPrompt(auditMode bool) string {
+	return buildAOIScanPromptWithDimensions(auditMode, nil)
+}
+
+// buildAOIScanPromptWithDimensions composes the AOI scan prompt with specific
+// dimensions. If dims is nil or empty, all dimensions are included.
+func buildAOIScanPromptWithDimensions(auditMode bool, dims []string) string {
+	var dimensionContent string
+	if len(dims) > 0 {
+		dimensionContent = ai.GetDimensions(dims)
+	} else {
+		dimensionContent = ai.AllDimensions()
+	}
+	prompt := strings.Replace(aoiScanPrompt, "{DIMENSIONS}", dimensionContent, 1)
+	rules := prModeRules
+	if auditMode {
+		rules = auditModeRules
+	}
+	return strings.Replace(prompt, "{MODE_RULES}", rules, 1)
+}
 
 // RevalidatePrompt returns the embedded revalidation system prompt.
 func RevalidatePrompt() string { return revalidatePrompt }
@@ -31,13 +69,28 @@ func RevalidatePrompt() string { return revalidatePrompt }
 // Kept generous since the cheap model handles large contexts fast.
 const aoiBatchMaxChars = 30000
 
-// aoiMaxConcurrency is the max number of AOI batches that run in parallel.
-// Capped to avoid hitting API rate limits on the provider.
-const aoiMaxConcurrency = 5
+// aoiMaxConcurrency is the default max number of AOI batches that run in
+// parallel. Capped to avoid hitting API rate limits on the provider.
+// SetAOIConcurrency overrides this for the lifetime of the process.
+const defaultAOIMaxConcurrency = 5
+
+var aoiMaxConcurrency = defaultAOIMaxConcurrency
+
+// SetAOIConcurrency sets the max number of AOI batches run in parallel.
+// Values <= 0 reset to the default. Not safe to call concurrently with
+// scans in flight; intended to be called once at startup.
+func SetAOIConcurrency(n int) {
+	if n <= 0 {
+		aoiMaxConcurrency = defaultAOIMaxConcurrency
+		return
+	}
+	aoiMaxConcurrency = n
+}
 
 // ScanAreasOfInterest runs the AOI pre-scan on all changed files using
-// a lightweight LLM. It batches files by directory (like the main review)
-// and runs up to aoiMaxConcurrency batches in parallel.
+// a lightweight LLM. It batches files by dimension set (or all together
+// if no classifications are provided) and runs up to aoiMaxConcurrency
+// batches in parallel.
 //
 // cachedResults maps file paths to previously cached AOIScanResult entries.
 // Files with cached results are skipped — only uncached files are sent to
@@ -51,6 +104,39 @@ func ScanAreasOfInterest(
 	rawDiffs map[string]string,
 	cachedResults map[string]*AOIScanResult,
 	onProgress func(status string),
+) (*AOIReport, error) {
+	return ScanAreasOfInterestDebug(ctx, client, rawDiffs, cachedResults, onProgress, nil, false)
+}
+
+// AOIDebugHook is called for each LLM call in the AOI scanner with the prompt, input, and response.
+type AOIDebugHook func(files []string, systemPrompt string, userMessage string, response string)
+
+// ScanAreasOfInterestDebug is like ScanAreasOfInterest but with an optional debug hook.
+func ScanAreasOfInterestDebug(
+	ctx context.Context,
+	client ai.Client,
+	rawDiffs map[string]string,
+	cachedResults map[string]*AOIScanResult,
+	onProgress func(status string),
+	debugHook AOIDebugHook,
+	auditMode bool,
+) (*AOIReport, error) {
+	return ScanAreasOfInterestClassified(ctx, client, rawDiffs, cachedResults, nil, onProgress, debugHook, auditMode)
+}
+
+// ScanAreasOfInterestClassified is like ScanAreasOfInterestDebug but with
+// per-file dimension filtering. fileDimensions maps file paths to their
+// dimension slugs. Files not in the map get all dimensions. If fileDimensions
+// is nil, all files get all dimensions.
+func ScanAreasOfInterestClassified(
+	ctx context.Context,
+	client ai.Client,
+	rawDiffs map[string]string,
+	cachedResults map[string]*AOIScanResult,
+	fileDimensions map[string][]string,
+	onProgress func(status string),
+	debugHook AOIDebugHook,
+	auditMode bool,
 ) (*AOIReport, error) {
 	// Separate cached vs uncached files
 	uncachedDiffs := make(map[string]string)
@@ -68,9 +154,10 @@ func ScanAreasOfInterest(
 		onProgress(fmt.Sprintf("using cached AOI results for %d file(s)", len(cachedAOIs)))
 	}
 
-	batches := buildAOIBatches(uncachedDiffs)
+	batches := buildAOIBatchesClassified(uncachedDiffs, fileDimensions)
+	log.Printf("[aoi-debug] built %d batches from %d uncached files", len(batches), len(uncachedDiffs))
 	if len(batches) == 0 && len(cachedAOIs) == 0 {
-		return &AOIReport{OverallRisk: "none"}, nil
+		return &AOIReport{}, nil
 	}
 
 	if len(batches) == 0 {
@@ -83,12 +170,13 @@ func ScanAreasOfInterest(
 	}
 
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("scanning %d file(s) for security areas of interest (%d cached)...", countFiles(batches), len(cachedAOIs)))
+		onProgress(fmt.Sprintf("scanning %d file(s) for areas of interest (%d cached)...", countFiles(batches), len(cachedAOIs)))
 	}
 
 	// Run batches in parallel with bounded concurrency.
 	type batchResult struct {
 		index   int
+		inputs  []string // file paths the batch was asked to scan
 		results []AOIScanResult
 		err     error
 	}
@@ -107,12 +195,12 @@ func ScanAreasOfInterest(
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				resultsCh <- batchResult{index: i, err: ctx.Err()}
+				resultsCh <- batchResult{index: i, inputs: batch.files, err: ctx.Err()}
 				return
 			}
 
-			results, err := scanBatch(ctx, client, batch)
-			resultsCh <- batchResult{index: i, results: results, err: err}
+			results, err := scanBatchWithRetry(ctx, client, batch, debugHook, auditMode)
+			resultsCh <- batchResult{index: i, inputs: batch.files, results: results, err: err}
 		}(i, batch)
 	}
 
@@ -122,18 +210,99 @@ func ScanAreasOfInterest(
 		close(resultsCh)
 	}()
 
-	// Collect results in order of completion, report sequential progress
+	// Collect results in order of completion, report sequential progress.
+	// Track silent LLM drops separately from outright batch failures —
+	// a batch that returned 5 of 8 input files looks "successful" but
+	// actually lost AOIs for 3 files.
 	allResults := make([][]AOIScanResult, len(batches))
 	completed := 0
+	var (
+		batchErrors      []string
+		failedInputPaths []string // file paths whose batch errored (no AOIs)
+		totalDropped     int      // files in successful batches that the LLM omitted
+		droppedFiles     []string // paths of those silently-dropped files
+	)
 	for br := range resultsCh {
 		completed++
 		if br.err != nil {
-			log.Printf("AOI scan batch %d failed: %v", br.index+1, br.err)
+			errMsg := fmt.Sprintf("AOI scan batch %d/%d failed: %v", br.index+1, len(batches), br.err)
+			// Log the per-batch error to disk for diagnostics, but
+			// don't blast it to onProgress — the consolidated
+			// terminal message below is what the user reads.
+			log.Printf("%s", errMsg)
+			batchErrors = append(batchErrors, errMsg)
+			failedInputPaths = append(failedInputPaths, br.inputs...)
 		} else {
 			allResults[br.index] = br.results
+
+			// Drop detection: every input path must appear in the
+			// output. Missing files are silent data loss — the model
+			// truncated the response, hit a token limit, or dropped
+			// files for no clear reason. Those files end up with NO
+			// AOIs and won't be reviewed in Phase 3.
+			returned := make(map[string]bool, len(br.results))
+			for _, r := range br.results {
+				returned[r.File] = true
+			}
+			for _, in := range br.inputs {
+				if !returned[in] {
+					totalDropped++
+					droppedFiles = append(droppedFiles, in)
+				}
+			}
 		}
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("AOI scan %d/%d complete", completed, len(batches)))
+			// Counter-only emit. Previously this was "AOI scan X/Y
+			// complete" which the TUI rendered as the detail line —
+			// duplicating the X/Y already shown by the inline counter.
+			onProgress(fmt.Sprintf("AOI scan %d/%d", completed, len(batches)))
+		}
+	}
+
+	if totalDropped > 0 {
+		// Surface ONCE at the end — emitting per-batch would
+		// out-shout the regular progress line. The full path list
+		// goes to the log; the progress message keeps it terse.
+		log.Printf("aoi: %d file(s) silently dropped by LLM (no AOIs scanned): %v",
+			totalDropped, droppedFiles)
+		if onProgress != nil {
+			onProgress(fmt.Sprintf(
+				"⚠ %d file(s) silently dropped by LLM during AOI scan (no AOIs — see log for paths)",
+				totalDropped))
+		}
+	}
+
+	// If ALL batches failed there's nothing to return — abort with
+	// the full error list regardless of count. The 2-batch floor
+	// below doesn't cover this: a single-batch run that fails 1/1
+	// has no useful results to ship.
+	if len(batchErrors) == len(batches) && len(batches) > 0 {
+		return nil, fmt.Errorf("all %d AOI scan batch(es) failed:\n  %s",
+			len(batches), strings.Join(batchErrors, "\n  "))
+	}
+
+	// Aggregate-fail: abort when too many batches fail. Previously
+	// only a 100% failure aborted (handled above), so 4-of-5 batches
+	// failing (80% of files unscanned) still returned "success" with
+	// whatever the one surviving batch produced. Same shape as
+	// Phase 1's file-read aggregate-fail.
+	if shouldAggregateFailAOI(len(batchErrors), len(batches)) {
+		return nil, fmt.Errorf(
+			"phase 2: %d/%d AOI scan batches failed (>%.0f%% threshold) — aborting; %d file(s) had no AOIs scanned:\n  %s",
+			len(batchErrors), len(batches), aoiAggregateFailRatio*100,
+			len(failedInputPaths), strings.Join(batchErrors, "\n  "))
+	}
+
+	// Partial failure under the threshold: surface ONCE so the user
+	// knows recall is degraded, instead of burying it in per-batch
+	// log lines. Per-batch errors are still in the log for forensics.
+	if len(batchErrors) > 0 {
+		log.Printf("aoi: %d/%d batches failed; %d file(s) have no AOIs and will not be reviewed: %v",
+			len(batchErrors), len(batches), len(failedInputPaths), failedInputPaths)
+		if onProgress != nil {
+			onProgress(fmt.Sprintf(
+				"⚠ %d/%d AOI batches failed; %d file(s) will not be deep-reviewed (see log for paths)",
+				len(batchErrors), len(batches), len(failedInputPaths)))
 		}
 	}
 
@@ -145,6 +314,22 @@ func ScanAreasOfInterest(
 	flat = append(flat, cachedAOIs...)
 
 	report := buildReport(flat)
+
+	// Empty-audit warning: in audit mode, zero AOIs across all files
+	// almost always indicates the model is broken or the prompt isn't
+	// landing — real codebases have something to flag in audit mode
+	// (the "be recall-biased" rule should ensure even nits surface).
+	// PR mode is different: a clean PR diff legitimately yields zero
+	// AOIs, so we don't warn there.
+	if auditMode && report.TotalAOIs == 0 && len(batches) > 0 {
+		log.Printf("aoi: audit returned 0 AOIs across %d batch(es) — model may be broken or prompt may not be landing", len(batches))
+		if onProgress != nil {
+			onProgress(fmt.Sprintf(
+				"⚠ audit returned 0 AOIs across %d batch(es) — review prompt may not be landing",
+				len(batches)))
+		}
+	}
+
 	return report, nil
 }
 
@@ -200,62 +385,95 @@ type FindingForRevalidation struct {
 // ── AOI batch logic ────────────────────────────────────────────────────
 
 type aoiBatch struct {
-	label string
-	files []string
-	diffs string
+	label      string
+	files      []string
+	diffs      string
+	dimensions []string // dimension slugs for this batch (nil = all)
 }
 
 func buildAOIBatches(rawDiffs map[string]string) []aoiBatch {
-	// Group by directory, skip excluded files
-	dirFiles := make(map[string][]string)
-	for p := range rawDiffs {
+	return buildAOIBatchesClassified(rawDiffs, nil)
+}
+
+// dimensionKey returns a stable string key for a set of dimension slugs.
+// Used to group files with the same dimensions into the same batch.
+func dimensionKey(dims []string) string {
+	if len(dims) == 0 {
+		return "_all_"
+	}
+	sorted := make([]string, len(dims))
+	copy(sorted, dims)
+	sort.Strings(sorted)
+	return strings.Join(sorted, ",")
+}
+
+func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[string][]string) []aoiBatch {
+	// Group by dimension set, skip excluded files
+	type fileEntry struct {
+		path string
+		diff string
+	}
+	groups := make(map[string][]fileEntry)
+	groupDims := make(map[string][]string)
+
+	for p, diff := range rawDiffs {
 		if config.ShouldExcludeFromReview(p) {
 			continue
 		}
-		dir := filepath.Dir(p)
-		if dir == "." {
-			dir = "root"
+		var dims []string
+		if fileDimensions != nil {
+			dims = fileDimensions[p]
 		}
-		dirFiles[dir] = append(dirFiles[dir], p)
+		key := dimensionKey(dims)
+		groups[key] = append(groups[key], fileEntry{path: p, diff: diff})
+		if _, ok := groupDims[key]; !ok {
+			groupDims[key] = dims
+		}
 	}
 
-	dirs := make([]string, 0, len(dirFiles))
-	for d := range dirFiles {
-		dirs = append(dirs, d)
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
 	}
-	sort.Strings(dirs)
+	sort.Strings(keys)
 
 	var batches []aoiBatch
-	for _, dir := range dirs {
-		files := dirFiles[dir]
-		sort.Strings(files)
+	for _, key := range keys {
+		entries := groups[key]
+		dims := groupDims[key]
+
+		// Sort files within group for determinism
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].path < entries[j].path
+		})
 
 		var curFiles []string
 		var curDiff strings.Builder
 
-		for _, f := range files {
-			diff := rawDiffs[f]
-			entry := fmt.Sprintf("=== %s ===\n%s\n\n", f, diff)
+		for _, e := range entries {
+			entry := fmt.Sprintf("=== %s ===\n%s\n\n", e.path, e.diff)
 
 			if curDiff.Len() > 0 && curDiff.Len()+len(entry) > aoiBatchMaxChars {
 				batches = append(batches, aoiBatch{
-					label: dir,
-					files: curFiles,
-					diffs: curDiff.String(),
+					label:      key,
+					files:      curFiles,
+					diffs:      curDiff.String(),
+					dimensions: dims,
 				})
 				curFiles = nil
 				curDiff.Reset()
 			}
 
 			curDiff.WriteString(entry)
-			curFiles = append(curFiles, f)
+			curFiles = append(curFiles, e.path)
 		}
 
 		if len(curFiles) > 0 {
 			batches = append(batches, aoiBatch{
-				label: dir,
-				files: curFiles,
-				diffs: curDiff.String(),
+				label:      key,
+				files:      curFiles,
+				diffs:      curDiff.String(),
+				dimensions: dims,
 			})
 		}
 	}
@@ -271,21 +489,172 @@ func countFiles(batches []aoiBatch) int {
 	return n
 }
 
-// scanBatch sends a single batch of diffs to the AOI scanner.
-func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch) ([]AOIScanResult, error) {
-	messages := []ai.Message{
-		{Role: "user", Content: fmt.Sprintf(
-			"Scan these %d file(s) for security areas of interest:\n\n%s",
-			len(batch.files), batch.diffs,
-		)},
+// errAOIParse marks errors that come from the response shape (bad JSON,
+// missing array, empty response). Distinguished from transport-side
+// errors (network, rate-limit, 5xx) so retry can short-circuit: re-
+// running the same prompt twice won't fix a parse failure, just doubles
+// the token spend.
+var errAOIParse = errors.New("aoi: parse failure")
+
+// validateAOIs surfaces semantic issues with parsed AOI results that
+// would silently propagate into Phase 3 routing:
+//
+//   - Empty or out-of-taxonomy `category` values. Phase 3 buckets AOIs
+//     by subcategory; a category like "shitposting" or "" would still
+//     be bucketed somewhere and pollute that bucket's review.
+//   - Dimension slugs not in the partial taxonomy. Used by --focus
+//     filtering; an unknown dim is silently dropped from filtering.
+//   - Duplicate IDs within a single file. IDs feed caching and
+//     cross-referencing; duplicates corrupt those.
+//
+// All issues are logged (no coercion). The model's output is left
+// intact so the user can see what the LLM emitted vs what we wanted.
+// Coercion would hide prompt-drift problems that need human attention.
+func validateAOIs(results []AOIScanResult) {
+	for _, r := range results {
+		seen := make(map[string]int, len(r.AreasOfInterest))
+		for _, aoi := range r.AreasOfInterest {
+			if aoi.Category == "" {
+				log.Printf("aoi: %s [id=%s] missing category (model output, not coerced)",
+					r.File, aoi.ID)
+			} else if !ai.DimensionExists(aoi.Category) {
+				log.Printf("aoi: %s [id=%s] uses out-of-taxonomy category %q (not coerced; Phase 3 routing may be off)",
+					r.File, aoi.ID, aoi.Category)
+			}
+
+			for _, d := range aoi.Dimensions {
+				if !ai.DimensionExists(d) {
+					log.Printf("aoi: %s [id=%s] uses unknown dimension %q (will be ignored by --focus filtering)",
+						r.File, aoi.ID, d)
+				}
+			}
+
+			if aoi.ID != "" {
+				seen[aoi.ID]++
+				if seen[aoi.ID] == 2 {
+					// Log the SECOND occurrence so we don't spam for triples,
+					// while still surfacing the collision.
+					log.Printf("aoi: %s has duplicate AOI id %q (caching and cross-referencing will collide)",
+						r.File, aoi.ID)
+				}
+			}
+		}
+	}
+}
+
+// aoiRetryBackoff is the wait before the single retry of a transient
+// AOI batch failure. Slightly longer than classify's 750ms because AOI
+// batches are larger (more tokens to retransmit) so the API is more
+// likely to be rate-limiting us.
+const aoiRetryBackoff = 1 * time.Second
+
+// Aggregate-fail thresholds for Phase 2 AOI batches.
+//
+// Previously a Phase 2 scan only aborted when 100% of batches failed.
+// 4 of 5 failing (20% recall) was "successful". With a >20% threshold
+// and a 2-batch floor, a handful of transient failures still proceed
+// with a clear warning, but a structural breakdown aborts cleanly.
+const (
+	aoiAggregateFailRatio    = 0.20
+	aoiAggregateFailMinBatch = 2
+)
+
+// shouldAggregateFailAOI reports whether the (failed, total) batch
+// counts cross the abort threshold.
+func shouldAggregateFailAOI(failed, total int) bool {
+	if failed < aoiAggregateFailMinBatch {
+		return false
+	}
+	if total <= 0 {
+		return false
+	}
+	return float64(failed)/float64(total) > aoiAggregateFailRatio
+}
+
+// scanBatchWithRetry runs scanBatch and retries ONCE on transient
+// errors. Parse failures and context cancellation short-circuit. The
+// retry catches the common rate-limit/5xx cases that currently
+// silently lose AOIs for entire batches (8-15 files at a time).
+func scanBatchWithRetry(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
+	res, err := scanBatch(ctx, client, batch, debugHook, auditMode)
+	if err == nil {
+		return res, nil
+	}
+	if errors.Is(err, errAOIParse) {
+		return res, err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return res, err
 	}
 
-	result, err := client.ChatStream(ctx, aoiScanPrompt, messages, nil)
+	select {
+	case <-time.After(aoiRetryBackoff):
+	case <-ctx.Done():
+		return res, ctx.Err()
+	}
+	log.Printf("aoi: retrying batch %q (%d files) after transient error: %v",
+		batch.label, len(batch.files), err)
+	return scanBatch(ctx, client, batch, debugHook, auditMode)
+}
+
+// scanBatch sends a single batch of diffs to the AOI scanner.
+func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
+	systemPrompt := buildAOIScanPromptWithDimensions(auditMode, batch.dimensions)
+	userMsg := fmt.Sprintf(
+		"Scan these %d file(s) for areas of interest:\n\n%s",
+		len(batch.files), batch.diffs,
+	)
+
+	messages := []ai.Message{
+		{Role: "user", Content: userMsg},
+	}
+
+	// Resolve {{TOOLS}} before ChatStream so the debug hook sees
+	// the same text the LLM sees (Agent.ChatStream resolves on a
+	// local copy of its parameter).
+	systemPrompt = ai.ResolveToolsForClient(client, systemPrompt)
+
+	log.Printf("[aoi-debug] calling LLM for batch %q (%d files, %d chars)", batch.label, len(batch.files), len(userMsg))
+
+	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return parseAOIResult(result)
+	log.Printf("[aoi-debug] LLM response length: %d chars", len(result))
+
+	// Debug hook
+	if debugHook != nil {
+		debugHook(batch.files, systemPrompt, userMsg, result)
+	}
+
+	if strings.TrimSpace(result) == "" {
+		// Empty response is a parse-shape failure — retry won't make
+		// a silent model start emitting JSON. Wrap with errAOIParse
+		// so scanBatchWithRetry short-circuits.
+		return nil, fmt.Errorf("%w: LLM returned empty response for batch %q (%d files)",
+			errAOIParse, batch.label, len(batch.files))
+	}
+
+	parsed, parseErr := parseAOIResult(result)
+	if parseErr != nil {
+		// Log a truncated snippet of the raw response to aid debugging
+		snippet := result
+		if len(snippet) > 200 {
+			snippet = snippet[:200] + "..."
+		}
+		return nil, fmt.Errorf("%w (raw response: %s)", parseErr, snippet)
+	}
+
+	log.Printf("[aoi-debug] parsed %d file results", len(parsed))
+
+	// Surface semantic issues in the parsed results (invalid categories,
+	// unknown dimensions, duplicate IDs). Informational only — output
+	// is not modified, so the caller can still see what the model
+	// emitted.
+	validateAOIs(parsed)
+
+	return parsed, nil
 }
 
 // ── Parsing ────────────────────────────────────────────────────────────
@@ -321,7 +690,7 @@ func parseAOIResult(raw string) ([]AOIScanResult, error) {
 	if !strings.HasPrefix(s, "[") {
 		start := strings.Index(s, "[")
 		if start == -1 {
-			return nil, fmt.Errorf("no JSON array found in AOI response")
+			return nil, fmt.Errorf("%w: no JSON array found in AOI response", errAOIParse)
 		}
 		s = s[start:]
 	}
@@ -329,7 +698,18 @@ func parseAOIResult(raw string) ([]AOIScanResult, error) {
 	var results []AOIScanResult
 	s = sanitizeJSON(s)
 	if err := json.Unmarshal([]byte(s), &results); err != nil {
-		return nil, fmt.Errorf("parse AOI JSON: %w", err)
+		return nil, fmt.Errorf("%w: parse AOI JSON: %v", errAOIParse, err)
+	}
+
+	// Normalize: merge Areas into AreasOfInterest for backward compat,
+	// and propagate the parent file path into each AOI.
+	for i := range results {
+		results[i].NormalizeAOIs()
+		for j := range results[i].AreasOfInterest {
+			if results[i].AreasOfInterest[j].File == "" {
+				results[i].AreasOfInterest[j].File = results[i].File
+			}
+		}
 	}
 
 	return results, nil
@@ -389,31 +769,11 @@ func parseRevalidationResult(raw string) ([]Revalidation, error) {
 
 func buildReport(results []AOIScanResult) *AOIReport {
 	report := &AOIReport{
-		Files:       results,
-		OverallRisk: "none",
+		Files: results,
 	}
 
-	riskRank := map[string]int{
-		"critical": 4,
-		"high":     3,
-		"medium":   2,
-		"low":      1,
-		"none":     0,
-	}
-
-	maxRisk := 0
 	for _, r := range results {
 		report.TotalAOIs += len(r.AreasOfInterest)
-
-		rank := riskRank[r.RiskLevel]
-		if rank > maxRisk {
-			maxRisk = rank
-			report.OverallRisk = r.RiskLevel
-		}
-
-		if r.RiskLevel == "critical" || r.RiskLevel == "high" {
-			report.HighRiskFiles = append(report.HighRiskFiles, r.File)
-		}
 	}
 
 	report.SecurityDigest = formatDigest(report)
@@ -427,22 +787,17 @@ func formatDigest(report *AOIReport) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("## Security Pre-Scan: %d Areas of Interest Found\n\n", report.TotalAOIs))
-	sb.WriteString(fmt.Sprintf("Overall risk level: **%s**\n\n", report.OverallRisk))
+	sb.WriteString(fmt.Sprintf("## Pre-Scan: %d Areas of Interest Found\n\n", report.TotalAOIs))
 
-	if len(report.HighRiskFiles) > 0 {
-		sb.WriteString("High-risk files requiring extra scrutiny:\n")
-		for _, f := range report.HighRiskFiles {
-			sb.WriteString(fmt.Sprintf("- %s\n", f))
-		}
-		sb.WriteString("\n")
-	}
-
-	// Group AOIs by category for a compact view
+	// Group AOIs by category (or category/subcategory) for a compact view
 	catCounts := make(map[string]int)
 	for _, r := range report.Files {
 		for _, aoi := range r.AreasOfInterest {
-			catCounts[aoi.Category]++
+			key := aoi.Category
+			if aoi.Subcategory != "" {
+				key = aoi.Category + "/" + aoi.Subcategory
+			}
+			catCounts[key]++
 		}
 	}
 
@@ -468,14 +823,36 @@ func formatDigest(report *AOIReport) string {
 		if len(r.AreasOfInterest) == 0 {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("**%s** (risk: %s)\n", r.File, r.RiskLevel))
+		sb.WriteString(fmt.Sprintf("**%s**\n", r.File))
 		for _, aoi := range r.AreasOfInterest {
 			lineRange := fmt.Sprintf("L%d", aoi.Line)
 			if aoi.EndLine > 0 && aoi.EndLine != aoi.Line {
 				lineRange = fmt.Sprintf("L%d-%d", aoi.Line, aoi.EndLine)
 			}
-			sb.WriteString(fmt.Sprintf("  - [%s] %s (%s): %s\n",
-				aoi.Category, lineRange, aoi.Confidence, aoi.Reasoning))
+
+			// Format depends on whether this is new-format (with subcategory) or legacy
+			cat := aoi.Category
+			if aoi.Subcategory != "" {
+				cat = aoi.Category + "/" + aoi.Subcategory
+			}
+
+			desc := aoi.Reasoning // legacy
+			if aoi.Concern != "" {
+				desc = aoi.Concern // new format
+			}
+
+			urgencyTag := ""
+			if aoi.Urgency == "individual" {
+				urgencyTag = " [!!]"
+			}
+
+			confTag := ""
+			if aoi.Confidence != "" {
+				confTag = fmt.Sprintf(" (%s)", aoi.Confidence)
+			}
+
+			sb.WriteString(fmt.Sprintf("  - [%s] %s%s%s: %s\n",
+				cat, lineRange, confTag, urgencyTag, desc))
 		}
 		sb.WriteString("\n")
 	}

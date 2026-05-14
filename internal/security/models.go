@@ -1,33 +1,70 @@
 package security
 
-// AreaOfInterest represents a security-sensitive code location identified
-// by the lightweight AOI scanner. These are injected into the main review
-// prompts so the AI knows where to apply extra scrutiny.
+// AreaOfInterest represents a code location identified by the AOI scanner
+// that warrants deeper review. Each AOI is tagged with a category/subcategory
+// from the review dimension taxonomy and an urgency level that controls
+// how it is reviewed in Phase 3.
 type AreaOfInterest struct {
-	File       string `json:"file"`
-	Line       int    `json:"line"`
-	EndLine    int    `json:"end_line,omitempty"` // optional: range end
-	Category   string `json:"category"`           // e.g. "user-input", "sql", "exec", "auth", "crypto", "secrets", "deserialization", "file-access", "network", "redirect"
-	Snippet    string `json:"snippet"`            // the relevant code fragment
-	Reasoning  string `json:"reasoning"`          // why this is security-sensitive
-	Confidence string `json:"confidence"`         // "high", "medium", "low"
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	EndLine int    `json:"end_line,omitempty"` // optional: range end
+
+	// Category + Subcategory from the dimension taxonomy (e.g. "error-handling" / "swallowed-errors").
+	Category    string `json:"category"`
+	Subcategory string `json:"subcategory,omitempty"`
+
+	// Urgency controls Phase 3 routing:
+	//   "individual" — gets a dedicated deep review call
+	//   "grouped"    — batched with other AOIs in the same subcategory
+	// Empty string treated as "grouped" for backward compatibility.
+	Urgency string `json:"urgency,omitempty"`
+
+	// Dimensions lists which review dimensions are relevant (e.g. ["correctness", "error-handling"]).
+	// Used for --focus filtering at Phase 3.
+	Dimensions []string `json:"dimensions,omitempty"`
+
+	// ID is a stable identifier for this AOI (e.g. "charge-go-float-currency").
+	// Used for caching and cross-referencing between phases.
+	ID string `json:"id,omitempty"`
+
+	// Concern is a brief description of what the AOI scanner flagged.
+	Concern string `json:"concern,omitempty"`
+
+	// Context provides additional information about why this location matters.
+	Context string `json:"context,omitempty"`
+
+	// Legacy fields — kept for backward compatibility with existing cached results.
+	Snippet    string `json:"snippet,omitempty"`
+	Reasoning  string `json:"reasoning,omitempty"`
+	Confidence string `json:"confidence,omitempty"` // "high", "medium", "low"
 }
 
 // AOIScanResult holds the output of an AOI scan for a single file.
+// Supports both the legacy format (areas_of_interest with snippets) and
+// the new format (areas with category/subcategory/urgency).
 type AOIScanResult struct {
 	File            string           `json:"file"`
 	AreasOfInterest []AreaOfInterest `json:"areas_of_interest"`
-	RiskLevel       string           `json:"risk_level"` // "critical", "high", "medium", "low", "none"
-	RiskSummary     string           `json:"risk_summary"`
+
+	// Areas is the new-format field name. During parsing, if "areas" is present
+	// in the JSON it takes precedence over "areas_of_interest".
+	Areas []AreaOfInterest `json:"areas,omitempty"`
+}
+
+// NormalizeAOIs merges Areas into AreasOfInterest (if Areas is populated)
+// so downstream code can always read AreasOfInterest. Call after unmarshaling.
+func (r *AOIScanResult) NormalizeAOIs() {
+	if len(r.Areas) > 0 {
+		r.AreasOfInterest = r.Areas
+		r.Areas = nil
+	}
 }
 
 // AOIReport is the complete result of scanning all changed files.
 type AOIReport struct {
 	Files          []AOIScanResult `json:"files"`
-	OverallRisk    string          `json:"overall_risk"` // highest risk across all files
 	TotalAOIs      int             `json:"total_aois"`
-	HighRiskFiles  []string        `json:"high_risk_files"` // files rated critical or high
-	SecurityDigest string          `json:"-"`               // formatted text for injection into review prompts
+	SecurityDigest string          `json:"-"` // formatted text for injection into review prompts
 }
 
 // Revalidation holds the result of a security revalidation pass on a finding.
@@ -43,7 +80,6 @@ type SecuritySummary struct {
 	TotalFindings    int            `json:"total_findings"`
 	BySeverity       map[string]int `json:"by_severity"`       // critical/high/medium/low counts
 	ByCWE            map[string]int `json:"by_cwe,omitempty"`  // CWE-ID -> count
-	HighRiskFiles    []string       `json:"high_risk_files"`   // files with critical/high findings
 	AOIsCovered      int            `json:"aois_covered"`      // how many AOIs led to findings
 	AOIsTotal        int            `json:"aois_total"`        // total AOIs identified
 	RevalidatedCount int            `json:"revalidated_count"` // findings that were revalidated

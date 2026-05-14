@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/andreujuanc/prr/internal/config"
 )
 
 // ── Test helpers ────────────────────────────────────────────────────────
@@ -950,7 +952,7 @@ func TestGeminiTranslation_ToolDefsToNative(t *testing.T) {
 // are correctly translated into the native generationConfig.
 func TestGeminiTranslation_GenerationConfig(t *testing.T) {
 	t.Run("with thinking enabled", func(t *testing.T) {
-		provider := &GeminiProvider{APIKey: "k", Model: "gemini-2.5-pro"}
+		provider := &GeminiProvider{APIKey: "k", Model: "gemini-3.1-pro-preview"}
 		provider.ModelConfig.MaxOutputTokens = 65536
 		provider.ModelConfig.Temperature = 0.2
 		provider.ModelConfig.ThinkingBudget = 8192
@@ -1435,15 +1437,15 @@ func TestGeminiProvider_ImplementsProvider(t *testing.T) {
 }
 
 func TestGeminiProvider_Name(t *testing.T) {
-	p := &GeminiProvider{APIKey: "k", Model: "gemini-2.5-flash"}
+	p := &GeminiProvider{APIKey: "k", Model: "gemini-3.1-flash-lite"}
 	if p.Name() != "gemini" {
 		t.Errorf("Name() = %q", p.Name())
 	}
 }
 
 func TestGeminiProvider_ModelID(t *testing.T) {
-	p := &GeminiProvider{APIKey: "k", Model: "gemini-2.5-flash"}
-	if p.ModelID() != "gemini-2.5-flash" {
+	p := &GeminiProvider{APIKey: "k", Model: "gemini-3.1-flash-lite"}
+	if p.ModelID() != "gemini-3.1-flash-lite" {
 		t.Errorf("ModelID() = %q", p.ModelID())
 	}
 }
@@ -1466,14 +1468,22 @@ func TestGeminiProvider_Capabilities(t *testing.T) {
 }
 
 // ── Live API tests ─────────────────────────────────────────────────────
-// These hit the real Gemini API. Skipped unless PRR_API_KEY is set.
-// Run with: PRR_API_KEY=<key> go test ./internal/ai/ -run TestLive -v
+// These hit the real Gemini API. Skipped unless PRR_LIVE_TESTS=1 is set.
+// Credentials are read from ~/.config/prr/config.json.
+// Run with: PRR_LIVE_TESTS=1 go test ./internal/ai/ -run TestLive -v
 
 func skipWithoutAPIKey(t *testing.T) string {
 	t.Helper()
-	key := os.Getenv("PRR_API_KEY")
+	if os.Getenv("PRR_LIVE_TESTS") != "1" {
+		t.Skip("PRR_LIVE_TESTS=1 not set, skipping live API test")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skipf("no valid config: %v", err)
+	}
+	key := cfg.APIKeyFor("gemini")
 	if key == "" {
-		t.Skip("PRR_API_KEY not set, skipping live API test")
+		t.Skip("no gemini API key in config, skipping live API test")
 	}
 	return key
 }
@@ -1482,7 +1492,7 @@ func liveModel() string {
 	if m := os.Getenv("PRR_MODEL"); m != "" {
 		return m
 	}
-	return "gemini-2.5-flash"
+	return "gemini-3.1-flash-lite"
 }
 
 func TestLive_SimpleChat(t *testing.T) {

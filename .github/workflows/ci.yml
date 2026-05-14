@@ -16,11 +16,35 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install git-delta
+        # Pin the version so builds stay reproducible. apt-get install
+        # git-delta (which is what we used to do) pulls whatever the
+        # runner image currently ships, so the same commit could
+        # behave differently a week later. Mirror the devcontainer
+        # pin in .devcontainer/install-deps.sh.
+        env:
+          DELTA_VERSION: "0.17.0"
+        run: |
+          ARCH=$(dpkg --print-architecture)
+          curl -Lsf -o /tmp/git-delta.deb \
+            "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/git-delta_${DELTA_VERSION}_${ARCH}.deb"
+          sudo dpkg -i /tmp/git-delta.deb
+          rm -f /tmp/git-delta.deb
+
       - name: Build
         run: go build ./...
 
-      - name: Test
-        run: go test ./...
+      - name: Test with coverage
+        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Display coverage
+        run: go tool cover -func=coverage.out
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
 
       - name: Vet
         run: go vet ./...

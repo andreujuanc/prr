@@ -1,6 +1,9 @@
 package ai
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Message represents a chat message.
 type Message struct {
@@ -25,7 +28,7 @@ type Client interface {
 type ModelInfo interface {
 	// ProviderName returns the provider name (e.g. "gemini", "anthropic").
 	ProviderName() string
-	// ModelName returns the model identifier (e.g. "gemini-2.5-pro").
+	// ModelName returns the model identifier (e.g. "gemini-3.1-pro-preview").
 	ModelName() string
 }
 
@@ -44,7 +47,50 @@ type ToolConfigurer interface {
 // ModelSwitcher is optionally implemented by clients that support switching
 // the underlying model at runtime (e.g. via a TUI model picker).
 type ModelSwitcher interface {
-	// SwitchModel changes the active model to the given ID and applies the
-	// provided tuning parameters. Returns an error if the model is invalid.
-	SwitchModel(modelID string, maxOutputTokens int, temperature float64, thinkingBudget int) error
+	// SwitchModel changes the active model. The modelRef is "provider/model-id" format.
+	// apiKey and baseURL are the credentials for the new provider.
+	// Tuning params are applied from the provided ProviderConfig.
+	SwitchModel(cfg ProviderConfig) error
+}
+
+// ThinkingBudgetSetter is optionally implemented by clients that support
+// adjusting the thinking budget at runtime (e.g. lower for chat, higher for review).
+type ThinkingBudgetSetter interface {
+	SetThinkingBudget(budget int)
+}
+
+// UsageReporter is optionally implemented by clients that track token usage.
+type UsageReporter interface {
+	// Usage returns the accumulated token usage since last reset.
+	Usage() TokenUsage
+	// ResetUsage zeroes the usage counters.
+	ResetUsage()
+}
+
+// SnapshotUsage returns the current token usage from a client and resets
+// the counters. If the client does not implement UsageReporter, returns
+// a zero TokenUsage.
+func SnapshotUsage(client Client) TokenUsage {
+	if ur, ok := client.(UsageReporter); ok {
+		u := ur.Usage()
+		ur.ResetUsage()
+		return u
+	}
+	return TokenUsage{}
+}
+
+// StripMarkdownFences removes ```json ... ``` wrapping that LLMs commonly
+// add around JSON output. Returns the trimmed content.
+func StripMarkdownFences(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		}
+		if idx := strings.LastIndex(s, "```"); idx != -1 {
+			s = s[:idx]
+		}
+		s = strings.TrimSpace(s)
+	}
+	return s
 }

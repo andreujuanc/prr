@@ -36,8 +36,9 @@ type ReviewOutput struct {
 
 // ReviewFinding is a single finding from the structured review.
 type ReviewFinding struct {
-	Severity   string `json:"severity"` // "critical", "high", "medium", "low", "nit"
-	Category   string `json:"category"` // "bug", "security", "performance", "testing", "style", "architecture", "docs"
+	Severity   string `json:"severity"`             // "critical", "high", "medium", "low", "nit"
+	Confidence string `json:"confidence,omitempty"` // "high", "medium", "low" — set by synthesis after verification
+	Category   string `json:"category"`             // "bug", "security", "performance", "testing", "style", "architecture", "docs"
 	File       string `json:"file"`
 	Line       int    `json:"line"`
 	Title      string `json:"title"`
@@ -45,6 +46,18 @@ type ReviewFinding struct {
 	Suggestion string `json:"suggestion,omitempty"`
 	CWE        string `json:"cwe,omitempty"`      // e.g. "CWE-89" — populated for security findings
 	Resolved   bool   `json:"resolved,omitempty"` // user-toggled or auto-resolved by task completion
+
+	// SourceIDs lists the deep-finding IDs (e.g. "F-001", "F-007") this
+	// synthesis finding derives from. One synthesis finding can cite
+	// multiple deep findings when synthesis consolidates a systemic
+	// pattern across files. Consumers should dereference these against
+	// the top-level `deep_findings` list for evidence / trigger / per-
+	// site file:line ranges — synthesis findings keep only a single
+	// representative file/line and a short narrative.
+	//
+	// Empty/omitted when synthesis ran without deep findings as input
+	// (single-pass review path).
+	SourceIDs []string `json:"source_ids,omitempty"`
 
 	// Revalidation — populated by the security revalidation pass (Phase 4).
 	Revalidation *FindingRevalidation `json:"revalidation,omitempty"`
@@ -94,6 +107,9 @@ type AIReview struct {
 	// SecurityDigest is the AOI pre-scan summary injected into review prompts.
 	// Persisted so the TUI can display it even after the review is cached.
 	SecurityDigest string `json:"security_digest,omitempty"`
+
+	// DeepFindings from AOI-driven review calls (structured findings with severity, category, etc.)
+	DeepFindings []DeepFinding `json:"deep_findings,omitempty"`
 }
 
 // FileState holds the review status and chat history for a specific file
@@ -105,6 +121,7 @@ type FileState struct {
 	BatchFindings   string          `json:"batch_findings,omitempty"`    // cached findings from PR-level batch review
 	AOIResults      json.RawMessage `json:"aoi_results,omitempty"`       // cached AOI scan result (AOIScanResult JSON)
 	AOIContextLines int             `json:"aoi_context_lines,omitempty"` // context lines used when AOI was generated
+	FileType        string          `json:"file_type,omitempty"`         // cached file classification (e.g. "handler", "test")
 }
 
 // State represents the persisted review state for a single pull request
@@ -117,6 +134,80 @@ type State struct {
 	Files              map[string]*FileState `json:"files"`
 	ProjectContext     string                `json:"project_context,omitempty"`      // cached project briefing
 	ProjectContextHash string                `json:"project_context_hash,omitempty"` // hash of inputs used to generate it
+	PRBrief            string                `json:"pr_brief,omitempty"`             // cached PR-specific briefing (comments, prior reviews, CI)
+	PRBriefHash        string                `json:"pr_brief_hash,omitempty"`        // hash of inputs used to generate the PR brief
+
+	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
+	// review inputs (file content + AOI content + focus dimensions for individual;
+	// all AOI content + focus dimensions for grouped).
+	DeepReviews map[string]*DeepReviewResult `json:"deep_reviews,omitempty"`
+
+	// RecheckCache caches Phase 3b recheck output by hash of the input
+	// findings + project context + mode. The value is a serialized
+	// []DeepFinding (the cleaned, deduplicated set).
+	RecheckCache map[string]json.RawMessage `json:"recheck_cache,omitempty"`
+
+	// SynthesisCache caches Phase 4 synthesis output by hash of the input
+	// findings + cross-cutting + project context. The value is a serialized
+	// SynthesisResult (audit-package type, opaque to this package).
+	SynthesisCache map[string]json.RawMessage `json:"synthesis_cache,omitempty"`
+
+	// DeepFindings is the top-level persisted list of Phase 1 + Phase 1c
+	// findings, independent of the synthesized Review object. Populated
+	// incrementally as each batch completes so a crash, cancellation, or
+	// failed-synthesis still leaves the user with their findings on
+	// reopen. The Review tab reads this when state.Review is nil — which
+	// is the default in TUI mode where synthesis is skipped.
+	DeepFindings []DeepFinding `json:"deep_findings,omitempty"`
+}
+
+// DeepReviewResult stores the cached output of a Phase 3 review call.
+type DeepReviewResult struct {
+	// Type is "individual" or "grouped".
+	Type string `json:"type"`
+
+	// CacheKey is the hash used to look up this result.
+	CacheKey string `json:"cache_key"`
+
+	// Category and Subcategory identify the concern area.
+	Category    string `json:"category"`
+	Subcategory string `json:"subcategory,omitempty"`
+
+	// RawOutput is the LLM's JSON response (unparsed for flexibility).
+	RawOutput json.RawMessage `json:"raw_output"`
+
+	// Findings extracted from the LLM output.
+	Findings []DeepFinding `json:"findings,omitempty"`
+
+	// Dismissals extracted from the LLM output.
+	Dismissals []DeepDismissal `json:"dismissals,omitempty"`
+
+	// CrossCutting observation (grouped reviews only).
+	CrossCutting string `json:"cross_cutting,omitempty"`
+}
+
+// DeepFinding is a confirmed issue from Phase 3 review.
+type DeepFinding struct {
+	FindingID   string `json:"finding_id,omitempty"` // assigned before recheck (e.g. "F-001")
+	AOIID       string `json:"aoi_id"`
+	File        string `json:"file"`
+	Lines       string `json:"lines"`
+	Severity    string `json:"severity"` // "critical", "high", "medium", "low", "nit"
+	Category    string `json:"category"`
+	Subcategory string `json:"subcategory,omitempty"`
+	Dimension   string `json:"dimension"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Evidence    string `json:"evidence,omitempty"` // what was verified and found (tool-backed)
+	Trigger     string `json:"trigger"`
+	Suggestion  string `json:"suggestion,omitempty"`
+}
+
+// DeepDismissal is a dismissed AOI from Phase 3 review.
+type DeepDismissal struct {
+	AOIID     string `json:"aoi_id"`
+	Evidence  string `json:"evidence,omitempty"`
+	Rationale string `json:"rationale"`
 }
 
 // NewState initializes a new empty state object for a PR
@@ -157,6 +248,28 @@ func (s *State) GetAOIResults(path string) (json.RawMessage, int) {
 	return nil, 0
 }
 
+// SetFileType stores the classification type for a file.
+func (s *State) SetFileType(path, fileType string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fs, ok := s.Files[path]
+	if !ok {
+		fs = &FileState{Status: StatusUnreviewed}
+		s.Files[path] = fs
+	}
+	fs.FileType = fileType
+}
+
+// GetFileType returns the cached classification type for a file, or empty string.
+func (s *State) GetFileType(path string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fs, ok := s.Files[path]; ok {
+		return fs.FileType
+	}
+	return ""
+}
+
 // SetBatchFindings stores the batch review purpose and findings for a file.
 func (s *State) SetBatchFindings(path, purpose, findings string) {
 	s.mu.Lock()
@@ -190,8 +303,17 @@ func (s *State) ClearAllCaches() {
 		fs.Purpose = ""
 		fs.AOIResults = nil
 		fs.AOIContextLines = 0
+		fs.FileType = ""
 	}
 	s.Review = nil
+	s.DeepReviews = nil
+	s.DeepFindings = nil
+	s.RecheckCache = nil
+	s.SynthesisCache = nil
+	s.ProjectContext = ""
+	s.ProjectContextHash = ""
+	s.PRBrief = ""
+	s.PRBriefHash = ""
 }
 
 // HasCachedBatch reports whether all files in the given paths have cached findings.
@@ -231,6 +353,66 @@ func (s *State) HasFile(path string) bool {
 	return ok
 }
 
+// CountCachedBatchFindings returns how many of the given paths have a
+// non-empty BatchFindings entry in state. Holds the read lock for the
+// entire iteration so the count is consistent against concurrent
+// writers — callers that build their own loops via HasFile + direct
+// Files map access would race.
+func (s *State) CountCachedBatchFindings(paths []string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, p := range paths {
+		if fs, ok := s.Files[p]; ok && fs != nil && fs.BatchFindings != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// SetDeepFindings replaces the persisted top-level deep findings.
+// Used by the pipeline at recheck boundaries (replace) and on load
+// migration. For incremental append during Phase 1, use AppendDeepFindings.
+func (s *State) SetDeepFindings(findings []DeepFinding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DeepFindings = append([]DeepFinding(nil), findings...)
+}
+
+// AppendDeepFindings adds findings to the top-level list. Holds the
+// write lock for the whole append so concurrent batch goroutines don't
+// drop entries via read-then-write races.
+func (s *State) AppendDeepFindings(findings []DeepFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DeepFindings = append(s.DeepFindings, findings...)
+}
+
+// GetDeepFindings returns a copy of the persisted deep findings.
+// Returning a copy keeps callers from racing with concurrent writers.
+func (s *State) GetDeepFindings() []DeepFinding {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.DeepFindings) == 0 {
+		return nil
+	}
+	out := make([]DeepFinding, len(s.DeepFindings))
+	copy(out, s.DeepFindings)
+	return out
+}
+
+// ClearDeepFindings empties the persisted list. Used when the pipeline
+// starts a fresh review run and wants to discard stale incremental
+// findings before accumulating new ones.
+func (s *State) ClearDeepFindings() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DeepFindings = nil
+}
+
 // SetProjectContext stores a cached project context and its input hash.
 func (s *State) SetProjectContext(summary, inputHash string) {
 	s.mu.Lock()
@@ -244,4 +426,100 @@ func (s *State) GetProjectContext() (summary, inputHash string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ProjectContext, s.ProjectContextHash
+}
+
+// SetPRBrief stores a cached PR-specific briefing (summary of comments,
+// prior AI reviews, CI status) and its input hash. Mirrors the
+// SetProjectContext API so callers in internal/prcontext can use it the
+// same way internal/project uses ProjectContext.
+func (s *State) SetPRBrief(brief, inputHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PRBrief = brief
+	s.PRBriefHash = inputHash
+}
+
+// GetPRBrief returns the cached PR brief and its input hash.
+func (s *State) GetPRBrief() (brief, inputHash string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.PRBrief, s.PRBriefHash
+}
+
+// ClearPRBrief invalidates the cached PR brief. Use when external state
+// (e.g. the prior AI review) changes in a way that should force
+// regeneration even if the input hash hasn't moved.
+func (s *State) ClearPRBrief() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PRBrief = ""
+	s.PRBriefHash = ""
+}
+
+// SetDeepReview stores a Phase 3 deep review result by cache key.
+func (s *State) SetDeepReview(key string, result *DeepReviewResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.DeepReviews == nil {
+		s.DeepReviews = make(map[string]*DeepReviewResult)
+	}
+	result.CacheKey = key
+	s.DeepReviews[key] = result
+}
+
+// GetDeepReview returns a cached Phase 3 result by key, or nil.
+func (s *State) GetDeepReview(key string) *DeepReviewResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.DeepReviews == nil {
+		return nil
+	}
+	return s.DeepReviews[key]
+}
+
+// SetRecheckCache stores a recheck output (serialized JSON) by cache key.
+func (s *State) SetRecheckCache(key string, raw json.RawMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.RecheckCache == nil {
+		s.RecheckCache = make(map[string]json.RawMessage)
+	}
+	s.RecheckCache[key] = raw
+}
+
+// GetRecheckCache returns a cached recheck result by key, or nil.
+func (s *State) GetRecheckCache(key string) json.RawMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.RecheckCache == nil {
+		return nil
+	}
+	return s.RecheckCache[key]
+}
+
+// SetSynthesisCache stores a synthesis output (serialized JSON) by cache key.
+func (s *State) SetSynthesisCache(key string, raw json.RawMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SynthesisCache == nil {
+		s.SynthesisCache = make(map[string]json.RawMessage)
+	}
+	s.SynthesisCache[key] = raw
+}
+
+// GetSynthesisCache returns a cached synthesis result by key, or nil.
+func (s *State) GetSynthesisCache(key string) json.RawMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.SynthesisCache == nil {
+		return nil
+	}
+	return s.SynthesisCache[key]
+}
+
+// ClearDeepReviews removes all cached Phase 3 results.
+func (s *State) ClearDeepReviews() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DeepReviews = nil
 }

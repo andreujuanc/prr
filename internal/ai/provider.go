@@ -98,6 +98,13 @@ type Capabilities struct {
 	StructuredOutput  bool // JSON-schema-constrained output
 	ParallelToolCalls bool
 	MaxContextTokens  int
+
+	// RunsOwnToolLoop indicates the provider runs its own internal
+	// tool-calling loop with a native toolset (e.g. Claude Code). When
+	// true, prr's prompts should NOT inject prr-specific tool names
+	// (read_file, git_diff, etc.) — the provider's native tools are
+	// used instead. See ResolveTools.
+	RunsOwnToolLoop bool
 }
 
 // ── Token usage ─────────────────────────────────────────────────────────

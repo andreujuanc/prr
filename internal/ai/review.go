@@ -14,14 +14,21 @@ import (
 // and minor JSON formatting issues.
 // Returns nil if parsing fails.
 func ParseReviewOutput(raw string) *state.ReviewOutput {
-	s := extractJSON(raw)
+	s := ExtractJSON(raw)
 	if s == "" {
+		log.Printf("ParseReviewOutput: ExtractJSON returned empty (raw len=%d)", len(raw))
 		return nil
 	}
 
 	var out state.ReviewOutput
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
-		log.Printf("Warning: failed to parse review JSON: %v", err)
+		log.Printf("Warning: failed to parse review JSON (extracted len=%d): %v", len(s), err)
+		if len(s) > 200 {
+			log.Printf("  extracted first 200: %s", s[:200])
+			log.Printf("  extracted last 200: %s", s[len(s)-200:])
+		} else {
+			log.Printf("  extracted: %s", s)
+		}
 		return nil
 	}
 
@@ -52,62 +59,135 @@ func ParseReviewOutput(raw string) *state.ReviewOutput {
 	return &out
 }
 
-// extractJSON extracts a JSON object from raw text that may contain
+// ExtractJSON extracts a JSON object from raw text that may contain
 // markdown code fences, leading prose, or trailing commentary.
-func extractJSON(raw string) string {
+// Returns the last well-formed top-level {...} found, or "" if none.
+func ExtractJSON(raw string) string {
 	s := strings.TrimSpace(raw)
 
-	// Strip markdown code fences
-	if strings.HasPrefix(s, "```") {
-		// Remove opening fence (```json or ```)
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		// Remove closing fence
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
+	// Try to extract from a markdown code fence first (handles fences
+	// anywhere in the text, not just at the start).
+	if fenced := extractFromCodeFence(s); fenced != "" {
+		return fenced
 	}
 
-	// If it starts with {, try as-is
-	if strings.HasPrefix(s, "{") {
-		return s
+	// Collect all top-level JSON objects in the text. The synthesis
+	// agent may emit prose across multiple tool-calling rounds before
+	// producing the final JSON, so the text can contain multiple {...}
+	// blocks. We want the LAST well-formed one (the final answer).
+	candidates := findAllJSONObjects(s)
+	if len(candidates) == 0 {
+		// Fallback: find first { to end
+		start := strings.Index(s, "{")
+		if start == -1 {
+			return ""
+		}
+		return s[start:]
 	}
 
-	// Try to find a JSON object in the text
-	start := strings.Index(s, "{")
-	if start == -1 {
+	// Return the last candidate — most likely to be the final output.
+	return candidates[len(candidates)-1]
+}
+
+// extractFromCodeFence looks for a ```json ... ``` (or ``` ... ```) fence
+// anywhere in the text and returns the content inside the last fence found.
+func extractFromCodeFence(s string) string {
+	// Find the last code fence block — the final answer is most likely
+	// in the last fence when multiple rounds of prose are present.
+	lastOpen := strings.LastIndex(s, "```json")
+	if lastOpen == -1 {
+		lastOpen = strings.LastIndex(s, "```{")
+		if lastOpen == -1 {
+			// Check if the whole string is a single fenced block
+			if !strings.HasPrefix(s, "```") {
+				return ""
+			}
+			lastOpen = 0
+		}
+	}
+
+	sub := s[lastOpen:]
+	// Skip the opening fence line
+	nl := strings.Index(sub, "\n")
+	if nl == -1 {
 		return ""
 	}
+	sub = sub[nl+1:]
 
-	// Find the matching closing brace by counting nesting
-	depth := 0
-	inString := false
-	escape := false
-	for i := start; i < len(s); i++ {
-		if escape {
-			escape = false
-			continue
+	// Find the closing fence. The JSON content itself may contain
+	// embedded code fences (e.g. in "suggestion" fields), so we look
+	// for a ``` that appears at the start of a line (after a newline).
+	closeIdx := -1
+	searchFrom := 0
+	for searchFrom < len(sub) {
+		idx := strings.Index(sub[searchFrom:], "```")
+		if idx == -1 {
+			break
 		}
-		c := s[i]
-		switch {
-		case c == '\\' && inString:
-			escape = true
-		case c == '"':
-			inString = !inString
-		case c == '{' && !inString:
-			depth++
-		case c == '}' && !inString:
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
-			}
+		pos := searchFrom + idx
+		// Accept if it's at the very start of sub or preceded by a newline
+		if pos == 0 || sub[pos-1] == '\n' {
+			closeIdx = pos
+			break
 		}
+		searchFrom = pos + 3
 	}
 
-	// Fallback: just return from { to end
-	return s[start:]
+	if closeIdx == -1 {
+		// No closing fence — use the rest
+		return strings.TrimSpace(sub)
+	}
+	return strings.TrimSpace(sub[:closeIdx])
+}
+
+// findAllJSONObjects finds all top-level balanced {...} objects in s.
+func findAllJSONObjects(s string) []string {
+	var results []string
+	i := 0
+	for i < len(s) {
+		// Find next opening brace
+		start := strings.IndexByte(s[i:], '{')
+		if start == -1 {
+			break
+		}
+		start += i
+
+		// Try to find the matching close brace
+		depth := 0
+		inString := false
+		escape := false
+		found := false
+		for j := start; j < len(s); j++ {
+			if escape {
+				escape = false
+				continue
+			}
+			c := s[j]
+			switch {
+			case c == '\\' && inString:
+				escape = true
+			case c == '"':
+				inString = !inString
+			case c == '{' && !inString:
+				depth++
+			case c == '}' && !inString:
+				depth--
+				if depth == 0 {
+					results = append(results, s[start:j+1])
+					i = j + 1
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+	return results
 }
 
 // normalizeVerdict normalizes verdict strings to canonical values.

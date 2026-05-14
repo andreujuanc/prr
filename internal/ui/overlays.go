@@ -116,85 +116,290 @@ func (m Model) renderPRPicker() string {
 
 // modelPickerItem represents a selectable model in the picker.
 type modelPickerItem struct {
-	id       string
+	id       string // model ID (bare, e.g. "gemini-3.1-flash-lite")
+	provider string // provider name (e.g. "gemini", "github-copilot")
 	label    string // display label (short human-friendly name)
 	thinking bool   // whether the model supports thinking
+	price    string // formatted price tag (e.g. "$0.15/$0.60 per 1M tok")
+	speed    string // speed icon (e.g. "⚡", "●", "◐")
+
+	// Benchmark data (from ~/.config/prr/benchmark.json)
+	hasBenchmark bool
+	recallPct    float64 // overall recall %
+	latencyMs    int     // scan latency in ms
+	costPerScan  float64 // USD per scan
 }
 
-// availableModels returns the ordered list of Gemini models for the picker.
-func availableModels() []modelPickerItem {
-	return []modelPickerItem{
-		{id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", thinking: true},
-		{id: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", thinking: true},
-		{id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", thinking: true},
+// modelRef returns the "provider/model-id" reference string.
+func (m modelPickerItem) modelRef() string {
+	return m.provider + "/" + m.id
+}
+
+// pickerSection groups model items under a heading.
+type pickerSection struct {
+	title string
+	items []modelPickerItem
+}
+
+// enrichWithBenchmark loads benchmark data and populates picker items.
+func enrichWithBenchmark(items []modelPickerItem) []modelPickerItem {
+	bench, err := config.LoadBenchmarkResults()
+	if err != nil || bench == nil {
+		return items
 	}
+	for i := range items {
+		if bm := bench.GetModelBenchmark(items[i].id); bm != nil {
+			items[i].hasBenchmark = true
+			items[i].recallPct = bm.RecallPct
+			items[i].latencyMs = bm.LatencyMs
+			items[i].costPerScan = bm.CostPerScan
+		}
+	}
+	return items
+}
+
+// availableModels returns the review models, filtered to configured providers.
+func availableModels(providers []string) []modelPickerItem {
+	models := config.ReviewModels(providers...)
+	items := make([]modelPickerItem, len(models))
+	for i, m := range models {
+		items[i] = modelPickerItem{id: m.ID, provider: m.Provider, label: m.Label, thinking: m.Thinking, price: m.PriceTag(), speed: m.SpeedIcon()}
+	}
+	return items
+}
+
+// availableAOIModels returns the AOI-suitable models, filtered to configured providers.
+func availableAOIModels(providers []string) []modelPickerItem {
+	models := config.AOIModels(providers...)
+	items := make([]modelPickerItem, len(models))
+	for i, m := range models {
+		items[i] = modelPickerItem{id: m.ID, provider: m.Provider, label: m.Label, thinking: m.Thinking, price: m.PriceTag(), speed: m.SpeedIcon()}
+	}
+	return enrichWithBenchmark(items)
 }
 
 // switchModel attempts to switch the AI client to the given model.
-// Returns the new model name on success. Persists the choice to config.
-func (m *Model) switchModel(modelID string) string {
+// modelRef is "provider/model-id" format. Returns the new model name on success.
+// Persists the choice to config.
+func (m *Model) switchModel(modelRef string) string {
 	switcher, ok := m.aiClient.(ai.ModelSwitcher)
 	if !ok {
 		return m.aiModelName
 	}
 
-	models, _ := config.LoadModels()
-	mcfg := config.GetModelConfig(models, modelID)
-
-	if err := switcher.SwitchModel(modelID, mcfg.MaxOutputTokens, mcfg.Temperature, mcfg.ThinkingBudget); err != nil {
+	ref, err := config.ParseModelRef(modelRef)
+	if err != nil {
 		return m.aiModelName
 	}
 
-	m.aiModelName = modelID
+	models, _ := config.LoadModels()
+	mcfg := config.GetModelConfig(models, ref.ModelID)
 
-	// Persist to config so the choice survives restarts
-	if cfg, err := config.Load(); err == nil {
-		cfg.Model = modelID
-		if err := config.Save(cfg); err != nil {
-			log.Printf("Warning: failed to persist model selection: %v", err)
-		}
+	// Resolve API key for the target provider. Keyless providers
+	// (claude-code) don't need a key in config — their CLI handles auth.
+	cfg, err := config.Load()
+	if err != nil {
+		return m.aiModelName
+	}
+	apiKey := cfg.APIKeyFor(ref.Provider)
+	if apiKey == "" && !config.IsKeylessProvider(ref.Provider) {
+		m.flashMsg = "No API key configured for provider " + ref.Provider
+		return m.aiModelName
+	}
+	pc := cfg.ProviderConfigFor(ref.Provider)
+
+	if err := switcher.SwitchModel(ai.ProviderConfig{
+		ProviderName:    ref.Provider,
+		ModelID:         ref.ModelID,
+		APIKey:          apiKey,
+		BaseURL:         pc.BaseURL,
+		MaxOutputTokens: mcfg.MaxOutputTokens,
+		Temperature:     mcfg.Temperature,
+		ThinkingBudget:  mcfg.ThinkingBudget.Review,
+	}); err != nil {
+		return m.aiModelName
 	}
 
-	return modelID
+	m.aiModelName = ref.ModelID
+
+	// Persist to config so the choice survives restarts
+	cfg.StrongModel = modelRef
+	if err := config.Save(cfg); err != nil {
+		log.Printf("Warning: failed to persist model selection: %v", err)
+		m.flashMsg = "Warning: model changed but could not save to config"
+	}
+
+	return ref.ModelID
 }
 
-// renderModelPicker renders the model selection overlay.
-func (m Model) renderModelPicker() string {
-	models := availableModels()
+// switchAOIModel attempts to switch the AOI client to the given model.
+// modelRef is "provider/model-id" format.
+func (m *Model) switchAOIModel(modelRef string) string {
+	if m.aoiClient == nil {
+		return m.aoiModelName
+	}
 
-	width := 40
+	switcher, ok := m.aoiClient.(ai.ModelSwitcher)
+	if !ok {
+		return m.aoiModelName
+	}
+
+	ref, err := config.ParseModelRef(modelRef)
+	if err != nil {
+		return m.aoiModelName
+	}
+
+	// Load model config for fast-mode tuning
+	models, _ := config.LoadModels()
+	mcfg := config.GetModelConfig(models, ref.ModelID)
+
+	// Resolve API key for the target provider. Keyless providers
+	// (claude-code) don't need a key in config — their CLI handles auth.
+	cfg, err := config.Load()
+	if err != nil {
+		return m.aoiModelName
+	}
+	apiKey := cfg.APIKeyFor(ref.Provider)
+	if apiKey == "" && !config.IsKeylessProvider(ref.Provider) {
+		m.flashMsg = "No API key configured for provider " + ref.Provider
+		return m.aoiModelName
+	}
+	pc := cfg.ProviderConfigFor(ref.Provider)
+
+	if err := switcher.SwitchModel(ai.ProviderConfig{
+		ProviderName:    ref.Provider,
+		ModelID:         ref.ModelID,
+		APIKey:          apiKey,
+		BaseURL:         pc.BaseURL,
+		MaxOutputTokens: mcfg.MaxOutputTokens,
+		Temperature:     mcfg.Temperature,
+		ThinkingBudget:  mcfg.ThinkingBudget.Fast,
+	}); err != nil {
+		return m.aoiModelName
+	}
+
+	m.aoiModelName = ref.ModelID
+	m.aoiContextLines = mcfg.ResolvedAOIContextLines()
+
+	// Persist to config
+	cfg.FastModel = modelRef
+	if err := config.Save(cfg); err != nil {
+		log.Printf("Warning: failed to persist AOI model selection: %v", err)
+		m.flashMsg = "Warning: AOI model changed but could not save to config"
+	}
+
+	return ref.ModelID
+}
+
+// modelPickerSections returns the combined list of picker sections,
+// filtered to only show models from providers the user has configured.
+func (m Model) modelPickerSections() []pickerSection {
+	// Load config to determine which providers have API keys
+	var providers []string
+	if cfg, err := config.Load(); err == nil {
+		providers = cfg.ConfiguredProviders()
+	}
+
+	sections := []pickerSection{
+		{title: "STRONG MODEL (review)", items: availableModels(providers)},
+	}
+	if m.aoiClient != nil {
+		sections = append(sections, pickerSection{
+			title: "FAST MODEL (discovery/AOI)",
+			items: availableAOIModels(providers),
+		})
+	}
+	return sections
+}
+
+// modelPickerTotalItems returns the total number of items across all sections.
+func modelPickerTotalItems(sections []pickerSection) int {
+	n := 0
+	for _, s := range sections {
+		n += len(s.items)
+	}
+	return n
+}
+
+// modelPickerItemAt resolves a flat cursor index to (section, item-within-section).
+func modelPickerItemAt(sections []pickerSection, cursor int) (section int, item int) {
+	offset := 0
+	for si, s := range sections {
+		if cursor < offset+len(s.items) {
+			return si, cursor - offset
+		}
+		offset += len(s.items)
+	}
+	// Shouldn't happen, clamp to last
+	if len(sections) == 0 {
+		return 0, 0
+	}
+	last := sections[len(sections)-1]
+	return len(sections) - 1, len(last.items) - 1
+}
+
+// renderModelPicker renders the model selection overlay with review + AOI sections.
+func (m Model) renderModelPicker() string {
+	sections := m.modelPickerSections()
+
+	width := 60
 	var b strings.Builder
 
-	b.WriteString(styleAccentBlueBold.Render("  SELECT MODEL"))
-	b.WriteString("\n\n")
-
-	for i, model := range models {
-		isSelected := i == m.modelPickerCursor
-		isCurrent := model.id == m.aiModelName
-
-		marker := "  "
-		if isSelected {
-			marker = styleAccentBlueBold.Render("> ")
+	globalIdx := 0
+	for si, section := range sections {
+		if si > 0 {
+			b.WriteString("\n")
 		}
+		b.WriteString(styleAccentBlueBold.Render("  " + section.title))
+		b.WriteString("\n\n")
 
-		name := model.label
-		if isSelected {
-			name = styleTextPrimary.Bold(true).Render(name)
-		} else {
-			name = styleTextSecondary.Render(name)
-		}
+		for _, model := range section.items {
+			isSelected := globalIdx == m.modelPickerCursor
+			isCurrent := (si == 0 && model.id == m.aiModelName) ||
+				(si == 1 && model.id == m.aoiModelName)
 
-		suffix := ""
-		if model.thinking {
-			suffix = styleTextMuted.Render(" [thinking]")
-		}
-		if isCurrent {
-			suffix += styleAccentGreen.Render(" *")
-		}
+			marker := "  "
+			if isSelected {
+				marker = styleAccentBlueBold.Render("> ")
+			}
 
-		line := fmt.Sprintf("%s%s%s", marker, name, suffix)
-		line = truncateToWidth(line, width)
-		b.WriteString(line + "\n")
+			providerTag := styleTextMuted.Render("[" + model.provider + "] ")
+			name := model.label
+			if isSelected {
+				name = styleTextPrimary.Bold(true).Render(name)
+			} else {
+				name = styleTextSecondary.Render(name)
+			}
+
+			suffix := ""
+			if model.thinking {
+				suffix = styleTextMuted.Render(" [thinking]")
+			}
+			if isCurrent {
+				suffix += styleAccentGreen.Render(" ●")
+			}
+
+			// Benchmark or static metadata
+			meta := ""
+			if model.hasBenchmark {
+				meta = styleTextMuted.Render(fmt.Sprintf("  %.0f%% recall  %.1fs  $%.3f/scan",
+					model.recallPct, float64(model.latencyMs)/1000, model.costPerScan))
+			} else if model.speed != "" || model.price != "" {
+				parts := []string{}
+				if model.speed != "" {
+					parts = append(parts, model.speed)
+				}
+				if model.price != "" {
+					parts = append(parts, model.price)
+				}
+				meta = styleTextMuted.Render("  " + strings.Join(parts, " "))
+			}
+
+			line := fmt.Sprintf("%s%s%s%s%s", marker, providerTag, name, suffix, meta)
+			line = truncateToWidth(line, width)
+			b.WriteString(line + "\n")
+			globalIdx++
+		}
 	}
 
 	b.WriteString("\n")
@@ -327,7 +532,7 @@ func (m Model) renderErrorModal() string {
 	var b strings.Builder
 	b.WriteString(styleAccentRed.Bold(true).Render("  ERROR"))
 	b.WriteString("\n\n")
-	b.WriteString(styleTextPrimary.Render("  " + strings.ReplaceAll(m.errorMsg, "\n", "\n  ")))
+	b.WriteString(styleTextPrimary.Render("  " + strings.ReplaceAll(ansi.Strip(m.errorMsg), "\n", "\n  ")))
 	b.WriteString("\n\n")
 	b.WriteString(styleTextMuted.Render("  Press any key to dismiss"))
 	return b.String()

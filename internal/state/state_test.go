@@ -137,6 +137,35 @@ func TestSyncWithDiffs(t *testing.T) {
 	}
 }
 
+func TestLoadInvalidPRNumber(t *testing.T) {
+	invalidKeys := []string{"", "12/34", "../etc", "1 2", "a b", "foo;bar", "a\nb"}
+	for _, key := range invalidKeys {
+		_, err := Load(key)
+		if err == nil {
+			t.Errorf("Load(%q) should return error for invalid state key", key)
+		}
+	}
+}
+
+func TestLoadValidStateKeys(t *testing.T) {
+	// These should all be valid state keys (not just PR numbers)
+	validKeys := []string{"42", "audit", "abc", "my-audit", "test_123"}
+	for _, key := range validKeys {
+		_, err := Load(key)
+		if err != nil {
+			t.Errorf("Load(%q) should succeed for valid state key, got: %v", key, err)
+		}
+	}
+}
+
+func TestSaveInvalidPRNumber(t *testing.T) {
+	s := NewState("foo/bar")
+	err := Save(s)
+	if err == nil {
+		t.Error("Save with invalid state key should return error")
+	}
+}
+
 func TestSyncWithDiffsNoChanges(t *testing.T) {
 	state := NewState("test_123")
 	state.GlobalChat = []Message{{Role: "user", Content: "Global"}}
