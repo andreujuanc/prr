@@ -49,11 +49,11 @@ func TestApplyEvent_ActivatesPhase(t *testing.T) {
 	m := newTestModel("p1", "p2", "p3")
 	m.applyEvent("p1", "starting")
 
-	if m.phases[0].status != "active" {
-		t.Errorf("expected p1 active, got %q", m.phases[0].status)
+	if m.phases[0].Status != PhaseActive {
+		t.Errorf("expected p1 active, got %q", m.phases[0].Status)
 	}
-	if m.phases[0].detail != "starting" {
-		t.Errorf("expected detail 'starting', got %q", m.phases[0].detail)
+	if m.phases[0].Detail != "starting" {
+		t.Errorf("expected detail 'starting', got %q", m.phases[0].Detail)
 	}
 }
 
@@ -62,11 +62,11 @@ func TestApplyEvent_MarksPreviousDone(t *testing.T) {
 	m.applyEvent("p1", "go")
 	m.applyEvent("p2", "scanning")
 
-	if m.phases[0].status != "done" {
-		t.Errorf("expected p1 done, got %q", m.phases[0].status)
+	if m.phases[0].Status != PhaseDone {
+		t.Errorf("expected p1 done, got %q", m.phases[0].Status)
 	}
-	if m.phases[1].status != "active" {
-		t.Errorf("expected p2 active, got %q", m.phases[1].status)
+	if m.phases[1].Status != PhaseActive {
+		t.Errorf("expected p2 active, got %q", m.phases[1].Status)
 	}
 }
 
@@ -78,11 +78,11 @@ func TestApplyEvent_UnknownPhaseIgnored(t *testing.T) {
 	m.applyEvent("p1", "go")
 	m.applyEvent("bogus", "should not exist")
 
-	if m.phases[0].status != "active" {
-		t.Errorf("p1 should still be active after unknown-phase emit, got %q", m.phases[0].status)
+	if m.phases[0].Status != PhaseActive {
+		t.Errorf("p1 should still be active after unknown-phase emit, got %q", m.phases[0].Status)
 	}
-	if m.phases[1].status != "waiting" {
-		t.Errorf("p2 should still be waiting, got %q", m.phases[1].status)
+	if m.phases[1].Status != PhaseWaiting {
+		t.Errorf("p2 should still be waiting, got %q", m.phases[1].Status)
 	}
 }
 
@@ -94,8 +94,8 @@ func TestApplyEvent_WarningSetsBanner(t *testing.T) {
 		t.Errorf("expected warning 'Disk space low', got %q", m.warning)
 	}
 	// Warning must not advance a phase.
-	if m.phases[0].status != "waiting" {
-		t.Errorf("warning should not activate phases, got %q", m.phases[0].status)
+	if m.phases[0].Status != PhaseWaiting {
+		t.Errorf("warning should not activate phases, got %q", m.phases[0].Status)
 	}
 }
 
@@ -138,7 +138,7 @@ func TestActiveProgress_UsesActivePhaseFn(t *testing.T) {
 		},
 	}
 	m := newUI(cfg)
-	m.phases[1].status = "active"
+	m.phases[1].Status = PhaseActive
 	m.state.Counters["done"] = 3
 	m.state.Counters["total"] = 4
 
@@ -150,7 +150,7 @@ func TestActiveProgress_UsesActivePhaseFn(t *testing.T) {
 func TestActiveProgress_NilProgressFn(t *testing.T) {
 	// Phases without a ProgressFn don't drive the bar.
 	m := newTestModel("p1")
-	m.phases[0].status = "active"
+	m.phases[0].Status = PhaseActive
 
 	if got := m.activeProgress(); got != 0 {
 		t.Errorf("expected 0 for phase with no ProgressFn, got %f", got)
@@ -163,7 +163,7 @@ func TestActiveProgress_NilProgressFn(t *testing.T) {
 // phase is active or done, but not while waiting (no point showing
 // 0/0) and not when no Counter is configured.
 
-func renderWithCounter(t *testing.T, status string, total int) string {
+func renderWithCounter(t *testing.T, status PhaseStatus, total int) string {
 	t.Helper()
 	cfg := Config{
 		Phases: []PhaseDef{{
@@ -175,21 +175,21 @@ func renderWithCounter(t *testing.T, status string, total int) string {
 		}},
 	}
 	m := newUI(cfg)
-	m.phases[0].status = status
+	m.phases[0].Status = status
 	m.state.Counters["done"] = 7
 	m.state.Counters["total"] = total
 	return m.View()
 }
 
 func TestView_CounterShownWhileActive(t *testing.T) {
-	out := renderWithCounter(t, "active", 40)
+	out := renderWithCounter(t, PhaseActive, 40)
 	if !contains(out, "7/40") {
 		t.Errorf("active phase should render 7/40 counter; output was:\n%s", out)
 	}
 }
 
 func TestView_CounterShownWhenDone(t *testing.T) {
-	out := renderWithCounter(t, "done", 40)
+	out := renderWithCounter(t, PhaseDone, 40)
 	if !contains(out, "7/40") {
 		t.Errorf("done phase should still render the counter; output was:\n%s", out)
 	}
@@ -198,7 +198,7 @@ func TestView_CounterShownWhenDone(t *testing.T) {
 func TestView_CounterHiddenWhileWaiting(t *testing.T) {
 	// Phase hasn't started — showing 7/40 here would be misleading
 	// (the 7 is from a future state never reached).
-	out := renderWithCounter(t, "waiting", 40)
+	out := renderWithCounter(t, PhaseWaiting, 40)
 	if contains(out, "7/40") {
 		t.Errorf("waiting phase should not render the counter; output was:\n%s", out)
 	}
@@ -206,7 +206,7 @@ func TestView_CounterHiddenWhileWaiting(t *testing.T) {
 
 func TestView_CounterHiddenWhenTotalZero(t *testing.T) {
 	// Total not yet known — a "5/0" or "0/0" would be confusing.
-	out := renderWithCounter(t, "active", 0)
+	out := renderWithCounter(t, PhaseActive, 0)
 	if contains(out, "/0") {
 		t.Errorf("zero-total phase should hide the counter; output was:\n%s", out)
 	}
@@ -218,7 +218,7 @@ func TestView_CounterHiddenWhenTotalZero(t *testing.T) {
 // phase reaches done — and that it falls back to the live detail
 // when Summary returns "" or is unset.
 
-func renderWithSummary(t *testing.T, status string, summary func(*State) string, liveDetail string) string {
+func renderWithSummary(t *testing.T, status PhaseStatus, summary func(*State) string, liveDetail string) string {
 	t.Helper()
 	cfg := Config{
 		Phases: []PhaseDef{{
@@ -228,13 +228,13 @@ func renderWithSummary(t *testing.T, status string, summary func(*State) string,
 		}},
 	}
 	m := newUI(cfg)
-	m.phases[0].status = status
-	m.phases[0].detail = liveDetail
+	m.phases[0].Status = status
+	m.phases[0].Detail = liveDetail
 	return m.View()
 }
 
 func TestView_SummaryReplacesDetailWhenDone(t *testing.T) {
-	out := renderWithSummary(t, "done",
+	out := renderWithSummary(t, PhaseDone,
 		func(*State) string { return "kept 11 · dismissed 4" },
 		"Recheck complete: kept 11, dismissed 4, consolidated 2, modified 1")
 	if !contains(out, "kept 11 · dismissed 4") {
@@ -249,7 +249,7 @@ func TestView_SummaryReplacesDetailWhenDone(t *testing.T) {
 func TestView_SummaryNotShownWhileActive(t *testing.T) {
 	// Active phase keeps the live, last-write-wins detail so users see
 	// liveness. Summary is only for the done state.
-	out := renderWithSummary(t, "active",
+	out := renderWithSummary(t, PhaseActive,
 		func(*State) string { return "kept 11 · dismissed 4" },
 		"Rechecking 18 findings...")
 	if !contains(out, "Rechecking 18 findings...") {
@@ -263,7 +263,7 @@ func TestView_SummaryNotShownWhileActive(t *testing.T) {
 func TestView_SummaryEmptyFallsBackToDetail(t *testing.T) {
 	// When Summary returns "" (e.g. no data captured yet), the row
 	// keeps showing whatever the live detail was at done time.
-	out := renderWithSummary(t, "done",
+	out := renderWithSummary(t, PhaseDone,
 		func(*State) string { return "" },
 		"Project context ready")
 	if !contains(out, "Project context ready") {
@@ -275,8 +275,8 @@ func TestView_NoSummaryFnFallsBackToDetail(t *testing.T) {
 	// When PhaseDef.Summary is nil, current behavior preserved.
 	cfg := Config{Phases: []PhaseDef{{Name: "p1", Label: "P1"}}}
 	m := newUI(cfg)
-	m.phases[0].status = "done"
-	m.phases[0].detail = "Phase 1 complete: 42 files to audit"
+	m.phases[0].Status = PhaseDone
+	m.phases[0].Detail = "Phase 1 complete: 42 files to audit"
 	if !contains(m.View(), "Phase 1 complete: 42 files to audit") {
 		t.Errorf("nil Summary should preserve current detail rendering")
 	}

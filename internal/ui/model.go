@@ -795,6 +795,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only tick spinner when something is loading/streaming
 		if m.loading || m.aiStreaming || m.prPickerLoading {
 			m.spinner, cmd = m.spinner.Update(msg)
+			// Refresh the review-progress view on every tick so the
+			// active phase's spinner glyph and the "elapsed" timer
+			// advance smoothly between AIReview* events (which may be
+			// seconds apart during e.g. AOI pre-scan).
+			if m.reviewProgress.IsActive() && !m.hasFileSelected() {
+				m.updateChatViewWithStream()
+			}
 			return m, cmd
 		}
 		return m, nil
@@ -2632,7 +2639,13 @@ func (m *Model) clearChat() {
 // "updateAIStream") so the dozen-plus call sites stay surgical; the
 // in-function dispatch keeps the routing logic in one place.
 func (m *Model) updateChatViewWithStream() {
-	if m.aiReviewPhase != "" {
+	// Either signal can mark the current stream as a review: the legacy
+	// aiReviewPhase string (set by AIReviewInit/AOI/Synthesis msgs) or
+	// the new phase tracker (which starts as soon as any phase event
+	// arrives, including discovery/classify before AOI/batch fire).
+	// Without the tracker check, the brief Discovery window before
+	// AOI/batch starts routes review traffic into chatViewport.
+	if m.aiReviewPhase != "" || m.reviewProgress.IsActive() {
 		m.updateReviewViewWithStream()
 		return
 	}
@@ -3467,6 +3480,12 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		m.syncLayout()
 		m.aiStreamBuffer = ""
 		m.aiChatHistoryCache = ""
+		// Pre-Start the phase tracker so the very first View() after
+		// `a` shows the bounded phase list (all rows pending) instead
+		// of falling through to "thinking..." or the chat history.
+		// Otherwise the first ~hundred ms feel like the review tab is
+		// stuck on the previous chat content.
+		m.reviewProgress.Start(defaultReviewPhases())
 		m.updateChatViewWithStream()
 
 		// Idle watchdog instead of wall-clock timeout. 240s of zero

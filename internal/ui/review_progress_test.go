@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"github.com/andreujuanc/prr/internal/progress"
 )
 
 func TestReviewPhaseTracker_StartActivatesNothing(t *testing.T) {
@@ -12,8 +14,8 @@ func TestReviewPhaseTracker_StartActivatesNothing(t *testing.T) {
 		t.Fatal("tracker should be active after Start")
 	}
 	for _, p := range tr.phases {
-		if p.Status != phasePending {
-			t.Fatalf("phase %q should start pending, got %v", p.Name, p.Status)
+		if p.Status != progress.PhaseWaiting {
+			t.Fatalf("phase %q should start waiting, got %v", p.Def.Name, p.Status)
 		}
 	}
 }
@@ -25,18 +27,18 @@ func TestReviewPhaseTracker_ActivateAdvancesEarlierPhases(t *testing.T) {
 
 	for _, name := range []string{"fetch", "discovery", "classify", "aoi"} {
 		idx := tr.phaseIndex(name)
-		if tr.phases[idx].Status != phaseDone {
+		if tr.phases[idx].Status != progress.PhaseDone {
 			t.Fatalf("phase %q should be done after Activate(phase1), got %v",
 				name, tr.phases[idx].Status)
 		}
 	}
-	if tr.phases[tr.phaseIndex("phase1")].Status != phaseActive {
+	if tr.phases[tr.phaseIndex("phase1")].Status != progress.PhaseActive {
 		t.Fatal("phase1 should be active")
 	}
 	for _, name := range []string{"recheck", "phase2"} {
 		idx := tr.phaseIndex(name)
-		if tr.phases[idx].Status != phasePending {
-			t.Fatalf("phase %q should remain pending, got %v",
+		if tr.phases[idx].Status != progress.PhaseWaiting {
+			t.Fatalf("phase %q should remain waiting, got %v",
 				name, tr.phases[idx].Status)
 		}
 	}
@@ -48,7 +50,7 @@ func TestReviewPhaseTracker_ActivateIsIdempotent(t *testing.T) {
 	tr.Activate("aoi")
 	tr.Activate("aoi")
 	tr.Activate("aoi")
-	if tr.phases[tr.phaseIndex("aoi")].Status != phaseActive {
+	if tr.phases[tr.phaseIndex("aoi")].Status != progress.PhaseActive {
 		t.Fatal("repeated Activate should keep the phase active")
 	}
 }
@@ -65,8 +67,8 @@ func TestReviewPhaseTracker_ResetClearsEverything(t *testing.T) {
 	if tr.phases != nil {
 		t.Fatal("phases should be nil after Reset")
 	}
-	if tr.counters != nil {
-		t.Fatal("counters should be nil after Reset")
+	if tr.state != nil {
+		t.Fatal("state should be nil after Reset")
 	}
 }
 
@@ -85,7 +87,7 @@ func TestReviewPhaseTracker_FailMarksTerminal(t *testing.T) {
 	tr.Start(defaultReviewPhases())
 	tr.Activate("aoi")
 	tr.Fail("aoi")
-	if tr.phases[tr.phaseIndex("aoi")].Status != phaseFailed {
+	if tr.phases[tr.phaseIndex("aoi")].Status != progress.PhaseError {
 		t.Fatal("phase should be failed")
 	}
 }
@@ -105,7 +107,7 @@ func TestRenderReviewProgressView_RendersAllPhases(t *testing.T) {
 	m.reviewProgress.SetCounter("batches_done", 3)
 	m.reviewProgress.SetDetail("phase1", "internal/ui/model.go")
 
-	out := m.renderReviewProgressView(80)
+	out := m.renderReviewProgressView(120)
 	if out == "" {
 		t.Fatal("expected non-empty output for active tracker")
 	}
@@ -118,11 +120,11 @@ func TestRenderReviewProgressView_RendersAllPhases(t *testing.T) {
 	if !strings.Contains(stripANSI(out), "internal/ui/model.go") {
 		t.Fatalf("expected active detail, got: %s", stripANSI(out))
 	}
-	// Counter and detail must NOT appear on pending phases.
+	// Counter and detail must NOT appear on waiting phases.
 	lines := strings.Split(stripANSI(out), "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "Synthesis") && strings.Contains(line, "10") {
-			t.Fatalf("pending phase should not show counter: %q", line)
+			t.Fatalf("waiting phase should not show counter: %q", line)
 		}
 	}
 }
