@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.0](https://github.com/andreujuanc/prr/compare/v1.4.0...v1.5.0) (2026-05-14)
+
+
+### Features
+
+* **review:** two-pass recheck pipeline with in-loop evidence verific… ([8035b74](https://github.com/andreujuanc/prr/commit/8035b747c31f8a998320d360efd95f29619d6e14))
+* **review:** two-pass recheck pipeline with in-loop evidence verification ([dd76dcd](https://github.com/andreujuanc/prr/commit/dd76dcdf8f045f39c88bc92e90651a510ecb065d))
+
 ## [1.4.0](https://github.com/andreujuanc/prr/compare/v1.3.0...v1.4.0) (2026-05-14)
 
 
