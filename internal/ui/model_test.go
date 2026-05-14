@@ -61,7 +61,7 @@ func testDiffs() map[string]string {
 // It bypasses network calls (no gh/git/AI needed) by pre-populating all fields
 // that would normally come from async messages (PRFetchedMsg, DiffHashedMsg).
 // TestViewportIsolation_ReviewDoesNotTouchChat pins the contract from
-// the AI panel viewport split: streaming a review must land in
+// the AI panel viewport split: rendering review progress must land in
 // reviewViewport and leave chatViewport's content untouched. This is
 // the load-bearing invariant of the split — if a future refactor
 // accidentally writes review content back into chatViewport, this
@@ -70,21 +70,24 @@ func TestViewportIsolation_ReviewDoesNotTouchChat(t *testing.T) {
 	m := newTestModel(t)
 
 	// Seed chatViewport with a known marker that should NOT be touched
-	// by a review-stream update.
+	// by a review update.
 	const chatMarker = "<<chat-history-marker>>"
 	m.chatViewport.SetContent(chatMarker)
 
-	// Drive a review-stream update through the dispatcher: setting
-	// aiReviewPhase routes updateChatViewWithStream to the review branch.
+	// Drive a review update via the tracker: setting up the phase
+	// tracker with a recognisable detail routes the new phase view
+	// into reviewViewport.
 	m.aiReviewPhase = "batch"
 	m.aiStreaming = true
-	m.aiStreamBuffer = "stream content from review"
+	m.reviewProgress.Start(defaultReviewPhases())
+	m.reviewProgress.Activate("phase1")
+	m.reviewProgress.SetDetail("phase1", "RVMARK")
 	m.updateChatViewWithStream()
 
-	// reviewViewport should contain the review stream content.
+	// reviewViewport should contain the review phase content.
 	got := m.reviewViewport.View()
-	if !strings.Contains(got, "stream content from review") {
-		t.Errorf("reviewViewport missing review stream content; got:\n%s", got)
+	if !strings.Contains(got, "RVMARK") {
+		t.Errorf("reviewViewport missing review content; got:\n%s", got)
 	}
 
 	// chatViewport must be untouched.

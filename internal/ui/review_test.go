@@ -757,6 +757,10 @@ type testReporter struct {
 	tokens    []string
 }
 
+func (r *testReporter) PhaseProgress(phase, status string, done bool) {
+	// test recorder — not checked in existing tests
+}
+
 func (r *testReporter) AOIProgress(status string, done bool, aoiCount int) {
 	// test recorder — not checked in existing tests
 }

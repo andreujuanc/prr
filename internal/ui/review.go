@@ -19,6 +19,10 @@ import (
 // loop. Production code uses teaReporter (wraps *tea.Program); tests can
 // supply a lightweight recording implementation.
 type ReviewReporter interface {
+	// PhaseProgress reports status updates for the pre-batch or post-
+	// batch phases (discovery, classify, recheck) that don't have a
+	// dedicated stream. phase is the pipeline phase key.
+	PhaseProgress(phase, status string, done bool)
 	// AOIProgress reports status updates from the AOI pre-scan phase.
 	AOIProgress(status string, done bool, aoiCount int)
 	// InitBatches is called once at the start with the batch list.
@@ -34,6 +38,9 @@ type ReviewReporter interface {
 // teaReporter adapts ReviewReporter to *tea.Program.
 type teaReporter struct{ p *tea.Program }
 
+func (r teaReporter) PhaseProgress(phase, status string, done bool) {
+	r.p.Send(AIReviewPhaseMsg{Phase: phase, Status: status, Done: done})
+}
 func (r teaReporter) AOIProgress(status string, done bool, aoiCount int) {
 	r.p.Send(AIReviewAOIMsg{Status: status, Done: done, AOIs: aoiCount})
 }
@@ -71,20 +78,19 @@ const maxRetries = review.MaxRetries
 
 // reviewReporterAdapter wraps a TUI ReviewReporter as a review.Reporter.
 //
-// review.Reporter splits pre-AOI work (project context + PR brief) from
-// the AOI pre-scan into separate methods. The in-app TUI doesn't make
-// that distinction today — both fan into the same AIReviewAOIMsg via
-// the inner ReviewReporter.AOIProgress so the existing TUI rendering
-// keeps working unchanged.
+// review.Reporter splits the pipeline into seven distinct phases. The
+// TUI maps each to its own phase row via the in-progress phase tracker,
+// so the bubbletea view can show all seven independently instead of
+// collapsing four of them into a single "AOI" status stream.
 type reviewReporterAdapter struct {
 	rr ReviewReporter
 }
 
 func (a *reviewReporterAdapter) DiscoveryProgress(status string) {
-	a.rr.AOIProgress(status, false, 0)
+	a.rr.PhaseProgress("discovery", status, false)
 }
 func (a *reviewReporterAdapter) ClassifyProgress(status string) {
-	a.rr.AOIProgress(status, false, 0)
+	a.rr.PhaseProgress("classify", status, false)
 }
 func (a *reviewReporterAdapter) AOIPrescanProgress(status string, done bool, aoiCount int) {
 	a.rr.AOIProgress(status, done, aoiCount)
@@ -100,9 +106,7 @@ func (a *reviewReporterAdapter) BatchProgress(batch int, status review.BatchStat
 	a.rr.BatchProgress(batch, batchStatusFromReview(status))
 }
 func (a *reviewReporterAdapter) RecheckProgress(status string) {
-	// In-app TUI doesn't distinguish recheck from other pre-AOI status today;
-	// fan into the existing AOIProgress channel to keep behavior unchanged.
-	a.rr.AOIProgress(status, false, 0)
+	a.rr.PhaseProgress("recheck", status, false)
 }
 func (a *reviewReporterAdapter) SynthesisStarted() {
 	a.rr.SynthesisStarted()

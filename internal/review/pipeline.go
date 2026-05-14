@@ -186,6 +186,24 @@ func RunPRReview(
 		return nil, err
 	}
 
+	// Validate / normalise the structured review before handing it off.
+	// Dropped findings (hallucinated file paths, empty titles, etc.)
+	// surface in the log so the count is visible without polluting the
+	// return shape.
+	if coreResult.StructuredReview != nil {
+		hunks := make(map[string][]HunkRange, len(rawDiffs))
+		for path, patch := range rawDiffs {
+			hunks[path] = ParseHunkRanges(patch)
+		}
+		_, dropped := ValidateAndNormalize(coreResult.StructuredReview, pr.Files, hunks)
+		if len(dropped) > 0 {
+			log.Printf("validation: dropped %d malformed finding(s)", len(dropped))
+			for _, d := range dropped {
+				log.Printf("  - %q (%s): %s", d.Title, d.File, d.Reason)
+			}
+		}
+	}
+
 	return &PRReviewResult{
 		PR:               pr,
 		FilesReviewed:    len(rawDiffs),

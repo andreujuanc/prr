@@ -1,0 +1,144 @@
+package ui
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestReviewPhaseTracker_StartActivatesNothing(t *testing.T) {
+	var tr reviewPhaseTracker
+	tr.Start(defaultReviewPhases())
+	if !tr.IsActive() {
+		t.Fatal("tracker should be active after Start")
+	}
+	for _, p := range tr.phases {
+		if p.Status != phasePending {
+			t.Fatalf("phase %q should start pending, got %v", p.Name, p.Status)
+		}
+	}
+}
+
+func TestReviewPhaseTracker_ActivateAdvancesEarlierPhases(t *testing.T) {
+	var tr reviewPhaseTracker
+	tr.Start(defaultReviewPhases())
+	tr.Activate("phase1") // skip fetch/discovery/classify/aoi
+
+	for _, name := range []string{"fetch", "discovery", "classify", "aoi"} {
+		idx := tr.phaseIndex(name)
+		if tr.phases[idx].Status != phaseDone {
+			t.Fatalf("phase %q should be done after Activate(phase1), got %v",
+				name, tr.phases[idx].Status)
+		}
+	}
+	if tr.phases[tr.phaseIndex("phase1")].Status != phaseActive {
+		t.Fatal("phase1 should be active")
+	}
+	for _, name := range []string{"recheck", "phase2"} {
+		idx := tr.phaseIndex(name)
+		if tr.phases[idx].Status != phasePending {
+			t.Fatalf("phase %q should remain pending, got %v",
+				name, tr.phases[idx].Status)
+		}
+	}
+}
+
+func TestReviewPhaseTracker_ActivateIsIdempotent(t *testing.T) {
+	var tr reviewPhaseTracker
+	tr.Start(defaultReviewPhases())
+	tr.Activate("aoi")
+	tr.Activate("aoi")
+	tr.Activate("aoi")
+	if tr.phases[tr.phaseIndex("aoi")].Status != phaseActive {
+		t.Fatal("repeated Activate should keep the phase active")
+	}
+}
+
+func TestReviewPhaseTracker_ResetClearsEverything(t *testing.T) {
+	var tr reviewPhaseTracker
+	tr.Start(defaultReviewPhases())
+	tr.Activate("aoi")
+	tr.SetCounter("aoi_total", 10)
+	tr.Reset()
+	if tr.IsActive() {
+		t.Fatal("tracker should not be active after Reset")
+	}
+	if tr.phases != nil {
+		t.Fatal("phases should be nil after Reset")
+	}
+	if tr.counters != nil {
+		t.Fatal("counters should be nil after Reset")
+	}
+}
+
+func TestReviewPhaseTracker_SetDetailUpdatesLastWriteWins(t *testing.T) {
+	var tr reviewPhaseTracker
+	tr.Start(defaultReviewPhases())
+	tr.SetDetail("phase1", "first")
+	tr.SetDetail("phase1", "second")
+	if got := tr.phases[tr.phaseIndex("phase1")].Detail; got != "second" {
+		t.Fatalf("detail = %q, want %q", got, "second")
+	}
+}
+
+func TestReviewPhaseTracker_FailMarksTerminal(t *testing.T) {
+	var tr reviewPhaseTracker
+	tr.Start(defaultReviewPhases())
+	tr.Activate("aoi")
+	tr.Fail("aoi")
+	if tr.phases[tr.phaseIndex("aoi")].Status != phaseFailed {
+		t.Fatal("phase should be failed")
+	}
+}
+
+func TestRenderReviewProgressView_InactiveReturnsEmpty(t *testing.T) {
+	m := Model{}
+	if got := m.renderReviewProgressView(60); got != "" {
+		t.Fatalf("inactive tracker should produce empty output, got %q", got)
+	}
+}
+
+func TestRenderReviewProgressView_RendersAllPhases(t *testing.T) {
+	m := newTestModel(t)
+	m.reviewProgress.Start(defaultReviewPhases())
+	m.reviewProgress.Activate("phase1")
+	m.reviewProgress.SetCounter("batches_total", 10)
+	m.reviewProgress.SetCounter("batches_done", 3)
+	m.reviewProgress.SetDetail("phase1", "internal/ui/model.go")
+
+	out := m.renderReviewProgressView(80)
+	if out == "" {
+		t.Fatal("expected non-empty output for active tracker")
+	}
+	if !strings.Contains(stripANSI(out), "Deep Review") {
+		t.Fatalf("expected Deep Review label, got: %s", stripANSI(out))
+	}
+	if !strings.Contains(stripANSI(out), "3/10") {
+		t.Fatalf("expected counter 3/10, got: %s", stripANSI(out))
+	}
+	if !strings.Contains(stripANSI(out), "internal/ui/model.go") {
+		t.Fatalf("expected active detail, got: %s", stripANSI(out))
+	}
+	// Counter and detail must NOT appear on pending phases.
+	lines := strings.Split(stripANSI(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Synthesis") && strings.Contains(line, "10") {
+			t.Fatalf("pending phase should not show counter: %q", line)
+		}
+	}
+}
+
+func TestRenderReviewProgressView_TruncatesLongDetail(t *testing.T) {
+	m := newTestModel(t)
+	m.reviewProgress.Start(defaultReviewPhases())
+	m.reviewProgress.Activate("phase1")
+	longDetail := strings.Repeat("very-deeply-nested-path/", 20) + "model.go"
+	m.reviewProgress.SetDetail("phase1", longDetail)
+
+	out := m.renderReviewProgressView(80)
+	for _, line := range strings.Split(out, "\n") {
+		if len(stripANSI(line)) > 100 {
+			t.Fatalf("line exceeded reasonable width: len=%d %q",
+				len(stripANSI(line)), stripANSI(line))
+		}
+	}
+}
