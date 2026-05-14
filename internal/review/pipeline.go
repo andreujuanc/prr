@@ -74,6 +74,36 @@ type PRReviewResult struct {
 	FileFindings map[string]string
 }
 
+// BuildPRMeta is the canonical PR-metadata header passed to RunReviewCore.
+//
+// Both `prr review` (headless) and the TUI's `a` keystroke must feed
+// the model the SAME header so the two paths produce comparable
+// results — divergent prMeta has bitten us once (the TUI used to
+// append a "Files changed" listing + a hint prompt, while the CLI
+// passed only the header).
+//
+// Shape:
+//
+//	PR #N: <title>
+//	Description:
+//	<body, when non-empty>
+//	Base: <base ref> → Head: <head ref>
+//	<blank>
+//
+// Safe to call with a nil PR — returns empty string.
+func BuildPRMeta(pr *git.PullRequest) string {
+	if pr == nil {
+		return ""
+	}
+	var meta strings.Builder
+	meta.WriteString(fmt.Sprintf("PR #%d: %s\n", pr.Number, pr.Title))
+	if pr.Body != "" {
+		meta.WriteString(fmt.Sprintf("Description:\n%s\n", pr.Body))
+	}
+	meta.WriteString(fmt.Sprintf("Base: %s → Head: %s\n\n", pr.BaseRefName, pr.HeadRefName))
+	return meta.String()
+}
+
 // RunPRReview executes the full multi-pass PR review pipeline headlessly.
 // This is the same pipeline that runs inside the TUI when pressing 'a':
 //
@@ -151,15 +181,8 @@ func RunPRReview(
 
 	// Build PR metadata string. PR Brief (condensed comments / prior
 	// reviews / CI) is built inside RunReviewCore — both this headless
-	// path and the TUI path go through there, so building it once
-	// covers both.
-	var meta strings.Builder
-	meta.WriteString(fmt.Sprintf("PR #%d: %s\n", pr.Number, pr.Title))
-	if pr.Body != "" {
-		meta.WriteString(fmt.Sprintf("Description:\n%s\n", pr.Body))
-	}
-	meta.WriteString(fmt.Sprintf("Base: %s → Head: %s\n\n", pr.BaseRefName, pr.HeadRefName))
-	prMeta := meta.String()
+	// path and the TUI path go through there.
+	prMeta := BuildPRMeta(pr)
 
 	// Run the shared core pipeline. If a watchdog tap is provided,
 	// wrap the reporter so streamed tokens (which progressReporter
@@ -902,12 +925,14 @@ func RunReviewCore(
 	// as the source of truth. Review is nil — the UI renders findings
 	// directly from state.DeepFindings.
 	if opts.SkipSynthesis {
+		recordReviewMeta(reviewState, deepFindings, len(dismissals), "")
 		return &CoreResult{
 			DeepFindings: deepFindings,
 			FileFindings: allFileFindings,
 		}, nil
 	}
 	if opts.NoSynthesis {
+		recordReviewMeta(reviewState, deepFindings, len(dismissals), "")
 		return &CoreResult{
 			Review: &state.AIReview{
 				Findings: allFindings.String(),
@@ -923,12 +948,60 @@ func RunReviewCore(
 		return nil, synthErr
 	}
 
+	synthVerdict := ""
+	if synthResult.Structured != nil {
+		synthVerdict = synthResult.Structured.Verdict
+	}
+	recordReviewMeta(reviewState, deepFindings, len(dismissals), synthVerdict)
+
 	return &CoreResult{
 		Review:           synthResult.Review,
 		StructuredReview: synthResult.Structured,
 		DeepFindings:     deepFindings,
 		FileFindings:     allFileFindings,
 	}, nil
+}
+
+// recordReviewMeta stamps a LastReview marker on state so the TUI can
+// distinguish "review ran, clean PR" from "no review yet" — both
+// previously left Review and DeepFindings empty and looked identical.
+// Called at every successful end-of-run path in RunReviewCore.
+//
+// verdict is set when synthesis ran; for SkipSynthesis/NoSynthesis the
+// verdict is inferred from finding counts (clean → approve, otherwise
+// comment).
+func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed int, verdict string) {
+	if s == nil {
+		return
+	}
+	if verdict == "" {
+		if len(findings) == 0 {
+			verdict = "approve"
+		} else {
+			verdict = "comment"
+		}
+	}
+	summary := ""
+	switch {
+	case len(findings) == 0 && dismissed == 0:
+		summary = "No findings — PR looks clean."
+	case len(findings) == 0 && dismissed > 0:
+		summary = fmt.Sprintf("No surviving findings — recheck dismissed all %d.", dismissed)
+	case len(findings) > 0:
+		summary = fmt.Sprintf("%d finding(s).", len(findings))
+		if dismissed > 0 {
+			summary += fmt.Sprintf(" %d dismissed in recheck.", dismissed)
+		}
+	}
+	s.SetLastReview(&state.ReviewMeta{
+		Verdict:        verdict,
+		Summary:        summary,
+		FindingsCount:  len(findings),
+		DismissedCount: dismissed,
+	})
+	if err := state.Save(s); err != nil {
+		log.Printf("Warning: failed to persist LastReview marker: %v", err)
+	}
 }
 
 // classifyChangedFiles classifies each diffed file by architectural

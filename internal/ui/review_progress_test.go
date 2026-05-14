@@ -129,6 +129,35 @@ func TestRenderReviewProgressView_RendersAllPhases(t *testing.T) {
 	}
 }
 
+func TestReviewPhaseTracker_FailActiveMarksAndSetsDetail(t *testing.T) {
+	var tr reviewPhaseTracker
+	tr.Start(defaultReviewPhases())
+	tr.Activate("phase1")
+	tr.FailActive("context deadline exceeded")
+
+	got := tr.phases[tr.phaseIndex("phase1")]
+	if got.Status != progress.PhaseError {
+		t.Fatalf("expected phase1 failed, got %v", got.Status)
+	}
+	if got.Detail != "context deadline exceeded" {
+		t.Fatalf("expected error reason on phase detail, got %q", got.Detail)
+	}
+}
+
+func TestReviewPhaseTracker_FailActiveFallsBackToFirstWaiting(t *testing.T) {
+	// No phase has been activated yet — FailActive should fail the
+	// first waiting phase rather than swallow the error.
+	var tr reviewPhaseTracker
+	tr.Start(defaultReviewPhases())
+	tr.FailActive("setup failed")
+
+	first := tr.phases[0]
+	if first.Status != progress.PhaseError {
+		t.Fatalf("expected first phase failed when none was active, got %v",
+			first.Status)
+	}
+}
+
 func TestRenderReviewProgressView_TruncatesLongDetail(t *testing.T) {
 	m := newTestModel(t)
 	m.reviewProgress.Start(defaultReviewPhases())

@@ -565,7 +565,7 @@ func parseRecheckResult(original []state.DeepFinding, raw string) (*RecheckResul
 	s = s[jsonStart:]
 
 	var resp recheckResponse
-	if err := json.Unmarshal([]byte(s), &resp); err != nil {
+	if err := unmarshalLLMResponse([]byte(s), &resp); err != nil {
 		log.Printf("Recheck: failed to parse response: %v — keeping all findings", err)
 		return &RecheckResult{Findings: original}, nil
 	}

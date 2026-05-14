@@ -84,6 +84,35 @@ func (t *reviewPhaseTracker) Fail(name string) {
 	}
 }
 
+// FailActive marks the currently-active phase failed and sets its
+// detail to reason. If no phase is active, the first not-yet-done
+// phase is failed instead, so the error is always visible somewhere
+// in the rendered phase list rather than swallowed.
+//
+// Used by the AIChatDoneMsg handler when a review run errors out so
+// the user sees the failure in the Review tab they were watching,
+// instead of the tab going silent while the error gets written to
+// the chat view they aren't looking at.
+func (t *reviewPhaseTracker) FailActive(reason string) {
+	if !t.active {
+		return
+	}
+	for i, p := range t.phases {
+		if p.Status == progress.PhaseActive {
+			t.phases[i].Status = progress.PhaseError
+			t.phases[i].Detail = reason
+			return
+		}
+	}
+	for i, p := range t.phases {
+		if p.Status == progress.PhaseWaiting {
+			t.phases[i].Status = progress.PhaseError
+			t.phases[i].Detail = reason
+			return
+		}
+	}
+}
+
 // SetCounter sets a named counter used by the phase-row counter
 // callback in the shared phase definition. Counter keys match what
 // internal/review/runwithui.go's parseReviewEvent populates, so the

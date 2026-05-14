@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ReviewStatus represents the current review state of a file
@@ -167,6 +168,60 @@ type State struct {
 	// across runs). Replaces the previous "DismissedCount only" output,
 	// which routed rationales to log.Printf and lost them.
 	RecheckDismissals []DismissedRecord `json:"recheck_dismissals,omitempty"`
+
+	// LastReview records that a review run completed against this PR,
+	// regardless of whether it produced any findings. Without this,
+	// "review ran and found nothing" is indistinguishable from "no
+	// review has ever been attempted" — both leave Review/DeepFindings
+	// empty and force the TUI to fall back to "no review yet" prompts.
+	//
+	// Set by the pipeline at the end of a successful run (or partial
+	// run that produced any artifacts). Cleared by ClearForFreshReview
+	// when the user forces a re-review.
+	LastReview *ReviewMeta `json:"last_review,omitempty"`
+}
+
+// ReviewMeta is the proof-of-run record stored on State.LastReview.
+// It lets the TUI distinguish:
+//
+//   - "review ran, found N findings"          (LastReview != nil, FindingsCount > 0)
+//   - "review ran, clean PR"                  (LastReview != nil, FindingsCount == 0, Error == "")
+//   - "review attempted, failed mid-flight"   (LastReview != nil, Error != "")
+//   - "no review has been run yet"            (LastReview == nil)
+//
+// The pipeline is responsible for populating success metadata; the
+// TUI is responsible for stamping the Error field on AIChatDoneMsg
+// failure paths so the next session shows what went wrong instead of
+// "no review yet."
+type ReviewMeta struct {
+	// CompletedAt is the wall-clock time the run finished.
+	CompletedAt time.Time `json:"completed_at"`
+
+	// Verdict is the structured-review verdict (or a synthesised
+	// "approve"/"comment" when synthesis was skipped).
+	// Empty for failure runs (use Error to disambiguate).
+	Verdict string `json:"verdict,omitempty"`
+
+	// Summary is a one-line description for the Review tab when no
+	// per-finding renderer is available (e.g. clean PR).
+	Summary string `json:"summary,omitempty"`
+
+	// FindingsCount is the number of findings that survived recheck
+	// (i.e. the length of DeepFindings or Review.Structured.Findings
+	// at end of run). Zero is a valid value — clean PR.
+	FindingsCount int `json:"findings_count"`
+
+	// DismissedCount is the number of findings recheck removed. Useful
+	// when the user wants to confirm "the model did look at things and
+	// decide they were fine."
+	DismissedCount int `json:"dismissed_count"`
+
+	// Error captures a failure message when the run aborted partway
+	// through (e.g. ">20% of AOI calls failed", upstream HTTP error,
+	// JSON parse error). Empty on successful runs. Persisted so the
+	// user can see what failed on reopen rather than losing the
+	// context after the TUI exits.
+	Error string `json:"error,omitempty"`
 }
 
 // DismissedRecord is one finding that recheck removed, with the
@@ -352,6 +407,39 @@ func (s *State) ClearAllCaches() {
 	s.ProjectContextHash = ""
 	s.PRBrief = ""
 	s.PRBriefHash = ""
+	s.LastReview = nil
+}
+
+// SetLastReview records that a review run completed against this PR,
+// regardless of whether it produced findings. Pipeline calls this at
+// end-of-run; the TUI reads it to distinguish "review ran (maybe
+// nothing found)" from "never reviewed."
+//
+// Pass nil to clear (e.g. fresh re-review). Otherwise CompletedAt is
+// auto-stamped if the caller leaves it zero.
+func (s *State) SetLastReview(meta *ReviewMeta) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if meta != nil && meta.CompletedAt.IsZero() {
+		meta.CompletedAt = time.Now()
+	}
+	s.LastReview = meta
+}
+
+// HasReviewArtifact returns true when this PR's state shows any
+// evidence that a review has been attempted — a synthesized Review,
+// persisted deep findings, OR a LastReview marker. The marker is what
+// makes "clean PR" honest: zero findings is a result, not absence.
+func (s *State) HasReviewArtifact() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.Review != nil {
+		return true
+	}
+	if len(s.DeepFindings) > 0 {
+		return true
+	}
+	return s.LastReview != nil
 }
 
 // HasCachedBatch reports whether all files in the given paths have cached findings.
