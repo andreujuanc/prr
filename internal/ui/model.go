@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -17,6 +18,7 @@ import (
 	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/opencode"
 	"github.com/andreujuanc/prr/internal/pipe"
+	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/state"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -130,6 +132,20 @@ type AIReviewAOIMsg struct {
 	Status string // status text to display
 	Done   bool   // true when AOI scan is complete
 	AOIs   int    // number of AOIs found (set when Done=true)
+}
+
+// AIReviewPhaseMsg signals a status update for one of the pre-batch or
+// post-batch phases that don't have a dedicated message type. The Phase
+// field carries the pipeline phase key ("discovery", "classify",
+// "recheck") so the bubbletea handler can route to the right phase row
+// in reviewProgress.
+//
+// Done=true means the phase has finished; Done=false means it's the
+// currently active status (last-write-wins for the detail line).
+type AIReviewPhaseMsg struct {
+	Phase  string // pipeline phase key: "discovery", "classify", "recheck"
+	Status string // status text to display as the active detail
+	Done   bool
 }
 
 // CommentsFetchedMsg is sent when PR review comments have been loaded.
@@ -300,22 +316,27 @@ type Model struct {
 	skippedFiles map[string]git.SkipReason
 
 	// AI
-	aiClient            ai.Client
-	aoiClient           ai.Client // optional: lightweight model for AOI security pre-scan
-	aiModelName         string    // model identifier for display (e.g. "gemini-3.1-pro-preview")
-	aoiModelName        string    // AOI model identifier for display
-	aiStreaming         bool      // true while AI is generating
-	aiStreamBuffer      string    // accumulated streamed response
-	aiStreamDirty       bool      // true when buffer has unflushed tokens
-	aiCancelFn          context.CancelFunc
-	aiChatHistoryCache  string                // pre-rendered markdown of completed messages (for streaming perf)
-	aiReviewBatches     []AIReviewBatchInfo   // batch list for in-place rendering
-	aiReviewStatuses    []AIReviewBatchStatus // per-batch status
-	aiReviewPhase       string                // "batch" or "synthesis"
-	deepFindings        []state.DeepFinding   // structured findings from AOI-driven review
-	aiPanelTab          int                   // 0 = Review, 1 = Tasks, 2 = Chat
-	aiReviewRendered    string                // cached rendered review markdown
-	aiReviewRenderWidth int                   // width used for cached render
+	aiClient           ai.Client
+	aoiClient          ai.Client // optional: lightweight model for AOI security pre-scan
+	aiModelName        string    // model identifier for display (e.g. "gemini-3.1-pro-preview")
+	aoiModelName       string    // AOI model identifier for display
+	aiStreaming        bool      // true while AI is generating
+	aiStreamBuffer     string    // accumulated streamed response
+	aiStreamDirty      bool      // true when buffer has unflushed tokens
+	aiCancelFn         context.CancelFunc
+	aiChatHistoryCache string                // pre-rendered markdown of completed messages (for streaming perf)
+	aiReviewBatches    []AIReviewBatchInfo   // batch list for in-place rendering
+	aiReviewStatuses   []AIReviewBatchStatus // per-batch status
+	aiReviewPhase      string                // "batch" or "synthesis"
+
+	// reviewProgress is the single source of truth for the in-progress
+	// phase view. Replaces the unbounded batch list that previously
+	// dominated the Review tab during a run.
+	reviewProgress      reviewPhaseTracker
+	deepFindings        []state.DeepFinding // structured findings from AOI-driven review
+	aiPanelTab          int                 // 0 = Review, 1 = Tasks, 2 = Chat
+	aiReviewRendered    string              // cached rendered review markdown
+	aiReviewRenderWidth int                 // width used for cached render
 
 	// Custom review instructions loaded from .prr/instructions.md
 	customInstructions string
@@ -775,6 +796,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only tick spinner when something is loading/streaming
 		if m.loading || m.aiStreaming || m.prPickerLoading {
 			m.spinner, cmd = m.spinner.Update(msg)
+			// Refresh the review-progress view on every tick so the
+			// active phase's spinner glyph and the "elapsed" timer
+			// advance smoothly between AIReview* events (which may be
+			// seconds apart during e.g. AOI pre-scan).
+			if m.reviewProgress.IsActive() && !m.hasFileSelected() {
+				m.updateChatViewWithStream()
+			}
 			return m, cmd
 		}
 		return m, nil
@@ -861,6 +889,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.loadingMsg = ""
 		if msg.Err != nil {
+			// State file corruption is a recoverable user-facing
+			// problem: route to a confirm modal instead of leaving
+			// the user with a generic "Error syncing state" string
+			// they can't act on.
+			var ce *state.CorruptStateError
+			if errors.As(msg.Err, &ce) {
+				m.confirmOverlay = &confirmModal{
+					action:    confirmDeleteCorruptState,
+					statePath: ce.Path,
+					stateErr:  ce.Cause,
+				}
+				return m, nil
+			}
 			m.setDiffContent(
 				styleAccentRed.Render(
 					fmt.Sprintf("Error syncing state: %v", msg.Err)))
@@ -903,6 +944,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewMode = viewModeOverview
 		m.setDiffContent(m.renderOverview())
 		m.diffViewport.GotoTop()
+		// If the loaded state already has a review (cached from a
+		// previous session — synthesized Review or persisted
+		// DeepFindings), open the Review tab so the user sees the
+		// previous findings on PR reopen instead of an empty Chat tab.
+		if m.hasReview() {
+			m.aiPanelTab = tabReview
+		}
 		chatCmd := m.renderActiveAIView()
 		var actionsCmd tea.Cmd
 		if m.pr != nil && m.pr.HeadRefOid != "" {
@@ -1224,12 +1272,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiReviewBatches = msg.Batches
 		m.aiReviewStatuses = make([]AIReviewBatchStatus, len(msg.Batches))
 		m.aiReviewPhase = "batch"
+		// Ensure tracker is initialised. InitBatches can arrive before
+		// (or after) the first PhaseProgress; Start is idempotent if
+		// we guard on IsActive.
+		if !m.reviewProgress.IsActive() {
+			m.reviewProgress.Start(defaultReviewPhases())
+		}
+		m.reviewProgress.SetCounter("batches_total", len(msg.Batches))
+		m.reviewProgress.Activate("phase1")
+		m.updateChatViewWithStream()
+		return m, nil
+
+	case AIReviewPhaseMsg:
+		if !m.reviewProgress.IsActive() {
+			m.reviewProgress.Start(defaultReviewPhases())
+		}
+		m.reviewProgress.Activate(msg.Phase)
+		if msg.Done {
+			m.reviewProgress.Complete(msg.Phase)
+		} else if msg.Status != "" {
+			m.reviewProgress.SetDetail(msg.Phase, msg.Status)
+		}
 		m.updateChatViewWithStream()
 		return m, nil
 
 	case AIReviewAOIMsg:
 		m.aiReviewPhase = "aoi"
+		if !m.reviewProgress.IsActive() {
+			m.reviewProgress.Start(defaultReviewPhases())
+		}
+		m.reviewProgress.Activate("aoi")
 		if msg.Done {
+			m.reviewProgress.SetCounter("aoi_total", msg.AOIs)
+			m.reviewProgress.SetCounter("aoi_scanned", msg.AOIs)
+			m.reviewProgress.Complete("aoi")
 			if msg.AOIs > 0 {
 				m.aiStreamBuffer += fmt.Sprintf("\n%s %s\n",
 					checkMark, msg.Status)
@@ -1237,7 +1313,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.aiStreamBuffer += fmt.Sprintf("\n%s\n", msg.Status)
 			}
 		} else {
-			// Update in-progress status
+			m.reviewProgress.SetDetail("aoi", msg.Status)
+			// Update in-progress status (legacy buffer kept for tests
+			// that read it directly; the tracker drives the new view).
 			m.aiStreamBuffer = msg.Status + "\n"
 		}
 		m.updateChatViewWithStream()
@@ -1247,11 +1325,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Batch >= 0 && msg.Batch < len(m.aiReviewStatuses) {
 			m.aiReviewStatuses[msg.Batch] = msg.Status
 		}
+		if m.reviewProgress.IsActive() {
+			done := 0
+			for _, s := range m.aiReviewStatuses {
+				if s == BatchDone || s == BatchCached || s == BatchFailed {
+					done++
+				}
+			}
+			m.reviewProgress.SetCounter("batches_done", done)
+			// The active-phase detail surfaces the currently running
+			// batch label, collapsing the old N-line batch list into
+			// one cell.
+			if msg.Status == BatchActive && msg.Batch >= 0 &&
+				msg.Batch < len(m.aiReviewBatches) {
+				m.reviewProgress.SetDetail("phase1",
+					m.aiReviewBatches[msg.Batch].Label)
+			}
+		}
 		m.updateChatViewWithStream()
 		return m, nil
 
 	case AIReviewSynthesisMsg:
 		m.aiReviewPhase = "synthesis"
+		if m.reviewProgress.IsActive() {
+			m.reviewProgress.Activate("phase2")
+		}
 		m.updateChatViewWithStream()
 		return m, nil
 
@@ -1339,74 +1437,131 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AIChatDoneMsg:
+		// AIChatDoneMsg is shared between chat completion and review
+		// completion. We disambiguate via reviewProgress.IsActive(),
+		// which is set true by triggerAIReview's Start call at the
+		// beginning of a PR review and stays true through every event
+		// until this handler runs. The tracker is the single source of
+		// truth for "was this run a review run".
+		wasReview := m.reviewProgress.IsActive()
+
 		m.aiStreaming = false
 		m.aiCancelFn = nil
 		m.aiStreamDirty = false // prevent stale tick from rendering after completion
 		m.aiReviewBatches = nil
 		m.aiReviewStatuses = nil
 		m.aiReviewPhase = ""
+
+		// ── Error path ──────────────────────────────────────────
 		if msg.Err != nil {
-			log.Printf("AI chat error: %v", msg.Err)
-			// Append error to chat view
-			m.aiStreamBuffer += "\n\n" + styleAccentRed.Render(
-				fmt.Sprintf("[error: %v]", msg.Err))
-			m.updateChatViewWithStream()
-		} else {
-			// Save the review if present
-			if msg.Review != nil {
-				// If we have a structured review, attach it
-				if msg.StructuredReview != nil {
-					msg.Review.Structured = msg.StructuredReview
-				}
-				m.saveReview(msg.Review)
-			}
-			// Save per-file batch findings for caching
-			if msg.FileFindings != nil && m.reviewState != nil {
-				for path, findings := range msg.FileFindings {
-					m.reviewState.SetBatchFindings(path, "reviewed", findings)
-				}
-				if err := state.Save(m.reviewState); err != nil {
-					log.Printf("Warning: failed to save file findings: %v", err)
-				}
-			}
-			// Persist deep findings to state.DeepFindings independently
-			// of Review. This is the load-bearing fix: when synthesis
-			// is skipped (TUI default) or fails, the findings still
-			// survive close+reopen because they live as a first-class
-			// state field rather than only-on-Review.
-			if len(msg.DeepFindings) > 0 {
-				m.deepFindings = msg.DeepFindings
-				if msg.Review != nil {
-					msg.Review.DeepFindings = msg.DeepFindings
-				}
+			log.Printf("AI run error: %v", msg.Err)
+			if wasReview {
+				// Stamp the error onto state.LastReview so it survives
+				// the TUI exit — reopening the PR will show "review
+				// attempted, failed" with the message, instead of the
+				// misleading "no review yet" placeholder.
 				if m.reviewState != nil {
-					m.reviewState.SetDeepFindings(msg.DeepFindings)
+					m.reviewState.SetLastReview(&state.ReviewMeta{
+						FindingsCount: len(m.reviewState.GetDeepFindings()),
+						Error:         msg.Err.Error(),
+						Summary:       "Review failed mid-flight.",
+					})
 					if err := state.Save(m.reviewState); err != nil {
-						log.Printf("Warning: failed to persist deep findings: %v", err)
+						log.Printf("Warning: failed to persist failure LastReview: %v", err)
 					}
 				}
-				// Invalidate the render cache so the Review tab picks
-				// up the new findings via renderActiveAIView below.
+				// Surface the failure on the Review tab (where the
+				// user is looking) by marking the active phase failed
+				// with the error as its detail. Render once, THEN
+				// reset, so the frozen frame the user sees is the
+				// error-decorated phase list, not a blank pane.
+				m.reviewProgress.FailActive(fmt.Sprintf("%v", msg.Err))
+				m.updateChatViewWithStream()
+				m.reviewProgress.Reset()
+				// Always re-render the Review tab so the error block
+				// (and any persisted partial findings) is visible.
 				m.aiReviewRendered = ""
 				m.reviewFindings = nil
 				m.reviewCursor = -1
-			}
-			// Both the synthesized-Review path and the SkipSynthesis
-			// (DeepFindings-only) path route to the Review tab — the
-			// user pressed 'a' for a review and expects to see one,
-			// not a chat history page.
-			if msg.Review != nil || len(msg.DeepFindings) > 0 {
-				m.aiStreamBuffer = ""
-				m.aiChatHistoryCache = ""
 				m.aiPanelTab = tabReview
 				m.syncLayout()
 				cmd = m.renderActiveAIView()
 			} else {
-				// Regular chat — save response to chat history
-				cmd = m.saveAIResponse(msg.FullResponse)
-				m.aiStreamBuffer = ""
-				m.aiChatHistoryCache = ""
+				m.aiStreamBuffer += "\n\n" + styleAccentRed.Render(
+					fmt.Sprintf("[error: %v]", msg.Err))
+				m.updateChatViewWithStream()
 			}
+			return m, cmd
+		}
+
+		// ── Success path ────────────────────────────────────────
+		m.reviewProgress.Reset()
+
+		// Persist a synthesized review if one came back.
+		if msg.Review != nil {
+			if msg.StructuredReview != nil {
+				msg.Review.Structured = msg.StructuredReview
+			}
+			m.saveReview(msg.Review)
+		}
+
+		// Persist per-file batch findings for cache reuse.
+		if msg.FileFindings != nil && m.reviewState != nil {
+			for path, findings := range msg.FileFindings {
+				m.reviewState.SetBatchFindings(path, "reviewed", findings)
+			}
+			if err := state.Save(m.reviewState); err != nil {
+				log.Printf("Warning: failed to save file findings: %v", err)
+			}
+		}
+
+		// Persist deep findings independently of Review. With
+		// SkipSynthesis (TUI default), this is the entire payload —
+		// keeping them as a first-class state field means findings
+		// survive close+reopen even when no synthesised Review exists.
+		if len(msg.DeepFindings) > 0 {
+			m.deepFindings = msg.DeepFindings
+			if msg.Review != nil {
+				msg.Review.DeepFindings = msg.DeepFindings
+			}
+			if m.reviewState != nil {
+				m.reviewState.SetDeepFindings(msg.DeepFindings)
+				if err := state.Save(m.reviewState); err != nil {
+					log.Printf("Warning: failed to persist deep findings: %v", err)
+				}
+			}
+			// Invalidate the rendered cache so renderActiveAIView
+			// picks up the new findings.
+			m.aiReviewRendered = ""
+			m.reviewFindings = nil
+			m.reviewCursor = -1
+		}
+
+		// Pressing `a` is a request for a review; the result must land
+		// on the Review tab even when the PR is clean (no findings) so
+		// the user sees an explicit "looks clean" instead of a frozen
+		// phase-tracker frame or a stray chat message.
+		if wasReview {
+			m.aiStreamBuffer = ""
+			m.aiChatHistoryCache = ""
+			m.aiPanelTab = tabReview
+			m.syncLayout()
+			cmd = m.renderActiveAIView()
+		} else if msg.Review != nil || len(msg.DeepFindings) > 0 {
+			// Non-review path that nonetheless produced review data
+			// (e.g. a single-file review that returned structured
+			// findings). Still route to the Review tab.
+			m.aiStreamBuffer = ""
+			m.aiChatHistoryCache = ""
+			m.aiPanelTab = tabReview
+			m.syncLayout()
+			cmd = m.renderActiveAIView()
+		} else {
+			// Genuine chat completion — save the assistant message
+			// and clear the streaming buffers.
+			cmd = m.saveAIResponse(msg.FullResponse)
+			m.aiStreamBuffer = ""
+			m.aiChatHistoryCache = ""
 		}
 		return m, cmd
 
@@ -2561,7 +2716,13 @@ func (m *Model) clearChat() {
 // "updateAIStream") so the dozen-plus call sites stay surgical; the
 // in-function dispatch keeps the routing logic in one place.
 func (m *Model) updateChatViewWithStream() {
-	if m.aiReviewPhase != "" {
+	// Either signal can mark the current stream as a review: the legacy
+	// aiReviewPhase string (set by AIReviewInit/AOI/Synthesis msgs) or
+	// the new phase tracker (which starts as soon as any phase event
+	// arrives, including discovery/classify before AOI/batch fire).
+	// Without the tracker check, the brief Discovery window before
+	// AOI/batch starts routes review traffic into chatViewport.
+	if m.aiReviewPhase != "" || m.reviewProgress.IsActive() {
 		m.updateReviewViewWithStream()
 		return
 	}
@@ -2616,9 +2777,15 @@ func (m *Model) updateChatViewOnly() {
 	}
 }
 
-// updateReviewViewWithStream renders the active review (batch list +
-// synthesis status + token stream) into reviewViewport. No chat
-// history — the review tab is dedicated to the run in progress.
+// updateReviewViewWithStream renders the active review into
+// reviewViewport. No chat history — the review tab is dedicated to
+// the run in progress.
+//
+// While a review is tracked (reviewProgress.IsActive), the view shows
+// the bounded phase list from renderReviewProgressView — fixed ~10
+// rows regardless of batch count. The legacy "thinking..." placeholder
+// is kept for the brief pre-init window before the first phase event
+// arrives, so the pane is never blank during cold starts.
 //
 // If the user has navigated to a file mid-review, this is a no-op:
 // the per-file review state lives elsewhere and shouldn't be clobbered
@@ -2628,33 +2795,16 @@ func (m *Model) updateReviewViewWithStream() {
 		return
 	}
 
-	var b strings.Builder
-
-	if len(m.aiReviewBatches) > 0 {
-		b.WriteString(m.renderBatchList())
-	}
-
-	if m.aiReviewPhase == "synthesis" || len(m.aiReviewBatches) == 0 {
-		// Show synthesis stream or initial "thinking" placeholder.
-		if m.aiStreamBuffer == "" && len(m.aiReviewBatches) == 0 {
-			b.WriteString(styleTextMuted.Render("thinking...") + "\n")
-		} else if m.aiStreamBuffer != "" {
-			if m.aiReviewPhase == "synthesis" {
-				// During synthesis the model outputs raw JSON — hide it
-				// and show a friendlier progress message instead.
-				b.WriteString(styleTextMuted.Render("Synthesizing final review...") + "\n")
-			} else {
-				b.WriteString(m.aiStreamBuffer)
-			}
-			if m.aiStreaming {
-				b.WriteString(styleAccentBlue.Render("▊"))
-			}
-			b.WriteString("\n")
-		}
+	var body string
+	switch {
+	case m.reviewProgress.IsActive():
+		body = m.renderReviewProgressView(m.reviewViewport.Width)
+	case m.aiStreaming:
+		body = styleTextMuted.Render("thinking...") + "\n"
 	}
 
 	wasAtBottom := m.reviewViewport.AtBottom()
-	m.reviewViewport.SetContent(b.String())
+	m.reviewViewport.SetContent(body)
 	if wasAtBottom {
 		m.reviewViewport.GotoBottom()
 	}
@@ -2679,31 +2829,40 @@ func (m Model) renderChatInputLabel(width int) string {
 }
 
 // hasReview returns true if any reviewable content exists for the
-// current PR — either a synthesized Review object (headless / legacy)
-// OR persisted deep findings (TUI default since synthesis is skipped).
+// current PR. Three sources count as "a review exists":
 //
-// Decoupling "Review tab populated" from "synthesis ran" is the
-// architectural fix that prevents losing review work on reopen: the
-// pipeline persists DeepFindings incrementally, so even a failed/
-// cancelled run leaves something for the Review tab to render.
+//   - state.Review        — synthesized Review (headless / legacy path)
+//   - state.DeepFindings  — persisted findings (TUI default; pipeline
+//     streams these incrementally so a partial run
+//     still leaves something to display)
+//   - state.LastReview    — proof-of-run marker stamped by the pipeline
+//     at end of every successful run, even when zero
+//     findings remained (clean PR or recheck-dismissed-
+//     everything). Without this, "ran and found nothing"
+//     was indistinguishable from "never ran."
 func (m Model) hasReview() bool {
 	if m.reviewState == nil {
 		return false
 	}
-	if m.reviewState.Review != nil {
-		return true
-	}
-	return len(m.reviewState.GetDeepFindings()) > 0
+	return m.reviewState.HasReviewArtifact()
 }
 
 // renderAIPanelTitle builds the AI panel title with tab indicators and streaming status.
 func (m Model) renderAIPanelTitle(maxWidth int) string {
-	// During streaming, show progress or spinner instead of tabs
+	// During streaming, show review progress or a chat spinner instead
+	// of the tab indicators. The tracker is the authoritative "is this
+	// a review run" signal — it's set in triggerAIReview before any
+	// pipeline event arrives, so we route correctly even during the
+	// pre-batch phases (discovery / classify / AOI) when
+	// aiReviewBatches is still empty.
 	if m.aiStreaming {
-		if len(m.aiReviewBatches) > 0 {
-			return m.renderReviewProgress(maxWidth)
+		if m.reviewProgress.IsActive() || len(m.aiReviewBatches) > 0 {
+			if len(m.aiReviewBatches) > 0 {
+				return m.renderReviewProgress(maxWidth)
+			}
+			return styleAccentBlueBold.Render("Reviewing ") + m.spinner.View()
 		}
-		return "CHAT " + m.spinner.View()
+		return styleAccentBlueBold.Render("Chat ") + m.spinner.View()
 	}
 
 	// If no review exists and no tasks, just show "Chat" — no tabs needed
@@ -2818,66 +2977,6 @@ func (m Model) renderReviewProgress(maxWidth int) string {
 	bar := styleProgressBar.Render(strings.Repeat("█", filled)) +
 		styleProgressBg.Render(strings.Repeat("░", empty))
 	return spin + " " + bar + " " + styleTextMuted.Render(label)
-}
-
-// renderBatchList renders the in-place batch progress list shown during review.
-// Each batch is a single line: status icon + label + file count.
-func (m Model) renderBatchList() string {
-	if len(m.aiReviewBatches) == 0 {
-		return ""
-	}
-
-	var b strings.Builder
-	b.WriteString("\n")
-
-	for i, batch := range m.aiReviewBatches {
-		status := m.aiReviewStatuses[i]
-
-		var icon string
-		switch status {
-		case BatchPending:
-			icon = styleTextSubtle.Render("  ○")
-		case BatchActive:
-			icon = styleAccentBlue.Render("  ●")
-		case BatchDone:
-			icon = styleAccentGreen.Render("  " + checkMark)
-		case BatchCached:
-			icon = styleAccentGreen.Render("  " + checkMark)
-		case BatchFailed:
-			icon = styleAccentRed.Render("  ✗")
-		}
-
-		suffix := ""
-		if status == BatchCached {
-			suffix = " (cached)"
-		}
-
-		fileWord := "files"
-		if batch.NumFiles == 1 {
-			fileWord = "file"
-		}
-
-		// Truncate long paths from the left, keeping the deepest part visible.
-		const maxLabelLen = 24
-		displayLabel := batch.Label
-		if len(displayLabel) > maxLabelLen {
-			displayLabel = "…" + displayLabel[len(displayLabel)-(maxLabelLen-1):]
-		}
-
-		label := fmt.Sprintf(" %-24s %d %s%s",
-			displayLabel, batch.NumFiles, fileWord, suffix)
-
-		if status == BatchPending {
-			b.WriteString(icon + styleTextSubtle.Render(label))
-		} else if status == BatchActive {
-			b.WriteString(icon + styleBatchOutput.Render(label))
-		} else {
-			b.WriteString(icon + styleBatchOutput.Render(label))
-		}
-		b.WriteString("\n")
-	}
-
-	return b.String()
 }
 
 // ── Comment helpers ─────────────────────────────────────────────────────
@@ -3206,11 +3305,35 @@ func (m *Model) setFlash(msg string) tea.Cmd {
 }
 
 // executeConfirmAction runs the confirmed action and returns a tea.Cmd.
+//
+// Most actions require a loaded PR (modal.finding lives on a PR); the
+// confirmDeleteCorruptState branch is the exception — it fires before
+// the PR is loaded, since state corruption is detected during the
+// initial load.
 func (m *Model) executeConfirmAction() tea.Cmd {
-	if m.confirmOverlay == nil || m.pr == nil {
+	if m.confirmOverlay == nil {
 		return nil
 	}
 	modal := m.confirmOverlay
+
+	if modal.action == confirmDeleteCorruptState {
+		if err := state.DeleteStateFile(m.prNumber); err != nil {
+			log.Printf("Failed to delete corrupt state file: %v", err)
+			m.errorMsg = fmt.Sprintf("Failed to delete state file:\n%v", err)
+			return nil
+		}
+		log.Printf("Deleted corrupt state file at %s; restarting load", modal.statePath)
+		// Restart the load chain. fetchPR will trigger PR fetch →
+		// refs → diffs → state.Load (which will now create a fresh
+		// state since we just deleted the file).
+		m.loading = true
+		m.loadingMsg = "Reloading after state reset..."
+		return fetchPR(m.prNumber)
+	}
+
+	if m.pr == nil {
+		return nil
+	}
 
 	switch modal.action {
 	case confirmPublishComment:
@@ -3450,8 +3573,15 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	}
 
 	if path == "" {
-		// Overview mode — multi-pass PR review
-		_, prMeta := m.getAIContext()
+		// Overview mode — multi-pass PR review.
+		//
+		// Use review.BuildPRMeta so the prompt header is byte-for-byte
+		// identical to what `prr review` (headless) sends. Previously
+		// the TUI built its own header here via getAIContext() which
+		// also appended a "Files changed" listing + an overview hint
+		// prompt — that made the two paths feed the model different
+		// inputs and produce different outputs for the same PR.
+		prMeta := review.BuildPRMeta(m.pr)
 
 		// Clear the previous review so the streaming view takes precedence
 		if m.reviewState != nil {
@@ -3467,6 +3597,12 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		m.syncLayout()
 		m.aiStreamBuffer = ""
 		m.aiChatHistoryCache = ""
+		// Pre-Start the phase tracker so the very first View() after
+		// `a` shows the bounded phase list (all rows pending) instead
+		// of falling through to "thinking..." or the chat history.
+		// Otherwise the first ~hundred ms feel like the review tab is
+		// stuck on the previous chat content.
+		m.reviewProgress.Start(defaultReviewPhases())
 		m.updateChatViewWithStream()
 
 		// Idle watchdog instead of wall-clock timeout. 240s of zero
@@ -3705,33 +3841,51 @@ func (m *Model) scrollDiffToLine(targetLine int) {
 // jumpToFinding navigates to the file:line referenced by the finding at
 // the given index. Selects the file in the tree, loads the diff, and
 // sets up pending scroll to the target line.
+//
+// Three-branch dispatch for finding shape:
+//   - PR-level (File == ""): no file to open; surface a flash message
+//     and leave the current view in place. Previously this silently
+//     no-op'd, which the user perceived as "Enter goes to the list of
+//     issues" because the view stayed where it was.
+//   - File-level (File != "", Line <= 0): open the file at line 1.
+//   - Locatable (File != "", Line > 0): open the file at the line.
 func (m *Model) jumpToFinding(idx int) tea.Cmd {
 	if idx < 0 || idx >= len(m.reviewFindings) || m.pr == nil {
 		return nil
 	}
-
 	finding := m.reviewFindings[idx]
-	if finding.File == "" {
+
+	switch {
+	case finding.File == "":
+		m.flashMsg = "PR-level finding — no file to navigate to"
+		return nil
+	case finding.Line <= 0:
+		return m.openFileAtLine(finding.File, 1)
+	default:
+		return m.openFileAtLine(finding.File, finding.Line)
+	}
+}
+
+// openFileAtLine selects the file in the tree, switches focus to the
+// diff pane, and queues a styled-diff fetch that will scroll to line.
+// Shared by jumpToFinding's branches so the file-open behavior is
+// consistent regardless of which shape the finding had.
+func (m *Model) openFileAtLine(file string, line int) tea.Cmd {
+	if file == "" || m.pr == nil {
 		return nil
 	}
-
-	// Select the file in the tree
-	m.fileTree.selectByPath(finding.File)
-
-	// Set up pending scroll target
-	m.selectedFile = finding.File
+	m.fileTree.selectByPath(file)
+	m.selectedFile = file
 	m.viewMode = viewModeFile
-	m.pendingScrollLine = finding.Line
+	m.pendingScrollLine = line
 	m.cameFromFinding = true
-
-	// Switch focus to diff pane
 	m.focusedPane = PaneDiff
 	m.chatInput.Blur()
-
-	// Load the diff
 	m.setDiffContent(styleTextMuted.Render("Loading diff..."))
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, finding.File, m.contextLines, false, m.useChroma, m.diffViewport.Width)
-	return diffCmd
+	return fetchStyledDiff(
+		m.pr.BaseRefName, m.pr.HeadRefName, file, m.contextLines,
+		false, m.useChroma, m.diffViewport.Width,
+	)
 }
 
 func (m *Model) toggleReviewStatus() tea.Cmd {
@@ -3960,6 +4114,105 @@ func (m *Model) renderActiveAIView() tea.Cmd {
 	}
 }
 
+// renderCleanReviewPlaceholder writes the Review tab content shown
+// when hasReview() is true but no findings survived. Two shapes:
+//
+//   - success / clean PR (Error == ""): green checkmark + verdict +
+//     dismissed-count context + re-review hint.
+//   - failed run (Error != ""): red header + the error message +
+//     "press a to retry" hint, so the user can see what went wrong
+//     and recover instead of being told "no review yet."
+//
+// Both shapes pull from state.LastReview so the context persists
+// across TUI restarts — closing prr and reopening still shows what
+// happened the last time.
+func (m *Model) renderCleanReviewPlaceholder() {
+	lr := (*state.ReviewMeta)(nil)
+	if m.reviewState != nil {
+		lr = m.reviewState.LastReview
+	}
+
+	var b strings.Builder
+
+	if lr != nil && lr.Error != "" {
+		b.WriteString(styleAccentRed.Bold(true).Render("  ✗ Review failed"))
+		b.WriteString("\n\n")
+		// Wrap the error so long messages don't get truncated by the
+		// viewport's horizontal clip.
+		w := m.reviewViewport.Width - 4
+		if w < 30 {
+			w = 30
+		}
+		b.WriteString(wrapStyled(styleTextSecondary, "  "+lr.Error, w))
+		b.WriteString("\n\n")
+		when := lr.CompletedAt.Format("2006-01-02 15:04")
+		b.WriteString(styleTextMuted.Render(fmt.Sprintf("  Last attempt: %s", when)))
+		b.WriteString("\n")
+		if lr.FindingsCount > 0 {
+			b.WriteString(styleTextMuted.Render(
+				fmt.Sprintf("  %d finding(s) were persisted before the failure (open the Files panel).",
+					lr.FindingsCount)))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(styleTextMuted.Render("  Press a to retry, A to force a fresh run."))
+		m.reviewViewport.SetContent(b.String())
+		m.reviewViewport.GotoTop()
+		return
+	}
+
+	b.WriteString(styleAccentGreen.Render("  ✓ No findings — PR looks clean."))
+	b.WriteString("\n\n")
+
+	if lr != nil {
+		when := lr.CompletedAt.Format("2006-01-02 15:04")
+		verdict := lr.Verdict
+		if verdict == "" {
+			verdict = "approve"
+		}
+		b.WriteString(styleTextMuted.Render(
+			fmt.Sprintf("  Reviewed %s · verdict %s", when, verdict)))
+		b.WriteString("\n")
+		if lr.DismissedCount > 0 {
+			b.WriteString(styleTextMuted.Render(
+				fmt.Sprintf("  Recheck dismissed %d finding(s) as false-positive.",
+					lr.DismissedCount)))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString(styleTextMuted.Render("  Press a to re-review, A to force re-review."))
+	m.reviewViewport.SetContent(b.String())
+	m.reviewViewport.GotoTop()
+}
+
+// validateReviewForTUI applies the same structural validation the
+// headless pipeline runs to a ReviewOutput before the TUI renders it.
+// This guards against hallucinated file paths, empty titles, and out-
+// of-hunk line numbers that would otherwise make Enter-on-finding
+// silently no-op (the original symptom of the "Enter goes to a list
+// of issues" regression).
+//
+// Mutates the review in place. Logs dropped-finding counts so the
+// user can see if findings disappear silently.
+func (m *Model) validateReviewForTUI(r *state.ReviewOutput) {
+	if r == nil || m.pr == nil {
+		return
+	}
+	hunks := make(map[string][]review.HunkRange, len(m.rawDiffs))
+	for path, patch := range m.rawDiffs {
+		hunks[path] = review.ParseHunkRanges(patch)
+	}
+	_, dropped := review.ValidateAndNormalize(r, m.pr.Files, hunks)
+	if len(dropped) > 0 {
+		log.Printf("review validation: dropped %d malformed finding(s)", len(dropped))
+		for _, d := range dropped {
+			log.Printf("  - %q (%s): %s", d.Title, d.File, d.Reason)
+		}
+	}
+}
+
 // renderReviewForFile renders the PR-level AI review in the Review tab.
 // If a structured ReviewOutput is available, it renders that with severity
 // grouping and color coding. Otherwise falls back to markdown rendering.
@@ -3991,9 +4244,16 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 	if m.reviewState.Review == nil {
 		deep := m.reviewState.GetDeepFindings()
 		if len(deep) == 0 {
+			// Reaching here means hasReview() returned true (so a
+			// review has been attempted) but produced no surviving
+			// findings. Render a positive "looks clean" message using
+			// the LastReview marker for context (dismissed count etc.)
+			// instead of leaving the pane silent.
+			m.renderCleanReviewPlaceholder()
 			return nil
 		}
 		synthetic := buildSyntheticReviewFromDeepFindings(deep)
+		m.validateReviewForTUI(synthetic)
 		stale := m.reviewState.IsReviewStale()
 		expanded := m.findingsExpanded
 		return func() tea.Msg {
@@ -4011,6 +4271,7 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 
 	// Check if we have structured review data
 	if review.Structured != nil {
+		m.validateReviewForTUI(review.Structured)
 		structured := review.Structured
 		stale := m.reviewState.IsReviewStale()
 		return func() tea.Msg {

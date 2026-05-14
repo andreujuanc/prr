@@ -166,11 +166,28 @@ type doneMsg struct {
 
 type tickMsg time.Time
 
-type phaseInfo struct {
-	def    PhaseDef
-	status string // "waiting", "active", "done", "error"
-	detail string
+// PhaseStatus is the lifecycle of a phase row.
+type PhaseStatus string
+
+const (
+	PhaseWaiting PhaseStatus = "waiting"
+	PhaseActive  PhaseStatus = "active"
+	PhaseDone    PhaseStatus = "done"
+	PhaseError   PhaseStatus = "error"
+)
+
+// PhaseInfo pairs a phase definition with its current status and the
+// last-write-wins detail string. The bubbletea program in this package
+// owns one of these per phase, and external consumers (e.g. the in-app
+// TUI) build their own slice for RenderPhaseList.
+type PhaseInfo struct {
+	Def    PhaseDef
+	Status PhaseStatus
+	Detail string
 }
+
+// phaseInfo is the internal alias used by the bubbletea model.
+type phaseInfo = PhaseInfo
 
 type model struct {
 	cfg Config
@@ -206,7 +223,7 @@ func newUI(cfg Config) *model {
 
 	phases := make([]phaseInfo, len(cfg.Phases))
 	for i, p := range cfg.Phases {
-		phases[i] = phaseInfo{def: p, status: "waiting"}
+		phases[i] = phaseInfo{Def: p, Status: PhaseWaiting}
 	}
 
 	return &model{
@@ -260,18 +277,18 @@ func (m *model) applyEvent(phase, message string) {
 	}
 
 	for i := range m.phases {
-		if m.phases[i].def.Name != phase {
+		if m.phases[i].Def.Name != phase {
 			continue
 		}
-		if m.phases[i].status == "waiting" {
-			m.phases[i].status = "active"
+		if m.phases[i].Status == PhaseWaiting {
+			m.phases[i].Status = PhaseActive
 			for j := 0; j < i; j++ {
-				if m.phases[j].status == "active" {
-					m.phases[j].status = "done"
+				if m.phases[j].Status == PhaseActive {
+					m.phases[j].Status = PhaseDone
 				}
 			}
 		}
-		m.phases[i].detail = message
+		m.phases[i].Detail = message
 		break
 	}
 
@@ -309,8 +326,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		m.state.Elapsed = time.Since(m.startAt)
 		for i := range m.phases {
-			if m.phases[i].status == "active" {
-				m.phases[i].status = "done"
+			if m.phases[i].Status == PhaseActive {
+				m.phases[i].Status = PhaseDone
 			}
 		}
 		return m, tea.Quit
@@ -346,41 +363,7 @@ func (m *model) View() string {
 	}
 
 	b.WriteString("\n")
-
-	// Phase list
-	total := len(m.phases)
-	for i, p := range m.phases {
-		icon := m.phaseIcon(p)
-		label := m.phaseLabel(p)
-		step := sSubtle.Render(fmt.Sprintf("%d/%d", i+1, total))
-
-		b.WriteString(fmt.Sprintf("  %s %s %s", icon, step, label))
-
-		// Inline counter ("12/40") when the phase exposes one and the
-		// total is known. Shown while active and after done so users
-		// see the final tally per phase.
-		if p.def.Counter != nil && (p.status == "active" || p.status == "done") {
-			if done, tot := p.def.Counter(m.state); tot > 0 {
-				b.WriteString(sSubtle.Render(fmt.Sprintf("  %d/%d", done, tot)))
-			}
-		}
-
-		// Detail line resolution:
-		//   - done phase + Summary fn returning non-empty → use Summary
-		//     (stable, structured readout of what the phase accomplished)
-		//   - otherwise → use the live detail (last-write-wins)
-		detail := p.detail
-		if p.status == "done" && p.def.Summary != nil {
-			if s := p.def.Summary(m.state); s != "" {
-				detail = s
-			}
-		}
-		if detail != "" && (p.status == "active" || p.status == "done") {
-			b.WriteString(sSubtle.Render("  " + truncate(detail, 60)))
-		}
-
-		b.WriteString("\n")
-	}
+	b.WriteString(RenderPhaseList(m.phases, m.state, m.spinner.View(), 60))
 
 	// Active-phase progress bar
 	if !m.done {
@@ -405,47 +388,91 @@ func (m *model) View() string {
 	return b.String()
 }
 
-func (m *model) phaseIcon(p phaseInfo) string {
-	switch p.status {
-	case "done":
+// activeProgress returns the progress fraction for whichever phase is
+// currently active, or 0 if none has a ProgressFn.
+func (m *model) activeProgress() float64 {
+	for _, p := range m.phases {
+		if p.Status != PhaseActive || p.Def.ProgressFn == nil {
+			continue
+		}
+		return p.Def.ProgressFn(m.state)
+	}
+	return 0
+}
+
+// RenderPhaseList renders the phase rows (no header, no progress bar,
+// no summary) as a pure string. Used both by the bubbletea program in
+// this package and by external callers (the in-app TUI) that want the
+// same rendered shape inside their own layout.
+//
+// activeSpinner is the glyph drawn for the active phase row; callers
+// without a spinner can pass "" and the active row will use a plain
+// "●". maxDetailWidth caps the truncation of each row's detail string;
+// pass 0 to disable truncation.
+func RenderPhaseList(phases []PhaseInfo, state *State, activeSpinner string, maxDetailWidth int) string {
+	if activeSpinner == "" {
+		activeSpinner = sPhaseOn.Render("●")
+	}
+	total := len(phases)
+	var b strings.Builder
+	for i, p := range phases {
+		icon := phaseIcon(p, activeSpinner)
+		label := phaseLabel(p)
+		step := sSubtle.Render(fmt.Sprintf("%d/%d", i+1, total))
+
+		b.WriteString(fmt.Sprintf("  %s %s %s", icon, step, label))
+
+		if p.Def.Counter != nil && (p.Status == PhaseActive || p.Status == PhaseDone) {
+			if done, tot := p.Def.Counter(state); tot > 0 {
+				b.WriteString(sSubtle.Render(fmt.Sprintf("  %d/%d", done, tot)))
+			}
+		}
+
+		detail := p.Detail
+		if p.Status == PhaseDone && p.Def.Summary != nil {
+			if s := p.Def.Summary(state); s != "" {
+				detail = s
+			}
+		}
+		if detail != "" && (p.Status == PhaseActive || p.Status == PhaseDone) {
+			b.WriteString(sSubtle.Render("  " + truncate(detail, maxDetailWidth)))
+		}
+
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func phaseIcon(p PhaseInfo, activeSpinner string) string {
+	switch p.Status {
+	case PhaseDone:
 		return sPhaseDone.Render("✓")
-	case "active":
-		return m.spinner.View()
-	case "error":
+	case PhaseActive:
+		return activeSpinner
+	case PhaseError:
 		return sWarn.Render("✗")
 	default:
 		return sPhaseWait.Render("○")
 	}
 }
 
-func (m *model) phaseLabel(p phaseInfo) string {
-	switch p.status {
-	case "done":
-		return sPhaseDone.Render(p.def.Label)
-	case "active":
-		return sPhaseOn.Render(p.def.Label)
+func phaseLabel(p PhaseInfo) string {
+	switch p.Status {
+	case PhaseDone:
+		return sPhaseDone.Render(p.Def.Label)
+	case PhaseActive:
+		return sPhaseOn.Render(p.Def.Label)
 	default:
-		return sPhaseWait.Render(p.def.Label)
+		return sPhaseWait.Render(p.Def.Label)
 	}
-}
-
-// activeProgress returns the progress fraction for whichever phase is
-// currently active, or 0 if none has a ProgressFn.
-func (m *model) activeProgress() float64 {
-	for _, p := range m.phases {
-		if p.status != "active" || p.def.ProgressFn == nil {
-			continue
-		}
-		return p.def.ProgressFn(m.state)
-	}
-	return 0
 }
 
 // truncate trims s to at most n runes, appending ellipsis when cut.
 // Operates on runes so multi-byte characters aren't sliced mid-codepoint.
+// n <= 0 disables truncation.
 func truncate(s string, n int) string {
 	if n <= 0 {
-		return ""
+		return s
 	}
 	r := []rune(s)
 	if len(r) <= n {

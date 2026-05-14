@@ -144,10 +144,39 @@ func Load(prNumber string) (*State, error) {
 
 	state := NewState(prNumber)
 	if err := json.Unmarshal(data, state); err != nil {
-		return nil, fmt.Errorf("failed to parse state file: %w", err)
+		return nil, &CorruptStateError{Path: filePath, Cause: err}
 	}
 
 	return state, nil
+}
+
+// CorruptStateError wraps a state-file parse failure with the path of
+// the offending file so the TUI can offer to delete it and start
+// fresh. Wrapping (rather than just %w) lets callers identify the
+// corruption case via errors.As without parsing error message strings.
+type CorruptStateError struct {
+	Path  string
+	Cause error
+}
+
+func (e *CorruptStateError) Error() string {
+	return fmt.Sprintf("state file %s is corrupt: %v", e.Path, e.Cause)
+}
+
+func (e *CorruptStateError) Unwrap() error { return e.Cause }
+
+// DeleteStateFile removes the state file for the given PR. Idempotent:
+// no error when the file is already gone. Used by the TUI's
+// "delete corrupt state" confirmation flow.
+func DeleteStateFile(prNumber string) error {
+	filePath, err := getStateFilePath(prNumber)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting state file %s: %w", filePath, err)
+	}
+	return nil
 }
 
 // Save writes the given State to disk.

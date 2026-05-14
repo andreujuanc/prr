@@ -24,14 +24,18 @@ var (
 	rInfo  = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
 )
 
-// reviewPhases is the review pipeline's phase order. Names match the
+// PRReviewPhases is the review pipeline's phase order. Names match the
 // event keys emitted by progressReporter in internal/review/pipeline.go.
+//
+// Exported so the in-app TUI can render the same phase list as the
+// headless `prr review` UI — the two views share this definition
+// rather than maintaining parallel copies.
 //
 // "discovery" covers project-context + PR-brief — usually cache-hit
 // fast. "aoi" is the security pre-scan — the slow part of pre-review.
 // Splitting them lets the TUI show real progress instead of a single
 // row that flashes past in milliseconds.
-func reviewPhases() []progress.PhaseDef {
+func PRReviewPhases() []progress.PhaseDef {
 	return []progress.PhaseDef{
 		{Name: "fetch", Label: "Fetch PR",
 			Summary: fetchSummary},
@@ -370,7 +374,7 @@ func RunWithUI(
 
 	cfg := progress.Config{
 		Header:     header,
-		Phases:     reviewPhases(),
+		Phases:     PRReviewPhases(),
 		ParseEvent: parseReviewEvent,
 		Summary: func(_ error, elapsed time.Duration) string {
 			return renderReviewSummary(result, elapsed)

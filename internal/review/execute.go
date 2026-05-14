@@ -532,7 +532,7 @@ func parseEvidenceCorrections(raw string) []evidenceCorrection {
 	var resp struct {
 		Corrections []evidenceCorrection `json:"corrections"`
 	}
-	if err := json.Unmarshal([]byte(s), &resp); err != nil {
+	if err := unmarshalLLMResponse([]byte(s), &resp); err != nil {
 		log.Printf("review: failed to parse evidence corrector response: %v", err)
 		return nil
 	}
@@ -783,7 +783,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			Suggestion         string `json:"suggestion"`
 			DismissedRationale string `json:"dismissed_rationale"`
 		}
-		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+		if err := unmarshalLLMResponse([]byte(s), &parsed); err != nil {
 			return result, fmt.Errorf("%w: parse individual response: %v", errReviewParse, err)
 		}
 		result.RawOutput = json.RawMessage(s)
@@ -833,7 +833,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				DismissedRationale string `json:"dismissed_rationale"`
 			} `json:"results"`
 		}
-		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+		if err := unmarshalLLMResponse([]byte(s), &parsed); err != nil {
 			return result, fmt.Errorf("%w: parse grouped response: %v", errReviewParse, err)
 		}
 		result.RawOutput = json.RawMessage(s)

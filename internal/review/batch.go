@@ -401,7 +401,7 @@ func ParseBatchResult(raw string) []BatchFileReview {
 	s := ai.StripMarkdownFences(raw)
 
 	var results []BatchFileReview
-	if err := json.Unmarshal([]byte(s), &results); err != nil {
+	if err := unmarshalLLMResponse([]byte(s), &results); err != nil {
 		log.Printf("Warning: failed to parse batch JSON: %v", err)
 		return nil
 	}

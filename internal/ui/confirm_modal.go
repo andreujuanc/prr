@@ -16,11 +16,12 @@ import (
 type confirmAction int
 
 const (
-	confirmPublishComment  confirmAction = iota // single finding → line comment
-	confirmBatchReview                          // all findings → GitHub review
-	confirmPRComment                            // single finding → general PR comment
-	confirmPipe                                 // pipe finding to external process
-	confirmFixWithOpenCode                      // fix finding with OpenCode agent
+	confirmPublishComment     confirmAction = iota // single finding → line comment
+	confirmBatchReview                             // all findings → GitHub review
+	confirmPRComment                               // single finding → general PR comment
+	confirmPipe                                    // pipe finding to external process
+	confirmFixWithOpenCode                         // fix finding with OpenCode agent
+	confirmDeleteCorruptState                      // state JSON unparseable → delete and start fresh
 )
 
 // confirmModal holds the state of a confirmation overlay.
@@ -29,6 +30,12 @@ type confirmModal struct {
 	finding  *state.ReviewFinding  // non-nil for single-finding actions
 	findings []state.ReviewFinding // for batch review
 	target   *pipe.Target          // for pipe actions
+	// For confirmDeleteCorruptState: the absolute path of the
+	// unparseable file and the error explaining why we couldn't load
+	// it. Kept on the overlay so the modal can show both to the user
+	// before they decide whether to delete.
+	statePath string
+	stateErr  error
 }
 
 // ── Action menu ─────────────────────────────────────────────────────────
@@ -126,6 +133,17 @@ func (m *Model) renderConfirmModal() (string, bool) {
 		b.WriteString(findingSummaryLine(f) + "\n")
 		b.WriteString(styleTextMuted.Render(fmt.Sprintf("  %s:%d", f.File, f.Line)) + "\n\n")
 		b.WriteString(styleTextMuted.Render("[Enter] Run   [Esc] Cancel"))
+
+	case confirmDeleteCorruptState:
+		b.WriteString(styleAccentRed.Bold(true).Render("⚠ State file is corrupt") + "\n\n")
+		b.WriteString(styleTextSecondary.Render("  "+modal.statePath) + "\n")
+		if modal.stateErr != nil {
+			b.WriteString(styleTextMuted.Render(fmt.Sprintf("  %v", modal.stateErr)) + "\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(styleTextSecondary.Render("  Delete this file and start fresh?") + "\n")
+		b.WriteString(styleTextMuted.Render("  Cached findings, briefs, and reviews for this PR will be lost.") + "\n\n")
+		b.WriteString(styleTextMuted.Render("[Enter] Delete   [Esc] Quit"))
 	}
 
 	if b.Len() == 0 {
