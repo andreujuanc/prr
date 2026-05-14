@@ -47,15 +47,7 @@ func IdleWatch(parent context.Context, idle time.Duration, onToken func(string))
 				cancel(ErrIdle)
 				return
 			case <-reset:
-				if !timer.Stop() {
-					// Drain a fired-but-unconsumed tick. Without this
-					// the next Reset() can race against a still-pending
-					// channel send and never fire.
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
+				timer.Stop()
 				timer.Reset(idle)
 			case <-parent.Done():
 				// Parent cancellation: propagate without marking as
