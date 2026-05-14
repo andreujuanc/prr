@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -33,21 +34,30 @@ func TestIdleWatch_ResetsOnToken(t *testing.T) {
 // TestIdleWatch_CancelsAfterIdle is the failure-mode pin: when no
 // activity flows for the full idle window, ctx must cancel with
 // ErrIdle as the cause.
+//
+// Runs inside a synctest bubble (Go 1.25+) so the idle timeout uses
+// fake time. The test completes in microseconds of real time and the
+// assertion is exact ("cancelled by fake-time T+idle") rather than
+// fuzzy ("cancelled sometime in the next 500ms of real time").
 func TestIdleWatch_CancelsAfterIdle(t *testing.T) {
-	ctx, _, stop := IdleWatch(context.Background(), 50*time.Millisecond, nil)
-	defer stop()
+	synctest.Test(t, func(t *testing.T) {
+		const idle = 50 * time.Millisecond
+		ctx, _, stop := IdleWatch(context.Background(), idle, nil)
+		defer stop()
 
-	// Wait past the idle window with no activity.
-	select {
-	case <-ctx.Done():
-		// Expected. Check cause.
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("ctx not cancelled after idle window expired")
-	}
+		// Advance just past the idle window. Fake time only moves once
+		// every goroutine in the bubble is durably blocked, so when
+		// this Sleep returns the watchdog has had its full chance to
+		// fire the cancel.
+		time.Sleep(idle + time.Millisecond)
 
-	if !errors.Is(context.Cause(ctx), ErrIdle) {
-		t.Errorf("cause = %v, want ErrIdle", context.Cause(ctx))
-	}
+		if ctx.Err() == nil {
+			t.Fatal("ctx not cancelled after idle window expired")
+		}
+		if !errors.Is(context.Cause(ctx), ErrIdle) {
+			t.Errorf("cause = %v, want ErrIdle", context.Cause(ctx))
+		}
+	})
 }
 
 // TestIdleWatch_RespectsParentCancel ensures parent cancellation
