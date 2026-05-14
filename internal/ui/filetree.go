@@ -7,8 +7,6 @@ import (
 
 	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/state"
-
-	"github.com/charmbracelet/x/ansi"
 )
 
 // ── File tree types ─────────────────────────────────────────────────────
@@ -435,18 +433,13 @@ func (ft *fileTree) View() string {
 			}
 		}
 
-		// Highlight selected row with a left border indicator
-		if isSelected {
-			line = ftSelectedMarkerSt.Render("▌") + line
-		} else {
-			line = " " + line
+		// Selection affordance: left bar + tinted background via the
+		// shared SelectableRow primitive.
+		rowW := ft.width - 1
+		if rowW < 3 {
+			rowW = 3
 		}
-
-		// Truncate to panel width to prevent wrapping (Golden Rule 2)
-		maxW := ft.width - 1
-		if maxW > 0 && ansi.StringWidth(line) > maxW {
-			line = truncateToWidth(line, maxW)
-		}
+		line = SelectableRow(line, rowW, isSelected)
 
 		lines = append(lines, line)
 	}

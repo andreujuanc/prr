@@ -20,9 +20,11 @@ type permissionModal struct {
 }
 
 // renderPermissionModal renders the permission approval overlay content.
-func (m *Model) renderPermissionModal() string {
+//
+// Returns (content, ok). ok=false when the overlay state is unset.
+func (m *Model) renderPermissionModal() (string, bool) {
 	if m.permissionOverlay == nil {
-		return ""
+		return "", false
 	}
 
 	var b strings.Builder
@@ -59,7 +61,7 @@ func (m *Model) renderPermissionModal() string {
 	b.WriteString(approveLabel + "    " + denyLabel + "\n\n")
 	b.WriteString(styleTextMuted.Render("  [Enter] Select   [y] Approve   [n] Deny   [Esc] Deny"))
 
-	return b.String()
+	return b.String(), true
 }
 
 // formatPermissionInput creates a brief human-readable summary of the tool input.
@@ -123,9 +125,11 @@ func (qm *questionModal) optionCount() int {
 }
 
 // renderQuestionModal renders the interactive question overlay content.
-func (m *Model) renderQuestionModal() string {
+//
+// Returns (content, ok). ok=false when the overlay state is unset.
+func (m *Model) renderQuestionModal() (string, bool) {
 	if m.questionOverlay == nil {
-		return ""
+		return "", false
 	}
 
 	var b strings.Builder
@@ -182,7 +186,7 @@ func (m *Model) renderQuestionModal() string {
 
 	b.WriteString("\n" + styleTextMuted.Render("  [Enter] Select   [Esc] Dismiss"))
 
-	return b.String()
+	return b.String(), true
 }
 
 // ── Permission actions ──────────────────────────────────────────────────
