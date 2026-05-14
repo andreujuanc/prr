@@ -32,10 +32,9 @@ func SelectableRow(content string, width int, selected bool) string {
 		return ansi.Truncate(content, width, "")
 	}
 
-	contentW := width - 2 // 1 for the bar, 1 for the gap after it
-	if contentW < 1 {
-		contentW = 1
-	}
+	contentW := max(
+		// 1 for the bar, 1 for the gap after it
+		width-2, 1)
 
 	// Truncate / pad content to exact width.
 	vis := ansi.StringWidth(content)

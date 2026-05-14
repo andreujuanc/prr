@@ -238,13 +238,7 @@ func excerptAround(s, needle string) string {
 	if i < 0 {
 		return s
 	}
-	start := i - 40
-	if start < 0 {
-		start = 0
-	}
-	end := i + len(needle) + 40
-	if end > len(s) {
-		end = len(s)
-	}
+	start := max(i-40, 0)
+	end := min(i+len(needle)+40, len(s))
 	return s[start:end]
 }

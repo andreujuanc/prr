@@ -311,7 +311,7 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 // scanCounter wraps fmt.Sscanf with a logged warning on format mismatch.
 // Kept package-local (audit has the same helper) so review-side format
 // drift is surfaced separately from audit-side drift.
-func scanCounter(phase, message, format string, dest ...interface{}) bool {
+func scanCounter(phase, message, format string, dest ...any) bool {
 	n, err := fmt.Sscanf(message, format, dest...)
 	if err != nil || n != len(dest) {
 		log.Printf("progress: counter parse mismatch in phase=%q (format=%q, message=%q): %v",

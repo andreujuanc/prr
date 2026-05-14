@@ -16,7 +16,7 @@ func TestLoadPipeTargets_ValidConfig(t *testing.T) {
 	dir := filepath.Join(home, ".config", "prr")
 	os.MkdirAll(dir, 0755)
 
-	cfg := map[string]interface{}{
+	cfg := map[string]any{
 		"provider": "gemini",
 		"api_key":  "key",
 		"pipes": []pipe.Target{
@@ -52,7 +52,7 @@ func TestLoadPipeTargets_NoPipes(t *testing.T) {
 	dir := filepath.Join(home, ".config", "prr")
 	os.MkdirAll(dir, 0755)
 
-	cfg := map[string]interface{}{
+	cfg := map[string]any{
 		"provider": "gemini",
 		"api_key":  "key",
 	}

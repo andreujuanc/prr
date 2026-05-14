@@ -4,7 +4,7 @@ Thanks for your interest in contributing to prr! Here's how to get started.
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.26+
 - [gh](https://cli.github.com/) (GitHub CLI, authenticated)
 - [delta](https://github.com/dandavison/delta) (git-delta)
 - A configured `~/.config/prr/config.json` with API keys (for running integration tests)

@@ -380,7 +380,7 @@ func IsToolReadOnly(name string) bool {
 // ExecuteTool runs a tool call and returns the result.
 // Results starting with "Error:" are flagged as isError=true so the model
 // can recover gracefully.
-func (t *ToolExecutor) ExecuteTool(name string, args map[string]interface{}) (result string, isError bool) {
+func (t *ToolExecutor) ExecuteTool(name string, args map[string]any) (result string, isError bool) {
 	var r string
 	switch name {
 	// File / code inspection
@@ -432,7 +432,7 @@ func (t *ToolExecutor) ExecuteTool(name string, args map[string]interface{}) (re
 // ══════════════════════════════════════════════════════════════════════════
 
 // readFile reads a file at the given git ref with pagination.
-func (t *ToolExecutor) readFile(args map[string]interface{}, ref string) string {
+func (t *ToolExecutor) readFile(args map[string]any, ref string) string {
 	path := getStringArg(args, "path")
 	if path == "" {
 		return "Error: 'path' is required"
@@ -465,10 +465,7 @@ func (t *ToolExecutor) readFile(args map[string]interface{}, ref string) string 
 	if startIdx >= totalLines {
 		return fmt.Sprintf("Error: file '%s' has %d lines, offset %d is past the end", path, totalLines, offset)
 	}
-	endIdx := startIdx + limit
-	if endIdx > totalLines {
-		endIdx = totalLines
-	}
+	endIdx := min(startIdx+limit, totalLines)
 
 	var result strings.Builder
 	result.WriteString(fmt.Sprintf("File: %s (lines %d-%d of %d)\n", path, offset, endIdx, totalLines))
@@ -484,7 +481,7 @@ func (t *ToolExecutor) readFile(args map[string]interface{}, ref string) string 
 }
 
 // listDir lists files and directories at a path with size information.
-func (t *ToolExecutor) listDir(args map[string]interface{}) string {
+func (t *ToolExecutor) listDir(args map[string]any) string {
 	path := getStringArg(args, "path")
 	if path == "" {
 		path = "."
@@ -521,7 +518,7 @@ func (t *ToolExecutor) listDir(args map[string]interface{}) string {
 	result.WriteString(fmt.Sprintf("Directory: %s\n", path))
 	result.WriteString(strings.Repeat("─", 40) + "\n")
 
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		if line == "" {
 			continue
 		}
@@ -556,7 +553,7 @@ func (t *ToolExecutor) listDir(args map[string]interface{}) string {
 }
 
 // globFiles finds files matching a glob pattern.
-func (t *ToolExecutor) globFiles(args map[string]interface{}) string {
+func (t *ToolExecutor) globFiles(args map[string]any) string {
 	pattern := getStringArg(args, "pattern")
 	if pattern == "" {
 		return "Error: 'pattern' is required"
@@ -603,7 +600,7 @@ func (t *ToolExecutor) globFiles(args map[string]interface{}) string {
 }
 
 // grepCode searches for a pattern in files using git grep.
-func (t *ToolExecutor) grepCode(args map[string]interface{}) string {
+func (t *ToolExecutor) grepCode(args map[string]any) string {
 	pattern := getStringArg(args, "pattern")
 	if pattern == "" {
 		return "Error: 'pattern' is required"
@@ -615,10 +612,7 @@ func (t *ToolExecutor) grepCode(args map[string]interface{}) string {
 	}
 
 	useRegex := getStringArg(args, "regex") != "false"
-	maxResults := getIntArg(args, "max_results", 50)
-	if maxResults < 1 {
-		maxResults = 1
-	}
+	maxResults := max(getIntArg(args, "max_results", 50), 1)
 	if maxResults > 200 {
 		maxResults = 200
 	}
@@ -686,7 +680,7 @@ func (t *ToolExecutor) grepCode(args map[string]interface{}) string {
 // ══════════════════════════════════════════════════════════════════════════
 
 // gitDiff returns unified diff between two refs.
-func (t *ToolExecutor) gitDiff(args map[string]interface{}) string {
+func (t *ToolExecutor) gitDiff(args map[string]any) string {
 	base := getStringArg(args, "base")
 	head := getStringArg(args, "head")
 	if base == "" {
@@ -722,7 +716,7 @@ func (t *ToolExecutor) gitDiff(args map[string]interface{}) string {
 }
 
 // gitLog shows commit history.
-func (t *ToolExecutor) gitLog(args map[string]interface{}) string {
+func (t *ToolExecutor) gitLog(args map[string]any) string {
 	revRange := getStringArg(args, "rev_range")
 	max := getIntArg(args, "max", 20)
 	if max < 1 {
@@ -753,7 +747,7 @@ func (t *ToolExecutor) gitLog(args map[string]interface{}) string {
 }
 
 // gitShow shows commit details or a file at a commit.
-func (t *ToolExecutor) gitShow(args map[string]interface{}) string {
+func (t *ToolExecutor) gitShow(args map[string]any) string {
 	commit := getStringArg(args, "commit")
 	if commit == "" {
 		return "Error: 'commit' is required"
@@ -778,7 +772,7 @@ func (t *ToolExecutor) gitShow(args map[string]interface{}) string {
 }
 
 // gitBlame shows line-by-line authorship.
-func (t *ToolExecutor) gitBlame(args map[string]interface{}) string {
+func (t *ToolExecutor) gitBlame(args map[string]any) string {
 	path := getStringArg(args, "path")
 	if path == "" {
 		return "Error: 'path' is required"
@@ -824,7 +818,7 @@ func (t *ToolExecutor) gitStatus() string {
 // GitHub (gh CLI) implementations
 // ══════════════════════════════════════════════════════════════════════════
 
-func (t *ToolExecutor) ghPRView(args map[string]interface{}) string {
+func (t *ToolExecutor) ghPRView(args map[string]any) string {
 	pr := getStringArg(args, "pr_number")
 	if pr == "" {
 		return "Error: 'pr_number' is required"
@@ -837,7 +831,7 @@ func (t *ToolExecutor) ghPRView(args map[string]interface{}) string {
 	return truncateOutput(out, "Use gh_pr_files or gh_pr_checks for specific details.")
 }
 
-func (t *ToolExecutor) ghPRDiff(args map[string]interface{}) string {
+func (t *ToolExecutor) ghPRDiff(args map[string]any) string {
 	pr := getStringArg(args, "pr_number")
 	if pr == "" {
 		return "Error: 'pr_number' is required"
@@ -849,7 +843,7 @@ func (t *ToolExecutor) ghPRDiff(args map[string]interface{}) string {
 	return truncateOutput(out, "Use git_diff with paths to inspect specific files.")
 }
 
-func (t *ToolExecutor) ghPRChecks(args map[string]interface{}) string {
+func (t *ToolExecutor) ghPRChecks(args map[string]any) string {
 	pr := getStringArg(args, "pr_number")
 	if pr == "" {
 		return "Error: 'pr_number' is required"
@@ -865,7 +859,7 @@ func (t *ToolExecutor) ghPRChecks(args map[string]interface{}) string {
 	return out
 }
 
-func (t *ToolExecutor) ghPRComments(args map[string]interface{}) string {
+func (t *ToolExecutor) ghPRComments(args map[string]any) string {
 	pr := getStringArg(args, "pr_number")
 	if pr == "" {
 		return "Error: 'pr_number' is required"
@@ -877,7 +871,7 @@ func (t *ToolExecutor) ghPRComments(args map[string]interface{}) string {
 	return truncateOutput(out, "Large discussion thread. Focus on recent comments.")
 }
 
-func (t *ToolExecutor) ghPRFiles(args map[string]interface{}) string {
+func (t *ToolExecutor) ghPRFiles(args map[string]any) string {
 	pr := getStringArg(args, "pr_number")
 	if pr == "" {
 		return "Error: 'pr_number' is required"
@@ -889,7 +883,7 @@ func (t *ToolExecutor) ghPRFiles(args map[string]interface{}) string {
 	return truncateOutput(out, "Many files changed.")
 }
 
-func (t *ToolExecutor) ghIssueView(args map[string]interface{}) string {
+func (t *ToolExecutor) ghIssueView(args map[string]any) string {
 	issue := getStringArg(args, "issue_number")
 	if issue == "" {
 		return "Error: 'issue_number' is required"
@@ -1050,7 +1044,7 @@ func matchDoublestar(pattern, path string) bool {
 
 	// Try matching suffix against every subpath
 	segments := strings.Split(path, "/")
-	for i := 0; i < len(segments); i++ {
+	for i := range segments {
 		candidate := strings.Join(segments[i:], "/")
 		if matched, _ := filepath.Match(suffix, candidate); matched {
 			return true
@@ -1064,13 +1058,13 @@ func matchDoublestar(pattern, path string) bool {
 }
 
 // getStringArg extracts a string argument from the args map.
-func getStringArg(args map[string]interface{}, key string) string {
+func getStringArg(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return v
 }
 
 // getIntArg extracts an integer argument (JSON numbers are float64).
-func getIntArg(args map[string]interface{}, key string, defaultVal int) int {
+func getIntArg(args map[string]any, key string, defaultVal int) int {
 	if v, ok := args[key].(float64); ok {
 		return int(v)
 	}

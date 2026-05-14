@@ -521,7 +521,7 @@ func TestBuildReviewBatches_DeterministicOrder(t *testing.T) {
 
 	// Run multiple times to verify determinism
 	var firstLabels []string
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		batches := buildReviewBatches(diffs)
 		labels := batchLabels(batches)
 		if i == 0 {

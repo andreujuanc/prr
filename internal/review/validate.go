@@ -181,26 +181,26 @@ func abs(x int) int {
 // disables snap-to-hunk for that file (validator leaves Line alone).
 func ParseHunkRanges(patch string) []HunkRange {
 	var out []HunkRange
-	for _, line := range strings.Split(patch, "\n") {
+	for line := range strings.SplitSeq(patch, "\n") {
 		if !strings.HasPrefix(line, "@@ ") {
 			continue
 		}
 		// Expected shape: "@@ -A,B +C,D @@ ..." or "@@ -A +C @@"
 		// (when B/D == 1, GNU diff omits the count).
-		plus := strings.Index(line, "+")
-		if plus < 0 {
+		_, after, ok := strings.Cut(line, "+")
+		if !ok {
 			continue
 		}
-		rest := line[plus+1:]
-		end := strings.Index(rest, " ")
-		if end < 0 {
+		rest := after
+		before, _, ok := strings.Cut(rest, " ")
+		if !ok {
 			continue
 		}
-		spec := rest[:end]
+		spec := before
 		var start, count int
-		if comma := strings.Index(spec, ","); comma >= 0 {
-			a, errA := strconv.Atoi(spec[:comma])
-			b, errB := strconv.Atoi(spec[comma+1:])
+		if before, after, ok := strings.Cut(spec, ","); ok {
+			a, errA := strconv.Atoi(before)
+			b, errB := strconv.Atoi(after)
 			if errA != nil || errB != nil {
 				continue
 			}

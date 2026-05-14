@@ -548,7 +548,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 	concurrencyLevels := []int{1}
 	if envConc := os.Getenv("PRR_DEEP_CONCURRENCY"); envConc != "" {
 		concurrencyLevels = nil
-		for _, s := range strings.Split(envConc, ",") {
+		for s := range strings.SplitSeq(envConc, ",") {
 			s = strings.TrimSpace(s)
 			var c int
 			fmt.Sscanf(s, "%d", &c)
@@ -867,7 +867,7 @@ func deepModelsFromEnv(cfg *config.Config) []deepModelSpec {
 	// Allow overriding thinking budgets: PRR_DEEP_THINKING="8192,16384"
 	if envTB := os.Getenv("PRR_DEEP_THINKING"); envTB != "" {
 		thinkingBudgets = nil
-		for _, s := range strings.Split(envTB, ",") {
+		for s := range strings.SplitSeq(envTB, ",") {
 			s = strings.TrimSpace(s)
 			var tb int
 			fmt.Sscanf(s, "%d", &tb)
@@ -884,7 +884,7 @@ func deepModelsFromEnv(cfg *config.Config) []deepModelSpec {
 	temperatures := []float64{0.1}
 	if envTemp := os.Getenv("PRR_DEEP_TEMP"); envTemp != "" {
 		temperatures = nil
-		for _, s := range strings.Split(envTemp, ",") {
+		for s := range strings.SplitSeq(envTemp, ",") {
 			s = strings.TrimSpace(s)
 			var temp float64
 			fmt.Sscanf(s, "%f", &temp)
@@ -893,7 +893,7 @@ func deepModelsFromEnv(cfg *config.Config) []deepModelSpec {
 	}
 
 	var specs []deepModelSpec
-	for _, m := range strings.Split(envModels, ",") {
+	for m := range strings.SplitSeq(envModels, ",") {
 		m = strings.TrimSpace(m)
 		if m == "" {
 			continue

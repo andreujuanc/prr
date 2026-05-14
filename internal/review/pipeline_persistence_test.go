@@ -51,11 +51,11 @@ func (f *fakeAIClient) ChatStream(_ context.Context, systemPrompt string, msgs [
 // production parses the model's response, not the prompt it sent.
 func extractAOIID(userMsg string) string {
 	const marker = "**ID:** "
-	i := strings.Index(userMsg, marker)
-	if i < 0 {
+	_, after, ok := strings.Cut(userMsg, marker)
+	if !ok {
 		return "test-aoi"
 	}
-	rest := userMsg[i+len(marker):]
+	rest := after
 	if end := strings.IndexAny(rest, "\n\r"); end >= 0 {
 		return strings.TrimSpace(rest[:end])
 	}
@@ -131,8 +131,8 @@ func TestPipeline_DeepFindings_PersistedAcrossSessions(t *testing.T) {
 			// review prompt embeds the AOI's id and we use it for the
 			// response so each call's output is distinct.
 			aoiID := "test-aoi"
-			if i := strings.Index(userMsg, `"id":`); i >= 0 {
-				rest := strings.TrimSpace(userMsg[i+len(`"id":`):])
+			if _, after, ok := strings.Cut(userMsg, `"id":`); ok {
+				rest := strings.TrimSpace(after)
 				if strings.HasPrefix(rest, `"`) {
 					end := strings.Index(rest[1:], `"`)
 					if end > 0 {

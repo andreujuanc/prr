@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -33,21 +34,30 @@ func TestIdleWatch_ResetsOnToken(t *testing.T) {
 // TestIdleWatch_CancelsAfterIdle is the failure-mode pin: when no
 // activity flows for the full idle window, ctx must cancel with
 // ErrIdle as the cause.
+//
+// Runs inside a synctest bubble (Go 1.25+) so the idle timeout uses
+// fake time. The test completes in microseconds of real time and the
+// assertion is exact ("cancelled by fake-time T+idle") rather than
+// fuzzy ("cancelled sometime in the next 500ms of real time").
 func TestIdleWatch_CancelsAfterIdle(t *testing.T) {
-	ctx, _, stop := IdleWatch(context.Background(), 50*time.Millisecond, nil)
-	defer stop()
+	synctest.Test(t, func(t *testing.T) {
+		const idle = 50 * time.Millisecond
+		ctx, _, stop := IdleWatch(context.Background(), idle, nil)
+		defer stop()
 
-	// Wait past the idle window with no activity.
-	select {
-	case <-ctx.Done():
-		// Expected. Check cause.
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("ctx not cancelled after idle window expired")
-	}
+		// Advance just past the idle window. Fake time only moves once
+		// every goroutine in the bubble is durably blocked, so when
+		// this Sleep returns the watchdog has had its full chance to
+		// fire the cancel.
+		time.Sleep(idle + time.Millisecond)
 
-	if !errors.Is(context.Cause(ctx), ErrIdle) {
-		t.Errorf("cause = %v, want ErrIdle", context.Cause(ctx))
-	}
+		if ctx.Err() == nil {
+			t.Fatal("ctx not cancelled after idle window expired")
+		}
+		if !errors.Is(context.Cause(ctx), ErrIdle) {
+			t.Errorf("cause = %v, want ErrIdle", context.Cause(ctx))
+		}
+	})
 }
 
 // TestIdleWatch_RespectsParentCancel ensures parent cancellation
@@ -78,7 +88,7 @@ func TestIdleWatch_RespectsParentCancel(t *testing.T) {
 func TestIdleWatch_StopReleasesGoroutine(t *testing.T) {
 	before := runtime.NumGoroutine()
 
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		_, _, stop := IdleWatch(context.Background(), time.Hour, nil)
 		stop()
 	}
@@ -104,7 +114,7 @@ func TestIdleWatch_WrapperCallsUnderlyingOnToken(t *testing.T) {
 	})
 	defer stop()
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wrap("x")
 	}
 
@@ -147,10 +157,10 @@ func TestIdleWatch_ConcurrentWrapCalls(t *testing.T) {
 	const callsPer = 500
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < callsPer; j++ {
+			for range callsPer {
 				wrap("tok")
 			}
 		}()
@@ -173,10 +183,10 @@ func TestIdleWatch_ConcurrentStopAndWrap(t *testing.T) {
 	const writers = 16
 	var wg sync.WaitGroup
 	wg.Add(writers)
-	for i := 0; i < writers; i++ {
+	for range writers {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 1000; j++ {
+			for range 1000 {
 				wrap("tok")
 			}
 		}()
@@ -198,7 +208,7 @@ func TestIdleWatch_ConcurrentStopAndWrap(t *testing.T) {
 func TestIdleWatch_ConcurrentStopAndParentCancel(t *testing.T) {
 	before := runtime.NumGoroutine()
 
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		parent, parentCancel := context.WithCancel(context.Background())
 		_, _, stop := IdleWatch(parent, time.Hour, nil)
 		// Race parent cancel against stop. Either order must work.

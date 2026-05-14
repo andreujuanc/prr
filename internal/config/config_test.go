@@ -18,7 +18,7 @@ func setTestHome(t *testing.T) string {
 }
 
 // writeTestConfig writes a JSON config file under the fake home.
-func writeTestConfig(t *testing.T, home string, data interface{}) string {
+func writeTestConfig(t *testing.T, home string, data any) string {
 	t.Helper()
 	dir := filepath.Join(home, ".config", "prr")
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -69,7 +69,7 @@ func TestLoad_CreatesDefaultWhenMissing(t *testing.T) {
 		t.Fatalf("default config not created: %v", readErr)
 	}
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("default config is not valid JSON: %v", err)
 	}
@@ -83,12 +83,12 @@ func TestLoad_CreatesDefaultWhenMissing(t *testing.T) {
 
 func TestLoad_ValidConfig(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "github-copilot/claude-sonnet-4-6",
 		"fast_model":   "gemini/gemini-2.5-flash-lite",
-		"providers": map[string]interface{}{
-			"github-copilot": map[string]interface{}{"api_key": "ghp-test"},
-			"gemini":         map[string]interface{}{"api_key": "AIza-test"},
+		"providers": map[string]any{
+			"github-copilot": map[string]any{"api_key": "ghp-test"},
+			"gemini":         map[string]any{"api_key": "AIza-test"},
 		},
 	})
 
@@ -110,10 +110,10 @@ func TestLoad_ValidConfig(t *testing.T) {
 func TestLoad_DefaultsApplied(t *testing.T) {
 	home := setTestHome(t)
 	// No strong_model or fast_model — should use defaults
-	writeTestConfig(t, home, map[string]interface{}{
-		"providers": map[string]interface{}{
-			"gemini":         map[string]interface{}{"api_key": "test-key"},
-			"github-copilot": map[string]interface{}{"api_key": "test-copilot-key"},
+	writeTestConfig(t, home, map[string]any{
+		"providers": map[string]any{
+			"gemini":         map[string]any{"api_key": "test-key"},
+			"github-copilot": map[string]any{"api_key": "test-copilot-key"},
 		},
 	})
 
@@ -131,10 +131,10 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 
 func TestLoad_InvalidModelRef(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "no-slash-here",
-		"providers": map[string]interface{}{
-			"gemini": map[string]interface{}{"api_key": "key"},
+		"providers": map[string]any{
+			"gemini": map[string]any{"api_key": "key"},
 		},
 	})
 
@@ -149,9 +149,9 @@ func TestLoad_InvalidModelRef(t *testing.T) {
 
 func TestLoad_MissingAPIKey(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "gemini/gemini-2.5-flash",
-		"providers":    map[string]interface{}{},
+		"providers":    map[string]any{},
 	})
 
 	_, err := Load()
@@ -180,11 +180,11 @@ func TestLoad_InvalidJSON(t *testing.T) {
 
 func TestLoad_ParallelReviewsPreserved(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model":     "gemini/gemini-2.5-flash",
 		"parallel_reviews": 5,
-		"providers": map[string]interface{}{
-			"gemini": map[string]interface{}{"api_key": "key"},
+		"providers": map[string]any{
+			"gemini": map[string]any{"api_key": "key"},
 		},
 	})
 
@@ -202,7 +202,7 @@ func TestLoad_ParallelReviewsPreserved(t *testing.T) {
 func TestLoad_MigratesLegacyConfig(t *testing.T) {
 	home := setTestHome(t)
 	// Write a legacy-format config
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"provider":  "gemini",
 		"api_key":   "AIzaSy_test",
 		"model":     "gemini-2.5-pro",
@@ -223,7 +223,7 @@ func TestLoad_MigratesLegacyConfig(t *testing.T) {
 	// Verify the migrated config was persisted
 	path := filepath.Join(home, ".config", "prr", "config.json")
 	data, _ := os.ReadFile(path)
-	var raw map[string]interface{}
+	var raw map[string]any
 	json.Unmarshal(data, &raw)
 
 	// Legacy fields should be removed
@@ -240,11 +240,11 @@ func TestLoad_MigratesLegacyConfig(t *testing.T) {
 
 func TestLoad_MigratesLegacyWithProvidersMap(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"provider": "github-copilot",
 		"model":    "claude-sonnet-4-6",
-		"providers": map[string]interface{}{
-			"github-copilot": map[string]interface{}{"api_key": "ghp-test"},
+		"providers": map[string]any{
+			"github-copilot": map[string]any{"api_key": "ghp-test"},
 		},
 	})
 
@@ -260,13 +260,13 @@ func TestLoad_MigratesLegacyWithProvidersMap(t *testing.T) {
 func TestLoad_NoMigrationIfNewFormat(t *testing.T) {
 	home := setTestHome(t)
 	// Config has both old and new fields — new fields should take precedence
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "openai/gpt-5.4",
 		"provider":     "gemini",
 		"model":        "gemini-2.5-flash",
-		"providers": map[string]interface{}{
-			"openai": map[string]interface{}{"api_key": "sk-test"},
-			"gemini": map[string]interface{}{"api_key": "AIza-test"},
+		"providers": map[string]any{
+			"openai": map[string]any{"api_key": "sk-test"},
+			"gemini": map[string]any{"api_key": "AIza-test"},
 		},
 	})
 
@@ -284,11 +284,11 @@ func TestLoad_NoMigrationIfNewFormat(t *testing.T) {
 
 func TestSave_RoundTrip(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "gemini/gemini-2.5-flash",
-		"providers": map[string]interface{}{
-			"gemini":         map[string]interface{}{"api_key": "old-key"},
-			"github-copilot": map[string]interface{}{"api_key": "ghp-key"},
+		"providers": map[string]any{
+			"gemini":         map[string]any{"api_key": "old-key"},
+			"github-copilot": map[string]any{"api_key": "ghp-key"},
 		},
 	})
 
@@ -322,11 +322,11 @@ func TestSave_RoundTrip(t *testing.T) {
 
 func TestSave_PreservesUnknownFields(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "gemini/gemini-2.5-flash",
 		"custom_field": "should survive",
-		"providers": map[string]interface{}{
-			"gemini": map[string]interface{}{"api_key": "key"},
+		"providers": map[string]any{
+			"gemini": map[string]any{"api_key": "key"},
 		},
 	})
 
@@ -346,7 +346,7 @@ func TestSave_PreservesUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	json.Unmarshal(data, &raw)
 	if raw["custom_field"] != "should survive" {
 		t.Errorf("custom_field lost after Save, got: %v", raw["custom_field"])
@@ -355,10 +355,10 @@ func TestSave_PreservesUnknownFields(t *testing.T) {
 
 func TestSave_Theme(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "gemini/gemini-2.5-flash",
-		"providers": map[string]interface{}{
-			"gemini": map[string]interface{}{"api_key": "key"},
+		"providers": map[string]any{
+			"gemini": map[string]any{"api_key": "key"},
 		},
 	})
 
@@ -375,7 +375,7 @@ func TestSave_Theme(t *testing.T) {
 
 	path := filepath.Join(home, ".config", "prr", "config.json")
 	data, _ := os.ReadFile(path)
-	var raw map[string]interface{}
+	var raw map[string]any
 	json.Unmarshal(data, &raw)
 	if raw["theme"] != "dracula" {
 		t.Errorf("theme = %v, want %q", raw["theme"], "dracula")
@@ -384,10 +384,10 @@ func TestSave_Theme(t *testing.T) {
 
 func TestSaveTo_PersistsProviders(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "config.json")
-	initial := map[string]interface{}{
+	initial := map[string]any{
 		"strong_model": "gemini/gemini-2.5-flash",
-		"providers": map[string]interface{}{
-			"gemini": map[string]interface{}{"api_key": "AIza-test"},
+		"providers": map[string]any{
+			"gemini": map[string]any{"api_key": "AIza-test"},
 		},
 	}
 	b, _ := json.MarshalIndent(initial, "", "  ")
@@ -409,7 +409,7 @@ func TestSaveTo_PersistsProviders(t *testing.T) {
 		t.Fatalf("ReadFile error: %v", err)
 	}
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
@@ -418,12 +418,12 @@ func TestSaveTo_PersistsProviders(t *testing.T) {
 		t.Errorf("strong_model = %v, want %q", raw["strong_model"], "github-copilot/claude-sonnet-4-6")
 	}
 
-	providers, ok := raw["providers"].(map[string]interface{})
+	providers, ok := raw["providers"].(map[string]any)
 	if !ok {
 		t.Fatalf("providers not saved in config file; raw keys: %v", raw)
 	}
 
-	ghCopilot, ok := providers["github-copilot"].(map[string]interface{})
+	ghCopilot, ok := providers["github-copilot"].(map[string]any)
 	if !ok {
 		t.Fatalf("providers.github-copilot missing; providers = %v", providers)
 	}
@@ -435,10 +435,10 @@ func TestSaveTo_PersistsProviders(t *testing.T) {
 
 func TestSaveTo_MergesProviders(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "config.json")
-	initial := map[string]interface{}{
+	initial := map[string]any{
 		"strong_model": "gemini/gemini-2.5-flash",
-		"providers": map[string]interface{}{
-			"gemini": map[string]interface{}{"api_key": "AIzaSy_test"},
+		"providers": map[string]any{
+			"gemini": map[string]any{"api_key": "AIzaSy_test"},
 		},
 	}
 	b, _ := json.MarshalIndent(initial, "", "  ")
@@ -455,16 +455,16 @@ func TestSaveTo_MergesProviders(t *testing.T) {
 	}
 
 	data, _ := os.ReadFile(tmpFile)
-	var raw map[string]interface{}
+	var raw map[string]any
 	json.Unmarshal(data, &raw)
 
-	providers, ok := raw["providers"].(map[string]interface{})
+	providers, ok := raw["providers"].(map[string]any)
 	if !ok {
 		t.Fatalf("providers missing from saved config")
 	}
 
 	// gemini should still be there
-	gemini, ok := providers["gemini"].(map[string]interface{})
+	gemini, ok := providers["gemini"].(map[string]any)
 	if !ok {
 		t.Fatalf("gemini provider was wiped! providers = %v", providers)
 	}
@@ -473,7 +473,7 @@ func TestSaveTo_MergesProviders(t *testing.T) {
 	}
 
 	// openai should be added
-	openai, ok := providers["openai"].(map[string]interface{})
+	openai, ok := providers["openai"].(map[string]any)
 	if !ok {
 		t.Fatalf("openai provider not added! providers = %v", providers)
 	}
@@ -633,12 +633,12 @@ func TestAPIKeyFor(t *testing.T) {
 
 func TestLoad_MixedProviders(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "openai/gpt-5.4",
 		"fast_model":   "gemini/gemini-2.5-flash-lite",
-		"providers": map[string]interface{}{
-			"openai": map[string]interface{}{"api_key": "sk-test"},
-			"gemini": map[string]interface{}{"api_key": "AIza-test"},
+		"providers": map[string]any{
+			"openai": map[string]any{"api_key": "sk-test"},
+			"gemini": map[string]any{"api_key": "AIza-test"},
 		},
 	})
 
@@ -656,11 +656,11 @@ func TestLoad_MixedProviders(t *testing.T) {
 
 func TestLoad_MissingProviderKey_ForFastModel(t *testing.T) {
 	home := setTestHome(t)
-	writeTestConfig(t, home, map[string]interface{}{
+	writeTestConfig(t, home, map[string]any{
 		"strong_model": "gemini/gemini-2.5-flash",
 		"fast_model":   "openai/gpt-5.4-mini",
-		"providers": map[string]interface{}{
-			"gemini": map[string]interface{}{"api_key": "key"},
+		"providers": map[string]any{
+			"gemini": map[string]any{"api_key": "key"},
 			// openai key missing
 		},
 	})

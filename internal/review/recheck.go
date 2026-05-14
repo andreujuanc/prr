@@ -136,7 +136,7 @@ func RecheckFindings(
 	}
 
 	// ── Pass 2: Per-file dismissal ─────────────────────────────
-	dismissResult, dismissErr := runDismissPass(ctx, client, postConsolidate, opts, maxPerBatch, emit, total)
+	dismissResult, dismissErr := runDismissPass(ctx, client, postConsolidate, opts, maxPerBatch, emit)
 	if dismissErr != nil {
 		log.Printf("Recheck pass 2 (dismiss) failed: %v — keeping post-consolidate set", dismissErr)
 		// Fall back: keep everything that survived consolidation, no dismissal records.
@@ -245,7 +245,6 @@ func runDismissPass(
 	opts RecheckOptions,
 	maxPerBatch int,
 	emit func(int),
-	total int,
 ) (*RecheckResult, error) {
 	if len(findings) == 0 {
 		return &RecheckResult{}, nil
@@ -273,10 +272,6 @@ func runDismissPass(
 	sem := make(chan struct{}, maxConc)
 	var wg sync.WaitGroup
 	var doneCount int64
-	startedAt := len(findings) - total
-	if startedAt < 0 {
-		startedAt = 0
-	}
 
 	for i, batch := range batches {
 		wg.Add(1)

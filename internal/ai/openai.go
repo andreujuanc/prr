@@ -122,7 +122,7 @@ type oaiRequest struct {
 	Messages          []oaiMessage  `json:"messages"`
 	Stream            bool          `json:"stream"`
 	Tools             []oaiTool     `json:"tools,omitempty"`
-	ToolChoice        interface{}   `json:"tool_choice,omitempty"`
+	ToolChoice        any           `json:"tool_choice,omitempty"`
 	MaxCompletionToks int           `json:"max_completion_tokens,omitempty"`
 	Temperature       *float64      `json:"temperature,omitempty"`
 	ReasoningEffort   string        `json:"reasoning_effort,omitempty"`
@@ -135,7 +135,7 @@ type oaiStreamOpt struct {
 
 type oaiMessage struct {
 	Role       string        `json:"role"`
-	Content    interface{}   `json:"content,omitempty"` // string or []oaiContentPart
+	Content    any           `json:"content,omitempty"` // string or []oaiContentPart
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 	Name       string        `json:"name,omitempty"`
@@ -201,7 +201,7 @@ func (o *OpenAIProvider) toNativeRequest(req ChatRequest) oaiRequest {
 	}
 
 	// Tool choice
-	var toolChoice interface{}
+	var toolChoice any
 	switch req.ToolChoice {
 	case ToolChoiceAuto:
 		if len(tools) > 0 {
@@ -346,12 +346,12 @@ func (o *OpenAIProvider) translateAssistantMessage(msg ProviderMessage) []oaiMes
 }
 
 func (o *OpenAIProvider) toolParamsToJSON(params ToolParams) json.RawMessage {
-	schema := map[string]interface{}{
+	schema := map[string]any{
 		"type": "object",
 	}
-	props := make(map[string]interface{})
+	props := make(map[string]any)
 	for name, p := range params.Properties {
-		prop := map[string]interface{}{
+		prop := map[string]any{
 			"type":        p.Type,
 			"description": p.Description,
 		}
@@ -359,7 +359,7 @@ func (o *OpenAIProvider) toolParamsToJSON(params ToolParams) json.RawMessage {
 			prop["enum"] = p.Enum
 		}
 		if p.Items != nil {
-			prop["items"] = map[string]interface{}{
+			prop["items"] = map[string]any{
 				"type": p.Items.Type,
 			}
 		}

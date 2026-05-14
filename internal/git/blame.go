@@ -79,10 +79,10 @@ func parsePorcelainBlame(output string) map[int]BlameLine {
 			continue
 		}
 
-		if strings.HasPrefix(line, "author ") {
-			author = strings.TrimPrefix(line, "author ")
-		} else if strings.HasPrefix(line, "author-time ") {
-			ts := strings.TrimPrefix(line, "author-time ")
+		if after, ok := strings.CutPrefix(line, "author "); ok {
+			author = after
+		} else if after, ok := strings.CutPrefix(line, "author-time "); ok {
+			ts := after
 			if epoch, err := strconv.ParseInt(ts, 10, 64); err == nil {
 				date = time.Unix(epoch, 0).Format("2006-01-02")
 			}

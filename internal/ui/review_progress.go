@@ -194,10 +194,9 @@ func (m Model) renderReviewProgressView(maxWidth int) string {
 
 	// Pick a detail-truncation budget that fits inside the AI pane;
 	// 60 (the headless default) is too wide for narrow side panels.
-	detailW := maxWidth - 24 // icon + step + label + 2× spacing ≈ 24
-	if detailW < 12 {
-		detailW = 12
-	}
+	detailW := max(
+		// icon + step + label + 2× spacing ≈ 24
+		maxWidth-24, 12)
 	b.WriteString(progress.RenderPhaseList(t.phases, t.state, m.spinner.View(), detailW))
 
 	return b.String()

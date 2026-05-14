@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"strings"
 	"sync"
 
@@ -393,9 +394,7 @@ func reviewBatchesParallel(
 			cached, cachedFF := collectCachedFindings(batch, reviewState)
 			results[i] = batchResult{batch: batch, result: cached, cached: true}
 			rr.BatchProgress(i, BatchCached)
-			for f, findings := range cachedFF {
-				allFileFindings[f] = findings
-			}
+			maps.Copy(allFileFindings, cachedFF)
 		} else {
 			uncachedIndices = append(uncachedIndices, i)
 		}
@@ -405,17 +404,12 @@ func reviewBatchesParallel(
 		work := make(chan int, len(uncachedIndices))
 		var wg sync.WaitGroup
 
-		workers := maxWorkers
-		if workers > len(uncachedIndices) {
-			workers = len(uncachedIndices)
-		}
+		workers := min(maxWorkers, len(uncachedIndices))
 
 		systemPrompt := buildBatchSystemPrompt(prMeta, customInstructions)
 
 		for w := 0; w < workers; w++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				for idx := range work {
 					if ctx.Err() != nil {
 						results[idx] = batchResult{batch: batches[idx], err: ctx.Err()}
@@ -435,7 +429,7 @@ func reviewBatchesParallel(
 						rr.BatchProgress(idx, BatchFailed)
 					}
 				}
-			}()
+			})
 		}
 
 		for _, idx := range uncachedIndices {
@@ -456,9 +450,7 @@ func reviewBatchesParallel(
 
 		if !res.cached {
 			parsed, batchFF := persistBatchFindings(reviewState, res.batch, res.result)
-			for f, findings := range batchFF {
-				allFileFindings[f] = findings
-			}
+			maps.Copy(allFileFindings, batchFF)
 			if parsed != nil {
 				for _, entry := range parsed {
 					if !entry.Findings.IsEmpty() {

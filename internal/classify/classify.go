@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -288,14 +289,8 @@ func windowForClassify(content string) string {
 
 	// Center the middle window on total/2, but never let it overlap
 	// the top window.
-	midStart := total/2 - classifyMidWindow/2
-	if midStart < classifyTopWindow {
-		midStart = classifyTopWindow
-	}
-	midEnd := midStart + classifyMidWindow
-	if midEnd > total {
-		midEnd = total
-	}
+	midStart := max(total/2-classifyMidWindow/2, classifyTopWindow)
+	midEnd := min(midStart+classifyMidWindow, total)
 	middle := lines[midStart:midEnd]
 
 	omitted := midStart - classifyTopWindow
@@ -321,10 +316,7 @@ func windowForClassify(content string) string {
 func buildBatches(files []File) [][]File {
 	var batches [][]File
 	for i := 0; i < len(files); i += batchMaxFiles {
-		end := i + batchMaxFiles
-		if end > len(files) {
-			end = len(files)
-		}
+		end := min(i+batchMaxFiles, len(files))
 		batches = append(batches, files[i:end])
 	}
 	return batches
@@ -440,10 +432,5 @@ func parseResult(raw string) ([]FileClassification, error) {
 }
 
 func isValidFileType(ft FileType) bool {
-	for _, valid := range AllFileTypes {
-		if ft == valid {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(AllFileTypes, ft)
 }

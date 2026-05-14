@@ -10,13 +10,13 @@ import (
 
 func makeRouteResult(individual, grouped int) *review.RouteResult {
 	r := &review.RouteResult{}
-	for i := 0; i < individual; i++ {
+	for i := range individual {
 		r.Individual = append(r.Individual, review.ReviewCall{
 			Type: "individual",
 			AOIs: []security.AreaOfInterest{{File: "a.go", Line: i + 1}},
 		})
 	}
-	for i := 0; i < grouped; i++ {
+	for range grouped {
 		r.Grouped = append(r.Grouped, review.ReviewCall{
 			Type: "grouped",
 			AOIs: []security.AreaOfInterest{{File: "b.go"}, {File: "c.go"}},

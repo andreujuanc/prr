@@ -39,10 +39,9 @@ func renderTaskRow(b *strings.Builder, t *Task, width int, isSelected bool) {
 
 	title := t.Title
 	// Truncate title to fit width (accounting for marker + icon + elapsed)
-	maxTitle := width - 12 // rough: marker(2) + icon(2) + space(1) + elapsed(~7)
-	if maxTitle < 10 {
-		maxTitle = 10
-	}
+	maxTitle := max(
+		// rough: marker(2) + icon(2) + space(1) + elapsed(~7)
+		width-12, 10)
 	if len(title) > maxTitle {
 		title = title[:maxTitle-3] + "..."
 	}

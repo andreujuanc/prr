@@ -109,13 +109,13 @@ type PartTime struct {
 
 // ToolState describes a tool call's lifecycle.
 type ToolState struct {
-	Status   string                 `json:"status"` // "pending", "running", "completed", "error"
-	Input    map[string]interface{} `json:"input,omitempty"`
-	Output   string                 `json:"output,omitempty"`
-	Raw      string                 `json:"raw,omitempty"`
-	Title    string                 `json:"title,omitempty"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
-	Time     *ToolTime              `json:"time,omitempty"`
+	Status   string         `json:"status"` // "pending", "running", "completed", "error"
+	Input    map[string]any `json:"input,omitempty"`
+	Output   string         `json:"output,omitempty"`
+	Raw      string         `json:"raw,omitempty"`
+	Title    string         `json:"title,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	Time     *ToolTime      `json:"time,omitempty"`
 }
 
 // ToolTime holds start/end for a tool execution.
@@ -198,11 +198,11 @@ type SessionSummary struct {
 
 // Permission represents a tool permission request that needs user approval.
 type Permission struct {
-	ID        string                 `json:"id"`
-	SessionID string                 `json:"sessionID"`
-	Tool      string                 `json:"tool"`
-	Input     map[string]interface{} `json:"input"`
-	CreatedAt time.Time              `json:"createdAt"`
+	ID        string         `json:"id"`
+	SessionID string         `json:"sessionID"`
+	Tool      string         `json:"tool"`
+	Input     map[string]any `json:"input"`
+	CreatedAt time.Time      `json:"createdAt"`
 }
 
 // PermissionResponse is sent to approve or deny a permission request.

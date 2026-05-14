@@ -216,14 +216,8 @@ func bottomOverlay(base, content string, screenWidth, screenHeight int) string {
 	}
 
 	// Position: bottom of screen with a small margin, horizontally centered
-	startRow := screenHeight - len(boxLines) - 2
-	if startRow < 0 {
-		startRow = 0
-	}
-	startCol := (screenWidth - boxW) / 2
-	if startCol < 0 {
-		startCol = 0
-	}
+	startRow := max(screenHeight-len(boxLines)-2, 0)
+	startCol := max((screenWidth-boxW)/2, 0)
 
 	// Composite box lines onto base
 	for i, bline := range boxLines {

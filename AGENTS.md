@@ -2,13 +2,11 @@
 
 ## Environment
 
-- **Always set `GOTOOLCHAIN=auto`** before running any Go commands (the devcontainer Go version is older than what `go.mod` requires).
 - **Never read `.env`** (it contains secrets). Use `source .env && ./prr` to load env vars when running the binary.
 
 ## Build & verify
 
 ```bash
-export GOTOOLCHAIN=auto
 go build -o prr ./cmd/prr        # build binary
 go test ./...                     # all tests
 gofmt -l .                        # lint (CI fails if any output)

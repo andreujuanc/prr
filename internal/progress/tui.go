@@ -282,7 +282,7 @@ func (m *model) applyEvent(phase, message string) {
 		}
 		if m.phases[i].Status == PhaseWaiting {
 			m.phases[i].Status = PhaseActive
-			for j := 0; j < i; j++ {
+			for j := range i {
 				if m.phases[j].Status == PhaseActive {
 					m.phases[j].Status = PhaseDone
 				}

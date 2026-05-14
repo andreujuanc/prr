@@ -98,7 +98,7 @@ func FetchReviewComments(prNumber string) ([]ReviewComment, error) {
 
 // CreateReviewComment posts a new line-level review comment on a PR.
 func CreateReviewComment(prNumber, commitSHA, path, body string, line int, side string) (*ReviewComment, error) {
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"body":      body,
 		"commit_id": commitSHA,
 		"path":      path,

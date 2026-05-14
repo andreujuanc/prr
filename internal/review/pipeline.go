@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -885,9 +886,7 @@ func RunReviewCore(
 		}
 
 		allFindings.WriteString(fbFindings)
-		for f, findings := range fbFF {
-			allFileFindings[f] = findings
-		}
+		maps.Copy(allFileFindings, fbFF)
 	}
 
 	// ── Phase 1c: Recheck ────────────────────────────────────────

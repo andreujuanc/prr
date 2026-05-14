@@ -1,4 +1,4 @@
-FROM golang:1.22-bookworm
+FROM golang:1.26-bookworm
 
 # Install basic development tools
 RUN apt-get update && apt-get install -y less man-db sudo jq curl git wget

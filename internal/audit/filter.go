@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/config"
@@ -116,14 +117,12 @@ func matchesAuditPatterns(path string, patterns []string) bool {
 				return true
 			}
 			// Also try matching the pattern against parent dirs
-			if strings.HasSuffix(pattern, "/**") {
-				dirName := strings.TrimSuffix(pattern, "/**")
+			if before, ok := strings.CutSuffix(pattern, "/**"); ok {
+				dirName := before
 				// Check if any path component matches
 				parts := strings.Split(path, "/")
-				for _, part := range parts[:len(parts)-1] { // skip filename
-					if part == dirName {
-						return true
-					}
+				if slices.Contains(parts[:len(parts)-1], dirName) {
+					return true
 				}
 			}
 			continue

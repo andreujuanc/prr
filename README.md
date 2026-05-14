@@ -8,7 +8,7 @@ Built with Go and [Bubble Tea](https://github.com/charmbracelet/bubbletea). Diff
 
 ## Prerequisites
 
-- [Go 1.22+](https://go.dev/dl/)
+- [Go 1.26+](https://go.dev/dl/)
 - [gh](https://cli.github.com/) (GitHub CLI, authenticated)
 - [delta](https://github.com/dandavison/delta) (git-delta)
 - A Gemini API key

@@ -96,7 +96,7 @@ func TestRouteAOIs_FocusFilter(t *testing.T) {
 
 func TestRouteAOIs_MaxGroupSize(t *testing.T) {
 	var aois []security.AreaOfInterest
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		aois = append(aois, makeAOI("a.go", i+1, "error-handling", "swallowed-errors", "grouped", []string{"error-handling"}))
 	}
 

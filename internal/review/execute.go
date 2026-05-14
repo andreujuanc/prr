@@ -330,17 +330,17 @@ func doReviewCall(
 	var onToken func(string)
 	if opts.OnToolCall != nil {
 		onToken = func(tok string) {
-			if strings.HasPrefix(tok, "\x00TOOL_START:") {
+			if after, ok := strings.CutPrefix(tok, "\x00TOOL_START:"); ok {
 				// Format: \x00TOOL_START:name(args)
-				payload := strings.TrimPrefix(tok, "\x00TOOL_START:")
-				if idx := strings.Index(payload, "("); idx >= 0 {
-					name := payload[:idx]
-					args := strings.TrimSuffix(payload[idx+1:], ")")
+				payload := after
+				if before, after, ok := strings.Cut(payload, "("); ok {
+					name := before
+					args := strings.TrimSuffix(after, ")")
 					opts.OnToolCall(callIndex, name, args, "start", "")
 				}
-			} else if strings.HasPrefix(tok, "\x00TOOL_DONE:") {
+			} else if after, ok := strings.CutPrefix(tok, "\x00TOOL_DONE:"); ok {
 				// Format: \x00TOOL_DONE:name|status|duration
-				payload := strings.TrimPrefix(tok, "\x00TOOL_DONE:")
+				payload := after
 				parts := strings.SplitN(payload, "|", 3)
 				if len(parts) == 3 {
 					opts.OnToolCall(callIndex, parts[0], "", parts[1], parts[2])

@@ -65,7 +65,7 @@ func (m *Model) renderPermissionModal() (string, bool) {
 }
 
 // formatPermissionInput creates a brief human-readable summary of the tool input.
-func formatPermissionInput(tool string, input map[string]interface{}) string {
+func formatPermissionInput(tool string, input map[string]any) string {
 	switch tool {
 	case "bash":
 		if cmd, ok := input["command"].(string); ok {

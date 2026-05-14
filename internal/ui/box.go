@@ -46,14 +46,8 @@ func budgetFromPane(pane int) widthBudget {
 	// Inline boxes get a 2-cell left indent inside the pane, so their
 	// outer width is inner - 2. The Box itself eats 2 cells for rails
 	// and a further 2 for Padding{L:1, R:1}.
-	boxOuter := inner - 2
-	if boxOuter < 4 {
-		boxOuter = 4
-	}
-	boxInner := boxOuter - 4
-	if boxInner < 1 {
-		boxInner = 1
-	}
+	boxOuter := max(inner-2, 4)
+	boxInner := max(boxOuter-4, 1)
 	return widthBudget{
 		pane:     pane,
 		inner:    inner,
@@ -127,10 +121,7 @@ func (b Box) Render(content string) string {
 	}
 
 	// Inner content width (between rails, inside padding).
-	innerW := b.Width - 2 - b.Padding.Left - b.Padding.Right
-	if innerW < 0 {
-		innerW = 0
-	}
+	innerW := max(b.Width-2-b.Padding.Left-b.Padding.Right, 0)
 
 	// ── Top border ─────────────────────────────────────────────────
 	topLeft := borderSt.Render(bdr.TopLeft)
@@ -149,10 +140,9 @@ func (b Box) Render(content string) string {
 
 		if labelW > maxLabelW {
 			overhead := labelW - ansi.StringWidth(labelText) // style padding contribution
-			maxTitleW := maxLabelW - 2 - overhead            // -2 for surrounding spaces
-			if maxTitleW < 1 {
-				maxTitleW = 1
-			}
+			maxTitleW := max(
+				// -2 for surrounding spaces
+				maxLabelW-2-overhead, 1)
 			truncated := ansi.Truncate(b.Title, maxTitleW, "…")
 			labelText = " " + truncated + " "
 			labelRendered = titleSt.Render(labelText)
@@ -165,10 +155,7 @@ func (b Box) Render(content string) string {
 		}
 
 		barBefore := borderSt.Render(strings.Repeat(bdr.Top, 2))
-		remaining := topBarWidth - 2 - labelW
-		if remaining < 0 {
-			remaining = 0
-		}
+		remaining := max(topBarWidth-2-labelW, 0)
 		barAfter := borderSt.Render(strings.Repeat(bdr.Top, remaining))
 		topLine = topLeft + barBefore + labelRendered + barAfter + topRight
 	} else {
@@ -190,10 +177,9 @@ func (b Box) Render(content string) string {
 	// Determine how many body rows to emit.
 	bodyCount := len(rawLines) + b.Padding.Top + b.Padding.Bottom
 	if b.Height > 0 {
-		bodyCount = b.Height - 2 // subtract top + bottom border rows
-		if bodyCount < 0 {
-			bodyCount = 0
-		}
+		bodyCount = max(
+			// subtract top + bottom border rows
+			b.Height-2, 0)
 	}
 
 	var body strings.Builder

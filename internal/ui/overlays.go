@@ -43,20 +43,14 @@ func (m Model) renderPRPicker() (string, bool) {
 	b.WriteString("\n")
 
 	// Clamp visible items to fit the terminal (header=2, footer=2, border=2)
-	maxVisible := m.height - 8
-	if maxVisible < 5 {
-		maxVisible = 5
-	}
+	maxVisible := max(m.height-8, 5)
 	total := len(m.prPickerItems)
 
 	// Compute visible window centered on cursor
 	start := 0
 	end := total
 	if total > maxVisible {
-		start = m.prPickerCursor - maxVisible/2
-		if start < 0 {
-			start = 0
-		}
+		start = max(m.prPickerCursor-maxVisible/2, 0)
 		end = start + maxVisible
 		if end > total {
 			end = total
@@ -74,10 +68,9 @@ func (m Model) renderPRPicker() (string, bool) {
 
 		num := fmt.Sprintf("#%-4d", pr.Number)
 		title := pr.Title
-		maxTitle := width - 16 // room for #num + author
-		if maxTitle < 20 {
-			maxTitle = 20
-		}
+		maxTitle := max(
+			// room for #num + author
+			width-16, 20)
 		titleRunes := []rune(title)
 		if len(titleRunes) > maxTitle {
 			title = string(titleRunes[:maxTitle-3]) + "..."
@@ -489,10 +482,7 @@ func (m Model) renderHelpModal() (string, bool) {
 		return "", false
 	}
 
-	maxWidth := m.width - 8
-	if maxWidth < 40 {
-		maxWidth = 40
-	}
+	maxWidth := max(m.width-8, 40)
 	if maxWidth > 60 {
 		maxWidth = 60
 	}
@@ -684,10 +674,7 @@ func floatOverlay(base, content string, screenWidth, screenHeight int) string {
 
 	// Position: top-right with a small margin
 	startRow := 2
-	startCol := screenWidth - boxW - 2
-	if startCol < 0 {
-		startCol = 0
-	}
+	startCol := max(screenWidth-boxW-2, 0)
 
 	// Composite box lines onto base
 	for i, bline := range boxLines {
@@ -729,16 +716,10 @@ func centerOverlay(content string, screenWidth, screenHeight int) string {
 	}
 
 	// Add padding/border
-	boxWidth := maxW + 4
-	if boxWidth > screenWidth-4 {
-		boxWidth = screenWidth - 4
-	}
+	boxWidth := min(maxW+4, screenWidth-4)
 
 	// Vertical centering
-	topPad := (screenHeight - len(lines) - 2) / 2
-	if topPad < 1 {
-		topPad = 1
-	}
+	topPad := max((screenHeight-len(lines)-2)/2, 1)
 
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -757,10 +738,7 @@ func centerOverlay(content string, screenWidth, screenHeight int) string {
 	// Center horizontally
 	for _, line := range boxLines {
 		w := ansi.StringWidth(line)
-		leftPad := (screenWidth - w) / 2
-		if leftPad < 0 {
-			leftPad = 0
-		}
+		leftPad := max((screenWidth-w)/2, 0)
 		b.WriteString(strings.Repeat(" ", leftPad) + line + "\n")
 	}
 

@@ -62,10 +62,7 @@ func RenderCategoryChart(findings []state.DeepFinding) string {
 	b.WriteString("\n\n")
 
 	for _, cc := range sorted {
-		barLen := (cc.count * maxBarWidth) / maxCount
-		if barLen < 1 {
-			barLen = 1
-		}
+		barLen := max((cc.count*maxBarWidth)/maxCount, 1)
 
 		bar := strings.Repeat("█", barLen)
 		padding := strings.Repeat(" ", maxLabel-len(cc.name))
@@ -122,10 +119,7 @@ func RenderSeverityBar(findings []state.DeepFinding) string {
 		if s.count == 0 {
 			continue
 		}
-		segLen := (s.count * barWidth) / total
-		if segLen < 1 {
-			segLen = 1
-		}
+		segLen := max((s.count*barWidth)/total, 1)
 		b.WriteString(s.style.Render(strings.Repeat(string(s.char), segLen)))
 	}
 

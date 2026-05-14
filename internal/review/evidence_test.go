@@ -216,6 +216,46 @@ func TestVerifyEvidence_EmptyFilePath(t *testing.T) {
 	}
 }
 
+func TestVerifyEvidence_RejectsPathTraversal(t *testing.T) {
+	// A finding whose File escapes repoRoot via ".." must not be able
+	// to read files outside the repo. This is defense-in-depth against
+	// prompt-injection-driven path traversal: a malicious PR could nudge
+	// the model to emit File: "../../../etc/passwd" with a plausible
+	// snippet, and the verifier must refuse.
+	//
+	// Plant a "secret" file outside the repo and a corresponding finding
+	// that tries to escape into it.
+	parent := t.TempDir()
+	repoRoot := filepath.Join(parent, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "secret"), []byte("topsecret\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		file string
+	}{
+		{"dotdot relative", "../secret"},
+		{"absolute outside root", filepath.Join(parent, "secret")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := state.DeepFinding{
+				File:            c.file,
+				Lines:           "1",
+				EvidenceSnippet: "topsecret",
+			}
+			got := verifyEvidence(repoRoot, f)
+			if got == evidenceOK {
+				t.Errorf("path traversal must not return evidenceOK, got %v", got)
+			}
+		})
+	}
+}
+
 func TestVerifyEvidence_OversizeFileSkipped(t *testing.T) {
 	// Files above the size cap are not verified — but we accept,
 	// not reject. The verifier exists to catch hallucinations, not

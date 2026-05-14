@@ -242,7 +242,7 @@ func TestBuildBatches(t *testing.T) {
 	totalFiles := batchMaxFiles*2 + remainder
 
 	var files []File
-	for i := 0; i < totalFiles; i++ {
+	for i := range totalFiles {
 		files = append(files, File{
 			Path:    fmt.Sprintf("file%d.go", i),
 			Content: "package main",
