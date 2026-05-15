@@ -50,6 +50,80 @@ In addition, for every scan:
 - Do NOT self-censor on security-sensitive or offensive-looking patterns. The entire purpose of this pass is to surface issues; skipping analysis defeats it.
 - Each AOI `id` must be unique within the file and match `[a-z0-9-]+` (lowercase letters, digits, and hyphens only), max ~80 chars. Use the pattern `filename-slug-concern-slug` (e.g., `charge-go-float-currency`, `handler-go-missing-auth`). Do not include path separators, dots, underscores, or uppercase.
 
+## Surface-area Rules (always apply on top of categories)
+
+These two patterns yield disproportionately many real bugs and are
+worth surfacing as AOIs even when the underlying category isn't
+obvious. They apply to every file you scan, regardless of language.
+
+### Actionable TODO/FIXME/XXX/HACK comments
+
+When a comment tag (`TODO`, `FIXME`, `XXX`, `HACK`) appears next to
+executable code AND the comment text contains an **actionable verb**
+or admits an **incomplete implementation**, emit an AOI for the
+adjacent code line:
+
+- Actionable verbs: `fix`, `handle`, `check`, `validate`, `verify`,
+  `support`, `add`, `remove`, `replace`, `clean up`, `revisit`,
+  `before`, `until`, `once`.
+- Admissions of incomplete logic: phrases like "doesn't handle X",
+  "need to", "for now", "until we have", "broken when", "wrong for".
+- The `XXX` and `HACK` tags are always actionable on their own
+  (those tags exist specifically to flag known problems).
+
+Bare `// TODO` or `// FIXME` with no further text is **informational
+and skipped** — surfacing every TODO would drown the audit in noise.
+The actionable-verb gate keeps the emission rate at roughly 5-10% of
+all TODO comments on typical codebases.
+
+For each such AOI:
+- `category` = `correctness` (or the more specific category if the
+  comment names one — e.g., a TODO about auth → `authorization`)
+- `concern` = paraphrase of the comment text in one sentence
+- `context` = "comment admits known gap at this location"
+- Urgency: `individual` if the comment names a security/auth/money
+  concern, otherwise `grouped`.
+
+### Named-unit values and branded types
+
+When a function name, variable name, parameter, or return type
+**implies a unit of measurement, a currency, a precision/scale, or
+a domain-tagged identifier**, emit an AOI tracking that value across
+one hop (its immediate caller or consumer).
+
+The patterns to look for are described by *shape*, not a fixed
+vocabulary — match by name structure across whatever language the
+file is in:
+
+- **Unit suffixes/prefixes in identifiers** — anything implying a
+  quantity, currency, time, size, rate, ratio, percentage, or
+  precision. The LLM picks them out by name shape: a function
+  containing tokens like `Amount`, `Cents`, `Bps`, `Ms`, `Seconds`,
+  `Bytes`, `Count`, `Rate`, `Pct`, `Ratio`, `Wei`, `Sats`, etc.
+  (these are illustrative — match by *shape*, not this list).
+- **Type aliases or branded types that wrap a primitive** to carry
+  domain meaning. Examples by language shape: `type UserID = string`
+  (TypeScript), `type Cents int64` (Go), `class OrderId(str)` 
+  (Python), `pub struct AccountId(u64)` (Rust). These exist
+  specifically because the primitive can't be trusted at the type
+  level.
+- **Sender/receiver type-name mismatches** where the producer's
+  type/name implies one unit/domain and the consumer expects
+  another. This is the highest-yield case — find a function that
+  returns one shape and look at the immediate caller to check.
+
+For each such AOI:
+- `category` = `data-integrity`, `subcategory` = `unit-mismatch`
+- `concern` = "value X (unit/type Y) flows to receiver expecting
+  different unit/type" or similar
+- Urgency: `individual` when the value crosses a system boundary
+  (HTTP response, persistence write, message send) or touches
+  money/auth; otherwise `grouped`.
+
+Skip when the unit-or-domain claim isn't backed by either a typed
+brand or a clear name-shape signal — guessing about units invites
+false positives.
+
 ## Output Format
 
 Return ONLY a JSON array — one object per file. Include ALL files, even those
