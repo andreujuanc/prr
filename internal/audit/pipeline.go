@@ -48,6 +48,13 @@ type Options struct {
 	// DebugFile restricts the audit to a single file (path relative to repo root).
 	DebugFile string
 
+	// AuditRecent restricts the audit to files touched in the last
+	// N commits (and only those — cold files are dropped entirely).
+	// Zero = no restriction; the audit covers every file that passes
+	// filtering. Either way, files touched recently are sorted to
+	// the front so --max-reviews truncates AOIs in cold files first.
+	AuditRecent int
+
 	// LargeFileThreshold is the file count above which a warning is
 	// displayed. Defaults to 200 when zero.
 	LargeFileThreshold int
@@ -228,6 +235,28 @@ func Run(
 	onProgress("phase1", "Collecting files...")
 	go func() {
 		paths, stats, err := CollectFiles(opts.RepoRoot, opts.ExcludePatterns, opts.IncludePatterns)
+		if err == nil && len(paths) > 0 {
+			// Reorder by recency so --max-reviews truncates AOIs in
+			// cold files first. When --audit-recent N is set we also
+			// restrict to that window — cold files are dropped
+			// entirely, and the surviving set is already
+			// recency-ordered. Both operations are best-effort: a
+			// git log failure logs and falls back to the un-reordered
+			// list.
+			if opts.AuditRecent > 0 {
+				if restricted, rerr := RestrictToRecent(opts.RepoRoot, paths, opts.AuditRecent); rerr != nil {
+					log.Printf("--audit-recent restriction failed (non-fatal): %v", rerr)
+				} else {
+					paths = restricted
+				}
+			} else {
+				if reordered, rerr := OrderFilesByRecency(opts.RepoRoot, paths, recentLookbackDefault); rerr != nil {
+					log.Printf("recency reorder failed (non-fatal): %v", rerr)
+				} else {
+					paths = reordered
+				}
+			}
+		}
 		p1Ch <- p1Result{paths: paths, stats: stats, err: err}
 	}()
 

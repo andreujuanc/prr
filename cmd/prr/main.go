@@ -183,6 +183,8 @@ func runAudit(debug bool, args []string) {
 			opts.Debug = true
 		} else if after, ok := strings.CutPrefix(arg, "--file="); ok {
 			opts.DebugFile = after
+		} else if after, ok := strings.CutPrefix(arg, "--audit-recent="); ok {
+			fmt.Sscanf(after, "%d", &opts.AuditRecent)
 		} else if arg == "--help" || arg == "-h" {
 			printAuditUsage()
 			os.Exit(0)
@@ -387,6 +389,7 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "                         (compact by default; set PRR_DEBUG_VERBOSE=1 to include\n")
 	fmt.Fprintf(os.Stderr, "                          full system prompts and unelided file content)\n")
 	fmt.Fprintf(os.Stderr, "    --file=<path>        Restrict audit to a single file (relative to repo root)\n")
+	fmt.Fprintf(os.Stderr, "    --audit-recent=<n>   Restrict audit to files touched in the last <n> commits\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available dimensions:"))
 	fmt.Fprintf(os.Stderr, "    authentication, authorization, input-validation, data-integrity,\n")

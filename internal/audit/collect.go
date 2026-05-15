@@ -134,6 +134,150 @@ func partitionFiles(tracked, untracked, excludePatterns, includePatterns []strin
 	return result, stats
 }
 
+// recentLookbackDefault is the number of recent commits scanned to
+// compute the recency ordering when no explicit --audit-recent N is
+// set. Bounded so the git log call stays cheap on big repos.
+const recentLookbackDefault = 200
+
+// OrderFilesByRecency reorders files so paths touched in the last
+// `lookback` commits come first (most-recent first), with the rest
+// preserved in stable order behind them. Paths not touched recently
+// are not dropped. When lookback ≤ 0, lookback falls back to
+// recentLookbackDefault.
+//
+// Best-effort: a `git log` failure is non-fatal — the original order
+// is returned and the caller logs the warning.
+func OrderFilesByRecency(repoRoot string, files []string, lookback int) ([]string, error) {
+	if len(files) == 0 {
+		return files, nil
+	}
+	if lookback <= 0 {
+		lookback = recentLookbackDefault
+	}
+	recent, err := gitRecentlyTouchedFiles(repoRoot, lookback)
+	if err != nil {
+		return files, fmt.Errorf("recency reorder: %w", err)
+	}
+	return reorderByRecency(files, recent), nil
+}
+
+// RestrictToRecent returns the subset of files that were touched in
+// the last `lookback` commits, in most-recent-first order. Files not
+// touched in the window are dropped entirely. When lookback ≤ 0,
+// returns files unchanged (no restriction).
+//
+// Best-effort: a `git log` failure is non-fatal — returns the input
+// list unchanged.
+func RestrictToRecent(repoRoot string, files []string, lookback int) ([]string, error) {
+	if lookback <= 0 || len(files) == 0 {
+		return files, nil
+	}
+	recent, err := gitRecentlyTouchedFiles(repoRoot, lookback)
+	if err != nil {
+		return files, fmt.Errorf("recency restrict: %w", err)
+	}
+	return restrictToRecent(files, recent), nil
+}
+
+// reorderByRecency is the pure half of OrderFilesByRecency, exposed
+// for unit testing so we don't need a temp git repo. files is the
+// input list (any order). recent is the recently-touched file list in
+// most-recent-first order. The result puts every path that appears in
+// both lists at the front (preserving recent's order) and the rest in
+// the input's original order.
+func reorderByRecency(files, recent []string) []string {
+	if len(recent) == 0 || len(files) == 0 {
+		return files
+	}
+
+	inFiles := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		inFiles[f] = struct{}{}
+	}
+
+	hot := make([]string, 0, len(recent))
+	seen := make(map[string]struct{}, len(recent))
+	for _, r := range recent {
+		if _, ok := inFiles[r]; !ok {
+			continue
+		}
+		if _, dup := seen[r]; dup {
+			continue
+		}
+		seen[r] = struct{}{}
+		hot = append(hot, r)
+	}
+
+	cold := make([]string, 0, len(files)-len(hot))
+	for _, f := range files {
+		if _, isHot := seen[f]; !isHot {
+			cold = append(cold, f)
+		}
+	}
+	return append(hot, cold...)
+}
+
+// restrictToRecent is the pure half of RestrictToRecent. Returns
+// files in most-recent-first order, dropping anything not in recent.
+func restrictToRecent(files, recent []string) []string {
+	if len(recent) == 0 {
+		return nil
+	}
+	inFiles := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		inFiles[f] = struct{}{}
+	}
+	out := make([]string, 0, len(recent))
+	seen := make(map[string]struct{}, len(recent))
+	for _, r := range recent {
+		if _, ok := inFiles[r]; !ok {
+			continue
+		}
+		if _, dup := seen[r]; dup {
+			continue
+		}
+		seen[r] = struct{}{}
+		out = append(out, r)
+	}
+	return out
+}
+
+// gitRecentlyTouchedFiles returns paths touched in the last `n`
+// commits, ordered most-recent-first, with duplicates removed.
+// Uses `git log -n <n> --name-only --pretty=format:` so the output
+// is one path per line, no commit metadata.
+func gitRecentlyTouchedFiles(repoRoot string, n int) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	cmd := exec.Command("git", "log", fmt.Sprintf("-n%d", n), "--name-only", "--pretty=format:")
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git log -n%d --name-only: %w", n, err)
+	}
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{}, 64)
+	var paths []string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		p := filepath.ToSlash(line)
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	return paths, nil
+}
+
 // gitLsFiles runs `git ls-files` with the given args and returns
 // slash-normalized paths. Empty lines are dropped.
 func gitLsFiles(repoRoot string, args ...string) ([]string, error) {
