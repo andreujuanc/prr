@@ -139,6 +139,17 @@ type RuntimeEntryPoint struct {
 	ValidationAt string `json:"validation_at,omitempty"`
 }
 
+// SiteRef is one call site in a Systemic / consolidated finding. It
+// names the specific file (and optionally line range + caller
+// symbol) where the cross-file pattern manifests. The consolidator
+// prompt asks for at least three distinct sites before allowing a
+// "Systemic:" title — a heuristic the validator enforces.
+type SiteRef struct {
+	File   string `json:"file"`
+	Lines  string `json:"lines,omitempty"`
+	Symbol string `json:"symbol,omitempty"` // calling function/handler when identifiable
+}
+
 // SiblingDeviation captures a "1 of N doesn't follow the pattern"
 // observation produced by Phase 2.5 sibling clustering. The pattern
 // field is a one-line description ("9 of 11 admin POSTs call
@@ -648,6 +659,15 @@ type DeepFinding struct {
 	// report can render "9 of 11 admin POSTs call guardAdmin —
 	// this one doesn't" under the finding.
 	SiblingDeviation *SiblingDeviation `json:"sibling_deviation,omitempty"`
+
+	// AffectedSites lists the specific call sites a Systemic /
+	// consolidated finding covers. Required (3+ distinct files) for
+	// any finding whose Title starts with "Systemic:" — see
+	// ApplySystemicGate. Optional and typically empty for per-file
+	// findings; the consolidator populates this when merging
+	// findings across files so the audit report can render each
+	// site explicitly rather than burying them in description text.
+	AffectedSites []SiteRef `json:"affected_sites,omitempty"`
 
 	// Systemic is set by the recheck parser when a finding came out
 	// of the `consolidated` bucket — i.e. it represents a cross-file

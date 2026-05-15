@@ -1,6 +1,8 @@
 package review
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -211,6 +213,241 @@ var requiredDefensesCategories = map[string]bool{
 	"concurrency":      true,
 	"input-validation": true,
 	"external-io":      true,
+}
+
+// systemicMinSites is the minimum number of distinct files an
+// AffectedSites list must cover before a finding qualifies as
+// "Systemic:". Below this, the consolidator was either over-eager
+// or the pattern is too narrow to justify the systemic framing.
+const systemicMinSites = 3
+
+// systemicTitlePrefix is the title prefix the consolidator uses on
+// merged-systemic findings. The gate drops it when demoting.
+const systemicTitlePrefix = "Systemic:"
+
+// ApplySystemicGate enforces the "≥3 distinct call sites with
+// distinct files" rule on findings flagged Systemic. When a
+// consolidated finding ships without enough sites:
+//
+//   - clears the Systemic flag,
+//   - strips a leading "Systemic:" from the title,
+//   - rewrites the file field to the first affected site when the
+//     finding's File is "multiple" (a marker the consolidator emits
+//     for systemic findings — making it a real path lets the audit
+//     report render a useful location).
+//
+// Severity and confidence are NOT touched here; the consolidator may
+// have justifiably raised severity on a real systemic pattern that
+// just happens to be smaller than 3 sites. Demoting only the framing
+// is conservative.
+//
+// Operates in place and returns the slice for chained use.
+func ApplySystemicGate(findings []state.DeepFinding) []state.DeepFinding {
+	for i := range findings {
+		f := &findings[i]
+		if !f.Systemic {
+			continue
+		}
+		if hasDistinctSites(f.AffectedSites, systemicMinSites) {
+			continue
+		}
+		f.Systemic = false
+		f.Title = strings.TrimSpace(strings.TrimPrefix(f.Title, systemicTitlePrefix))
+		if f.File == "multiple" && len(f.AffectedSites) > 0 {
+			f.File = f.AffectedSites[0].File
+			if f.Lines == "" {
+				f.Lines = f.AffectedSites[0].Lines
+			}
+		}
+	}
+	return findings
+}
+
+// hasDistinctSites reports whether sites contains at least minDistinct
+// entries pointing at distinct files. The plan's framing is "≥3 with
+// distinct callers"; "distinct files" is the conservative
+// deterministic check (callers are LLM-named and hard to verify).
+func hasDistinctSites(sites []state.SiteRef, minDistinct int) bool {
+	if len(sites) < minDistinct {
+		return false
+	}
+	seen := make(map[string]struct{}, len(sites))
+	for _, s := range sites {
+		f := strings.TrimSpace(s.File)
+		if f == "" {
+			continue
+		}
+		seen[f] = struct{}{}
+		if len(seen) >= minDistinct {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCoverageHint summarises the result of a test-suite cross-check
+// for one finding's cited file/symbol. Injected into the recheck
+// dismiss prompt as a one-line annotation per finding so the model
+// can downgrade or dismiss findings the existing test suite should
+// have caught.
+type TestCoverageHint string
+
+const (
+	// TestCoverageMissing means the cited file has no companion
+	// test file at any of the looked-up locations.
+	TestCoverageMissing TestCoverageHint = "no_test_file"
+
+	// TestCoverageExistsButNotCovering means a test file exists for
+	// the cited file (either same-dir _test.* or sibling
+	// .spec.*/.test.*) but its content does not reference the cited
+	// symbol. Synthesis can list this finding under missing_tests.
+	TestCoverageExistsButNotCovering TestCoverageHint = "test_exists_but_not_covering"
+
+	// TestCoverageExistsAndCovers means a test file exists AND
+	// references the cited symbol. The recheck model should ask
+	// "did the test fail? if not, the finding is probably wrong."
+	TestCoverageExistsAndCovers TestCoverageHint = "test_exists_and_covers"
+)
+
+// String returns the hint as its tag string for prompt injection.
+func (h TestCoverageHint) String() string { return string(h) }
+
+// CheckTestCoverage runs a cheap filesystem grep for each finding to
+// classify how the existing test suite relates to the cited code. It
+// is deliberately heuristic — finding a test file that references
+// the cited symbol doesn't prove the test would catch the bug, only
+// that the recheck pass should ASK the question.
+//
+// repoRoot must be the absolute path containing the cited files; an
+// empty repoRoot returns an empty map (the recheck pass then runs
+// without test hints, which is the pre-commit-10 behavior).
+//
+// Symbol extraction is intentionally narrow: the cited file's base
+// name minus extension. This works across languages without a
+// language-specific parser: "internal/auth/login.go" yields "login",
+// and we grep for "login" in the test files. Imperfect but cheap;
+// false-positive matches just shift the hint from no_test_file to
+// test_exists_but_not_covering, which is still informative.
+func CheckTestCoverage(repoRoot string, findings []state.DeepFinding) map[string]TestCoverageHint {
+	if repoRoot == "" || len(findings) == 0 {
+		return nil
+	}
+
+	root, err := os.OpenRoot(repoRoot)
+	if err != nil {
+		return nil
+	}
+	defer root.Close()
+
+	out := make(map[string]TestCoverageHint, len(findings))
+	for _, f := range findings {
+		if f.FindingID == "" || f.File == "" {
+			continue
+		}
+		out[f.FindingID] = classifyTestCoverage(root, f.File)
+	}
+	return out
+}
+
+// classifyTestCoverage walks the candidate test file paths for one
+// finding and returns the appropriate hint. Stops at the first
+// file that references the cited symbol.
+//
+// Match is case-insensitive because the cited symbol comes from the
+// file's base name (typically lowercase: "login.go") but the actual
+// function or class identifier often has different casing
+// (CamelCase "Login" in Go, camelCase "login" in JS, snake_case
+// "log_in" in Python). Lowercasing both sides is cheap and removes a
+// large class of false negatives.
+func classifyTestCoverage(root *os.Root, citedFile string) TestCoverageHint {
+	candidates := candidateTestPaths(citedFile)
+	if len(candidates) == 0 {
+		return TestCoverageMissing
+	}
+	symbol := strings.ToLower(citedSymbol(citedFile))
+
+	var sawAnyTestFile bool
+	for _, p := range candidates {
+		body, ok := readBoundedFile(root, p, 256*1024)
+		if !ok {
+			continue
+		}
+		sawAnyTestFile = true
+		if symbol != "" && strings.Contains(strings.ToLower(body), symbol) {
+			return TestCoverageExistsAndCovers
+		}
+	}
+	if sawAnyTestFile {
+		return TestCoverageExistsButNotCovering
+	}
+	return TestCoverageMissing
+}
+
+// candidateTestPaths returns the set of paths to check for tests of
+// citedFile. Multi-language by design:
+//
+//   - same-dir <base>_test.<ext>  (Go convention)
+//   - same-dir <base>.test.<ext>   (JS/TS test runners)
+//   - same-dir <base>.spec.<ext>   (JS/TS spec runners)
+//
+// Paths are returned as repo-relative; the caller's os.Root resolves
+// against repoRoot. Duplicates are dropped.
+func candidateTestPaths(citedFile string) []string {
+	citedFile = strings.TrimSpace(citedFile)
+	if citedFile == "" {
+		return nil
+	}
+	dir, file := filepath.Split(citedFile)
+	ext := filepath.Ext(file)
+	base := strings.TrimSuffix(file, ext)
+
+	seen := make(map[string]struct{}, 6)
+	var out []string
+	add := func(p string) {
+		if _, dup := seen[p]; dup {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+
+	// Go-style: foo_test.go
+	if ext != "" {
+		add(filepath.ToSlash(filepath.Join(dir, base+"_test"+ext)))
+	}
+	// JS/TS-style: foo.test.ts / foo.spec.ts. Also Python: foo_test.py
+	// (covered by the first form). The same patterns apply to .js,
+	// .jsx, .tsx, etc.; we use the cited file's own extension.
+	if ext != "" {
+		add(filepath.ToSlash(filepath.Join(dir, base+".test"+ext)))
+		add(filepath.ToSlash(filepath.Join(dir, base+".spec"+ext)))
+	}
+	return out
+}
+
+// citedSymbol returns the cited file's base name without extension.
+// Used as a coarse heuristic for whether a test file "covers" the
+// finding: if the test contains a string match of the base name, we
+// assume it touches related code.
+func citedSymbol(citedFile string) string {
+	_, file := filepath.Split(citedFile)
+	ext := filepath.Ext(file)
+	return strings.TrimSuffix(file, ext)
+}
+
+// readBoundedFile reads the contents of relPath through root, capped
+// at maxBytes. Returns "", false when the file is absent or
+// unreadable. Existence-only checks should use root.Stat directly;
+// this helper exists for "exists AND I need to grep its content".
+func readBoundedFile(root *os.Root, relPath string, maxBytes int) (string, bool) {
+	f, err := root.Open(relPath)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	buf := make([]byte, maxBytes)
+	n, _ := f.Read(buf)
+	return string(buf[:n]), true
 }
 
 // ApplyConfidencePenalties walks deep findings and adjusts confidence

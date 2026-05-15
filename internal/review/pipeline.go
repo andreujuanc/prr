@@ -496,6 +496,11 @@ func DiscoverRuntimeModel(
 // fields fall back to defaults inside RecheckFindings.
 type RecheckSettings struct {
 	MaxConcurrency int
+
+	// RepoRoot is the absolute path to the repository root. When
+	// set, the dismiss pass runs a test-suite cross-check per
+	// finding (see RecheckOptions.RepoRoot). Empty = skip.
+	RepoRoot string
 }
 
 // RunRecheck validates and deduplicates deep findings. On failure, returns
@@ -531,6 +536,7 @@ func RunRecheck(
 	recheckResult, recheckErr := RecheckFindings(ctx, client, findings, RecheckOptions{
 		Mode:           mode,
 		ProjectContext: projectContext,
+		RepoRoot:       s.RepoRoot,
 		MaxConcurrency: s.MaxConcurrency,
 		OnLLMCall:      debugHook,
 		OnProgress: func(done, total int) {
@@ -975,7 +981,8 @@ func RunReviewCore(
 		}
 	}
 	rechecked, dismissals, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext,
-		func(status string) { rr.RecheckProgress(status) }, recheckDebugHook)
+		func(status string) { rr.RecheckProgress(status) }, recheckDebugHook,
+		RecheckSettings{RepoRoot: opts.RepoRoot})
 	if changed {
 		deepFindings = rechecked
 		// Rebuild synthesis input from rechecked findings

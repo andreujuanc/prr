@@ -154,6 +154,20 @@ func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) err
 						fmt.Fprintf(&b, "**Conforming siblings:** %s  \n", strings.Join(capped, ", "))
 					}
 				}
+				if len(f.AffectedSites) > 0 {
+					b.WriteString("**Affected sites:**\n")
+					for _, s := range f.AffectedSites {
+						loc := s.File
+						if s.Lines != "" {
+							loc += ":" + s.Lines
+						}
+						if s.Symbol != "" {
+							fmt.Fprintf(&b, "- %s (`%s`)\n", loc, s.Symbol)
+						} else {
+							fmt.Fprintf(&b, "- %s\n", loc)
+						}
+					}
+				}
 				if f.Suggestion != "" {
 					fmt.Fprintf(&b, "**Fix:** %s  \n", f.Suggestion)
 				}

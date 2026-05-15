@@ -1,6 +1,7 @@
 package review
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -389,5 +390,226 @@ func TestApplyConfidencePenalties_OtherTagSatisfiesDefenses(t *testing.T) {
 	out := ApplyConfidencePenalties(findings)
 	if out[0].ConfidenceScore != 80 {
 		t.Errorf("other:tag should count as non-empty; got %d", out[0].ConfidenceScore)
+	}
+}
+
+// ── ApplySystemicGate: ≥3 distinct sites or strip the framing ───────────
+
+func TestApplySystemicGate_KeepsSystemicWhenSitesSatisfy(t *testing.T) {
+	findings := []state.DeepFinding{
+		{
+			Systemic: true,
+			Title:    "Systemic: Missing input validation",
+			File:     "multiple",
+			AffectedSites: []state.SiteRef{
+				{File: "a.go"}, {File: "b.go"}, {File: "c.go"},
+			},
+		},
+	}
+	out := ApplySystemicGate(findings)
+	if !out[0].Systemic {
+		t.Error("3 distinct sites should preserve the Systemic flag")
+	}
+	if !strings.HasPrefix(out[0].Title, "Systemic:") {
+		t.Errorf("Systemic title prefix should be preserved; got %q", out[0].Title)
+	}
+}
+
+func TestApplySystemicGate_DemotesBelowThreeSites(t *testing.T) {
+	findings := []state.DeepFinding{
+		{
+			Systemic: true,
+			Title:    "Systemic: Missing input validation",
+			File:     "multiple",
+			AffectedSites: []state.SiteRef{
+				{File: "a.go"}, {File: "b.go"},
+			},
+		},
+	}
+	out := ApplySystemicGate(findings)
+	if out[0].Systemic {
+		t.Error("2 sites should clear the Systemic flag")
+	}
+	if strings.HasPrefix(out[0].Title, "Systemic:") {
+		t.Errorf("Systemic prefix should be stripped; got %q", out[0].Title)
+	}
+	if out[0].Title != "Missing input validation" {
+		t.Errorf("title after strip = %q, want 'Missing input validation'", out[0].Title)
+	}
+}
+
+func TestApplySystemicGate_DemotesWhenSitesAreSameFile(t *testing.T) {
+	// 3 entries but all pointing at the same file → 1 distinct file.
+	findings := []state.DeepFinding{
+		{
+			Systemic: true,
+			Title:    "Systemic: pattern",
+			File:     "multiple",
+			AffectedSites: []state.SiteRef{
+				{File: "a.go"}, {File: "a.go"}, {File: "a.go"},
+			},
+		},
+	}
+	out := ApplySystemicGate(findings)
+	if out[0].Systemic {
+		t.Error("3 entries on same file = 1 distinct file, should demote")
+	}
+}
+
+func TestApplySystemicGate_RewritesFilePlaceholder(t *testing.T) {
+	// "multiple" placeholder file should become a real path on demotion
+	// so the report doesn't render "[multiple] Missing validation".
+	findings := []state.DeepFinding{
+		{
+			Systemic: true,
+			Title:    "Systemic: pattern",
+			File:     "multiple",
+			Lines:    "",
+			AffectedSites: []state.SiteRef{
+				{File: "handler.go", Lines: "42-58"},
+			},
+		},
+	}
+	out := ApplySystemicGate(findings)
+	if out[0].File != "handler.go" {
+		t.Errorf("File = %q, want handler.go (taken from first site)", out[0].File)
+	}
+	if out[0].Lines != "42-58" {
+		t.Errorf("Lines = %q, want 42-58", out[0].Lines)
+	}
+}
+
+func TestApplySystemicGate_LeavesNonSystemicAlone(t *testing.T) {
+	findings := []state.DeepFinding{
+		{
+			Systemic:      false,
+			Title:         "Regular finding",
+			AffectedSites: nil,
+		},
+	}
+	out := ApplySystemicGate(findings)
+	if out[0].Title != "Regular finding" {
+		t.Errorf("non-systemic finding should not be modified; got %q", out[0].Title)
+	}
+}
+
+// ── Test-suite coverage cross-check ──────────────────────────────────────
+
+func TestCandidateTestPaths_GoConvention(t *testing.T) {
+	got := candidateTestPaths("internal/auth/login.go")
+	wantAny := []string{
+		"internal/auth/login_test.go",
+		"internal/auth/login.test.go",
+		"internal/auth/login.spec.go",
+	}
+	for _, w := range wantAny {
+		found := false
+		for _, g := range got {
+			if g == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected candidate %q in %v", w, got)
+		}
+	}
+}
+
+func TestCandidateTestPaths_JSExtensions(t *testing.T) {
+	got := candidateTestPaths("src/auth/login.ts")
+	want := map[string]bool{
+		"src/auth/login_test.ts": false,
+		"src/auth/login.test.ts": false,
+		"src/auth/login.spec.ts": false,
+	}
+	for _, g := range got {
+		if _, ok := want[g]; ok {
+			want[g] = true
+		}
+	}
+	for p, found := range want {
+		if !found {
+			t.Errorf("expected %q in candidates: %v", p, got)
+		}
+	}
+}
+
+func TestCitedSymbol(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"internal/auth/login.go", "login"},
+		{"foo.ts", "foo"},
+		{"a/b/c.py", "c"},
+		{"noext", "noext"},
+	}
+	for _, c := range cases {
+		if got := citedSymbol(c.in); got != c.want {
+			t.Errorf("citedSymbol(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestCheckTestCoverage_MissingTestFile(t *testing.T) {
+	dir := t.TempDir()
+	// One source file, no test file.
+	if err := os.WriteFile(dir+"/login.go", []byte("package main\nfunc Login(){}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hints := CheckTestCoverage(dir, []state.DeepFinding{
+		{FindingID: "F-1", File: "login.go"},
+	})
+	if hints["F-1"] != TestCoverageMissing {
+		t.Errorf("hint = %q, want %q", hints["F-1"], TestCoverageMissing)
+	}
+}
+
+func TestCheckTestCoverage_TestExistsAndCovers(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/login.go", []byte("package main\nfunc Login(){}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Test file mentions "login" (the cited symbol = base name).
+	if err := os.WriteFile(dir+"/login_test.go",
+		[]byte("package main\nimport \"testing\"\nfunc TestLogin(t *testing.T){ Login() }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hints := CheckTestCoverage(dir, []state.DeepFinding{
+		{FindingID: "F-1", File: "login.go"},
+	})
+	if hints["F-1"] != TestCoverageExistsAndCovers {
+		t.Errorf("hint = %q, want %q", hints["F-1"], TestCoverageExistsAndCovers)
+	}
+}
+
+func TestCheckTestCoverage_TestExistsButNotCovering(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/login.go", []byte("package main\nfunc Login(){}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Test file exists but does not reference "login".
+	if err := os.WriteFile(dir+"/login_test.go",
+		[]byte("package main\nimport \"testing\"\nfunc TestUnrelated(t *testing.T){}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hints := CheckTestCoverage(dir, []state.DeepFinding{
+		{FindingID: "F-1", File: "login.go"},
+	})
+	if hints["F-1"] != TestCoverageExistsButNotCovering {
+		t.Errorf("hint = %q, want %q", hints["F-1"], TestCoverageExistsButNotCovering)
+	}
+}
+
+func TestCheckTestCoverage_NoRepoRoot(t *testing.T) {
+	hints := CheckTestCoverage("", []state.DeepFinding{{FindingID: "F-1", File: "x.go"}})
+	if hints != nil {
+		t.Errorf("empty repoRoot should produce nil hints; got %+v", hints)
+	}
+}
+
+func TestCheckTestCoverage_SkipsFindingsWithoutID(t *testing.T) {
+	dir := t.TempDir()
+	hints := CheckTestCoverage(dir, []state.DeepFinding{{File: "x.go"}})
+	if _, ok := hints[""]; ok {
+		t.Error("finding without ID should not produce a hint entry")
 	}
 }

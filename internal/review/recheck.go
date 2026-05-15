@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,16 @@ type RecheckOptions struct {
 
 	// ProjectContext for additional context in the prompt.
 	ProjectContext string
+
+	// RepoRoot is the absolute path to the repository root. When
+	// set, the dismiss pass runs a cheap filesystem grep per finding
+	// for matching test files (foo_test.*, foo.test.*, foo.spec.*)
+	// and includes a one-line "Test coverage:" annotation per
+	// finding in the user message — so the recheck model can
+	// downgrade findings whose existing test suite should have
+	// caught them, and synthesis can list missing tests. Empty =
+	// skip the cross-check.
+	RepoRoot string
 
 	// MaxFindingsPerBatch caps findings per LLM call.
 	// If total findings exceed this, they're split by file.
@@ -133,6 +144,15 @@ func RecheckFindings(
 		log.Printf("Recheck pass 1 (consolidate) failed: %v — proceeding with original findings", consolErr)
 		postConsolidate = findings
 		consolidations = nil
+	}
+
+	// Enforce the systemic gate: a consolidated finding that didn't
+	// reach the 3-distinct-sites bar gets the "Systemic:" framing
+	// stripped (and is treated as a regular finding for the rest of
+	// the pipeline). Severity is untouched; the consolidator may
+	// have justifiably raised it.
+	if len(consolidations) > 0 {
+		consolidations = ApplySystemicGate(consolidations)
 	}
 
 	// ── Pass 2: Per-file dismissal ─────────────────────────────
@@ -457,11 +477,20 @@ func recheckDismissBatch(
 	if err != nil {
 		return nil, fmt.Errorf("marshal findings: %w", err)
 	}
+
+	// Optional pre-recheck test-coverage cross-check. Renders as a
+	// "Test coverage:" annotation per finding so the model can ask
+	// "if a test exists and passes, the finding is probably wrong."
+	// Skipped when opts.RepoRoot is empty (PR-review path passes a
+	// real repo root; some tests don't).
+	hints := CheckTestCoverage(opts.RepoRoot, findings)
+	testCoverageBlock := renderTestCoverageHints(hints)
+
 	messages := []ai.Message{{
 		Role: "user",
 		Content: fmt.Sprintf(
-			"Here are %d findings to dismiss-or-refine. Cross-file consolidation already ran upstream — do NOT consolidate. Focus on dismissing false positives and within-file dedup.\n\n%s",
-			len(findings), string(findingsJSON),
+			"Here are %d findings to dismiss-or-refine. Cross-file consolidation already ran upstream — do NOT consolidate. Focus on dismissing false positives and within-file dedup.%s\n\n%s",
+			len(findings), testCoverageBlock, string(findingsJSON),
 		),
 	}}
 
@@ -489,6 +518,30 @@ func recheckDismissBatch(
 		result.ConsolidatedCount = 0
 	}
 	return result, nil
+}
+
+// renderTestCoverageHints turns the per-finding hint map into a
+// prompt block to prepend to the dismiss user message. Empty when
+// there are no hints to surface.
+func renderTestCoverageHints(hints map[string]TestCoverageHint) string {
+	if len(hints) == 0 {
+		return ""
+	}
+
+	// Sort by FindingID for deterministic prompts.
+	keys := make([]string, 0, len(hints))
+	for k := range hints {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	b.WriteString("\n\nTest-suite cross-check (per finding ID):\n")
+	for _, k := range keys {
+		b.WriteString(fmt.Sprintf("- %s: %s\n", k, hints[k]))
+	}
+	b.WriteString("\nWhen a finding is tagged `test_exists_and_covers`, ASK: if the existing test passes, this finding is probably wrong — dismiss with rationale `existing-test-would-have-caught-it` unless the finding identifies a test-suite gap. When `test_exists_but_not_covering`, keep the finding and note the missing test case. When `no_test_file`, the finding stays and synthesis lists it under missing_tests.")
+	return b.String()
 }
 
 // buildRecheckSystemPrompt assembles the system prompt: mode preamble +

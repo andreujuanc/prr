@@ -662,7 +662,7 @@ func Run(
 		var dismissals []state.DismissedRecord
 		findings, dismissals, changed = review.RunRecheck(ctx, reviewClient, findings, review.ModeAudit, projectContext,
 			func(status string) { onProgress("recheck", status) }, recheckDebugHook,
-			review.RecheckSettings{MaxConcurrency: opts.Concurrency.Recheck})
+			review.RecheckSettings{MaxConcurrency: opts.Concurrency.Recheck, RepoRoot: opts.RepoRoot})
 
 		// Persist on success — both the deduped finding set (used for
 		// cache hits next run) AND the dismissal rationale log (used

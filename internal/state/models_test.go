@@ -1078,3 +1078,42 @@ func TestDeepFinding_SiblingDeviationOmittedWhenNil(t *testing.T) {
 		t.Errorf("nil SiblingDeviation should be omitted, got %s", data)
 	}
 }
+
+// ── SiteRef + AffectedSites ─────────────────────────────────────────────
+
+func TestDeepFinding_AffectedSitesRoundTrip(t *testing.T) {
+	orig := DeepFinding{
+		AOIID:    "aoi-1",
+		Severity: "medium",
+		Systemic: true,
+		AffectedSites: []SiteRef{
+			{File: "a.go", Lines: "10-20", Symbol: "createUser"},
+			{File: "b.go", Lines: "55-70", Symbol: "updateUser"},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepFinding
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.AffectedSites) != 2 {
+		t.Fatalf("AffectedSites length = %d, want 2", len(got.AffectedSites))
+	}
+	if got.AffectedSites[0].File != "a.go" || got.AffectedSites[0].Symbol != "createUser" {
+		t.Errorf("site round-trip lost data: %+v", got.AffectedSites[0])
+	}
+}
+
+func TestDeepFinding_AffectedSitesOmittedWhenEmpty(t *testing.T) {
+	f := DeepFinding{AOIID: "x", Severity: "medium"}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "affected_sites") {
+		t.Errorf("empty AffectedSites should be omitted, got %s", data)
+	}
+}

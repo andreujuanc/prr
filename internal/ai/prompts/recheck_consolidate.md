@@ -42,12 +42,19 @@ descriptions — not full evidence audits.
 ## Tasks
 
 ### 1. Consolidate cross-file patterns
-When three or more findings in different files share a root cause,
-merge them into a single systemic finding. Use the highest severity
-among the group; title the consolidated finding to reflect the
-systemic nature (e.g., "Systemic: Missing input validation across
-API handlers"); list all affected files in the description; keep the
-clearest suggestion.
+When three or more findings in **three or more distinct files**
+share a root cause, merge them into a single systemic finding:
+
+- Use the highest severity among the group.
+- Title with the "Systemic:" prefix (e.g., "Systemic: Missing input
+  validation across API handlers").
+- Populate `affected_sites` with one entry per call site: the
+  file, lines (when known), and the calling function/handler symbol
+  when one is identifiable. The downstream validator demotes any
+  "Systemic:" finding whose `affected_sites` cover fewer than 3
+  distinct files — so don't claim systemic for a 2-file pattern by
+  stretching the site list.
+- Keep the clearest suggestion.
 
 A 2-finding pattern is usually NOT a pattern — it's a coincidence
 in a small codebase. Hold those for the per-file pass to evaluate
@@ -89,7 +96,12 @@ Return a single JSON object:
         "title": "Systemic: Missing input sanitization across API handlers",
         "description": "Found in handler.go:45, service.go:112, api.go:78. All three endpoints accept user input without sanitization before passing to database queries.",
         "trigger": "User-controlled input flows to database without sanitization",
-        "suggestion": "Add a shared validation middleware or sanitization helper"
+        "suggestion": "Add a shared validation middleware or sanitization helper",
+        "affected_sites": [
+          {"file": "handler.go", "lines": "45-58", "symbol": "createUser"},
+          {"file": "service.go", "lines": "112-130", "symbol": "updateUser"},
+          {"file": "api.go", "lines": "78-90", "symbol": "deleteUser"}
+        ]
       }
     }
   ]
