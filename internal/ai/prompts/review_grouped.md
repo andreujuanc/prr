@@ -42,6 +42,32 @@ After reviewing all AOIs:
 
 Do NOT skip steps. Do NOT report findings based solely on the code snippets in the prompt.
 
+## End-to-End Trace (required at critical/high)
+
+For any finding you intend to emit at `critical` or `high` severity,
+produce a `trace` array of at least THREE hops showing how the suspect
+value reaches the next system boundary. Findings at `medium` / `low` /
+`nit` don't need a trace.
+
+Hop roles:
+
+- `suspect` — the cited line.
+- `caller` — the function/handler that invokes it.
+- `boundary` — the next *system* boundary the value reaches
+  (transport: HTTP response, RPC reply, message-queue send;
+  persistence: any write that may CAS, versioned column, or
+  conditional update; trust: input from network, file, env,
+  message body). The Runtime Model section above enumerates the
+  entry-point classes for this codebase.
+
+You may include more than three hops. Each hop carries `role`,
+`file`, `lines`, and a one-line `evidence` field.
+
+If you cannot write the trace, your understanding of the bug is
+incomplete — re-investigate or downgrade severity to medium. (The
+validator will penalize confidence on severe findings without a 3-hop
+trace.)
+
 ## Severity Calibration
 
 Pick `severity` per finding from CONCRETE IMPACT, not feel. Anchor to these:
@@ -95,6 +121,11 @@ Return ONLY a JSON object — no prose before or after:
         "repro": "concrete input/request that triggers this",
         "observable": "what the caller sees when the bug fires"
       },
+      "trace": [
+        {"role": "suspect",  "file": "a.go", "lines": "10", "evidence": "..."},
+        {"role": "caller",   "file": "b.go", "lines": "55", "evidence": "..."},
+        {"role": "boundary", "file": "c.go", "lines": "120", "evidence": "value returned to HTTP client"}
+      ],
       "confidence_score": 78,
       "confidence_reasoning": "one short sentence: what made you confident or uncertain",
       "suggestion": "concrete fix",
@@ -118,5 +149,5 @@ Return ONLY a JSON object — no prose before or after:
 - `trigger` describes a CONCRETE scenario, not "if an attacker..." generalities. `repro` is the smallest input that fires the bug; `observable` is what the caller actually sees. If you cannot fill both fields with concrete content, your understanding of the bug is incomplete — re-investigate or downgrade.
 - `confidence_score` (0-100) is your certainty that the finding is REAL, separate from severity. Severity = "how bad if real"; confidence_score = "how sure I am it's real". Anchor: 90-100 verified end-to-end; 70-89 strong evidence but one defense layer unchecked; 50-69 plausible from cited line + general patterns; <50 speculative.
 - `confidence_reasoning` is one short sentence justifying the score.
-- For findings: fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion.
+- For findings: fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
 - For dismissals: fill evidence and dismissed_rationale only.

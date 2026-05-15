@@ -173,6 +173,97 @@ func abs(x int) int {
 	return x
 }
 
+// Confidence penalties applied by ApplyConfidencePenalties to deep
+// findings whose evidence record is incomplete. The numbers come from
+// the audit-quality plan (commit 4). They are subtracted (floor 0) and
+// the corresponding tag is appended to ConfidenceReasoning so the
+// reviewer can see why the score moved.
+const (
+	// missingTracePenalty is subtracted from ConfidenceScore when a
+	// critical/high finding lacks a 3-hop trace. Severity is NOT
+	// changed — the bug's impact doesn't depend on whether the model
+	// documented the trace; only certainty does.
+	missingTracePenalty = 30
+
+	// minTraceHops is the minimum trace length the model must provide
+	// for critical/high severity. Below this, the missing-trace
+	// penalty fires.
+	minTraceHops = 3
+)
+
+// ApplyConfidencePenalties walks deep findings and adjusts confidence
+// scores when required evidence is missing. Today it enforces the
+// 3-hop-trace rule for critical/high severity (commit 4 in the
+// audit-quality plan). Later commits will add additional penalty
+// classes (e.g. defenses-not-checked from commit 5).
+//
+// Severity is never modified. Confidence is the right axis: severity
+// = "how bad if real", confidence = "how sure I am it's real". A
+// missing trace doesn't make the bug less bad; it makes us less sure
+// it's a bug. The reviewer can still sort/filter by confidence
+// without losing the signal that, if real, the bug is critical.
+//
+// Operates in place on the provided slice and returns the modified
+// findings for chained use.
+func ApplyConfidencePenalties(findings []state.DeepFinding) []state.DeepFinding {
+	for i := range findings {
+		if traceRequired(findings[i].Severity) && !hasValidTrace(findings[i].Trace) {
+			applyConfidencePenalty(&findings[i], missingTracePenalty, "missing-trace")
+		}
+	}
+	return findings
+}
+
+// traceRequired reports whether the 3-hop trace rule applies to a
+// finding's severity. Only critical/high — local-scope bugs at lower
+// severities don't need a boundary-reaching trace.
+func traceRequired(severity string) bool {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high":
+		return true
+	default:
+		return false
+	}
+}
+
+// hasValidTrace reports whether the trace meets the minimum-hops
+// requirement. A hop with an empty Role is treated as a missing hop
+// — the model has to label what each step represents.
+func hasValidTrace(hops []state.TraceHop) bool {
+	if len(hops) < minTraceHops {
+		return false
+	}
+	valid := 0
+	for _, h := range hops {
+		if strings.TrimSpace(h.Role) != "" {
+			valid++
+		}
+	}
+	return valid >= minTraceHops
+}
+
+// applyConfidencePenalty subtracts amount from the finding's confidence
+// score (floor 0) and appends tag to ConfidenceReasoning so the
+// reviewer can see what triggered the move. Multiple penalties on the
+// same finding accumulate via repeated calls — tags are
+// comma-separated.
+func applyConfidencePenalty(f *state.DeepFinding, amount int, tag string) {
+	f.ConfidenceScore -= amount
+	if f.ConfidenceScore < 0 {
+		f.ConfidenceScore = 0
+	}
+	if f.ConfidenceReasoning == "" {
+		f.ConfidenceReasoning = tag
+		return
+	}
+	// Avoid appending duplicates if the same finding flows through
+	// the validator more than once.
+	if strings.Contains(f.ConfidenceReasoning, tag) {
+		return
+	}
+	f.ConfidenceReasoning = f.ConfidenceReasoning + "; " + tag
+}
+
 // ParseHunkRanges extracts new-side hunk ranges from a unified diff
 // patch text (the "@@ -a,b +c,d @@" headers). Used by the pipeline to
 // build the hunkRanges map for ValidateAndNormalize.

@@ -389,6 +389,13 @@ func doReviewCall(
 		result = verifyAndCorrectEvidence(ctx, client, call, opts, callIndex, systemPrompt, messages, raw, result)
 	}
 
+	// Apply confidence penalties for missing required evidence (3-hop
+	// trace on critical/high — commit 4 in the audit-quality plan).
+	// Severity stays the model's call; only confidence moves.
+	if result != nil {
+		result.Findings = ApplyConfidencePenalties(result.Findings)
+	}
+
 	return result, nil
 }
 
@@ -788,6 +795,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			Evidence            string               `json:"evidence"`
 			EvidenceSnippet     string               `json:"evidence_snippet"`
 			Trigger             state.FindingTrigger `json:"trigger"`
+			Trace               []state.TraceHop     `json:"trace"`
 			Suggestion          string               `json:"suggestion"`
 			ConfidenceScore     int                  `json:"confidence_score"`
 			ConfidenceReasoning string               `json:"confidence_reasoning"`
@@ -811,6 +819,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				Evidence:            parsed.Evidence,
 				EvidenceSnippet:     parsed.EvidenceSnippet,
 				Trigger:             parsed.Trigger,
+				Trace:               parsed.Trace,
 				Suggestion:          parsed.Suggestion,
 				ConfidenceScore:     parsed.ConfidenceScore,
 				ConfidenceReasoning: parsed.ConfidenceReasoning,
@@ -841,6 +850,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				Evidence            string               `json:"evidence"`
 				EvidenceSnippet     string               `json:"evidence_snippet"`
 				Trigger             state.FindingTrigger `json:"trigger"`
+				Trace               []state.TraceHop     `json:"trace"`
 				Suggestion          string               `json:"suggestion"`
 				ConfidenceScore     int                  `json:"confidence_score"`
 				ConfidenceReasoning string               `json:"confidence_reasoning"`
@@ -867,6 +877,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 					Evidence:            r.Evidence,
 					EvidenceSnippet:     r.EvidenceSnippet,
 					Trigger:             r.Trigger,
+					Trace:               r.Trace,
 					Suggestion:          r.Suggestion,
 					ConfidenceScore:     r.ConfidenceScore,
 					ConfidenceReasoning: r.ConfidenceReasoning,

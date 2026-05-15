@@ -123,6 +123,24 @@ func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) err
 						fmt.Fprintf(&b, "**Confidence:** %d/100  \n", f.ConfidenceScore)
 					}
 				}
+				if len(f.Trace) > 0 {
+					b.WriteString("**Trace:**\n")
+					for _, h := range f.Trace {
+						role := h.Role
+						if role == "" {
+							role = "?"
+						}
+						loc := h.File
+						if h.Lines != "" {
+							loc += ":" + h.Lines
+						}
+						if h.Evidence != "" {
+							fmt.Fprintf(&b, "- `%s` %s — %s\n", role, loc, h.Evidence)
+						} else {
+							fmt.Fprintf(&b, "- `%s` %s\n", role, loc)
+						}
+					}
+				}
 				if f.Suggestion != "" {
 					fmt.Fprintf(&b, "**Fix:** %s  \n", f.Suggestion)
 				}

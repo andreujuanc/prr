@@ -491,6 +491,32 @@ func (t *FindingTrigger) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// TraceHop is one step of the end-to-end trace the reviewer walked
+// before flagging a finding. The 3-hop minimum (suspect line →
+// caller → boundary) is enforced for critical/high severity by the
+// confidence-penalty rule in applyConfidencePenalties.
+//
+// Role is one of:
+//   - "suspect"  — the cited line itself; the alleged bug location.
+//   - "caller"   — the immediate function/handler that invokes the
+//     suspect code.
+//   - "boundary" — the next system boundary the value reaches
+//     (transport: HTTP response, RPC reply, message send;
+//     persistence: any write that may CAS, versioned column, or
+//     conditional update; trust: input from network, file, env,
+//     message body). The runtime model from Phase 0.5 anchors which
+//     boundaries exist in this codebase.
+//
+// Findings can include additional hops between caller and boundary
+// when the data flow passes through layered helpers; the validator
+// only requires that at least 3 hops are present.
+type TraceHop struct {
+	Role     string `json:"role"`               // "suspect" | "caller" | "boundary" | free-form
+	File     string `json:"file,omitempty"`     // path of the hop's file
+	Lines    string `json:"lines,omitempty"`    // line range within the file
+	Evidence string `json:"evidence,omitempty"` // 1-line summary of what was confirmed at this hop
+}
+
 // DeepFinding is a confirmed issue from Phase 3 review.
 type DeepFinding struct {
 	FindingID   string `json:"finding_id,omitempty"` // assigned before recheck (e.g. "F-001")
@@ -526,6 +552,15 @@ type DeepFinding struct {
 	// concrete tags (e.g., "missing-trace", "defenses-not-checked")
 	// so the reviewer can see why the score moved.
 	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
+
+	// Trace is the end-to-end path the reviewer walked from the
+	// suspect line to the next system boundary. The Phase 3 prompt
+	// asks for at least three hops for findings at severity
+	// critical/high so a snippet-in-isolation flag can't survive at
+	// severe severity without the reviewer showing their work.
+	// Findings at lower severity (medium/low/nit) don't require a
+	// trace.
+	Trace []TraceHop `json:"trace,omitempty"`
 
 	// Systemic is set by the recheck parser when a finding came out
 	// of the `consolidated` bucket — i.e. it represents a cross-file

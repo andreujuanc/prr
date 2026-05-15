@@ -36,6 +36,38 @@ If no `### Conventions` section is present, this rule doesn't apply.
 
 Do NOT skip steps. Do NOT report a finding based solely on the code snippet in the prompt.
 
+## End-to-End Trace (required at critical/high)
+
+If you intend to emit this finding at `critical` or `high` severity,
+you MUST produce a `trace` array of at least THREE hops showing how
+the suspect value reaches the next system boundary. Findings at
+`medium` / `low` / `nit` don't need a trace — local-scope bugs that
+never reach a boundary aren't `high`-severity to begin with.
+
+Hop roles:
+
+- `suspect` — the cited line itself (the alleged bug).
+- `caller` — the function/handler that invokes the suspect code.
+- `boundary` — the next *system* boundary the value reaches.
+  - *transport boundary*: HTTP response, RPC reply, message-queue send.
+  - *persistence boundary*: any write that may CAS, versioned column,
+    or conditional update.
+  - *trust boundary*: input from network, file, env, message body.
+
+The Runtime Model section above enumerates the entry-point classes for
+this codebase — use it to classify what counts as a boundary here. You
+may include additional hops between caller and boundary when the data
+flow passes through layered helpers; the minimum is 3.
+
+Each hop carries `role`, `file`, `lines`, and a one-line `evidence`
+field summarizing what you confirmed at that step.
+
+If you cannot write the trace, your understanding of the bug is
+incomplete. **Either re-investigate or downgrade severity to medium**
+— don't ship a severe finding without a trace. (The validator will
+penalize confidence on severe findings without a 3-hop trace, so
+shipping anyway just produces low-confidence noise.)
+
 ## Severity Calibration
 
 Pick `severity` from CONCRETE IMPACT, not feel. Anchor to these:
@@ -86,6 +118,11 @@ Return ONLY a JSON object — no prose before or after:
     "repro": "concrete input/request that triggers this — e.g., 'POST /admin/X body {...}' or 'call Foo(nil)'",
     "observable": "what the caller sees when the bug fires — e.g., '500 with stack trace' or 'returns wrong value 42'"
   },
+  "trace": [
+    {"role": "suspect",  "file": "path/to/file.go", "lines": "45-62", "evidence": "one line summary of what you confirmed here"},
+    {"role": "caller",   "file": "path/to/caller.go", "lines": "100-110", "evidence": "..."},
+    {"role": "boundary", "file": "path/to/route.go",  "lines": "12-20",   "evidence": "HTTP handler returns this value to the client"}
+  ],
   "confidence_score": 78,
   "confidence_reasoning": "one short sentence: what made you confident or uncertain",
   "suggestion": "concrete fix — code snippet preferred",
@@ -93,7 +130,7 @@ Return ONLY a JSON object — no prose before or after:
 }
 ```
 
-- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion
+- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
 - If this is NOT a real issue: set status to "dismissed", fill evidence and dismissed_rationale (evidence_snippet not required for dismissals)
 - "evidence" is REQUIRED for both findings and dismissals — summarize what you checked and what you found
   - Good: "found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open"

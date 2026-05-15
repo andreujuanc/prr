@@ -150,3 +150,149 @@ func TestValidateAndNormalize_NilInput(t *testing.T) {
 		t.Fatalf("nil input must round-trip nil/nil, got %v / %v", out, dropped)
 	}
 }
+
+// ── ApplyConfidencePenalties: 3-hop trace requirement ────────────────────
+
+func threeHopTrace() []state.TraceHop {
+	return []state.TraceHop{
+		{Role: "suspect", File: "a.go", Lines: "10", Evidence: "cited line"},
+		{Role: "caller", File: "b.go", Lines: "50", Evidence: "calls a.go:10"},
+		{Role: "boundary", File: "c.go", Lines: "120", Evidence: "HTTP response"},
+	}
+}
+
+func TestApplyConfidencePenalties_HighWithoutTraceDocksConfidence(t *testing.T) {
+	findings := []state.DeepFinding{
+		{Severity: "high", ConfidenceScore: 85},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 55 {
+		t.Errorf("ConfidenceScore = %d, want 55 (85 - 30)", out[0].ConfidenceScore)
+	}
+	if out[0].ConfidenceReasoning != "missing-trace" {
+		t.Errorf("ConfidenceReasoning = %q, want 'missing-trace'", out[0].ConfidenceReasoning)
+	}
+	if out[0].Severity != "high" {
+		t.Errorf("Severity should remain unchanged, got %q", out[0].Severity)
+	}
+}
+
+func TestApplyConfidencePenalties_CriticalWithoutTraceDocksConfidence(t *testing.T) {
+	findings := []state.DeepFinding{
+		{Severity: "critical", ConfidenceScore: 90},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 60 {
+		t.Errorf("ConfidenceScore = %d, want 60", out[0].ConfidenceScore)
+	}
+}
+
+func TestApplyConfidencePenalties_HighWithTraceUntouched(t *testing.T) {
+	findings := []state.DeepFinding{
+		{Severity: "high", ConfidenceScore: 85, Trace: threeHopTrace()},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 85 {
+		t.Errorf("ConfidenceScore should not move when trace is present; got %d", out[0].ConfidenceScore)
+	}
+	if out[0].ConfidenceReasoning != "" {
+		t.Errorf("ConfidenceReasoning should be empty; got %q", out[0].ConfidenceReasoning)
+	}
+}
+
+func TestApplyConfidencePenalties_MediumWithoutTraceUntouched(t *testing.T) {
+	findings := []state.DeepFinding{
+		{Severity: "medium", ConfidenceScore: 75},
+		{Severity: "low", ConfidenceScore: 50},
+		{Severity: "nit", ConfidenceScore: 30},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 75 || out[1].ConfidenceScore != 50 || out[2].ConfidenceScore != 30 {
+		t.Errorf("medium/low/nit should not get the missing-trace penalty; got %+v", out)
+	}
+}
+
+func TestApplyConfidencePenalties_TooFewHops(t *testing.T) {
+	// Only 2 hops — the rule requires 3.
+	short := []state.TraceHop{
+		{Role: "suspect", File: "a.go", Lines: "10"},
+		{Role: "caller", File: "b.go", Lines: "50"},
+	}
+	findings := []state.DeepFinding{
+		{Severity: "high", ConfidenceScore: 85, Trace: short},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 55 {
+		t.Errorf("2-hop trace should not satisfy 3-hop rule; got %d", out[0].ConfidenceScore)
+	}
+}
+
+func TestApplyConfidencePenalties_HopWithoutRoleDoesNotCount(t *testing.T) {
+	// A hop with empty role is malformed; should not contribute.
+	hops := []state.TraceHop{
+		{Role: "suspect", File: "a.go", Lines: "10"},
+		{Role: "", File: "b.go", Lines: "50"}, // unlabeled
+		{Role: "boundary", File: "c.go", Lines: "120"},
+	}
+	findings := []state.DeepFinding{
+		{Severity: "high", ConfidenceScore: 80, Trace: hops},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 50 {
+		t.Errorf("unlabeled hops should not count; want penalty applied, got %d", out[0].ConfidenceScore)
+	}
+}
+
+func TestApplyConfidencePenalties_FloorsAtZero(t *testing.T) {
+	findings := []state.DeepFinding{
+		{Severity: "high", ConfidenceScore: 10}, // 10 - 30 underflows
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 0 {
+		t.Errorf("ConfidenceScore should floor at 0, got %d", out[0].ConfidenceScore)
+	}
+}
+
+func TestApplyConfidencePenalties_PreservesExistingReasoning(t *testing.T) {
+	findings := []state.DeepFinding{
+		{Severity: "high", ConfidenceScore: 80, ConfidenceReasoning: "saw the call site"},
+	}
+	out := ApplyConfidencePenalties(findings)
+	want := "saw the call site; missing-trace"
+	if out[0].ConfidenceReasoning != want {
+		t.Errorf("ConfidenceReasoning = %q, want %q", out[0].ConfidenceReasoning, want)
+	}
+}
+
+func TestApplyConfidencePenalties_IdempotentTag(t *testing.T) {
+	// Running the validator twice should not duplicate the tag.
+	findings := []state.DeepFinding{
+		{Severity: "high", ConfidenceScore: 80},
+	}
+	out := ApplyConfidencePenalties(findings)
+	out = ApplyConfidencePenalties(out)
+	// First pass: 80 → 50, reasoning="missing-trace".
+	// Second pass: 50 → 20, reasoning still "missing-trace" (no duplicate).
+	if out[0].ConfidenceReasoning != "missing-trace" {
+		t.Errorf("ConfidenceReasoning duplicated: %q", out[0].ConfidenceReasoning)
+	}
+}
+
+func TestApplyConfidencePenalties_GroupedReviewIndependentAOIs(t *testing.T) {
+	// Grouped review test: mixed-severity findings are judged per AOI.
+	findings := []state.DeepFinding{
+		{Severity: "high", ConfidenceScore: 80},                         // penalty
+		{Severity: "medium", ConfidenceScore: 70},                       // no penalty
+		{Severity: "high", ConfidenceScore: 80, Trace: threeHopTrace()}, // no penalty
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 50 {
+		t.Errorf("[0] expected penalty: %d", out[0].ConfidenceScore)
+	}
+	if out[1].ConfidenceScore != 70 {
+		t.Errorf("[1] medium should be untouched: %d", out[1].ConfidenceScore)
+	}
+	if out[2].ConfidenceScore != 80 {
+		t.Errorf("[2] high+trace should be untouched: %d", out[2].ConfidenceScore)
+	}
+}

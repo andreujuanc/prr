@@ -698,6 +698,45 @@ func TestDeepFinding_UnmarshalLegacyStringTrigger(t *testing.T) {
 	}
 }
 
+func TestDeepFinding_TraceRoundTrip(t *testing.T) {
+	orig := DeepFinding{
+		AOIID:    "aoi-1",
+		Severity: "high",
+		Trace: []TraceHop{
+			{Role: "suspect", File: "a.go", Lines: "10", Evidence: "cited"},
+			{Role: "caller", File: "b.go", Lines: "50", Evidence: "calls a"},
+			{Role: "boundary", File: "c.go", Lines: "120", Evidence: "returns to client"},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepFinding
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Trace) != 3 {
+		t.Fatalf("Trace length = %d, want 3", len(got.Trace))
+	}
+	if got.Trace[2].Role != "boundary" || got.Trace[2].File != "c.go" {
+		t.Errorf("Trace[2] round-trip lost data: %+v", got.Trace[2])
+	}
+}
+
+func TestDeepFinding_TraceOmittedWhenEmpty(t *testing.T) {
+	// Findings at medium/low/nit don't include a trace — make sure the
+	// field is omitempty and doesn't bloat the JSON.
+	f := DeepFinding{AOIID: "x", Severity: "medium"}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "trace") {
+		t.Errorf("empty Trace should be omitted from JSON, got %s", data)
+	}
+}
+
 // ── ConfidenceBand: derived from score, falls back to legacy string ─────
 
 func TestConfidenceBand(t *testing.T) {
