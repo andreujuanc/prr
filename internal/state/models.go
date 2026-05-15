@@ -294,13 +294,18 @@ type FindingRevalidation struct {
 }
 
 // ConfidenceBand returns a coarse band derived from ConfidenceScore for
-// UIs that still want a "high"|"medium"|"low" label. When
-// ConfidenceScore is zero (unknown), the legacy Confidence string is
-// returned so old cached findings still render with a band.
+// UIs that still want a "high"|"medium"|"low" label.
 //
 // Bands: >=80 high, 50-79 medium, <50 low.
+//
+// Legacy-fallback rule: only when ConfidenceScore is zero AND the
+// legacy Confidence string is populated do we treat that as "this
+// finding came from old cached state, use its string band as-is."
+// A score of zero with an empty legacy field means the score was
+// either never set OR was penalized to zero by ApplyConfidencePenalties
+// — both render as "low" so the UI doesn't blank out the band.
 func (f ReviewFinding) ConfidenceBand() string {
-	if f.ConfidenceScore == 0 {
+	if f.ConfidenceScore == 0 && f.Confidence != "" {
 		return f.Confidence
 	}
 	switch {

@@ -241,6 +241,44 @@ func TestSynthesizeBoundaryAOIs_IDsAreUnique(t *testing.T) {
 	}
 }
 
+// Regression: two HTTP boundaries in the same file with empty Symbol
+// (the LLM couldn't identify route handlers for either) used to
+// collide on the file+kind+symbol hash. MergeBoundaryAOIs then
+// silently dropped the second boundary's defense AOIs. Lines and
+// Description are now mixed into the hash so distinct boundaries
+// produce distinct ids even without a Symbol.
+func TestSynthesizeBoundaryAOIs_EmptySymbolBoundariesDoNotCollide(t *testing.T) {
+	got := SynthesizeBoundaryAOIs([]state.Boundary{
+		{Kind: "http", File: "api.go", Lines: "10-30", Description: "POST /users"},
+		{Kind: "http", File: "api.go", Lines: "50-70", Description: "GET /users"},
+	})
+	// Each http boundary expands to 3 defense AOIs → 6 total. If the
+	// IDs collide, MergeBoundaryAOIs would dedup down to 3.
+	if len(got) != 6 {
+		t.Fatalf("got %d AOIs, want 6 (3 per boundary)", len(got))
+	}
+	seen := make(map[string]struct{}, len(got))
+	for _, aoi := range got {
+		if _, dup := seen[aoi.ID]; dup {
+			t.Errorf("duplicate AOI id across boundaries with empty Symbol: %q", aoi.ID)
+		}
+		seen[aoi.ID] = struct{}{}
+	}
+}
+
+// Even more degenerate: two boundaries with empty Symbol AND empty
+// Description — distinguished only by Lines. They should still get
+// distinct ids.
+func TestSynthesizeBoundaryAOIs_DifferentLinesEnoughForUniqueness(t *testing.T) {
+	got := SynthesizeBoundaryAOIs([]state.Boundary{
+		{Kind: "http", File: "api.go", Lines: "10-30"},
+		{Kind: "http", File: "api.go", Lines: "50-70"},
+	})
+	if len(got) != 6 {
+		t.Fatalf("got %d AOIs, want 6", len(got))
+	}
+}
+
 func TestSynthesizeBoundaryAOIs_IDsAreStable(t *testing.T) {
 	// Same boundary produces same id across calls — important for
 	// caching and cross-referencing.

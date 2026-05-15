@@ -785,9 +785,12 @@ func TestConfidenceBand(t *testing.T) {
 		{score: 79, wantBand: "medium"},
 		{score: 50, wantBand: "medium"},
 		{score: 49, wantBand: "low"},
-		{score: 0, legacy: "high", wantBand: "high"},     // legacy fallback
-		{score: 0, legacy: "medium", wantBand: "medium"}, // legacy fallback
-		{score: 0, legacy: "", wantBand: ""},             // unknown stays unknown
+		{score: 0, legacy: "high", wantBand: "high"},     // legacy fallback (cached state)
+		{score: 0, legacy: "medium", wantBand: "medium"}, // legacy fallback (cached state)
+		// Penalized-to-zero finding with no legacy field falls through
+		// to the switch and renders as "low" — previously this returned
+		// "" and the UI blanked the confidence column.
+		{score: 0, legacy: "", wantBand: "low"},
 	}
 	for _, tt := range tests {
 		f := ReviewFinding{ConfidenceScore: tt.score, Confidence: tt.legacy}
@@ -795,6 +798,20 @@ func TestConfidenceBand(t *testing.T) {
 			t.Errorf("ConfidenceBand(score=%d legacy=%q) = %q, want %q",
 				tt.score, tt.legacy, got, tt.wantBand)
 		}
+	}
+}
+
+// Regression: a finding produced by the new pipeline gets penalized
+// down to ConfidenceScore=0 (e.g. a starting score of 40 with both
+// missing-trace (-30) and defenses-not-checked (-25) applied). The
+// legacy Confidence field is empty because the new pipeline doesn't
+// populate it. Previously ConfidenceBand() returned "" here and the
+// UI blanked the confidence column. Now it falls through to the
+// switch and returns "low".
+func TestConfidenceBand_PenalizedToZeroRendersAsLow(t *testing.T) {
+	f := ReviewFinding{ConfidenceScore: 0, Confidence: ""}
+	if got := f.ConfidenceBand(); got != "low" {
+		t.Errorf("ConfidenceBand() = %q, want %q", got, "low")
 	}
 }
 

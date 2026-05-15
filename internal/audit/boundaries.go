@@ -436,10 +436,16 @@ type boundaryDefense struct {
 // boundaryAOIID builds a stable, slug-shaped id for a synthetic AOI.
 // IDs feed caching and cross-referencing so the same boundary +
 // defense question yields the same id across runs.
+//
+// The hash mixes File, Kind, Symbol, Lines, AND Description so two
+// boundaries that share file+kind+symbol (a common case when the
+// LLM can't identify route handlers — Symbol comes back empty for
+// both) still produce different ids and MergeBoundaryAOIs doesn't
+// silently dedup one away. Without Lines/Description in the hash,
+// two HTTP routes in the same router file with no extracted symbol
+// collide and the second is lost.
 func boundaryAOIID(b state.Boundary, defenseSlug string) string {
-	// Hash the boundary's file+kind+symbol so two boundaries on the
-	// same file (e.g. POST /a and POST /b) don't collide.
-	h := sha256.Sum256([]byte(b.File + "|" + b.Kind + "|" + b.Symbol))
+	h := sha256.Sum256([]byte(b.File + "|" + b.Kind + "|" + b.Symbol + "|" + b.Lines + "|" + b.Description))
 	tag := fmt.Sprintf("%x", h)[:10]
 	return fmt.Sprintf("boundary-%s-%s-%s", slugifyKind(b.Kind), defenseSlug, tag)
 }
