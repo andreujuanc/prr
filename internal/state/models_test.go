@@ -71,7 +71,7 @@ func TestSetGetAOIResults(t *testing.T) {
 	data := json.RawMessage(`{"areas":["auth","crypto"]}`)
 
 	// Set on a file that doesn't exist yet — should create FileState
-	s.SetAOIResults("main.go", data, 5)
+	s.SetAOIResults("main.go", data, 5, "")
 
 	got, ctx := s.GetAOIResults("main.go")
 	if got == nil {
@@ -101,7 +101,7 @@ func TestSetAOIResults_OverwritesExisting(t *testing.T) {
 	s.Files["f.go"] = &FileState{Status: StatusReviewed, DiffHash: "abc"}
 
 	data := json.RawMessage(`{"new": true}`)
-	s.SetAOIResults("f.go", data, 10)
+	s.SetAOIResults("f.go", data, 10, "")
 
 	// Should overwrite AOI data but preserve other fields
 	if s.Files["f.go"].Status != StatusReviewed {
@@ -1115,5 +1115,34 @@ func TestDeepFinding_AffectedSitesOmittedWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(data), "affected_sites") {
 		t.Errorf("empty AffectedSites should be omitted, got %s", data)
+	}
+}
+
+// ── SiblingClusterCache: opaque JSON + hash persistence ─────────────────
+
+func TestStateSetGetSiblingClusterCache(t *testing.T) {
+	s := NewState("1")
+	if raw, h := s.GetSiblingClusterCache(); raw != nil || h != "" {
+		t.Errorf("empty state should return nil/empty, got %s / %q", raw, h)
+	}
+
+	payload := json.RawMessage(`[{"id":"deviant-x","file":"h.go"}]`)
+	s.SetSiblingClusterCache(payload, "hash-xyz")
+
+	gotRaw, gotHash := s.GetSiblingClusterCache()
+	if string(gotRaw) != string(payload) {
+		t.Errorf("payload round-trip failed: got %s", gotRaw)
+	}
+	if gotHash != "hash-xyz" {
+		t.Errorf("hash = %q, want hash-xyz", gotHash)
+	}
+}
+
+func TestStateClearAllCachesAlsoClearsSiblingClusterCache(t *testing.T) {
+	s := NewState("1")
+	s.SetSiblingClusterCache(json.RawMessage(`[]`), "h1")
+	s.ClearAllCaches()
+	if raw, h := s.GetSiblingClusterCache(); raw != nil || h != "" {
+		t.Errorf("ClearAllCaches should clear the cluster cache, got %s / %q", raw, h)
 	}
 }

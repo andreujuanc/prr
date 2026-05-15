@@ -2,7 +2,9 @@ package security
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,18 @@ var revalidatePrompt string
 
 // AOIScanPrompt returns the AOI scan system prompt for PR review mode.
 func AOIScanPrompt() string { return buildAOIScanPrompt(false) }
+
+// AOIScanPromptHash returns a short sha256 hash of the AOI scan
+// prompt for cache-invalidation purposes. Mixed into the Phase 2
+// AOI cache key so prompt edits (e.g. commit 7's TODO/FIXME +
+// unit-type rules) auto-invalidate stale entries.
+//
+// auditMode selects which prompt variant to hash. The two modes
+// embed different mode-specific rules so they need separate hashes.
+func AOIScanPromptHash(auditMode bool) string {
+	h := sha256.Sum256([]byte(buildAOIScanPrompt(auditMode)))
+	return hex.EncodeToString(h[:])
+}
 
 // AOIAuditPrompt returns the AOI scan system prompt for full-project audit mode.
 func AOIAuditPrompt() string { return buildAOIScanPrompt(true) }

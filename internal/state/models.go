@@ -357,14 +357,20 @@ type AIReview struct {
 
 // FileState holds the review status and chat history for a specific file
 type FileState struct {
-	Status          ReviewStatus    `json:"status"`
-	DiffHash        string          `json:"diff_hash"`
-	Chat            []Message       `json:"chat,omitempty"`
-	Purpose         string          `json:"purpose,omitempty"`           // AI-generated description of what the file does
-	BatchFindings   string          `json:"batch_findings,omitempty"`    // cached findings from PR-level batch review
-	AOIResults      json.RawMessage `json:"aoi_results,omitempty"`       // cached AOI scan result (AOIScanResult JSON)
-	AOIContextLines int             `json:"aoi_context_lines,omitempty"` // context lines used when AOI was generated
-	FileType        string          `json:"file_type,omitempty"`         // cached file classification (e.g. "handler", "test")
+	Status        ReviewStatus    `json:"status"`
+	DiffHash      string          `json:"diff_hash"`
+	Chat          []Message       `json:"chat,omitempty"`
+	Purpose       string          `json:"purpose,omitempty"`        // AI-generated description of what the file does
+	BatchFindings string          `json:"batch_findings,omitempty"` // cached findings from PR-level batch review
+	AOIResults    json.RawMessage `json:"aoi_results,omitempty"`    // cached AOI scan result (AOIScanResult JSON)
+	// AOIPromptHash is sha256 of the AOI scanner prompt at the time
+	// AOIResults was written. The audit pipeline includes this in the
+	// cache-hit check so prompt changes (e.g. commit 7's TODO/FIXME
+	// + unit-type rules) auto-invalidate stale entries rather than
+	// silently serving results produced by the previous prompt.
+	AOIPromptHash   string `json:"aoi_prompt_hash,omitempty"`
+	AOIContextLines int    `json:"aoi_context_lines,omitempty"` // context lines used when AOI was generated
+	FileType        string `json:"file_type,omitempty"`         // cached file classification (e.g. "handler", "test")
 }
 
 // State represents the persisted review state for a single pull request
@@ -398,6 +404,16 @@ type State struct {
 	// isolation, result discipline).
 	BoundaryInventory     []Boundary `json:"boundary_inventory,omitempty"`
 	BoundaryInventoryHash string     `json:"boundary_inventory_hash,omitempty"`
+
+	// SiblingClusterOutliers caches the outlier AOIs synthesized by
+	// Phase 2.5 sibling clustering. Stored as opaque JSON because the
+	// outliers are typed []security.AreaOfInterest and state must not
+	// import security (security already imports state for
+	// SiblingDeviation). On cache hit the audit package unmarshals
+	// into its own typed slice. Hash covers the candidate AOI set
+	// + the cluster prompt; either rolls the cache.
+	SiblingClusterOutliers json.RawMessage `json:"sibling_cluster_outliers,omitempty"`
+	SiblingClusterHash     string          `json:"sibling_cluster_hash,omitempty"`
 
 	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
 	// review inputs (file content + AOI content + focus dimensions for individual;
@@ -701,9 +717,12 @@ func NewState(prNumber string) *State {
 // directly mutating FileState fields, because the Bubble Tea main loop reads
 // the same fields for rendering.
 
-// SetAOIResults stores AOI scan results for a file along with the context
-// lines used to generate them. Creates the FileState if it doesn't exist.
-func (s *State) SetAOIResults(path string, data json.RawMessage, contextLines int) {
+// SetAOIResults stores AOI scan results for a file along with the
+// context lines and the AOI scanner prompt hash used to generate
+// them. Creates the FileState if it doesn't exist. The promptHash is
+// what gates cache reuse on prompt edits — passing "" disables that
+// check (useful for tests).
+func (s *State) SetAOIResults(path string, data json.RawMessage, contextLines int, promptHash string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fs, ok := s.Files[path]
@@ -713,6 +732,7 @@ func (s *State) SetAOIResults(path string, data json.RawMessage, contextLines in
 	}
 	fs.AOIResults = data
 	fs.AOIContextLines = contextLines
+	fs.AOIPromptHash = promptHash
 }
 
 // GetAOIResults returns the cached AOI results for a file, or nil.
@@ -797,6 +817,8 @@ func (s *State) ClearAllCaches() {
 	s.RuntimeModelHash = ""
 	s.BoundaryInventory = nil
 	s.BoundaryInventoryHash = ""
+	s.SiblingClusterOutliers = nil
+	s.SiblingClusterHash = ""
 	s.LastReview = nil
 }
 
@@ -1032,6 +1054,25 @@ func (s *State) GetBoundaryInventory() (boundaries []Boundary, inputHash string)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.BoundaryInventory, s.BoundaryInventoryHash
+}
+
+// SetSiblingClusterCache stores the Phase 2.5 outlier list (as opaque
+// JSON) along with its input hash. The audit package owns the typed
+// shape of the JSON; state stores it opaquely to avoid importing
+// the security package.
+func (s *State) SetSiblingClusterCache(outliers json.RawMessage, inputHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SiblingClusterOutliers = outliers
+	s.SiblingClusterHash = inputHash
+}
+
+// GetSiblingClusterCache returns the cached outlier JSON and its
+// input hash. Returns (nil, "") when no cache entry exists.
+func (s *State) GetSiblingClusterCache() (outliers json.RawMessage, inputHash string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.SiblingClusterOutliers, s.SiblingClusterHash
 }
 
 // SetDeepReview stores a Phase 3 deep review result by cache key.

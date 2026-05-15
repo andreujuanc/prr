@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -263,7 +264,9 @@ func makeAOIs(n int, prefix string) []security.AreaOfInterest {
 }
 
 func prefixID(prefix string, i int) string {
-	return prefix + "-" + string('a'+rune(i))
+	// %d (not 'a' + i) so the fixture stays correct past i=25.
+	// Previously emitted '{', '|', '}', '~' for i = 26..29.
+	return fmt.Sprintf("%s-%d", prefix, i)
 }
 
 func TestDiscoverSiblingOutliers_ParsesValidResponse(t *testing.T) {
@@ -271,8 +274,8 @@ func TestDiscoverSiblingOutliers_ParsesValidResponse(t *testing.T) {
 	client := &clusterStubClient{
 		response: `[{
 			"pattern": "5 of 6 handlers call guardAdmin",
-			"sibling_ids": ["h-a","h-b","h-c","h-d","h-e"],
-			"deviant_ids": ["h-f"],
+			"sibling_ids": ["h-0","h-1","h-2","h-3","h-4"],
+			"deviant_ids": ["h-5"],
 			"category": "authorization",
 			"deviation_concern": "missing guardAdmin"
 		}]`,
@@ -284,8 +287,8 @@ func TestDiscoverSiblingOutliers_ParsesValidResponse(t *testing.T) {
 	if len(res.Outliers) != 1 {
 		t.Fatalf("expected 1 outlier, got %d", len(res.Outliers))
 	}
-	if res.Outliers[0].File != "h-f.go" {
-		t.Errorf("outlier should anchor to h-f.go; got %q", res.Outliers[0].File)
+	if res.Outliers[0].File != "h-5.go" {
+		t.Errorf("outlier should anchor to h-5.go; got %q", res.Outliers[0].File)
 	}
 	if !strings.Contains(client.systemSeen, "outliers") {
 		t.Errorf("system prompt should mention outliers; got %q", client.systemSeen[:80])

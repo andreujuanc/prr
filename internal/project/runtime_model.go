@@ -90,20 +90,23 @@ func DiscoverRuntimeModel(
 }
 
 // hashRuntimeModelInputs hashes the inputs used to generate the runtime
-// model. Includes the project summary in the hash so editing the
-// project briefing also invalidates the runtime model — they're meant
-// to stay consistent with each other.
+// model. Includes the project summary AND the runtime model prompt in
+// the hash so any of the three rolls the cache:
+//
+//   - the project briefing changes (different summary → potentially
+//     different runtime model)
+//   - the embedded prompt changes (different rules → different output
+//     even on the same inputs)
+//   - the underlying inputs change (docs, manifests, dir tree)
 func hashRuntimeModelInputs(inputs *discoveredInputs, projectSummary string) string {
 	base := hashInputs(inputs)
-	if projectSummary == "" {
-		return base
-	}
-	// Mix the project summary into the existing hash so any change to
-	// the briefing also rolls the runtime model's hash.
 	h := sha256.New()
 	h.Write([]byte(base))
 	h.Write([]byte{0})
 	h.Write([]byte(projectSummary))
+	h.Write([]byte{0})
+	promptHash := sha256.Sum256([]byte(runtimeModelSystemPrompt))
+	h.Write(promptHash[:])
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 

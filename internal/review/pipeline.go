@@ -772,7 +772,10 @@ func RunReviewCore(
 						}
 					}
 					if data, err := json.Marshal(fileResult); err == nil {
-						reviewState.SetAOIResults(filePath, data, aoiContextLines)
+						// PR review uses the diff-mode AOI prompt
+						// (auditMode=false). Hash it into the cache
+						// entry so future prompt edits auto-invalidate.
+						reviewState.SetAOIResults(filePath, data, aoiContextLines, security.AOIScanPromptHash(false))
 					} else {
 						log.Printf("Warning: failed to marshal AOI result for %s: %v", filePath, err)
 					}

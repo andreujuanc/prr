@@ -519,7 +519,7 @@ func Run(
 	// investigation on "is this deviation intentional or a bug?"
 	if opts.SiblingClustering {
 		dbgw.Phase("PHASE 2.5: Sibling Cluster Outlier Detection")
-		outlierAOIs := runPhase25(ctx, aoiClient, aoiResults, onProgress)
+		outlierAOIs := runPhase25(ctx, aoiClient, aoiResults, auditState, opts.NoCache, onProgress)
 		if len(outlierAOIs) > 0 {
 			aoiResults = MergeBoundaryAOIs(aoiResults, outlierAOIs) // reuse the same merge — same shape/contract
 			onProgress("phase2.5", fmt.Sprintf("merged %d sibling-outlier AOIs", len(outlierAOIs)))
@@ -792,13 +792,20 @@ func runPhase15(
 // ── Phase 2.5: Sibling Cluster Outlier Detection ──────────────────────
 
 // runPhase25 collects all AOIs across the per-file results and runs
-// sibling-cluster discovery. Non-fatal: an LLM/parse failure logs
-// and returns an empty outlier list (the audit proceeds with just
-// the regular AOIs).
+// sibling-cluster discovery, with state-backed caching. Non-fatal:
+// an LLM/parse failure logs and returns an empty outlier list (the
+// audit proceeds with just the regular AOIs).
+//
+// Caching: cluster output is stored on state.State.SiblingClusterCache
+// as opaque JSON keyed by hashClusterInputs (which mixes both the
+// AOI set and the cluster prompt). On hit, we unmarshal and skip the
+// LLM call entirely. NoCache forces a re-run.
 func runPhase25(
 	ctx context.Context,
 	aoiClient ai.Client,
 	results []security.AOIScanResult,
+	auditState *state.State,
+	noCache bool,
 	onProgress OnProgress,
 ) []security.AreaOfInterest {
 	var all []security.AreaOfInterest
@@ -809,12 +816,36 @@ func runPhase25(
 		return nil
 	}
 
-	res, err := DiscoverSiblingOutliers(ctx, aoiClient, all, "", func(status string) {
+	var cachedHash string
+	if !noCache {
+		_, cachedHash = auditState.GetSiblingClusterCache()
+	}
+
+	res, err := DiscoverSiblingOutliers(ctx, aoiClient, all, cachedHash, func(status string) {
 		onProgress("phase2.5", status)
 	})
 	if err != nil {
 		log.Printf("Phase 2.5 sibling clustering failed (non-fatal): %v", err)
 		return nil
+	}
+
+	if res.FromCache {
+		// Cache hit — load the previously-persisted outliers.
+		raw, _ := auditState.GetSiblingClusterCache()
+		if len(raw) == 0 {
+			return nil
+		}
+		var outliers []security.AreaOfInterest
+		if err := json.Unmarshal(raw, &outliers); err != nil {
+			log.Printf("Phase 2.5: failed to unmarshal cached outliers (non-fatal): %v", err)
+			return nil
+		}
+		return outliers
+	}
+
+	// Persist fresh outliers for next run.
+	if data, err := json.Marshal(res.Outliers); err == nil {
+		auditState.SetSiblingClusterCache(data, res.InputHash)
 	}
 	return res.Outliers
 }
@@ -839,13 +870,19 @@ func runPhase2(
 		filePath := f.Path
 		contentStr := f.Content
 
-		// Check cache: if file content hash matches, reuse cached AOI results
+		// Check cache: file content + AOI scanner prompt must both
+		// be unchanged. The prompt hash gate ensures commit 7's
+		// (and any later) scanner-prompt edits auto-invalidate stale
+		// AOI cache entries instead of silently serving results
+		// produced by the previous prompt.
 		contentHash := hashContent(contentStr)
+		currentPromptHash := security.AOIScanPromptHash(true)
 		if !opts.NoCache {
 			raw, cachedCtxLines := auditState.GetAOIResults(filePath)
 			if raw != nil && cachedCtxLines == opts.AOIContextLines {
-				// Check if the content hash matches
-				if fs, ok := auditState.Files[filePath]; ok && fs.DiffHash == contentHash {
+				if fs, ok := auditState.Files[filePath]; ok &&
+					fs.DiffHash == contentHash &&
+					(fs.AOIPromptHash == "" || fs.AOIPromptHash == currentPromptHash) {
 					var cached security.AOIScanResult
 					if err := json.Unmarshal(raw, &cached); err == nil {
 						cached.NormalizeAOIs()
@@ -896,13 +933,15 @@ func runPhase2(
 	}
 
 	// Cache results per-file (fresh results only — cached entries are
-	// already in state).
+	// already in state). Promptt hash is captured at write time so a
+	// later prompt edit auto-invalidates these entries on read.
+	aoiPromptHash := security.AOIScanPromptHash(true)
 	for _, fileResult := range report.Files {
 		data, err := json.Marshal(fileResult)
 		if err != nil {
 			continue
 		}
-		auditState.SetAOIResults(fileResult.File, data, opts.AOIContextLines)
+		auditState.SetAOIResults(fileResult.File, data, opts.AOIContextLines, aoiPromptHash)
 	}
 
 	// Merge cached results into the return value. The scanner's internal

@@ -153,8 +153,10 @@ func trimToLines(s string, n int) string {
 }
 
 // hashBoundaryInputs hashes the ordered excerpts plus the runtime
-// model (when present) so any change to the inputs invalidates the
-// cached inventory.
+// model (when present) plus the boundary-inventory prompt itself.
+// Mixing the prompt in means a later edit to boundary_inventory.md
+// auto-invalidates the cached inventory rather than silently serving
+// boundaries produced by the previous prompt.
 func hashBoundaryInputs(excerpts []boundaryExcerpt, model *state.RuntimeModel) string {
 	h := sha256.New()
 	for _, e := range excerpts {
@@ -169,6 +171,9 @@ func hashBoundaryInputs(excerpts []boundaryExcerpt, model *state.RuntimeModel) s
 			h.Write(data)
 		}
 	}
+	h.Write([]byte{0})
+	promptHash := sha256.Sum256([]byte(boundaryInventorySystemPrompt))
+	h.Write(promptHash[:])
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 

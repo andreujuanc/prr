@@ -269,8 +269,11 @@ func groupByCategory(candidates []clusterCandidate) map[string][]clusterCandidat
 	return out
 }
 
-// hashClusterInputs hashes the ordered candidates so the cluster
-// cache invalidates when the AOI set changes.
+// hashClusterInputs hashes the ordered candidates plus the cluster
+// prompt itself so the cache invalidates when the AOI set OR the
+// prompt rules change. Without the prompt hash a later edit to
+// sibling_cluster.md would silently serve clusters produced by the
+// previous prompt.
 func hashClusterInputs(candidates []clusterCandidate) string {
 	sorted := make([]clusterCandidate, len(candidates))
 	copy(sorted, candidates)
@@ -280,6 +283,9 @@ func hashClusterInputs(candidates []clusterCandidate) string {
 	for _, c := range sorted {
 		fmt.Fprintf(h, "%s|%s|%s|%s|%s\x00", c.ID, c.File, c.Category, c.Concern, c.Context)
 	}
+	h.Write([]byte{0})
+	promptHash := sha256.Sum256([]byte(siblingClusterSystemPrompt))
+	h.Write(promptHash[:])
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 

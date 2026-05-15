@@ -93,6 +93,11 @@ confidence score and tag the reasoning with `defenses-not-checked`.
 Severity is unchanged — but a low-confidence severe finding is a
 weaker signal than a high-confidence one.
 
+**Always emit the `defenses_checked` field, even if the value is
+`[]`.** An omitted field and an empty array are treated the same way
+by the validator, but emitting the field explicitly proves you
+considered it rather than forgetting.
+
 ## End-to-End Trace (required at critical/high)
 
 If you intend to emit this finding at `critical` or `high` severity,
