@@ -55,6 +55,17 @@ type Options struct {
 	// the front so --max-reviews truncates AOIs in cold files first.
 	AuditRecent int
 
+	// SiblingClustering enables Phase 2.5: after Phase 2 AOI
+	// generation, run an LLM call (or per-category calls when the
+	// AOI set is large) that groups AOIs by shape and surfaces
+	// outliers — handlers/call-sites whose pattern disagrees with
+	// the majority of their siblings. Each outlier becomes an
+	// individual-urgency AOI for Phase 3.
+	//
+	// Gated behind a flag for the first release so precision can be
+	// measured on real audits before making it default.
+	SiblingClustering bool
+
 	// LargeFileThreshold is the file count above which a warning is
 	// displayed. Defaults to 200 when zero.
 	LargeFileThreshold int
@@ -499,6 +510,26 @@ func Run(
 			len(boundaryAOIs), len(boundaryInventory)))
 	}
 
+	// ── Phase 2.5: Sibling Cluster Outlier Detection ────────────────────
+	// Optional — gated on opts.SiblingClustering. Identifies AOIs
+	// whose pattern disagrees with their siblings (e.g., 9 of 11
+	// admin handlers call guardAdmin and this one doesn't). The
+	// outliers are merged into aoiResults as individual-urgency
+	// AOIs with a SiblingDeviation tag so Phase 3 can anchor the
+	// investigation on "is this deviation intentional or a bug?"
+	if opts.SiblingClustering {
+		dbgw.Phase("PHASE 2.5: Sibling Cluster Outlier Detection")
+		outlierAOIs := runPhase25(ctx, aoiClient, aoiResults, onProgress)
+		if len(outlierAOIs) > 0 {
+			aoiResults = MergeBoundaryAOIs(aoiResults, outlierAOIs) // reuse the same merge — same shape/contract
+			onProgress("phase2.5", fmt.Sprintf("merged %d sibling-outlier AOIs", len(outlierAOIs)))
+			dbgw.Section("Sibling Outliers")
+			for _, a := range outlierAOIs {
+				dbgw.Text("- [%s] %s — %s", a.Category, a.File, a.Concern)
+			}
+		}
+	}
+
 	// Emit the terminal phase-2 summary the TUI parser needs to populate
 	// aoi_count. Without this, the summary row renders "0 AOIs" forever
 	// even when the scan found dozens — the review pipeline emits the
@@ -756,6 +787,36 @@ func runPhase15(
 		}
 	}
 	return res.Boundaries
+}
+
+// ── Phase 2.5: Sibling Cluster Outlier Detection ──────────────────────
+
+// runPhase25 collects all AOIs across the per-file results and runs
+// sibling-cluster discovery. Non-fatal: an LLM/parse failure logs
+// and returns an empty outlier list (the audit proceeds with just
+// the regular AOIs).
+func runPhase25(
+	ctx context.Context,
+	aoiClient ai.Client,
+	results []security.AOIScanResult,
+	onProgress OnProgress,
+) []security.AreaOfInterest {
+	var all []security.AreaOfInterest
+	for _, r := range results {
+		all = append(all, r.AreasOfInterest...)
+	}
+	if len(all) < siblingClusterMinSize {
+		return nil
+	}
+
+	res, err := DiscoverSiblingOutliers(ctx, aoiClient, all, "", func(status string) {
+		onProgress("phase2.5", status)
+	})
+	if err != nil {
+		log.Printf("Phase 2.5 sibling clustering failed (non-fatal): %v", err)
+		return nil
+	}
+	return res.Outliers
 }
 
 // ── Phase 2: AOI Generation ─────────────────────────────────────────────

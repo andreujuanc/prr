@@ -1022,3 +1022,59 @@ func TestStateClearAllCachesAlsoClearsBoundaryInventory(t *testing.T) {
 		t.Errorf("ClearAllCaches should clear the boundary inventory, got %+v / %q", b, h)
 	}
 }
+
+// ── SiblingDeviation: schema + DeepFinding round-trip ───────────────────
+
+func TestSiblingDeviation_RoundTrip(t *testing.T) {
+	orig := SiblingDeviation{
+		Pattern:    "9 of 11 handlers call guardAdmin",
+		SiblingIDs: []string{"a-id", "b-id", "c-id"},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got SiblingDeviation
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Pattern != orig.Pattern || len(got.SiblingIDs) != 3 {
+		t.Errorf("round-trip lost data: %+v", got)
+	}
+}
+
+func TestDeepFinding_SiblingDeviationRoundTrip(t *testing.T) {
+	orig := DeepFinding{
+		AOIID:    "aoi-1",
+		Severity: "high",
+		SiblingDeviation: &SiblingDeviation{
+			Pattern:    "9 of 11 handlers call guardAdmin",
+			SiblingIDs: []string{"a", "b"},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepFinding
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.SiblingDeviation == nil {
+		t.Fatal("SiblingDeviation should round-trip")
+	}
+	if got.SiblingDeviation.Pattern != orig.SiblingDeviation.Pattern {
+		t.Errorf("pattern lost: %q", got.SiblingDeviation.Pattern)
+	}
+}
+
+func TestDeepFinding_SiblingDeviationOmittedWhenNil(t *testing.T) {
+	f := DeepFinding{AOIID: "x", Severity: "medium"}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "sibling_deviation") {
+		t.Errorf("nil SiblingDeviation should be omitted, got %s", data)
+	}
+}

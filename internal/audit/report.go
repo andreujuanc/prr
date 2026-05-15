@@ -144,6 +144,16 @@ func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) err
 				if len(f.DefensesChecked) > 0 {
 					fmt.Fprintf(&b, "**Defenses checked:** %s  \n", strings.Join(f.DefensesChecked, ", "))
 				}
+				if f.SiblingDeviation != nil {
+					fmt.Fprintf(&b, "**Sibling pattern:** %s  \n", strings.TrimSpace(f.SiblingDeviation.Pattern))
+					if ids := f.SiblingDeviation.SiblingIDs; len(ids) > 0 {
+						capped := ids
+						if len(capped) > 5 {
+							capped = capped[:5]
+						}
+						fmt.Fprintf(&b, "**Conforming siblings:** %s  \n", strings.Join(capped, ", "))
+					}
+				}
 				if f.Suggestion != "" {
 					fmt.Fprintf(&b, "**Fix:** %s  \n", f.Suggestion)
 				}

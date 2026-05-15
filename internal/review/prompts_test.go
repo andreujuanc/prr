@@ -169,3 +169,76 @@ func TestBuildGroupedPrompt_RuntimeModelInjected(t *testing.T) {
 		t.Error("grouped prompt should include the auth model content")
 	}
 }
+
+// ── SiblingDeviation injection ──────────────────────────────────────────
+
+func TestBuildIndividualPrompt_SiblingDeviationInjected(t *testing.T) {
+	aoi := security.AreaOfInterest{
+		File:     "handler.go",
+		Line:     10,
+		Category: "authorization",
+		ID:       "deviant-aoi",
+		Concern:  "missing guardAdmin",
+		SiblingDeviation: &state.SiblingDeviation{
+			Pattern:    "9 of 11 admin POST handlers call guardAdmin()",
+			SiblingIDs: []string{"a-id", "b-id", "c-id"},
+		},
+	}
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", nil, aoi)
+
+	if !strings.Contains(prompt, "Sibling pattern:") {
+		t.Error("prompt should include the sibling pattern label")
+	}
+	if !strings.Contains(prompt, "9 of 11 admin POST handlers") {
+		t.Error("prompt should embed the pattern description")
+	}
+	if !strings.Contains(prompt, "Conforming siblings") {
+		t.Error("prompt should list conforming siblings")
+	}
+	if !strings.Contains(prompt, "a-id") || !strings.Contains(prompt, "b-id") {
+		t.Error("prompt should cite specific sibling IDs")
+	}
+	if !strings.Contains(prompt, "intentional") {
+		t.Error("prompt should anchor on whether the deviation is intentional")
+	}
+}
+
+func TestBuildIndividualPrompt_NilSiblingDeviationOmitted(t *testing.T) {
+	aoi := security.AreaOfInterest{
+		File:     "handler.go",
+		Line:     10,
+		Category: "authorization",
+		ID:       "regular-aoi",
+	}
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", nil, aoi)
+	if strings.Contains(prompt, "Sibling pattern:") {
+		t.Error("regular AOI should not emit a sibling-pattern section")
+	}
+}
+
+func TestBuildIndividualPrompt_SiblingDeviationCapsSiblingList(t *testing.T) {
+	// More than 8 siblings — should cap to keep the prompt small.
+	manyIDs := []string{"s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12"}
+	aoi := security.AreaOfInterest{
+		File:     "handler.go",
+		Line:     10,
+		Category: "authorization",
+		SiblingDeviation: &state.SiblingDeviation{
+			Pattern:    "test pattern",
+			SiblingIDs: manyIDs,
+		},
+	}
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", nil, aoi)
+	// The 9th-12th ids should NOT appear (capped at 8).
+	for _, late := range []string{"s9", "s10", "s11", "s12"} {
+		if strings.Contains(prompt, late) {
+			t.Errorf("prompt should cap sibling list at 8; saw %q", late)
+		}
+	}
+	// First 8 should be present.
+	for _, early := range manyIDs[:8] {
+		if !strings.Contains(prompt, early) {
+			t.Errorf("expected %q in prompt", early)
+		}
+	}
+}

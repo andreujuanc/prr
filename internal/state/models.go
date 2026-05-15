@@ -139,6 +139,20 @@ type RuntimeEntryPoint struct {
 	ValidationAt string `json:"validation_at,omitempty"`
 }
 
+// SiblingDeviation captures a "1 of N doesn't follow the pattern"
+// observation produced by Phase 2.5 sibling clustering. The pattern
+// field is a one-line description ("9 of 11 admin POSTs call
+// guardAdmin()") and SiblingIDs lists the AOI ids that DO follow the
+// pattern (the conforming siblings), so a reviewer can compare the
+// deviant against them.
+//
+// Carried verbatim from the AreaOfInterest into the DeepFinding so
+// the audit report can render the deviation alongside the finding.
+type SiblingDeviation struct {
+	Pattern    string   `json:"pattern"`
+	SiblingIDs []string `json:"sibling_ids,omitempty"`
+}
+
 // Boundary is one concrete externally-reachable surface located in a
 // specific file. It is the persisted output of Phase 1.5 (boundary
 // discovery). Each boundary seeds 1-3 defense-coverage AOIs for
@@ -624,6 +638,16 @@ type DeepFinding struct {
 	// fully as one that does. Other categories leave this
 	// optional.
 	DefensesChecked []string `json:"defenses_checked,omitempty"`
+
+	// SiblingDeviation is carried over from the AOI when the
+	// finding came from a Phase 2.5 outlier — the AOI scanner
+	// noticed N siblings all follow a pattern and this one doesn't.
+	// Set when the AOI's SiblingDeviation was non-nil and the
+	// reviewer confirmed the deviation as a real finding (rather
+	// than dismissing it as intentional). Carried so the audit
+	// report can render "9 of 11 admin POSTs call guardAdmin —
+	// this one doesn't" under the finding.
+	SiblingDeviation *SiblingDeviation `json:"sibling_deviation,omitempty"`
 
 	// Systemic is set by the recheck parser when a finding came out
 	// of the `consolidated` bucket — i.e. it represents a cross-file

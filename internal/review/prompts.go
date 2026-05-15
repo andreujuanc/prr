@@ -167,6 +167,25 @@ func formatAOI(aoi security.AreaOfInterest) string {
 		sb.WriteString(fmt.Sprintf("**Code:** `%s`\n", aoi.Snippet))
 	}
 
+	// Sibling deviation: when this AOI was synthesized by Phase 2.5
+	// clustering, surface the conforming pattern and the sibling
+	// references so the reviewer can frame the investigation around
+	// "is this deviation intentional or a bug?" rather than judging
+	// the line in isolation.
+	if aoi.SiblingDeviation != nil {
+		sb.WriteString("\n**Sibling pattern:** ")
+		sb.WriteString(strings.TrimSpace(aoi.SiblingDeviation.Pattern))
+		sb.WriteString("\n")
+		if ids := aoi.SiblingDeviation.SiblingIDs; len(ids) > 0 {
+			capped := ids
+			if len(capped) > 8 {
+				capped = capped[:8]
+			}
+			sb.WriteString(fmt.Sprintf("**Conforming siblings (compare against):** %s\n", strings.Join(capped, ", ")))
+		}
+		sb.WriteString("**Anchor the investigation on:** Is this deviation intentional (note in nearby code, different invariant, deliberate exception) or is it a bug? Read both this code and at least one conforming sibling before concluding.\n")
+	}
+
 	return sb.String()
 }
 
