@@ -253,6 +253,21 @@ func Run(
 		dbgw.Text("(no project context discovered)")
 	}
 
+	// Phase 0.5 — runtime model. One additional LLM call that
+	// summarizes the codebase's structured shape (auth model, entry
+	// points, validation sites, result discipline, invariants) for
+	// injection into every Phase 3 prompt. Non-fatal on failure —
+	// review.DiscoverRuntimeModel logs and returns the cached value
+	// (possibly nil) rather than erroring.
+	dbgw.Phase("PHASE 0.5: Runtime Model Discovery")
+	runtimeModel := review.DiscoverRuntimeModel(ctx, aoiClient, opts.RepoRoot, projectContext, auditState, func(status string) {
+		onProgress("phase0", status)
+	})
+	if runtimeModel != nil {
+		dbgw.Section("Runtime Model Result")
+		dbgw.Text("%s", runtimeModel.Render())
+	}
+
 	if p1.err != nil {
 		return nil, fmt.Errorf("phase 1 file collection: %w", p1.err)
 	}
@@ -516,7 +531,7 @@ func Run(
 		log.Printf("Phase 3: using review model %s/%s", mi.ProviderName(), mi.ModelName())
 	}
 	findings, dismissals, crossCutting, failed, failedAOIIDs, err := runPhase3(
-		ctx, reviewClient, opts, auditState, projectContext, calls, onProgress, phase3DebugHook, phase3ToolHook,
+		ctx, reviewClient, opts, auditState, projectContext, runtimeModel, calls, onProgress, phase3DebugHook, phase3ToolHook,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("phase 3 deep review: %w", err)
@@ -754,6 +769,7 @@ func runPhase3(
 	opts Options,
 	auditState *state.State,
 	projectContext string,
+	runtimeModel *state.RuntimeModel,
 	calls []review.ReviewCall,
 	onProgress OnProgress,
 	debugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string),
@@ -762,6 +778,7 @@ func runPhase3(
 	execOpts := review.ExecuteOptions{
 		Mode:            review.ModeAudit,
 		ProjectContext:  projectContext,
+		RuntimeModel:    runtimeModel,
 		FocusDimensions: opts.Focus,
 		MaxConcurrency:  concurrencyOr(opts.Concurrency.DeepReview, phase3MaxConcurrency),
 		NoCache:         opts.NoCache,

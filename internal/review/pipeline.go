@@ -446,6 +446,52 @@ func DiscoverProjectContext(
 	return result.Summary, nil
 }
 
+// DiscoverRuntimeModel runs Phase 0.5 runtime-model discovery with
+// state caching. Mirrors DiscoverProjectContext's contract: returns
+// the cached model on hash match, otherwise calls the LLM and caches
+// the new result.
+//
+// The runtime model is a quality enhancement, not load-bearing — on
+// LLM or parse failure we log and return a nil model rather than
+// failing the whole audit. The caller threads the (possibly-nil)
+// model into Phase 3 prompt construction.
+func DiscoverRuntimeModel(
+	ctx context.Context,
+	client ai.Client,
+	repoRoot string,
+	projectSummary string,
+	reviewState *state.State,
+	onProgress func(string),
+) *state.RuntimeModel {
+	if onProgress == nil {
+		onProgress = func(string) {}
+	}
+
+	var cachedModel *state.RuntimeModel
+	var cachedHash string
+	if reviewState != nil {
+		cachedModel, cachedHash = reviewState.GetRuntimeModel()
+	}
+
+	res, err := project.DiscoverRuntimeModel(ctx, client, repoRoot, projectSummary, cachedHash, onProgress)
+	if err != nil {
+		// Non-fatal — log and fall back to whatever we had cached
+		// (possibly nil). Phase 3 still runs; the prompt just omits
+		// the runtime model section.
+		log.Printf("Runtime model discovery failed (non-fatal): %v", err)
+		return cachedModel
+	}
+
+	if res.FromCache {
+		return cachedModel
+	}
+
+	if reviewState != nil && res.Model != nil {
+		reviewState.SetRuntimeModel(res.Model, res.InputHash)
+	}
+	return res.Model
+}
+
 // RecheckSettings is an optional settings bundle for RunRecheck. Zero-value
 // fields fall back to defaults inside RecheckFindings.
 type RecheckSettings struct {
@@ -591,6 +637,7 @@ func RunReviewCore(
 	// the project package silently degraded to a raw doc dump which
 	// then bloated every later prompt. Fail fast.
 	var projectContext string
+	var runtimeModel *state.RuntimeModel
 	if opts.RepoRoot != "" {
 		pctx, err := DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, reviewState, func(status string) {
 			rr.DiscoveryProgress("Project context: " + status)
@@ -599,6 +646,12 @@ func RunReviewCore(
 			return nil, fmt.Errorf("project context discovery: %w", err)
 		}
 		projectContext = pctx
+
+		// Phase 0.5 — runtime model. Non-fatal: failure leaves
+		// runtimeModel nil and Phase 3 prompts omit the section.
+		runtimeModel = DiscoverRuntimeModel(ctx, aoiClient, opts.RepoRoot, projectContext, reviewState, func(status string) {
+			rr.DiscoveryProgress("Runtime model: " + status)
+		})
 	}
 
 	// PR Brief discovery — condensed summary of comments / prior AI
@@ -821,6 +874,7 @@ func RunReviewCore(
 		execOpts := ExecuteOptions{
 			Mode:               ModePR,
 			ProjectContext:     projectContext,
+			RuntimeModel:       runtimeModel,
 			CustomInstructions: enhancedInstructions,
 			MaxConcurrency:     maxConc,
 			RepoRoot:           opts.RepoRoot,

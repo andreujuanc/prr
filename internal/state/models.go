@@ -82,6 +82,149 @@ type ReviewFinding struct {
 	Revalidation *FindingRevalidation `json:"revalidation,omitempty"`
 }
 
+// RuntimeModel captures the codebase's runtime shape so Phase 3 review
+// can ground findings in the project's actual entry points, validation
+// sites, and error-handling discipline. Produced once per audit by
+// Phase 0.5 and injected verbatim into every Phase 3 prompt.
+//
+// The fields are intentionally narrow and prose-based — they encode
+// the same answers a senior engineer would give a new hire on their
+// first day. Downstream review prompts reference these answers when
+// judging whether a finding traces through the runtime model or
+// contradicts it.
+type RuntimeModel struct {
+	// AuthModel describes who guards what — gateway authorizers,
+	// middleware, in-handler checks. 1-2 sentences.
+	AuthModel string `json:"auth_model,omitempty"`
+
+	// ValidationSites lists where user/network input gets validated
+	// before reaching business logic. Short strings, one per layer
+	// or location.
+	ValidationSites []string `json:"validation_sites,omitempty"`
+
+	// EntryPoints enumerates the externally-reachable surfaces. Each
+	// entry classifies its kind, retry model, batching model, and
+	// where validation happens. Empty list means "no entry points
+	// identified" (could be a library/CLI-only repo).
+	EntryPoints []RuntimeEntryPoint `json:"entry_points,omitempty"`
+
+	// ResultDiscipline describes how errors propagate — Result types,
+	// exception handling, error wrapping, sentinel values. One line.
+	ResultDiscipline string `json:"result_discipline,omitempty"`
+
+	// Invariants lists the load-bearing assumptions the codebase
+	// relies on but doesn't necessarily enforce in every call site
+	// (e.g., "all IDs are UUID v4", "amounts are stored in minor
+	// units", "the inbox table is append-only"). Short statements.
+	Invariants []string `json:"invariants,omitempty"`
+}
+
+// RuntimeEntryPoint describes one externally-reachable surface.
+type RuntimeEntryPoint struct {
+	// Kind classifies the surface: "http", "queue", "scheduled",
+	// "cli", "rpc", "webhook", "other".
+	Kind string `json:"kind"`
+
+	// RetryModel describes who retries on failure and what triggers
+	// retry (e.g., "API Gateway does not retry — caller's job",
+	// "SNS retries with exponential backoff per record").
+	RetryModel string `json:"retry_model,omitempty"`
+
+	// BatchModel describes batching: single-record vs. batched, and
+	// whether one bad record fails the batch.
+	BatchModel string `json:"batch_model,omitempty"`
+
+	// ValidationAt is one of "boundary", "handler", "both", "none".
+	// Where in the call chain inputs get validated.
+	ValidationAt string `json:"validation_at,omitempty"`
+}
+
+// IsZero reports whether the model carries no information.
+func (m *RuntimeModel) IsZero() bool {
+	if m == nil {
+		return true
+	}
+	return m.AuthModel == "" &&
+		len(m.ValidationSites) == 0 &&
+		len(m.EntryPoints) == 0 &&
+		m.ResultDiscipline == "" &&
+		len(m.Invariants) == 0
+}
+
+// Render formats the model for injection into a Phase 3 prompt under a
+// `## Runtime Model` section. Returns the empty string when the model
+// is zero so callers can skip the section entirely.
+//
+// The output is compact (well under 1KB on a typical repo) so it
+// doesn't crowd out the rest of the prompt. Each field gets a labeled
+// line; empty fields are omitted.
+func (m *RuntimeModel) Render() string {
+	if m.IsZero() {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Runtime Model\n\n")
+	b.WriteString("A finding that contradicts the runtime model is a strong signal of a bug. ")
+	b.WriteString("A finding that doesn't trace through the runtime model is a strong false-positive candidate.\n\n")
+
+	if m.AuthModel != "" {
+		b.WriteString("**Auth model:** ")
+		b.WriteString(strings.TrimSpace(m.AuthModel))
+		b.WriteString("\n\n")
+	}
+	if len(m.ValidationSites) > 0 {
+		b.WriteString("**Validation sites:**\n")
+		for _, s := range m.ValidationSites {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		b.WriteString("\n")
+	}
+	if len(m.EntryPoints) > 0 {
+		b.WriteString("**Entry points:**\n")
+		for _, ep := range m.EntryPoints {
+			kind := strings.TrimSpace(ep.Kind)
+			if kind == "" {
+				kind = "other"
+			}
+			fmt.Fprintf(&b, "- `%s`", kind)
+			if v := strings.TrimSpace(ep.ValidationAt); v != "" {
+				fmt.Fprintf(&b, " — validation at %s", v)
+			}
+			if r := strings.TrimSpace(ep.RetryModel); r != "" {
+				fmt.Fprintf(&b, "; retries: %s", r)
+			}
+			if bm := strings.TrimSpace(ep.BatchModel); bm != "" {
+				fmt.Fprintf(&b, "; batching: %s", bm)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if m.ResultDiscipline != "" {
+		b.WriteString("**Result discipline:** ")
+		b.WriteString(strings.TrimSpace(m.ResultDiscipline))
+		b.WriteString("\n\n")
+	}
+	if len(m.Invariants) > 0 {
+		b.WriteString("**Invariants:**\n")
+		for _, inv := range m.Invariants {
+			inv = strings.TrimSpace(inv)
+			if inv == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s\n", inv)
+		}
+		b.WriteString("\n")
+	}
+
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
 // FindingRevalidation holds the result of a security revalidation pass.
 type FindingRevalidation struct {
 	Verdict    string `json:"verdict"` // "true-positive", "false-positive", "fixed", "uncertain"
@@ -175,6 +318,15 @@ type State struct {
 	ProjectContextHash string                `json:"project_context_hash,omitempty"` // hash of inputs used to generate it
 	PRBrief            string                `json:"pr_brief,omitempty"`             // cached PR-specific briefing (comments, prior reviews, CI)
 	PRBriefHash        string                `json:"pr_brief_hash,omitempty"`        // hash of inputs used to generate the PR brief
+
+	// RuntimeModel is the structured codebase shape produced by Phase
+	// 0.5 — auth model, validation sites, entry points, result
+	// discipline, invariants. Injected into every Phase 3 prompt so
+	// the reviewer can ground findings in "what this codebase looks
+	// like at runtime". RuntimeModelHash carries the hash of inputs
+	// used to produce it.
+	RuntimeModel     *RuntimeModel `json:"runtime_model,omitempty"`
+	RuntimeModelHash string        `json:"runtime_model_hash,omitempty"`
 
 	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
 	// review inputs (file content + AOI content + focus dimensions for individual;
@@ -499,6 +651,8 @@ func (s *State) ClearAllCaches() {
 	s.ProjectContextHash = ""
 	s.PRBrief = ""
 	s.PRBriefHash = ""
+	s.RuntimeModel = nil
+	s.RuntimeModelHash = ""
 	s.LastReview = nil
 }
 
@@ -698,6 +852,24 @@ func (s *State) ClearPRBrief() {
 	defer s.mu.Unlock()
 	s.PRBrief = ""
 	s.PRBriefHash = ""
+}
+
+// SetRuntimeModel stores the discovered runtime model and the hash of
+// the inputs used to produce it. Mirrors SetProjectContext.
+func (s *State) SetRuntimeModel(model *RuntimeModel, inputHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.RuntimeModel = model
+	s.RuntimeModelHash = inputHash
+}
+
+// GetRuntimeModel returns the cached runtime model and its input hash.
+// The returned pointer is the live one held by State; treat it as
+// read-only.
+func (s *State) GetRuntimeModel() (model *RuntimeModel, inputHash string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.RuntimeModel, s.RuntimeModelHash
 }
 
 // SetDeepReview stores a Phase 3 deep review result by cache key.

@@ -24,6 +24,14 @@ type ExecuteOptions struct {
 	// ProjectContext is the discovered project summary.
 	ProjectContext string
 
+	// RuntimeModel is the discovered structured codebase shape from
+	// Phase 0.5. When non-nil, the runtime model is rendered into a
+	// `## Runtime Model` section of every Phase 3 prompt so the
+	// reviewer can ground findings in the project's actual entry
+	// points, validation sites, and error discipline. Nil is fine —
+	// the section is simply omitted.
+	RuntimeModel *state.RuntimeModel
+
 	// CustomInstructions from user config.
 	CustomInstructions string
 
@@ -314,11 +322,11 @@ func doReviewCall(
 	var systemPrompt string
 	if call.Type == "individual" {
 		systemPrompt = BuildIndividualPrompt(
-			opts.Mode, opts.ProjectContext, opts.CustomInstructions, call.AOIs[0],
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.RuntimeModel, call.AOIs[0],
 		)
 	} else {
 		systemPrompt = BuildGroupedPrompt(
-			opts.Mode, opts.ProjectContext, opts.CustomInstructions, call,
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.RuntimeModel, call,
 		)
 	}
 

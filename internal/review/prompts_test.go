@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/andreujuanc/prr/internal/security"
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
@@ -21,7 +22,7 @@ func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
 		Dimensions:  []string{"correctness", "financial"},
 	}
 
-	prompt := BuildIndividualPrompt(ModeAudit, "This is a billing system.", "Always check money math.", aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "This is a billing system.", "Always check money math.", nil, aoi)
 
 	checks := []struct {
 		name    string
@@ -54,7 +55,7 @@ func TestBuildIndividualPrompt_PRMode(t *testing.T) {
 		Category: "error-handling",
 	}
 
-	prompt := BuildIndividualPrompt(ModePR, "", "", aoi)
+	prompt := BuildIndividualPrompt(ModePR, "", "", nil, aoi)
 
 	if !strings.Contains(prompt, "pull request") {
 		t.Error("PR mode preamble should mention pull request")
@@ -76,7 +77,7 @@ func TestBuildGroupedPrompt_ContainsAllAOIs(t *testing.T) {
 		Files: []string{"a.go", "b.go"},
 	}
 
-	prompt := BuildGroupedPrompt(ModeAudit, "Test project", "", call)
+	prompt := BuildGroupedPrompt(ModeAudit, "Test project", "", nil, call)
 
 	if !strings.Contains(prompt, "error-handling/swallowed-errors") {
 		t.Error("should contain subcategory label")
@@ -106,12 +107,65 @@ func TestBuildIndividualPrompt_LegacyAOI(t *testing.T) {
 		Confidence: "high",
 	}
 
-	prompt := BuildIndividualPrompt(ModePR, "", "", aoi)
+	prompt := BuildIndividualPrompt(ModePR, "", "", nil, aoi)
 
 	if !strings.Contains(prompt, "db.Query(s)") {
 		t.Error("should include snippet from legacy AOI")
 	}
 	if !strings.Contains(prompt, "raw SQL with variable") {
 		t.Error("should use reasoning as concern for legacy AOI")
+	}
+}
+
+// ── Runtime model injection ─────────────────────────────────────────────
+
+func TestBuildIndividualPrompt_RuntimeModelInjected(t *testing.T) {
+	rm := &state.RuntimeModel{
+		AuthModel: "Gateway authorizer validates every request",
+		EntryPoints: []state.RuntimeEntryPoint{
+			{Kind: "http", ValidationAt: "boundary"},
+		},
+	}
+	aoi := security.AreaOfInterest{File: "main.go", Line: 1, Category: "correctness"}
+
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", rm, aoi)
+
+	if !strings.Contains(prompt, "## Runtime Model") {
+		t.Error("prompt should contain the runtime model section header")
+	}
+	if !strings.Contains(prompt, "Gateway authorizer validates every request") {
+		t.Error("prompt should include the auth model content")
+	}
+	if !strings.Contains(prompt, "validation at boundary") {
+		t.Error("prompt should include the rendered entry point")
+	}
+}
+
+func TestBuildIndividualPrompt_NilRuntimeModelOmitsSection(t *testing.T) {
+	aoi := security.AreaOfInterest{File: "main.go", Line: 1, Category: "correctness"}
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", nil, aoi)
+	if strings.Contains(prompt, "## Runtime Model") {
+		t.Error("nil runtime model should not emit the section header")
+	}
+}
+
+func TestBuildGroupedPrompt_RuntimeModelInjected(t *testing.T) {
+	rm := &state.RuntimeModel{
+		AuthModel: "API key per route",
+	}
+	call := ReviewCall{
+		Type:        "grouped",
+		Category:    "error-handling",
+		Subcategory: "swallowed-errors",
+		AOIs: []security.AreaOfInterest{
+			{File: "a.go", Line: 1, Category: "error-handling", ID: "a"},
+		},
+	}
+	prompt := BuildGroupedPrompt(ModeAudit, "", "", rm, call)
+	if !strings.Contains(prompt, "## Runtime Model") {
+		t.Error("grouped prompt should contain the runtime model section")
+	}
+	if !strings.Contains(prompt, "API key per route") {
+		t.Error("grouped prompt should include the auth model content")
 	}
 }

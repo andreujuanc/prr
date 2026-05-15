@@ -6,6 +6,7 @@ import (
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/security"
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 // Mode distinguishes between PR review and audit mode for prompt framing.
@@ -17,7 +18,9 @@ const (
 )
 
 // BuildIndividualPrompt composes the system prompt for reviewing a single AOI.
-func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string, aoi security.AreaOfInterest) string {
+// runtimeModel may be nil — when present, a `## Runtime Model` section is
+// appended after the project context.
+func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string, runtimeModel *state.RuntimeModel, aoi security.AreaOfInterest) string {
 	var sb strings.Builder
 
 	// Mode-specific preamble
@@ -37,6 +40,13 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string,
 	// Project context
 	if projectContext != "" {
 		appendProjectContext(&sb, projectContext)
+	}
+
+	// Runtime model — appended after project context so the reviewer
+	// sees the structured shape after the prose briefing.
+	if rendered := runtimeModel.Render(); rendered != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(rendered)
 	}
 
 	// AOI details
@@ -60,7 +70,9 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string,
 }
 
 // BuildGroupedPrompt composes the system prompt for reviewing a subcategory group.
-func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, call ReviewCall) string {
+// runtimeModel may be nil — when present, a `## Runtime Model` section is
+// appended after the project context.
+func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, runtimeModel *state.RuntimeModel, call ReviewCall) string {
 	var sb strings.Builder
 
 	// Mode-specific preamble
@@ -80,6 +92,12 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, ca
 	// Project context
 	if projectContext != "" {
 		appendProjectContext(&sb, projectContext)
+	}
+
+	// Runtime model — appended after project context.
+	if rendered := runtimeModel.Render(); rendered != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(rendered)
 	}
 
 	// AOI list
