@@ -211,12 +211,12 @@ func TestAOISummary_ZeroAOIsMentionsGeneralReview(t *testing.T) {
 
 func TestDeepReviewSummary_BreakdownFromCounters(t *testing.T) {
 	s := &progress.State{Counters: map[string]int{
-		"batches_total":       39,
-		"batches_done":        35,
-		"batches_cached":      3,
-		"batches_failed":      1,
-		"batches_aoi_driven":  12,
-		"batches_general":     27,
+		"batches_total":      39,
+		"batches_done":       35,
+		"batches_cached":     3,
+		"batches_failed":     1,
+		"batches_aoi_driven": 12,
+		"batches_general":    27,
 	}}
 	want := "35 done · 3 cached · 1 failed (12 AOI-driven + 27 general)"
 	if got := deepReviewSummary(s); got != want {

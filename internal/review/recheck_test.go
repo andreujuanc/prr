@@ -189,7 +189,7 @@ func TestDismissedRecord_RoundTripsJSON(t *testing.T) {
 			Lines:     "42-58",
 			Severity:  "medium",
 			Title:     "Missing rate limit",
-			Trigger:   "user spams login",
+			Trigger:   state.FindingTrigger{Repro: "user spams login"},
 		},
 		Rationale: "covered by upstream gateway rate limit",
 	}

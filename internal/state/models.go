@@ -37,9 +37,27 @@ type ReviewOutput struct {
 
 // ReviewFinding is a single finding from the structured review.
 type ReviewFinding struct {
-	Severity   string `json:"severity"`             // "critical", "high", "medium", "low", "nit"
-	Confidence string `json:"confidence,omitempty"` // "high", "medium", "low" — set by synthesis after verification
-	Category   string `json:"category"`             // "bug", "security", "performance", "testing", "style", "architecture", "docs"
+	Severity string `json:"severity"` // "critical", "high", "medium", "low", "nit"
+
+	// Confidence is the legacy string band ("high"|"medium"|"low") kept
+	// for backward compatibility with cached state and older prompts.
+	// New code should read ConfidenceScore; render via ConfidenceBand().
+	Confidence string `json:"confidence,omitempty"`
+
+	// ConfidenceScore is the 0-100 certainty that the finding is real,
+	// independent of its severity. Severity = "how bad if real";
+	// ConfidenceScore = "how sure I am it's real". 0 means unknown
+	// (e.g., a finding loaded from legacy state that only had the
+	// string band).
+	ConfidenceScore int `json:"confidence_score,omitempty"`
+
+	// ConfidenceReasoning is a short one-line justification for the
+	// score. Concrete signals like "missing-trace" or
+	// "defenses-not-checked" are appended by downstream validators
+	// (see commits 4 + 5 in the audit-quality plan).
+	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
+
+	Category   string `json:"category"` // "bug", "security", "performance", "testing", "style", "architecture", "docs"
 	File       string `json:"file"`
 	Line       int    `json:"line"`
 	Title      string `json:"title"`
@@ -69,6 +87,26 @@ type FindingRevalidation struct {
 	Verdict    string `json:"verdict"` // "true-positive", "false-positive", "fixed", "uncertain"
 	Reasoning  string `json:"reasoning"`
 	Confidence string `json:"confidence"` // "high", "medium", "low"
+}
+
+// ConfidenceBand returns a coarse band derived from ConfidenceScore for
+// UIs that still want a "high"|"medium"|"low" label. When
+// ConfidenceScore is zero (unknown), the legacy Confidence string is
+// returned so old cached findings still render with a band.
+//
+// Bands: >=80 high, 50-79 medium, <50 low.
+func (f ReviewFinding) ConfidenceBand() string {
+	if f.ConfidenceScore == 0 {
+		return f.Confidence
+	}
+	switch {
+	case f.ConfidenceScore >= 80:
+		return "high"
+	case f.ConfidenceScore >= 50:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
 // SeverityRank returns a numeric rank for sorting findings by severity
@@ -259,6 +297,48 @@ type DeepReviewResult struct {
 	CrossCutting string `json:"cross_cutting,omitempty"`
 }
 
+// FindingTrigger is the concrete scenario that exercises a finding.
+// Repro is the input or request to send (e.g., a curl command, a
+// payload, an API call). Observable is what the caller sees when the
+// bug fires (status code, returned value, side effect). Both are
+// short strings — the prompt asks for the smallest concrete thing
+// that distinguishes "real bug" from "theoretical concern".
+type FindingTrigger struct {
+	Repro      string `json:"repro,omitempty"`
+	Observable string `json:"observable,omitempty"`
+}
+
+// IsZero reports whether the trigger carries no information.
+func (t FindingTrigger) IsZero() bool {
+	return t.Repro == "" && t.Observable == ""
+}
+
+// UnmarshalJSON accepts either the structured object form or a legacy
+// string (which becomes Repro with Observable empty). Older cached
+// state and the previous prompt schema both produced strings; the
+// new prompt schema produces objects.
+func (t *FindingTrigger) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		t.Repro = s
+		return nil
+	}
+	type alias FindingTrigger
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*t = FindingTrigger(a)
+	return nil
+}
+
 // DeepFinding is a confirmed issue from Phase 3 review.
 type DeepFinding struct {
 	FindingID   string `json:"finding_id,omitempty"` // assigned before recheck (e.g. "F-001")
@@ -279,9 +359,21 @@ type DeepFinding struct {
 	// actually exists at the cited location. Findings whose snippet
 	// doesn't match get one refinement round trip and, if still
 	// unmatched, are dropped.
-	EvidenceSnippet string `json:"evidence_snippet,omitempty"`
-	Trigger         string `json:"trigger"`
-	Suggestion      string `json:"suggestion,omitempty"`
+	EvidenceSnippet string         `json:"evidence_snippet,omitempty"`
+	Trigger         FindingTrigger `json:"trigger"`
+	Suggestion      string         `json:"suggestion,omitempty"`
+
+	// ConfidenceScore (0-100) is the model's certainty that the
+	// finding is real, independent of severity. Downstream validators
+	// (commits 4 + 5 in the audit-quality plan) subtract from this
+	// score when required evidence is missing without touching
+	// severity. 0 means unknown (legacy data).
+	ConfidenceScore int `json:"confidence_score,omitempty"`
+
+	// ConfidenceReasoning is a short justification. Validators append
+	// concrete tags (e.g., "missing-trace", "defenses-not-checked")
+	// so the reviewer can see why the score moved.
+	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
 
 	// Systemic is set by the recheck parser when a finding came out
 	// of the `consolidated` bucket — i.e. it represents a cross-file

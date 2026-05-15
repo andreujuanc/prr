@@ -91,7 +91,12 @@ Return ONLY a JSON object — no prose before or after:
       "description": "what's wrong and why it matters",
       "evidence": "what you verified and what you found — summarize key tool results",
       "evidence_snippet": "verbatim copy of 1-3 lines from the cited file:lines that prove the issue",
-      "trigger": "specific scenario that triggers this",
+      "trigger": {
+        "repro": "concrete input/request that triggers this",
+        "observable": "what the caller sees when the bug fires"
+      },
+      "confidence_score": 78,
+      "confidence_reasoning": "one short sentence: what made you confident or uncertain",
       "suggestion": "concrete fix",
       "dismissed_rationale": "if dismissed: why this is not a real issue"
     }
@@ -110,5 +115,8 @@ Return ONLY a JSON object — no prose before or after:
 - `evidence_snippet` is REQUIRED for every finding (status="finding") and must be a verbatim copy of 1-3 lines that actually appear in the cited file near the cited line range. The audit pipeline matches this snippet against the file before accepting the finding — paraphrasing, summarizing, or fabricating the snippet will get the finding dropped. Not required for dismissals.
   - Good: `if err := json.Decode(body, &v); err != nil {` (literal line from the file)
   - Bad: `the error from Decode() is ignored` (description, not a snippet)
-- For findings: fill severity/title/description/evidence/evidence_snippet/trigger/suggestion.
+- `trigger` describes a CONCRETE scenario, not "if an attacker..." generalities. `repro` is the smallest input that fires the bug; `observable` is what the caller actually sees. If you cannot fill both fields with concrete content, your understanding of the bug is incomplete — re-investigate or downgrade.
+- `confidence_score` (0-100) is your certainty that the finding is REAL, separate from severity. Severity = "how bad if real"; confidence_score = "how sure I am it's real". Anchor: 90-100 verified end-to-end; 70-89 strong evidence but one defense layer unchecked; 50-69 plausible from cited line + general patterns; <50 speculative.
+- `confidence_reasoning` is one short sentence justifying the score.
+- For findings: fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion.
 - For dismissals: fill evidence and dismissed_rationale only.

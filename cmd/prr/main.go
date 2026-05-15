@@ -1155,8 +1155,13 @@ func renderDeepFindings(findings []state.DeepFinding) {
 		if f.Description != "" {
 			fmt.Fprintf(os.Stderr, "    %s\n", cliDim.Render(f.Description))
 		}
-		if f.Trigger != "" {
-			fmt.Fprintf(os.Stderr, "    Trigger: %s\n", cliDim.Render(f.Trigger))
+		if !f.Trigger.IsZero() {
+			if f.Trigger.Repro != "" {
+				fmt.Fprintf(os.Stderr, "    Trigger: %s\n", cliDim.Render(f.Trigger.Repro))
+			}
+			if f.Trigger.Observable != "" {
+				fmt.Fprintf(os.Stderr, "    Observable: %s\n", cliDim.Render(f.Trigger.Observable))
+			}
 		}
 		if f.Suggestion != "" {
 			fmt.Fprintf(os.Stderr, "    Fix: %s\n", cliDim.Render(f.Suggestion))

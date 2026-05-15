@@ -110,7 +110,19 @@ func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) err
 					cat += " / " + f.Subcategory
 				}
 				fmt.Fprintf(&b, "**Category:** %s  \n", cat)
-				fmt.Fprintf(&b, "**Trigger:** %s  \n", f.Trigger)
+				if f.Trigger.Repro != "" {
+					fmt.Fprintf(&b, "**Trigger:** %s  \n", f.Trigger.Repro)
+				}
+				if f.Trigger.Observable != "" {
+					fmt.Fprintf(&b, "**Observable:** %s  \n", f.Trigger.Observable)
+				}
+				if f.ConfidenceScore > 0 {
+					if f.ConfidenceReasoning != "" {
+						fmt.Fprintf(&b, "**Confidence:** %d/100 — %s  \n", f.ConfidenceScore, f.ConfidenceReasoning)
+					} else {
+						fmt.Fprintf(&b, "**Confidence:** %d/100  \n", f.ConfidenceScore)
+					}
+				}
 				if f.Suggestion != "" {
 					fmt.Fprintf(&b, "**Fix:** %s  \n", f.Suggestion)
 				}

@@ -82,13 +82,18 @@ Return ONLY a JSON object — no prose before or after:
   "description": "what's wrong, why it matters, concrete impact",
   "evidence": "what you verified and what you found — summarize key tool results that support this conclusion",
   "evidence_snippet": "verbatim copy of 1-3 lines from the cited file:lines that prove the issue",
-  "trigger": "specific input or scenario that triggers this issue",
+  "trigger": {
+    "repro": "concrete input/request that triggers this — e.g., 'POST /admin/X body {...}' or 'call Foo(nil)'",
+    "observable": "what the caller sees when the bug fires — e.g., '500 with stack trace' or 'returns wrong value 42'"
+  },
+  "confidence_score": 78,
+  "confidence_reasoning": "one short sentence: what made you confident or uncertain",
   "suggestion": "concrete fix — code snippet preferred",
   "dismissed_rationale": "if dismissed: brief explanation of why this is not a real issue"
 }
 ```
 
-- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/suggestion
+- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion
 - If this is NOT a real issue: set status to "dismissed", fill evidence and dismissed_rationale (evidence_snippet not required for dismissals)
 - "evidence" is REQUIRED for both findings and dismissals — summarize what you checked and what you found
   - Good: "found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open"
@@ -100,4 +105,10 @@ Return ONLY a JSON object — no prose before or after:
   - Bad: `the error from Close() is ignored` (description, not a snippet)
   - Bad: `\\\\json.Decode without error check\\\\` (paraphrase)
 - For security findings: include a CWE ID in the title when applicable
-- "trigger" must be a concrete scenario, not "if an attacker..." generalities
+- "trigger" must describe a CONCRETE scenario, not "if an attacker..." generalities. `repro` is the smallest input that fires the bug; `observable` is what the caller actually sees. If you cannot fill both fields with concrete content, your understanding of the bug is incomplete — re-investigate or downgrade.
+- "confidence_score" (0-100) is your certainty that this finding is REAL, separate from how bad it would be if true. Severity says "how bad if real"; confidence_score says "how sure I am it's real". Anchor:
+  - 90-100: verified end-to-end; you saw the bug fire (or could trivially make it fire)
+  - 70-89: strong evidence; one reasonable defense layer would defuse it, but you couldn't find one
+  - 50-69: plausible based on the cited line + general patterns, but you haven't traced the full data flow
+  - <50: speculative; pattern-match without verification
+- "confidence_reasoning" is one short sentence justifying the score (what you traced, what you couldn't verify).

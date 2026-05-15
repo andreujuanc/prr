@@ -29,13 +29,15 @@ func buildSyntheticReviewFromDeepFindings(deep []state.DeepFinding) *state.Revie
 	}
 	for _, d := range deep {
 		out.Findings = append(out.Findings, state.ReviewFinding{
-			Severity:   d.Severity,
-			Category:   d.Category,
-			File:       d.File,
-			Line:       firstInt(d.Lines),
-			Title:      d.Title,
-			Detail:     d.Description,
-			Suggestion: d.Suggestion,
+			Severity:            d.Severity,
+			Category:            d.Category,
+			File:                d.File,
+			Line:                firstInt(d.Lines),
+			Title:               d.Title,
+			Detail:              d.Description,
+			Suggestion:          d.Suggestion,
+			ConfidenceScore:     d.ConfidenceScore,
+			ConfidenceReasoning: d.ConfidenceReasoning,
 		})
 	}
 	return out

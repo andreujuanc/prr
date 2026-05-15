@@ -130,7 +130,7 @@ Evaluate EVERY dimension. Report all findings, including ones you are uncertain 
 - **low**: Defense-in-depth, minor readability issues, cold-path performance, documentation gaps.
 - **nit**: Cosmetic, formatting, naming preferences. Should be rare.
 
-When uncertain, **report the finding** with lower `confidence` rather than suppressing it. The synthesis pass filters false positives; missing a real bug here cannot be recovered.
+When uncertain, **report the finding** with a lower `confidence_score` rather than suppressing it. The synthesis pass filters false positives; missing a real bug here cannot be recovered.
 
 ## Output Format
 
@@ -144,7 +144,8 @@ Return a JSON array. One element per file in this batch — include every file, 
     "findings": [
       {
         "severity": "critical | high | medium | low | nit",
-        "confidence": "high | medium | low",
+        "confidence_score": 78,
+        "confidence_reasoning": "one short sentence: what made you confident or uncertain",
         "dimension": "dimension-slug (e.g. correctness, security, performance)",
         "title": "short title",
         "line": 42,
@@ -163,6 +164,8 @@ Rules:
 - `file` matches the path exactly as provided in the diff.
 - `findings` is an array (possibly empty `[]`); never a string.
 - `line` is a single integer pointing to the most relevant line — only cite lines you have read.
+- `confidence_score` (0-100) is your certainty that the finding is REAL, separate from severity. Severity = "how bad if real"; confidence_score = "how sure I am it's real". Anchor: 90-100 verified end-to-end; 70-89 strong evidence but one defense layer unchecked; 50-69 plausible from cited line + general patterns; <50 speculative.
+- `confidence_reasoning` is one short sentence justifying the score.
 - Omit `cwe`/`exploitability`/`impact` for non-security findings rather than setting them to empty strings.
 - Suggestions must not propose refactors of adjacent code, new abstractions the codebase doesn't already use, or stylistic changes to existing lines. Fix the issue, nothing more.
 - Return ONLY the JSON array. No markdown fences, no prose.
@@ -172,7 +175,8 @@ Example finding (good — concrete, actionable):
 ```json
 {
   "severity": "high",
-  "confidence": "high",
+  "confidence_score": 92,
+  "confidence_reasoning": "verified by reading the comparison and its single call site; no surrounding guard catches the boundary case",
   "dimension": "correctness",
   "title": "Token expiry uses <= instead of <",
   "line": 87,

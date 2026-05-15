@@ -767,21 +767,23 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 
 	if call.Type == "individual" {
 		var parsed struct {
-			AOIID              string `json:"aoi_id"`
-			Status             string `json:"status"`
-			File               string `json:"file"`
-			Lines              string `json:"lines"`
-			Severity           string `json:"severity"`
-			Category           string `json:"category"`
-			Subcategory        string `json:"subcategory"`
-			Dimension          string `json:"dimension"`
-			Title              string `json:"title"`
-			Description        string `json:"description"`
-			Evidence           string `json:"evidence"`
-			EvidenceSnippet    string `json:"evidence_snippet"`
-			Trigger            string `json:"trigger"`
-			Suggestion         string `json:"suggestion"`
-			DismissedRationale string `json:"dismissed_rationale"`
+			AOIID               string               `json:"aoi_id"`
+			Status              string               `json:"status"`
+			File                string               `json:"file"`
+			Lines               string               `json:"lines"`
+			Severity            string               `json:"severity"`
+			Category            string               `json:"category"`
+			Subcategory         string               `json:"subcategory"`
+			Dimension           string               `json:"dimension"`
+			Title               string               `json:"title"`
+			Description         string               `json:"description"`
+			Evidence            string               `json:"evidence"`
+			EvidenceSnippet     string               `json:"evidence_snippet"`
+			Trigger             state.FindingTrigger `json:"trigger"`
+			Suggestion          string               `json:"suggestion"`
+			ConfidenceScore     int                  `json:"confidence_score"`
+			ConfidenceReasoning string               `json:"confidence_reasoning"`
+			DismissedRationale  string               `json:"dismissed_rationale"`
 		}
 		if err := unmarshalLLMResponse([]byte(s), &parsed); err != nil {
 			return result, fmt.Errorf("%w: parse individual response: %v", errReviewParse, err)
@@ -789,19 +791,21 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 		result.RawOutput = json.RawMessage(s)
 		if parsed.Status == "finding" {
 			result.Findings = append(result.Findings, state.DeepFinding{
-				AOIID:           parsed.AOIID,
-				File:            parsed.File,
-				Lines:           parsed.Lines,
-				Severity:        parsed.Severity,
-				Category:        parsed.Category,
-				Subcategory:     parsed.Subcategory,
-				Dimension:       parsed.Dimension,
-				Title:           parsed.Title,
-				Description:     parsed.Description,
-				Evidence:        parsed.Evidence,
-				EvidenceSnippet: parsed.EvidenceSnippet,
-				Trigger:         parsed.Trigger,
-				Suggestion:      parsed.Suggestion,
+				AOIID:               parsed.AOIID,
+				File:                parsed.File,
+				Lines:               parsed.Lines,
+				Severity:            parsed.Severity,
+				Category:            parsed.Category,
+				Subcategory:         parsed.Subcategory,
+				Dimension:           parsed.Dimension,
+				Title:               parsed.Title,
+				Description:         parsed.Description,
+				Evidence:            parsed.Evidence,
+				EvidenceSnippet:     parsed.EvidenceSnippet,
+				Trigger:             parsed.Trigger,
+				Suggestion:          parsed.Suggestion,
+				ConfidenceScore:     parsed.ConfidenceScore,
+				ConfidenceReasoning: parsed.ConfidenceReasoning,
 			})
 		} else {
 			result.Dismissals = append(result.Dismissals, state.DeepDismissal{
@@ -816,21 +820,23 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			Subcategory  string `json:"subcategory"`
 			CrossCutting string `json:"cross_cutting"`
 			Results      []struct {
-				AOIID              string `json:"aoi_id"`
-				Status             string `json:"status"`
-				File               string `json:"file"`
-				Lines              string `json:"lines"`
-				Severity           string `json:"severity"`
-				Category           string `json:"category"`
-				Subcategory        string `json:"subcategory"`
-				Dimension          string `json:"dimension"`
-				Title              string `json:"title"`
-				Description        string `json:"description"`
-				Evidence           string `json:"evidence"`
-				EvidenceSnippet    string `json:"evidence_snippet"`
-				Trigger            string `json:"trigger"`
-				Suggestion         string `json:"suggestion"`
-				DismissedRationale string `json:"dismissed_rationale"`
+				AOIID               string               `json:"aoi_id"`
+				Status              string               `json:"status"`
+				File                string               `json:"file"`
+				Lines               string               `json:"lines"`
+				Severity            string               `json:"severity"`
+				Category            string               `json:"category"`
+				Subcategory         string               `json:"subcategory"`
+				Dimension           string               `json:"dimension"`
+				Title               string               `json:"title"`
+				Description         string               `json:"description"`
+				Evidence            string               `json:"evidence"`
+				EvidenceSnippet     string               `json:"evidence_snippet"`
+				Trigger             state.FindingTrigger `json:"trigger"`
+				Suggestion          string               `json:"suggestion"`
+				ConfidenceScore     int                  `json:"confidence_score"`
+				ConfidenceReasoning string               `json:"confidence_reasoning"`
+				DismissedRationale  string               `json:"dismissed_rationale"`
 			} `json:"results"`
 		}
 		if err := unmarshalLLMResponse([]byte(s), &parsed); err != nil {
@@ -841,19 +847,21 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 		for _, r := range parsed.Results {
 			if r.Status == "finding" {
 				result.Findings = append(result.Findings, state.DeepFinding{
-					AOIID:           r.AOIID,
-					File:            r.File,
-					Lines:           r.Lines,
-					Severity:        r.Severity,
-					Category:        r.Category,
-					Subcategory:     r.Subcategory,
-					Dimension:       r.Dimension,
-					Title:           r.Title,
-					Description:     r.Description,
-					Evidence:        r.Evidence,
-					EvidenceSnippet: r.EvidenceSnippet,
-					Trigger:         r.Trigger,
-					Suggestion:      r.Suggestion,
+					AOIID:               r.AOIID,
+					File:                r.File,
+					Lines:               r.Lines,
+					Severity:            r.Severity,
+					Category:            r.Category,
+					Subcategory:         r.Subcategory,
+					Dimension:           r.Dimension,
+					Title:               r.Title,
+					Description:         r.Description,
+					Evidence:            r.Evidence,
+					EvidenceSnippet:     r.EvidenceSnippet,
+					Trigger:             r.Trigger,
+					Suggestion:          r.Suggestion,
+					ConfidenceScore:     r.ConfidenceScore,
+					ConfidenceReasoning: r.ConfidenceReasoning,
 				})
 			} else {
 				result.Dismissals = append(result.Dismissals, state.DeepDismissal{

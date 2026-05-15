@@ -615,3 +615,143 @@ func TestGetRecheckDismissals_EmptyReturnsNil(t *testing.T) {
 		t.Errorf("expected nil for empty state, got %d entries", len(got))
 	}
 }
+
+// ── FindingTrigger: structured + legacy-string back-compat ──────────────
+
+func TestFindingTrigger_UnmarshalLegacyString(t *testing.T) {
+	// Older cached state and the previous prompt schema both serialized
+	// the trigger as a bare string. The structured type must still accept
+	// it, dropping the value into Repro with Observable empty.
+	raw := `"user spams the login endpoint"`
+	var got FindingTrigger
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal legacy string: %v", err)
+	}
+	if got.Repro != "user spams the login endpoint" {
+		t.Errorf("Repro = %q, want %q", got.Repro, "user spams the login endpoint")
+	}
+	if got.Observable != "" {
+		t.Errorf("Observable = %q, want empty", got.Observable)
+	}
+}
+
+func TestFindingTrigger_UnmarshalStructured(t *testing.T) {
+	raw := `{"repro": "POST /admin/users body {\"role\": \"admin\"}", "observable": "200 OK"}`
+	var got FindingTrigger
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal structured: %v", err)
+	}
+	if got.Repro != `POST /admin/users body {"role": "admin"}` {
+		t.Errorf("Repro = %q", got.Repro)
+	}
+	if got.Observable != "200 OK" {
+		t.Errorf("Observable = %q, want %q", got.Observable, "200 OK")
+	}
+}
+
+func TestFindingTrigger_RoundTrip(t *testing.T) {
+	orig := FindingTrigger{Repro: "trigger thing", Observable: "side effect"}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got FindingTrigger
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got != orig {
+		t.Errorf("round trip = %+v, want %+v", got, orig)
+	}
+}
+
+func TestFindingTrigger_UnmarshalEmpty(t *testing.T) {
+	cases := []string{`""`, `null`, ``, `{}`}
+	for _, raw := range cases {
+		var got FindingTrigger
+		if err := json.Unmarshal([]byte(raw), &got); err != nil && raw != "" {
+			t.Errorf("unmarshal %q: %v", raw, err)
+			continue
+		}
+		if !got.IsZero() {
+			t.Errorf("unmarshal %q: want zero, got %+v", raw, got)
+		}
+	}
+}
+
+func TestDeepFinding_UnmarshalLegacyStringTrigger(t *testing.T) {
+	// A DeepFinding cached before commit 2 carries trigger as a string.
+	// Loading it now must place the value in Trigger.Repro.
+	raw := `{
+		"aoi_id": "aoi-1",
+		"file": "foo.go",
+		"lines": "10",
+		"severity": "high",
+		"trigger": "user posts a malformed payload"
+	}`
+	var got DeepFinding
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Trigger.Repro != "user posts a malformed payload" {
+		t.Errorf("Trigger.Repro = %q", got.Trigger.Repro)
+	}
+}
+
+// ── ConfidenceBand: derived from score, falls back to legacy string ─────
+
+func TestConfidenceBand(t *testing.T) {
+	tests := []struct {
+		score      int
+		legacy     string
+		wantBand   string
+		wantReason string
+	}{
+		{score: 95, wantBand: "high"},
+		{score: 80, wantBand: "high"},
+		{score: 79, wantBand: "medium"},
+		{score: 50, wantBand: "medium"},
+		{score: 49, wantBand: "low"},
+		{score: 0, legacy: "high", wantBand: "high"},     // legacy fallback
+		{score: 0, legacy: "medium", wantBand: "medium"}, // legacy fallback
+		{score: 0, legacy: "", wantBand: ""},             // unknown stays unknown
+	}
+	for _, tt := range tests {
+		f := ReviewFinding{ConfidenceScore: tt.score, Confidence: tt.legacy}
+		if got := f.ConfidenceBand(); got != tt.wantBand {
+			t.Errorf("ConfidenceBand(score=%d legacy=%q) = %q, want %q",
+				tt.score, tt.legacy, got, tt.wantBand)
+		}
+	}
+}
+
+func TestReviewFinding_UnmarshalLegacyConfidence(t *testing.T) {
+	// Older cached state carries confidence as a string band only.
+	// Unmarshal must preserve it so ConfidenceBand() still renders.
+	raw := `{"severity":"high","confidence":"medium","title":"t","file":"f","line":1,"category":"bug","detail":"d"}`
+	var got ReviewFinding
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Confidence != "medium" {
+		t.Errorf("Confidence = %q", got.Confidence)
+	}
+	if got.ConfidenceScore != 0 {
+		t.Errorf("ConfidenceScore = %d, want 0 for legacy data", got.ConfidenceScore)
+	}
+	if band := got.ConfidenceBand(); band != "medium" {
+		t.Errorf("ConfidenceBand() = %q, want medium (legacy fallback)", band)
+	}
+}
+
+func TestReviewFinding_NewConfidenceWins(t *testing.T) {
+	// When both fields are present (transitional state during the
+	// migration window), ConfidenceBand prefers the structured score.
+	raw := `{"severity":"high","confidence":"low","confidence_score":85,"title":"t","file":"f","line":1,"category":"bug","detail":"d"}`
+	var got ReviewFinding
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ConfidenceBand() != "high" {
+		t.Errorf("ConfidenceBand() = %q, want high (score-derived)", got.ConfidenceBand())
+	}
+}

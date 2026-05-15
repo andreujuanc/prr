@@ -31,8 +31,14 @@ type Batch struct {
 
 // BatchFinding is one structured finding from a batch review (new format).
 type BatchFinding struct {
-	Severity       string `json:"severity,omitempty"`
-	Confidence     string `json:"confidence,omitempty"`
+	Severity string `json:"severity,omitempty"`
+
+	// Confidence is the legacy string band kept for backward
+	// compatibility. New prompts emit ConfidenceScore.
+	Confidence          string `json:"confidence,omitempty"`
+	ConfidenceScore     int    `json:"confidence_score,omitempty"`
+	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
+
 	Dimension      string `json:"dimension,omitempty"`
 	Title          string `json:"title,omitempty"`
 	Line           int    `json:"line,omitempty"`
@@ -108,7 +114,9 @@ func (bf BatchFindings) Text() string {
 		if f.Severity != "" {
 			b.WriteString("[severity: " + f.Severity + "] ")
 		}
-		if f.Confidence != "" {
+		if f.ConfidenceScore > 0 {
+			fmt.Fprintf(&b, "[confidence: %d/100] ", f.ConfidenceScore)
+		} else if f.Confidence != "" {
 			b.WriteString("[confidence: " + f.Confidence + "] ")
 		}
 		if f.Dimension != "" {
@@ -955,8 +963,13 @@ func AppendDeepFindings(b *strings.Builder, fileFindings map[string]string, find
 		b.WriteString(fmt.Sprintf("**File:** %s:%s\n", f.File, f.Lines))
 		b.WriteString(fmt.Sprintf("**Category:** %s/%s\n", f.Category, f.Subcategory))
 		b.WriteString(fmt.Sprintf("**Description:** %s\n", f.Description))
-		if f.Trigger != "" {
-			b.WriteString(fmt.Sprintf("**Trigger:** %s\n", f.Trigger))
+		if !f.Trigger.IsZero() {
+			if f.Trigger.Repro != "" {
+				b.WriteString(fmt.Sprintf("**Trigger:** %s\n", f.Trigger.Repro))
+			}
+			if f.Trigger.Observable != "" {
+				b.WriteString(fmt.Sprintf("**Observable:** %s\n", f.Trigger.Observable))
+			}
 		}
 		if f.Suggestion != "" {
 			b.WriteString(fmt.Sprintf("**Suggestion:** %s\n", f.Suggestion))
