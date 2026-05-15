@@ -562,6 +562,23 @@ type DeepFinding struct {
 	// trace.
 	Trace []TraceHop `json:"trace,omitempty"`
 
+	// DefensesChecked lists the canonical defense layers the
+	// reviewer inspected before flagging this finding. Each entry
+	// is a short tag from a fixed vocabulary the Phase 3 prompts
+	// enumerate (boundary-authz, handler-guard, conditional-write,
+	// idempotency-key, schema-validation, framework-escape,
+	// result-discipline, native-limit) or a free-form
+	// `other:<tag>` for cases outside the list.
+	//
+	// For findings whose category is in the "required" set
+	// (authorization, concurrency, input-validation, external-io),
+	// an empty list triggers a confidence penalty in
+	// ApplyConfidencePenalties — the reviewer didn't show which
+	// defenses they ruled out, so we can't trust the finding as
+	// fully as one that does. Other categories leave this
+	// optional.
+	DefensesChecked []string `json:"defenses_checked,omitempty"`
+
 	// Systemic is set by the recheck parser when a finding came out
 	// of the `consolidated` bucket — i.e. it represents a cross-file
 	// pattern merged from multiple per-file findings, not an

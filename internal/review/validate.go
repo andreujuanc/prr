@@ -175,9 +175,9 @@ func abs(x int) int {
 
 // Confidence penalties applied by ApplyConfidencePenalties to deep
 // findings whose evidence record is incomplete. The numbers come from
-// the audit-quality plan (commit 4). They are subtracted (floor 0) and
-// the corresponding tag is appended to ConfidenceReasoning so the
-// reviewer can see why the score moved.
+// the audit-quality plan (commits 4 + 5). Each penalty is subtracted
+// from ConfidenceScore (floor 0) and a tag is appended to
+// ConfidenceReasoning so the reviewer can see why the score moved.
 const (
 	// missingTracePenalty is subtracted from ConfidenceScore when a
 	// critical/high finding lacks a 3-hop trace. Severity is NOT
@@ -189,18 +189,42 @@ const (
 	// for critical/high severity. Below this, the missing-trace
 	// penalty fires.
 	minTraceHops = 3
+
+	// defensesNotCheckedPenalty is subtracted from ConfidenceScore
+	// when a finding in a required category (authorization,
+	// concurrency, input-validation, external-io) lists no
+	// defenses_checked entries. Severity is unchanged — the bug's
+	// impact doesn't depend on whether the model showed which
+	// defense layers it ruled out, only our certainty does.
+	defensesNotCheckedPenalty = 25
 )
 
+// requiredDefensesCategories enumerates the finding categories where
+// `defenses_checked` is mandatory. The category names match the slugs
+// produced by Phase 2 AOI generation and Phase 3 review output.
+//
+// `error-handling` is deliberately excluded — defense classes there
+// are inconsistent enough that requiring them adds more friction than
+// signal (per the audit-quality plan).
+var requiredDefensesCategories = map[string]bool{
+	"authorization":    true,
+	"concurrency":      true,
+	"input-validation": true,
+	"external-io":      true,
+}
+
 // ApplyConfidencePenalties walks deep findings and adjusts confidence
-// scores when required evidence is missing. Today it enforces the
-// 3-hop-trace rule for critical/high severity (commit 4 in the
-// audit-quality plan). Later commits will add additional penalty
-// classes (e.g. defenses-not-checked from commit 5).
+// scores when required evidence is missing. Currently enforces:
+//
+//   - missing-trace: critical/high finding without ≥3 trace hops
+//     (commit 4 in the audit-quality plan).
+//   - defenses-not-checked: required-category finding with no
+//     `defenses_checked` entries (commit 5).
 //
 // Severity is never modified. Confidence is the right axis: severity
-// = "how bad if real", confidence = "how sure I am it's real". A
-// missing trace doesn't make the bug less bad; it makes us less sure
-// it's a bug. The reviewer can still sort/filter by confidence
+// = "how bad if real", confidence = "how sure I am it's real".
+// Missing evidence doesn't make the bug less bad; it makes us less
+// sure it's a bug. The reviewer can still sort/filter by confidence
 // without losing the signal that, if real, the bug is critical.
 //
 // Operates in place on the provided slice and returns the modified
@@ -210,8 +234,18 @@ func ApplyConfidencePenalties(findings []state.DeepFinding) []state.DeepFinding 
 		if traceRequired(findings[i].Severity) && !hasValidTrace(findings[i].Trace) {
 			applyConfidencePenalty(&findings[i], missingTracePenalty, "missing-trace")
 		}
+		if defensesRequired(findings[i].Category) && len(findings[i].DefensesChecked) == 0 {
+			applyConfidencePenalty(&findings[i], defensesNotCheckedPenalty, "defenses-not-checked")
+		}
 	}
 	return findings
+}
+
+// defensesRequired reports whether the defenses_checked field is
+// mandatory for a finding's category. The category name is
+// case-insensitive; whitespace is trimmed.
+func defensesRequired(category string) bool {
+	return requiredDefensesCategories[strings.ToLower(strings.TrimSpace(category))]
 }
 
 // traceRequired reports whether the 3-hop trace rule applies to a

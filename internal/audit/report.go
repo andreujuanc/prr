@@ -141,6 +141,9 @@ func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) err
 						}
 					}
 				}
+				if len(f.DefensesChecked) > 0 {
+					fmt.Fprintf(&b, "**Defenses checked:** %s  \n", strings.Join(f.DefensesChecked, ", "))
+				}
 				if f.Suggestion != "" {
 					fmt.Fprintf(&b, "**Fix:** %s  \n", f.Suggestion)
 				}

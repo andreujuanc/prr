@@ -36,6 +36,63 @@ If no `### Conventions` section is present, this rule doesn't apply.
 
 Do NOT skip steps. Do NOT report a finding based solely on the code snippet in the prompt.
 
+## Defenses Checked (required for security-shaped categories)
+
+For findings whose `category` is in this set, you MUST list every
+defense layer you inspected when judging the bug:
+
+- `authorization`
+- `concurrency`
+- `input-validation`
+- `external-io`
+
+Each entry in `defenses_checked` is one tag from the canonical
+vocabulary below, or `other:<tag>` for cases outside the list. The
+goal is to make the rebuttal explicit: when you flag a missing
+auth check, the reader should see that you actually looked at the
+boundary authorizer / middleware / in-handler guard before concluding
+the check is missing.
+
+Canonical tags (language-agnostic — describe the shape, not the
+framework):
+
+- `boundary-authz` — gateway/middleware authentication or
+  authorization layer; the check that runs before any handler sees
+  the request.
+- `handler-guard` — in-function permission / role check
+  (e.g., `if !user.IsAdmin { return 403 }`).
+- `conditional-write` — write that succeeds only when a precondition
+  holds: compare-and-swap, versioned column, "if-not-exists",
+  optimistic-lock retry.
+- `idempotency-key` — dedup table, nonce, request-ID lookup, or any
+  mechanism that makes the operation safe to repeat.
+- `schema-validation` — declared schema (JSON Schema, OpenAPI body,
+  protobuf, brand types) that parses the input at the boundary
+  before business logic sees it.
+- `framework-escape` — template engine auto-escape, ORM
+  parameterization, prepared-statement substitution, header sanitizer.
+- `result-discipline` — the caller awaits the result and propagates
+  the error/Result type instead of fire-and-forget or silent swallow.
+- `native-limit` — platform's documented payload / batch / size
+  ceiling that bounds the input before it ever reaches the handler
+  (e.g., API Gateway's 6MB payload cap, DynamoDB's 100-item
+  BatchWrite limit).
+
+For each tag listed, the `evidence` field should describe what you
+saw at that layer — "boundary-authz: API Gateway authorizer
+referenced in routes.yaml validates JWT scope `admin:write`".
+
+For findings in OTHER categories (correctness, error-handling,
+performance, etc.), `defenses_checked` is optional — leave it empty
+when no defense layer applies (e.g., an off-by-one in arithmetic has
+nothing to defend against).
+
+If a required-category finding ships with an empty
+`defenses_checked` list, the validator will subtract 25 from your
+confidence score and tag the reasoning with `defenses-not-checked`.
+Severity is unchanged — but a low-confidence severe finding is a
+weaker signal than a high-confidence one.
+
 ## End-to-End Trace (required at critical/high)
 
 If you intend to emit this finding at `critical` or `high` severity,
@@ -123,6 +180,7 @@ Return ONLY a JSON object — no prose before or after:
     {"role": "caller",   "file": "path/to/caller.go", "lines": "100-110", "evidence": "..."},
     {"role": "boundary", "file": "path/to/route.go",  "lines": "12-20",   "evidence": "HTTP handler returns this value to the client"}
   ],
+  "defenses_checked": ["boundary-authz", "handler-guard"],
   "confidence_score": 78,
   "confidence_reasoning": "one short sentence: what made you confident or uncertain",
   "suggestion": "concrete fix — code snippet preferred",

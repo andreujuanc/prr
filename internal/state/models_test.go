@@ -737,6 +737,40 @@ func TestDeepFinding_TraceOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestDeepFinding_DefensesCheckedRoundTrip(t *testing.T) {
+	orig := DeepFinding{
+		AOIID:           "aoi-1",
+		Category:        "authorization",
+		Severity:        "high",
+		DefensesChecked: []string{"boundary-authz", "handler-guard", "other:custom-check"},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepFinding
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.DefensesChecked) != 3 {
+		t.Fatalf("DefensesChecked length = %d, want 3", len(got.DefensesChecked))
+	}
+	if got.DefensesChecked[2] != "other:custom-check" {
+		t.Errorf("DefensesChecked[2] = %q, want 'other:custom-check'", got.DefensesChecked[2])
+	}
+}
+
+func TestDeepFinding_DefensesCheckedOmittedWhenEmpty(t *testing.T) {
+	f := DeepFinding{AOIID: "x", Severity: "medium", Category: "correctness"}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "defenses_checked") {
+		t.Errorf("empty DefensesChecked should be omitted, got %s", data)
+	}
+}
+
 // ── ConfidenceBand: derived from score, falls back to legacy string ─────
 
 func TestConfidenceBand(t *testing.T) {

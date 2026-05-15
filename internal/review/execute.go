@@ -796,6 +796,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			EvidenceSnippet     string               `json:"evidence_snippet"`
 			Trigger             state.FindingTrigger `json:"trigger"`
 			Trace               []state.TraceHop     `json:"trace"`
+			DefensesChecked     []string             `json:"defenses_checked"`
 			Suggestion          string               `json:"suggestion"`
 			ConfidenceScore     int                  `json:"confidence_score"`
 			ConfidenceReasoning string               `json:"confidence_reasoning"`
@@ -820,6 +821,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				EvidenceSnippet:     parsed.EvidenceSnippet,
 				Trigger:             parsed.Trigger,
 				Trace:               parsed.Trace,
+				DefensesChecked:     parsed.DefensesChecked,
 				Suggestion:          parsed.Suggestion,
 				ConfidenceScore:     parsed.ConfidenceScore,
 				ConfidenceReasoning: parsed.ConfidenceReasoning,
@@ -851,6 +853,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				EvidenceSnippet     string               `json:"evidence_snippet"`
 				Trigger             state.FindingTrigger `json:"trigger"`
 				Trace               []state.TraceHop     `json:"trace"`
+				DefensesChecked     []string             `json:"defenses_checked"`
 				Suggestion          string               `json:"suggestion"`
 				ConfidenceScore     int                  `json:"confidence_score"`
 				ConfidenceReasoning string               `json:"confidence_reasoning"`
@@ -878,6 +881,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 					EvidenceSnippet:     r.EvidenceSnippet,
 					Trigger:             r.Trigger,
 					Trace:               r.Trace,
+					DefensesChecked:     r.DefensesChecked,
 					Suggestion:          r.Suggestion,
 					ConfidenceScore:     r.ConfidenceScore,
 					ConfidenceReasoning: r.ConfidenceReasoning,

@@ -1,6 +1,7 @@
 package review
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/andreujuanc/prr/internal/git"
@@ -294,5 +295,99 @@ func TestApplyConfidencePenalties_GroupedReviewIndependentAOIs(t *testing.T) {
 	}
 	if out[2].ConfidenceScore != 80 {
 		t.Errorf("[2] high+trace should be untouched: %d", out[2].ConfidenceScore)
+	}
+}
+
+// ── ApplyConfidencePenalties: defenses_checked requirement ──────────────
+
+func TestApplyConfidencePenalties_RequiredCategoryEmptyDefensesDocks(t *testing.T) {
+	for _, cat := range []string{"authorization", "concurrency", "input-validation", "external-io"} {
+		// medium severity + 3-hop trace not required → only the
+		// defenses penalty fires.
+		findings := []state.DeepFinding{
+			{Category: cat, Severity: "medium", ConfidenceScore: 80},
+		}
+		out := ApplyConfidencePenalties(findings)
+		if out[0].ConfidenceScore != 55 {
+			t.Errorf("category %q: ConfidenceScore = %d, want 55 (80 - 25)", cat, out[0].ConfidenceScore)
+		}
+		if !strings.Contains(out[0].ConfidenceReasoning, "defenses-not-checked") {
+			t.Errorf("category %q: reasoning = %q, want 'defenses-not-checked'", cat, out[0].ConfidenceReasoning)
+		}
+		if out[0].Severity != "medium" {
+			t.Errorf("category %q: severity should remain unchanged", cat)
+		}
+	}
+}
+
+func TestApplyConfidencePenalties_RequiredCategoryWithDefensesUntouched(t *testing.T) {
+	findings := []state.DeepFinding{
+		{Category: "authorization", Severity: "medium", ConfidenceScore: 80, DefensesChecked: []string{"boundary-authz"}},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 80 {
+		t.Errorf("ConfidenceScore should not move when defenses listed; got %d", out[0].ConfidenceScore)
+	}
+	if out[0].ConfidenceReasoning != "" {
+		t.Errorf("ConfidenceReasoning should be empty; got %q", out[0].ConfidenceReasoning)
+	}
+}
+
+func TestApplyConfidencePenalties_NonRequiredCategoryEmptyDefensesUntouched(t *testing.T) {
+	// Categories not in the required set don't penalize for empty
+	// defenses — error-handling, correctness, performance, etc.
+	for _, cat := range []string{"correctness", "error-handling", "performance", "testing"} {
+		findings := []state.DeepFinding{
+			{Category: cat, Severity: "medium", ConfidenceScore: 80},
+		}
+		out := ApplyConfidencePenalties(findings)
+		if out[0].ConfidenceScore != 80 {
+			t.Errorf("category %q: should not penalize; got %d", cat, out[0].ConfidenceScore)
+		}
+	}
+}
+
+func TestApplyConfidencePenalties_BothPenaltiesCompound(t *testing.T) {
+	// A high-severity authz finding with no trace AND no defenses
+	// gets BOTH penalties.
+	findings := []state.DeepFinding{
+		{Category: "authorization", Severity: "high", ConfidenceScore: 90},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 35 {
+		t.Errorf("ConfidenceScore = %d, want 35 (90 - 30 - 25)", out[0].ConfidenceScore)
+	}
+	if !strings.Contains(out[0].ConfidenceReasoning, "missing-trace") {
+		t.Errorf("reasoning missing 'missing-trace': %q", out[0].ConfidenceReasoning)
+	}
+	if !strings.Contains(out[0].ConfidenceReasoning, "defenses-not-checked") {
+		t.Errorf("reasoning missing 'defenses-not-checked': %q", out[0].ConfidenceReasoning)
+	}
+}
+
+func TestApplyConfidencePenalties_CategoryCaseInsensitive(t *testing.T) {
+	// LLM might emit "Authorization" or "AUTHORIZATION" — match
+	// case-insensitively.
+	for _, cat := range []string{"Authorization", "INPUT-VALIDATION", "External-IO"} {
+		findings := []state.DeepFinding{
+			{Category: cat, Severity: "medium", ConfidenceScore: 80},
+		}
+		out := ApplyConfidencePenalties(findings)
+		if out[0].ConfidenceScore != 55 {
+			t.Errorf("category %q: case-insensitive match failed; got %d", cat, out[0].ConfidenceScore)
+		}
+	}
+}
+
+func TestApplyConfidencePenalties_OtherTagSatisfiesDefenses(t *testing.T) {
+	// `other:<tag>` is the documented escape hatch for defense
+	// classes outside the canonical vocabulary. It still counts as a
+	// non-empty list.
+	findings := []state.DeepFinding{
+		{Category: "concurrency", Severity: "medium", ConfidenceScore: 80, DefensesChecked: []string{"other:lock-free-algorithm"}},
+	}
+	out := ApplyConfidencePenalties(findings)
+	if out[0].ConfidenceScore != 80 {
+		t.Errorf("other:tag should count as non-empty; got %d", out[0].ConfidenceScore)
 	}
 }

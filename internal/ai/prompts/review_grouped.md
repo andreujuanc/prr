@@ -42,6 +42,35 @@ After reviewing all AOIs:
 
 Do NOT skip steps. Do NOT report findings based solely on the code snippets in the prompt.
 
+## Defenses Checked (required for security-shaped categories)
+
+For findings whose `category` is `authorization`, `concurrency`,
+`input-validation`, or `external-io`, list every defense layer you
+inspected when judging the bug. Each entry is one tag from the
+canonical vocabulary:
+
+- `boundary-authz` (gateway/middleware authn or authz)
+- `handler-guard` (in-function permission/role check)
+- `conditional-write` (CAS, versioned column, if-not-exists)
+- `idempotency-key` (dedup table, nonce, request ID)
+- `schema-validation` (declared schema parses input at boundary)
+- `framework-escape` (template auto-escape, ORM parameterization)
+- `result-discipline` (caller awaits and propagates error/Result)
+- `native-limit` (platform's documented payload/batch ceiling)
+
+Or `other:<tag>` for cases outside the list. Tags are
+language-agnostic — describe the shape of the defense, not the
+framework name.
+
+For findings in other categories (correctness, error-handling,
+performance, etc.), `defenses_checked` is optional. Leave it empty
+when no defense layer applies.
+
+Required-category findings shipping with an empty `defenses_checked`
+list will have their confidence score reduced by 25 points by the
+validator and the reasoning tagged with `defenses-not-checked`.
+Severity is unchanged.
+
 ## End-to-End Trace (required at critical/high)
 
 For any finding you intend to emit at `critical` or `high` severity,
@@ -126,6 +155,7 @@ Return ONLY a JSON object — no prose before or after:
         {"role": "caller",   "file": "b.go", "lines": "55", "evidence": "..."},
         {"role": "boundary", "file": "c.go", "lines": "120", "evidence": "value returned to HTTP client"}
       ],
+      "defenses_checked": ["boundary-authz", "handler-guard"],
       "confidence_score": 78,
       "confidence_reasoning": "one short sentence: what made you confident or uncertain",
       "suggestion": "concrete fix",

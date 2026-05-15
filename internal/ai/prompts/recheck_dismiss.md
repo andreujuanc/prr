@@ -64,6 +64,13 @@ patterns:
   evidence didn't account for. This is the single most common FP
   class — the deep reviewer cited a real line but missed context one
   or two lines away.
+- **Defense layer is confirmed present.** The finding's
+  `defenses_checked` field lists a layer (e.g. `boundary-authz`,
+  `conditional-write`, `schema-validation`) AND the trace shows that
+  layer is actually in place AND it defuses the bug. The reviewer
+  noted the defense exists but flagged the finding anyway — that's
+  what dismissal is for. Use rationale `defense-confirmed-present`
+  and cite the specific tag.
 - Evidence says "found 3 call sites" but doesn't show any of them
   reach the alleged sink.
 - Evidence cites a sanitization or framework guard that defuses the
@@ -78,6 +85,12 @@ patterns:
 For each dismissal, provide a one-sentence rationale. When dismissing
 because surrounding code refutes the finding, quote the contradicting
 line in the rationale so the audit log shows what you saw.
+
+Note: do NOT dismiss a finding just because `defenses_checked` is
+empty. The validator already penalizes confidence on those (a
+`defenses-not-checked` tag will be in the reasoning). An empty
+list means "the model didn't show its work", not "no bug exists" —
+keep the finding so the reviewer can decide.
 
 ### 2. Remove within-file duplicates
 If two findings describe the same issue on the same file and line
