@@ -139,6 +139,42 @@ type RuntimeEntryPoint struct {
 	ValidationAt string `json:"validation_at,omitempty"`
 }
 
+// Boundary is one concrete externally-reachable surface located in a
+// specific file. It is the persisted output of Phase 1.5 (boundary
+// discovery). Each boundary seeds 1-3 defense-coverage AOIs for
+// Phase 3 so the audit can guarantee at least one review pass at
+// every boundary regardless of what the AOI scanner caught on its
+// own.
+//
+// Boundary differs from RuntimeEntryPoint: RuntimeEntryPoint
+// describes the codebase's *classes* of entry points abstractly
+// ("HTTP routes use schema validation at the boundary"); Boundary
+// names a specific surface at a specific path so review can be
+// targeted.
+type Boundary struct {
+	// Kind matches RuntimeEntryPoint.Kind. One of: "http", "queue",
+	// "scheduled", "cli", "rpc", "webhook", "other".
+	Kind string `json:"kind"`
+
+	// File is the path holding the boundary declaration (e.g. the
+	// route file, queue subscription, scheduled job).
+	File string `json:"file"`
+
+	// Lines is the optional line range hint within File. Best-effort
+	// from the LLM's read of the file header.
+	Lines string `json:"lines,omitempty"`
+
+	// Symbol is the boundary's identifier (route name, handler
+	// function, subscription topic) when one is identifiable. Used
+	// to anchor the synthesized AOIs to specific code.
+	Symbol string `json:"symbol,omitempty"`
+
+	// Description is a one-line free-form explanation: "POST
+	// /admin/users — admin creation handler", "SNS subscription to
+	// payment-events topic", "scheduled daily reconciliation".
+	Description string `json:"description"`
+}
+
 // IsZero reports whether the model carries no information.
 func (m *RuntimeModel) IsZero() bool {
 	if m == nil {
@@ -327,6 +363,16 @@ type State struct {
 	// used to produce it.
 	RuntimeModel     *RuntimeModel `json:"runtime_model,omitempty"`
 	RuntimeModelHash string        `json:"runtime_model_hash,omitempty"`
+
+	// BoundaryInventory is the Phase 1.5 list of externally-reachable
+	// surfaces (HTTP routes, queue consumers, schedulers, storage
+	// triggers, CAS-shaped DB writes). Each entry seeds 1-3 defense-
+	// coverage AOIs synthesized before Phase 3 so every boundary is
+	// guaranteed to be reviewed for the standard defense questions
+	// (schema validation, error handling, authorization, per-record
+	// isolation, result discipline).
+	BoundaryInventory     []Boundary `json:"boundary_inventory,omitempty"`
+	BoundaryInventoryHash string     `json:"boundary_inventory_hash,omitempty"`
 
 	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
 	// review inputs (file content + AOI content + focus dimensions for individual;
@@ -705,6 +751,8 @@ func (s *State) ClearAllCaches() {
 	s.PRBriefHash = ""
 	s.RuntimeModel = nil
 	s.RuntimeModelHash = ""
+	s.BoundaryInventory = nil
+	s.BoundaryInventoryHash = ""
 	s.LastReview = nil
 }
 
@@ -922,6 +970,24 @@ func (s *State) GetRuntimeModel() (model *RuntimeModel, inputHash string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.RuntimeModel, s.RuntimeModelHash
+}
+
+// SetBoundaryInventory stores the Phase 1.5 boundary inventory and
+// its input hash.
+func (s *State) SetBoundaryInventory(boundaries []Boundary, inputHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.BoundaryInventory = boundaries
+	s.BoundaryInventoryHash = inputHash
+}
+
+// GetBoundaryInventory returns the cached boundary inventory and its
+// input hash. The returned slice is the live one held by State;
+// treat it as read-only.
+func (s *State) GetBoundaryInventory() (boundaries []Boundary, inputHash string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.BoundaryInventory, s.BoundaryInventoryHash
 }
 
 // SetDeepReview stores a Phase 3 deep review result by cache key.

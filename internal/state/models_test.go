@@ -971,3 +971,54 @@ func TestStateClearAllCachesAlsoClearsRuntimeModel(t *testing.T) {
 		t.Errorf("ClearAllCaches should clear the runtime model, got %+v / %q", m, h)
 	}
 }
+
+// ── BoundaryInventory: schema + persistence ─────────────────────────────
+
+func TestBoundary_RoundTrip(t *testing.T) {
+	orig := []Boundary{
+		{Kind: "http", File: "handler.go", Lines: "10-50", Symbol: "createUser", Description: "POST /users"},
+		{Kind: "queue", File: "consumer.go", Description: "SNS payments-topic"},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got []Boundary
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 || got[0].Kind != "http" || got[1].Kind != "queue" {
+		t.Errorf("round trip lost data: %+v", got)
+	}
+	if got[0].Lines != "10-50" || got[0].Symbol != "createUser" {
+		t.Errorf("optional fields lost: %+v", got[0])
+	}
+}
+
+func TestStateSetGetBoundaryInventory(t *testing.T) {
+	s := NewState("1")
+
+	if b, h := s.GetBoundaryInventory(); b != nil || h != "" {
+		t.Errorf("empty state should return nil/empty, got %+v / %q", b, h)
+	}
+
+	inv := []Boundary{{Kind: "http", File: "h.go", Description: "x"}}
+	s.SetBoundaryInventory(inv, "hash-xyz")
+
+	got, hash := s.GetBoundaryInventory()
+	if len(got) != 1 || got[0].File != "h.go" {
+		t.Errorf("GetBoundaryInventory = %+v, want one entry for h.go", got)
+	}
+	if hash != "hash-xyz" {
+		t.Errorf("hash = %q, want hash-xyz", hash)
+	}
+}
+
+func TestStateClearAllCachesAlsoClearsBoundaryInventory(t *testing.T) {
+	s := NewState("1")
+	s.SetBoundaryInventory([]Boundary{{Kind: "http", File: "h.go", Description: "x"}}, "h1")
+	s.ClearAllCaches()
+	if b, h := s.GetBoundaryInventory(); b != nil || h != "" {
+		t.Errorf("ClearAllCaches should clear the boundary inventory, got %+v / %q", b, h)
+	}
+}

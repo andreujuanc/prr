@@ -457,6 +457,16 @@ func Run(
 		log.Printf("Warning: failed to save audit state after Phase 1b: %v", err)
 	}
 
+	// ── Phase 1.5: Boundary Inventory ───────────────────────────────────
+	// One LLM call that scans file headers + the runtime model and
+	// emits a list of externally-reachable surfaces. Each boundary
+	// seeds 1-3 synthetic defense-coverage AOIs (after Phase 2) so the
+	// audit guarantees a review at every entry point even when the
+	// AOI scanner missed it. Non-fatal: failure leaves the inventory
+	// empty and we proceed with scanner output only.
+	dbgw.Phase("PHASE 1.5: Boundary Inventory")
+	boundaryInventory := runPhase15(ctx, aoiClient, opts, auditState, files, runtimeModel, onProgress, dbgw)
+
 	// ── Phase 2: AOI Generation ─────────────────────────────────────────
 
 	dbgw.Phase("PHASE 2: AOI Pre-scan")
@@ -476,6 +486,17 @@ func Run(
 	aoiResults, err := runPhase2(ctx, aoiClient, opts, auditState, files, classifications, onProgress, aoiDebugHook)
 	if err != nil {
 		return nil, fmt.Errorf("phase 2 AOI generation: %w", err)
+	}
+
+	// Merge the synthesized boundary-coverage AOIs into the per-file
+	// results so Phase 3 picks them up alongside scanner-produced
+	// AOIs. The synthesizer is deterministic; the merge is
+	// idempotent on AOI id collision.
+	if len(boundaryInventory) > 0 {
+		boundaryAOIs := SynthesizeBoundaryAOIs(boundaryInventory)
+		aoiResults = MergeBoundaryAOIs(aoiResults, boundaryAOIs)
+		onProgress("phase2", fmt.Sprintf("merged %d boundary-coverage AOIs from %d boundaries",
+			len(boundaryAOIs), len(boundaryInventory)))
 	}
 
 	// Emit the terminal phase-2 summary the TUI parser needs to populate
@@ -680,6 +701,61 @@ func runPhase1b(
 	}
 
 	return result, nil
+}
+
+// ── Phase 1.5: Boundary Inventory ───────────────────────────────────────
+
+// runPhase15 runs the boundary discovery LLM call and persists the
+// result on state. Non-fatal: a discovery failure logs and returns
+// the cached inventory (possibly empty/nil) so the audit can
+// continue with scanner-only AOIs.
+func runPhase15(
+	ctx context.Context,
+	aoiClient ai.Client,
+	opts Options,
+	auditState *state.State,
+	files []classify.File,
+	runtimeModel *state.RuntimeModel,
+	onProgress OnProgress,
+	dbgw *dbg.Writer,
+) []state.Boundary {
+	cachedInventory, cachedHash := auditState.GetBoundaryInventory()
+	if opts.NoCache {
+		cachedHash = ""
+	}
+
+	// Build the input map. We pass the full file content; the
+	// discovery function truncates to the first N lines internally
+	// to keep the prompt bounded.
+	fileContents := make(map[string]string, len(files))
+	for _, f := range files {
+		fileContents[f.Path] = f.Content
+	}
+
+	res, err := DiscoverBoundaries(ctx, aoiClient, fileContents, runtimeModel, cachedHash, func(status string) {
+		onProgress("phase1.5", status)
+	})
+	if err != nil {
+		log.Printf("Phase 1.5 boundary discovery failed (non-fatal): %v", err)
+		return cachedInventory
+	}
+	if res.FromCache {
+		dbgw.Section("Boundary Inventory (cache hit)")
+		dbgw.Text("%d boundaries", len(cachedInventory))
+		return cachedInventory
+	}
+
+	auditState.SetBoundaryInventory(res.Boundaries, res.InputHash)
+	if err := state.Save(auditState); err != nil {
+		log.Printf("Warning: failed to save audit state after Phase 1.5: %v", err)
+	}
+	if dbgw != nil {
+		dbgw.Section("Boundary Inventory Result")
+		for _, b := range res.Boundaries {
+			dbgw.Text("- [%s] %s — %s", b.Kind, b.File, b.Description)
+		}
+	}
+	return res.Boundaries
 }
 
 // ── Phase 2: AOI Generation ─────────────────────────────────────────────
