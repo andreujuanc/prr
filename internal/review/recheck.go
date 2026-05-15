@@ -416,6 +416,12 @@ func recheckConsolidateBatch(
 		),
 	}}
 
+	// Tap the idle watchdog every 30s for the duration of this call.
+	// The consolidator doesn't stream tokens (nil onToken), so without
+	// the heartbeat a slow call would trip the upstream IdleWatch.
+	stop := ai.HeartbeatTap(ctx)
+	defer stop()
+
 	raw, err := client.ChatStream(ctx, systemPrompt, messages, nil)
 	if err != nil {
 		return nil, fmt.Errorf("recheck consolidate call: %w", err)
@@ -493,6 +499,11 @@ func recheckDismissBatch(
 			len(findings), testCoverageBlock, string(findingsJSON),
 		),
 	}}
+
+	// Heartbeat the idle watchdog for the duration of this silent
+	// call. See recheckConsolidateBatch for context.
+	stop := ai.HeartbeatTap(ctx)
+	defer stop()
 
 	raw, err := client.ChatStream(ctx, systemPrompt, messages, nil)
 	if err != nil {

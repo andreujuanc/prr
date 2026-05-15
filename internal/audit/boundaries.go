@@ -202,6 +202,12 @@ func summarizeBoundaries(
 
 	messages := []ai.Message{{Role: "user", Content: user.String()}}
 
+	// Heartbeat the idle watchdog for the duration of this silent
+	// call so a slow boundary discovery doesn't trip the upstream
+	// IdleWatch.
+	stop := ai.HeartbeatTap(ctx)
+	defer stop()
+
 	raw, err := client.ChatStream(ctx, boundaryInventorySystemPrompt, messages, nil)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call: %w", err)

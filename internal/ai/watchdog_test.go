@@ -225,3 +225,99 @@ func TestIdleWatch_ConcurrentStopAndParentCancel(t *testing.T) {
 	}
 	t.Errorf("goroutine leak after concurrent stop+parent-cancel: before=%d, after=%d", before, runtime.NumGoroutine())
 }
+
+// ── ContextWithTap / TapFromContext ─────────────────────────────────────
+
+func TestContextWithTap_RoundTrip(t *testing.T) {
+	var called atomic.Int32
+	tap := func(string) { called.Add(1) }
+
+	ctx := ContextWithTap(context.Background(), tap)
+	got := TapFromContext(ctx)
+	if got == nil {
+		t.Fatal("expected non-nil tap from context")
+	}
+	got("test")
+	if called.Load() != 1 {
+		t.Errorf("expected 1 call, got %d", called.Load())
+	}
+}
+
+func TestContextWithTap_NilTapIsNoop(t *testing.T) {
+	ctx := ContextWithTap(context.Background(), nil)
+	if got := TapFromContext(ctx); got != nil {
+		t.Errorf("nil tap should not be attached; got non-nil")
+	}
+}
+
+func TestTapFromContext_AbsentReturnsNil(t *testing.T) {
+	if got := TapFromContext(context.Background()); got != nil {
+		t.Errorf("plain context should return nil tap; got non-nil")
+	}
+}
+
+// ── HeartbeatTap ────────────────────────────────────────────────────────
+
+func TestHeartbeatTap_PulsesUntilStop(t *testing.T) {
+	var taps atomic.Int32
+	ctx := ContextWithTap(context.Background(), func(string) { taps.Add(1) })
+
+	stop := HeartbeatTapEvery(ctx, 20*time.Millisecond)
+	time.Sleep(85 * time.Millisecond) // ~4 ticks
+	stop()
+	final := taps.Load()
+	if final < 3 {
+		t.Errorf("expected at least 3 heartbeats in 85ms with 20ms interval, got %d", final)
+	}
+
+	// Confirm no more taps fire after stop.
+	time.Sleep(50 * time.Millisecond)
+	if taps.Load() != final {
+		t.Errorf("heartbeat continued after stop: %d → %d", final, taps.Load())
+	}
+}
+
+func TestHeartbeatTap_NoTapInContextIsNoop(t *testing.T) {
+	stop := HeartbeatTap(context.Background())
+	// Should not panic, should not start a goroutine.
+	stop()
+	stop() // double-stop must be safe
+}
+
+func TestHeartbeatTap_StopsOnContextCancel(t *testing.T) {
+	var taps atomic.Int32
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := ContextWithTap(parent, func(string) { taps.Add(1) })
+
+	stop := HeartbeatTapEvery(ctx, 20*time.Millisecond)
+	defer stop()
+	time.Sleep(45 * time.Millisecond) // ~2 ticks
+	cancel()
+	mid := taps.Load()
+
+	// No more ticks after ctx cancel.
+	time.Sleep(80 * time.Millisecond)
+	if taps.Load() != mid {
+		t.Errorf("heartbeat continued after ctx cancel: %d → %d", mid, taps.Load())
+	}
+}
+
+func TestHeartbeatTap_FeedsIdleWatch(t *testing.T) {
+	// End-to-end: HeartbeatTap on a context with an IdleWatch's tap
+	// attached should keep the watchdog from firing even with no
+	// other activity.
+	parent := context.Background()
+	ctx, watchdogTap, stopWatchdog := IdleWatch(parent, 100*time.Millisecond, nil)
+	defer stopWatchdog()
+	ctx = ContextWithTap(ctx, watchdogTap)
+
+	stop := HeartbeatTapEvery(ctx, 30*time.Millisecond)
+	defer stop()
+
+	// Sleep through several would-be idle windows.
+	time.Sleep(400 * time.Millisecond)
+
+	if err := ctx.Err(); err != nil {
+		t.Errorf("watchdog should still be alive thanks to heartbeats; got %v", err)
+	}
+}

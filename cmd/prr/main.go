@@ -489,8 +489,17 @@ func runReview(debug bool, args []string) {
 	// has no user-facing cancel, but a stalled agent shouldn't burn
 	// budget indefinitely in CI. 240s of zero activity (no tokens, no
 	// phase events) cancels the run with ai.ErrIdle.
+	//
+	// Silent single-shot LLM calls (recheck consolidator + dismiss,
+	// runtime model, boundary inventory, sibling cluster) don't stream
+	// tokens, so their watchdog reset has to come from somewhere else.
+	// Attaching the tap to ctx lets each silent call site call
+	// ai.HeartbeatTap(ctx) and tap on a 30s timer for the duration of
+	// its LLM call — without plumbing a "tap" field through every
+	// options struct.
 	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(context.Background(), 240*time.Second, nil)
 	defer stopWatchdog()
+	ctx = ai.ContextWithTap(ctx, watchdogTap)
 
 	opts := review.PRReviewOptions{
 		PRNumber:           prNumber,

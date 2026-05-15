@@ -2492,6 +2492,7 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 	m.aiCancelFn = parentCancel
 	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
+	ctx = ai.ContextWithTap(ctx, watchdogTap)
 
 	// Use chat thinking budget (lower than review for responsiveness)
 	if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
@@ -3584,6 +3585,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		parentCtx, parentCancel := context.WithCancel(context.Background())
 		m.aiCancelFn = parentCancel
 		ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
+		ctx = ai.ContextWithTap(ctx, watchdogTap)
 
 		// Ensure review thinking budget is active (chat may have lowered it)
 		if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
@@ -3662,6 +3664,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 	m.aiCancelFn = parentCancel
 	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
+	ctx = ai.ContextWithTap(ctx, watchdogTap)
 
 	// Use review thinking budget (same depth as batch review)
 	if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
