@@ -16,13 +16,23 @@ import (
 //	defer hb.stop()
 //	for ... { hb.tick() ... }
 //
+// Time is measured against `start` via time.Since, which uses the
+// monotonic clock embedded in the time.Time captured at construction.
+// Wall-clock adjustments (NTP step, daylight saving, manual `date`)
+// don't affect the silence measurement.
+//
 // Sends are guarded by a select against stopCh so the watchdog cannot
 // deadlock if the channel buffer fills and stop() is then called.
 // stop must run before the surrounding goroutine closes the channel.
 type streamHeartbeat struct {
 	ch       chan<- ChatEvent
 	interval time.Duration
-	lastNano atomic.Int64
+
+	// start anchors the monotonic clock reading. lastSinceStart holds
+	// time.Since(start) at the moment of the most recent activity,
+	// stored as nanoseconds for lockless updates.
+	start            time.Time
+	lastSinceStart   atomic.Int64
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -33,9 +43,10 @@ func newStreamHeartbeat(ch chan<- ChatEvent, interval time.Duration) *streamHear
 	hb := &streamHeartbeat{
 		ch:       ch,
 		interval: interval,
+		start:    time.Now(), // captures monotonic reading
 		stopCh:   make(chan struct{}),
 	}
-	hb.lastNano.Store(time.Now().UnixNano())
+	hb.lastSinceStart.Store(0)
 
 	if interval <= 0 {
 		return hb
@@ -61,7 +72,9 @@ func (h *streamHeartbeat) watch(checkEvery time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			elapsed := time.Duration(time.Now().UnixNano() - h.lastNano.Load())
+			now := time.Since(h.start)
+			last := time.Duration(h.lastSinceStart.Load())
+			elapsed := now - last
 			if elapsed < h.interval {
 				continue
 			}
@@ -72,7 +85,7 @@ func (h *streamHeartbeat) watch(checkEvery time.Duration) {
 			case <-h.stopCh:
 				return
 			}
-			h.lastNano.Store(time.Now().UnixNano())
+			h.lastSinceStart.Store(int64(time.Since(h.start)))
 		case <-h.stopCh:
 			return
 		}
@@ -81,7 +94,7 @@ func (h *streamHeartbeat) watch(checkEvery time.Duration) {
 
 // tick records activity. Cheap; safe to call on every chunk.
 func (h *streamHeartbeat) tick() {
-	h.lastNano.Store(time.Now().UnixNano())
+	h.lastSinceStart.Store(int64(time.Since(h.start)))
 }
 
 // stop terminates the watchdog goroutine. Idempotent. Must be called

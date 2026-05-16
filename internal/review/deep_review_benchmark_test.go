@@ -580,7 +580,12 @@ func TestDeepReviewModelComparison(t *testing.T) {
 					APIKey:          specCopy.apiKey,
 					BaseURL:         specCopy.baseURL,
 					MaxOutputTokens: specCopy.maxOutput,
-					Temperature:     ai.TempPtr(specCopy.temperature),
+					// This benchmark exists to compare temperature settings,
+					// including the explicit-zero (greedy) case. Bypass
+					// ai.TempPtr here — it folds 0 to nil, which silently
+					// makes PRR_DEEP_TEMP="0.0" a no-op against the
+					// provider default.
+					Temperature:     &specCopy.temperature,
 					ThinkingBudget:  specCopy.thinkingBudget,
 				})
 				if err != nil {
