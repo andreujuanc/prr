@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/andreujuanc/prr/compare/v1.5.0...v1.6.0) (2026-05-16)
+
+
+### Features
+
+* **progress:** surface AOI/general split + fix counter collision ([eca777a](https://github.com/andreujuanc/prr/commit/eca777a7045ceffed5d8e1188e54033eebc13010))
+
+
+### Bug Fixes
+
+* address review findings — error handling, env-handling, idiomatic parsing ([0324a87](https://github.com/andreujuanc/prr/commit/0324a87a11c39c6948be288c1aa60f4ec9610af7))
+
 ## [1.5.0](https://github.com/andreujuanc/prr/compare/v1.4.0...v1.5.0) (2026-05-14)
 
 
