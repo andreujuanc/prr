@@ -214,10 +214,11 @@ func renderCoverage(b *strings.Builder, cov *state.ReviewCoverage, width int) {
 	b.WriteString(styleTextSubtle.Render(strings.Repeat("─", width)))
 	b.WriteString("\n\n")
 
-	header := fmt.Sprintf("COVERAGE — %d files in scope, %d reviewed",
-		cov.FilesInScope, cov.FilesReviewed)
+	header := fmt.Sprintf("COVERAGE — %s in scope, %d reviewed",
+		pluralize(cov.FilesInScope, "file", "files"),
+		cov.FilesReviewed)
 	if n := len(cov.OrphanFiles); n > 0 {
-		header += fmt.Sprintf(" (%d orphans)", n)
+		header += fmt.Sprintf(" (%s)", pluralize(n, "orphan", "orphans"))
 	}
 	b.WriteString(styleTextSubtle.Render(header))
 	b.WriteString("\n\n")
@@ -251,7 +252,8 @@ func renderCoverage(b *strings.Builder, cov *state.ReviewCoverage, width int) {
 	}
 	if remaining := len(cov.Files) - len(shown); remaining > 0 {
 		b.WriteString("  ")
-		b.WriteString(styleTextMuted.Render(fmt.Sprintf("… %d more files (see --output for full coverage)", remaining)))
+		b.WriteString(styleTextMuted.Render(fmt.Sprintf("… %s (see --output for full coverage)",
+			pluralize(remaining, "more file", "more files"))))
 		b.WriteString("\n")
 	}
 
@@ -271,7 +273,8 @@ func renderCoverage(b *strings.Builder, cov *state.ReviewCoverage, width int) {
 		}
 		if remaining := len(cov.OrphanFiles) - len(orphansShown); remaining > 0 {
 			b.WriteString("    ")
-			b.WriteString(styleTextMuted.Render(fmt.Sprintf("… %d more orphans", remaining)))
+			b.WriteString(styleTextMuted.Render(fmt.Sprintf("… %s",
+				pluralize(remaining, "more orphan", "more orphans"))))
 			b.WriteString("\n")
 		}
 	}

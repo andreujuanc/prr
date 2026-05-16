@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -792,11 +793,11 @@ func TestReviewCoverage_RoundTrip(t *testing.T) {
 	if got.Coverage == nil {
 		t.Fatal("coverage dropped on round-trip")
 	}
-	if len(got.Coverage.Files) != 1 || got.Coverage.Files[0].File != "a.go" {
-		t.Errorf("files round-trip: %+v", got.Coverage.Files)
-	}
-	if len(got.Coverage.OrphanFiles) != 2 {
-		t.Errorf("orphan files round-trip: %v", got.Coverage.OrphanFiles)
+	// Compare the full struct so silently dropped fields fail the
+	// test — anchoring on a couple of fields would miss e.g. an
+	// accidental `json:"-"` on AvgDismissConf or MaxFindingSeverity.
+	if !reflect.DeepEqual(got.Coverage, orig.Coverage) {
+		t.Errorf("coverage round-trip mismatch\n got:  %+v\n want: %+v", got.Coverage, orig.Coverage)
 	}
 }
 
@@ -809,7 +810,9 @@ func TestReviewCoverage_OmittedWhenNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(data), "coverage") {
+	// Match the quoted JSON key so unrelated fields containing the
+	// substring "coverage" wouldn't false-positive this assertion.
+	if strings.Contains(string(data), `"coverage"`) {
 		t.Errorf("nil coverage should be omitted; got %s", data)
 	}
 }

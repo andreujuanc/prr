@@ -205,8 +205,9 @@ Return ONLY a JSON object — no prose before or after:
 }
 ```
 
-- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
-- If this is NOT a real issue: set status to "dismissed", fill `file`/`evidence`/`dismissed_rationale`, AND set `confidence_score` + `confidence_reasoning` describing how sure you are this isn't a bug (same 0-100 scale, inverted meaning — 95 means "I traced it and confirmed a defense", 50 means "looks fine but I didn't pin down a specific mitigation"). `evidence_snippet` is not required for dismissals. The dismissal confidence feeds per-file coverage reporting so downstream consumers can tell "reviewed and clean" from "didn't look hard".
+- `aoi_id` and `status` are REQUIRED on every emission — both findings and dismissals. Without `aoi_id` the result cannot be linked back to the area of interest and may be dropped; without `status` the parser cannot tell whether you're reporting a finding or a dismissal.
+- If this is a real issue: set status to "finding", fill aoi_id/severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
+- If this is NOT a real issue: set status to "dismissed", fill aoi_id/`file`/`evidence`/`dismissed_rationale`, AND set `confidence_score` + `confidence_reasoning` describing how sure you are this isn't a bug (same 0-100 scale, inverted meaning — 95 means "I traced it and confirmed a defense", 50 means "looks fine but I didn't pin down a specific mitigation"). `evidence_snippet` is not required for dismissals. The dismissal confidence feeds per-file coverage reporting so downstream consumers can tell "reviewed and clean" from "didn't look hard".
 - "evidence" is REQUIRED for both findings and dismissals — summarize what you checked and what you found
   - Good: "found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open"
   - Good: "confirmed middleware at server.go:45 validates all inputs via validateRequest() before handlers run"

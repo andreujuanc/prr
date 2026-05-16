@@ -226,7 +226,9 @@ func Run(
 	// Phase 1.5 (boundary discovery), Phase 2.5 (sibling clustering),
 	// Phase 3 (deep review), and Phase 3b (recheck cache key). An empty
 	// string elsewhere means "no priors section" so the off-path is
-	// byte-identical to today.
+	// byte-identical to today. Error is intentionally dropped:
+	// bugpriors.Extract documents it as best-effort and a priors miss
+	// must never fail an audit.
 	var bugPriorsContent string
 	if opts.BugPriors && opts.RepoRoot != "" {
 		rendered, _ := bugpriors.Extract(opts.RepoRoot, bugpriors.DefaultLookback)

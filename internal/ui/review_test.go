@@ -1222,6 +1222,11 @@ func TestLive_StreamMultiPassReview(t *testing.T) {
 // --- renderStructuredReview coverage section tests ---
 
 func TestRenderStructuredReview_CoverageSectionPresent(t *testing.T) {
+	// Data deliberately exercises every singular/plural path: a.go
+	// has 1 finding (pluralize finding/findings), d.go has exactly
+	// 1 AOI (pluralize AOI/AOIs). Without those, asserting absence
+	// of "1 AOIs" / "1 findings" would pass trivially because the
+	// renderer never reaches the singular branch.
 	review := &state.ReviewOutput{
 		Summary: "x",
 		Verdict: "approve",
@@ -1229,28 +1234,35 @@ func TestRenderStructuredReview_CoverageSectionPresent(t *testing.T) {
 			Files: []state.FileCoverage{
 				{File: "a.go", AOIsScanned: 3, Findings: 1, MaxFindingSeverity: "high"},
 				{File: "b.go", AOIsScanned: 2, Dismissals: 2, AvgDismissConf: 82},
+				{File: "d.go", AOIsScanned: 1, Dismissals: 1, AvgDismissConf: 70},
 			},
-			FilesInScope:  3,
-			FilesWithAOIs: 2,
-			FilesReviewed: 2,
+			FilesInScope:  4,
+			FilesWithAOIs: 3,
+			FilesReviewed: 3,
 			OrphanFiles:   []string{"c.go"},
 		},
 	}
 	rendered, _ := renderStructuredReview(review, 100, -1, nil, false)
 	for _, want := range []string{
-		"COVERAGE", "a.go", "b.go", "1 finding", "2 dismissed", "avg conf 82",
+		"COVERAGE",
+		"a.go", "b.go", "d.go",
+		"1 finding",   // a.go pluralized correctly
+		"1 AOI ",      // d.go pluralized correctly (trailing space prevents "1 AOIs" match)
+		"2 dismissed", // b.go
+		"avg conf 82",
 		"Orphan files", "c.go",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("rendered coverage missing %q\nfull:\n%s", want, rendered)
 		}
 	}
-	// Singular AOI count must render as "1 AOI", not "1 AOIs".
-	if strings.Contains(rendered, "1 AOIs") {
-		t.Errorf("singular AOI count should render as '1 AOI', got '1 AOIs'\n%s", rendered)
-	}
-	if strings.Contains(rendered, "1 findings") {
-		t.Errorf("singular finding count should render as '1 finding', got '1 findings'\n%s", rendered)
+	// Belt-and-suspenders: the broken plural forms must NOT appear
+	// anywhere in the output. The singular test data above is what
+	// makes these checks non-vacuous.
+	for _, unwanted := range []string{"1 AOIs", "1 findings", "1 files in scope", "1 orphans)"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Errorf("broken plural leaked: found %q\n%s", unwanted, rendered)
+		}
 	}
 }
 

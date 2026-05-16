@@ -896,6 +896,8 @@ func RunReviewCore(
 		// Extract bug-priors once when opted in. Failure / empty repo /
 		// no matches all return empty string — the prompt-builder
 		// treats empty as "no priors section", so a miss costs nothing.
+		// Error is intentionally dropped: bugpriors.Extract documents
+		// it as best-effort and a priors miss must never fail a review.
 		var bugPriorsContent string
 		if opts.BugPriors && opts.RepoRoot != "" {
 			rendered, _ := bugpriors.Extract(opts.RepoRoot, bugpriors.DefaultLookback)
