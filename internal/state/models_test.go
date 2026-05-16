@@ -759,6 +759,61 @@ func TestDeepDismissal_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestReviewCoverage_RoundTrip(t *testing.T) {
+	orig := &ReviewOutput{
+		Summary: "x",
+		Verdict: "approve",
+		Coverage: &ReviewCoverage{
+			Files: []FileCoverage{
+				{
+					File:               "a.go",
+					AOIsScanned:        3,
+					Findings:           1,
+					Dismissals:         2,
+					Failed:             0,
+					AvgDismissConf:     85,
+					MaxFindingSeverity: "high",
+				},
+			},
+			FilesInScope:  3,
+			FilesWithAOIs: 1,
+			FilesReviewed: 1,
+			OrphanFiles:   []string{"b.go", "c.go"},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got ReviewOutput
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Coverage == nil {
+		t.Fatal("coverage dropped on round-trip")
+	}
+	if len(got.Coverage.Files) != 1 || got.Coverage.Files[0].File != "a.go" {
+		t.Errorf("files round-trip: %+v", got.Coverage.Files)
+	}
+	if len(got.Coverage.OrphanFiles) != 2 {
+		t.Errorf("orphan files round-trip: %v", got.Coverage.OrphanFiles)
+	}
+}
+
+func TestReviewCoverage_OmittedWhenNil(t *testing.T) {
+	// Output with no coverage block must not emit "coverage":null —
+	// otherwise downstream consumers parsing strict JSON schemas
+	// would see the field present-but-null and fail.
+	r := &ReviewOutput{Summary: "x", Verdict: "approve"}
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "coverage") {
+		t.Errorf("nil coverage should be omitted; got %s", data)
+	}
+}
+
 func TestDeepDismissal_OptionalFieldsOmittedWhenEmpty(t *testing.T) {
 	// Older cached state may not include File / ConfidenceScore. The
 	// JSON shape must round-trip cleanly with the new fields zero.

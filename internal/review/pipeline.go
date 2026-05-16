@@ -607,6 +607,11 @@ type CoreResult struct {
 	StructuredReview *state.ReviewOutput
 	DeepFindings     []state.DeepFinding
 	FileFindings     map[string]string
+	// Coverage is the per-file breakdown of AOIs / findings /
+	// dismissals / orphans. Nil when the pipeline ran without an
+	// AOI scan or with empty inputs. The TUI uses this to render
+	// the Coverage section even when synthesis is skipped.
+	Coverage *state.ReviewCoverage
 }
 
 // RunReviewCore is the shared pipeline core used by both the TUI and the headless CLI.
@@ -876,6 +881,12 @@ func RunReviewCore(
 	allFileFindings := make(map[string]string)
 	var deepFindings []state.DeepFinding
 
+	// deepDismissals / failedAOIIDs flow from Phase 3 through to the
+	// coverage stamp at the end of the pipeline. Both default to nil
+	// when no review calls run.
+	var deepDismissals []state.DeepDismissal
+	var failedAOIIDs []string
+
 	if len(reviewCalls) > 0 {
 		maxConc := opts.ParallelReviews
 		if maxConc <= 0 {
@@ -947,6 +958,8 @@ func RunReviewCore(
 		}
 
 		deepFindings = execResult.Findings
+		deepDismissals = execResult.Dismissals
+		failedAOIIDs = execResult.FailedAOIIDs
 		AppendDeepFindings(&allFindings, allFileFindings, deepFindings)
 
 		// Persist the deep findings to state immediately so a crash,
@@ -1015,6 +1028,17 @@ func RunReviewCore(
 		}
 	}
 
+	// Coverage is computed once here from the inputs already in
+	// memory (AOI scan, findings, dismissals, failed AOIs, diff
+	// files). Stamped onto StructuredReview when synthesis runs, or
+	// surfaced through CoreResult.Coverage otherwise — see Commit 6
+	// for how downstream renders it.
+	filesInScope := make([]string, 0, len(opts.RawDiffs))
+	for f := range opts.RawDiffs {
+		filesInScope = append(filesInScope, f)
+	}
+	coverage := BuildCoverage(aoiScanResults, deepFindings, deepDismissals, failedAOIIDs, filesInScope)
+
 	// ── Phase 2: Synthesis ───────────────────────────────────────
 	// SkipSynthesis (TUI default): return immediately with DeepFindings
 	// as the source of truth. Review is nil — the UI renders findings
@@ -1024,6 +1048,7 @@ func RunReviewCore(
 		return &CoreResult{
 			DeepFindings: deepFindings,
 			FileFindings: allFileFindings,
+			Coverage:     coverage,
 		}, nil
 	}
 	if opts.NoSynthesis {
@@ -1034,6 +1059,7 @@ func RunReviewCore(
 			},
 			DeepFindings: deepFindings,
 			FileFindings: allFileFindings,
+			Coverage:     coverage,
 		}, nil
 	}
 
@@ -1041,6 +1067,14 @@ func RunReviewCore(
 		enhancedInstructions, allFindings.String(), allFileFindings, rr)
 	if synthErr != nil {
 		return nil, synthErr
+	}
+
+	// Stamp coverage onto the structured output so JSON consumers
+	// see it alongside findings. Synthesis itself doesn't author
+	// the field — we trust the upstream count exactly because no
+	// LLM authored it.
+	if synthResult.Structured != nil && coverage != nil {
+		synthResult.Structured.Coverage = coverage
 	}
 
 	synthVerdict := ""
@@ -1054,6 +1088,7 @@ func RunReviewCore(
 		StructuredReview: synthResult.Structured,
 		DeepFindings:     deepFindings,
 		FileFindings:     allFileFindings,
+		Coverage:         coverage,
 	}, nil
 }
 
