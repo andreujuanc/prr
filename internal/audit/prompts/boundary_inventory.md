@@ -4,6 +4,7 @@ You will receive:
 
 1. A free-form **Runtime Model** describing the codebase's auth model, validation sites, entry-point classes, error-handling discipline, and invariants (when available).
 2. **File header excerpts** (top ~80 lines of each candidate file) so you can match patterns by call shape without re-reading the whole codebase.
+3. Optionally, a `## Known failure modes in this codebase` section listing recent fix-shaped commits. When present, prioritize identifying boundaries whose surface area touches those failure classes — the auditor will want defense coverage there first.
 
 For each boundary you find, emit one entry in the output array. **One entry per distinct surface**, not one per file or per route — if a file declares 30 HTTP routes that all go through the same authorizer + middleware, that's still **one** `http` boundary entry for that file.
 

@@ -73,18 +73,22 @@ func TestHashBoundaryInputs_StableAndSensitive(t *testing.T) {
 	exB := []boundaryExcerpt{{Path: "a.go", Header: "h2"}}
 	model := &state.RuntimeModel{AuthModel: "x"}
 
-	if hashBoundaryInputs(exA, model) != hashBoundaryInputs(exA, model) {
+	if hashBoundaryInputs(exA, model, "") != hashBoundaryInputs(exA, model, "") {
 		t.Error("hash must be stable across calls")
 	}
-	if hashBoundaryInputs(exA, model) == hashBoundaryInputs(exB, model) {
+	if hashBoundaryInputs(exA, model, "") == hashBoundaryInputs(exB, model, "") {
 		t.Error("different excerpts must produce different hashes")
 	}
 	other := &state.RuntimeModel{AuthModel: "y"}
-	if hashBoundaryInputs(exA, model) == hashBoundaryInputs(exA, other) {
+	if hashBoundaryInputs(exA, model, "") == hashBoundaryInputs(exA, other, "") {
 		t.Error("runtime model contributes to the hash")
 	}
-	if hashBoundaryInputs(exA, nil) == hashBoundaryInputs(exA, model) {
+	if hashBoundaryInputs(exA, nil, "") == hashBoundaryInputs(exA, model, "") {
 		t.Error("nil model vs present model must differ")
+	}
+	// New fix-commit → new bug-priors → cache must invalidate.
+	if hashBoundaryInputs(exA, model, "") == hashBoundaryInputs(exA, model, "abc") {
+		t.Error("bug-priors must contribute to the boundary hash")
 	}
 }
 
@@ -400,7 +404,7 @@ func TestDiscoverBoundaries_ParsesValidResponse(t *testing.T) {
 		"consumer.go": "package main\nfunc handleMessage() {}",
 	}
 
-	res, err := DiscoverBoundaries(context.Background(), client, files, nil, "", nil)
+	res, err := DiscoverBoundaries(context.Background(), client, files, nil, "", "", nil)
 	if err != nil {
 		t.Fatalf("DiscoverBoundaries: %v", err)
 	}
@@ -424,7 +428,7 @@ func TestDiscoverBoundaries_ParsesValidResponse(t *testing.T) {
 func TestDiscoverBoundaries_RuntimeModelIncluded(t *testing.T) {
 	client := &boundaryStubClient{response: `[]`}
 	model := &state.RuntimeModel{AuthModel: "Gateway authorizer"}
-	_, err := DiscoverBoundaries(context.Background(), client, map[string]string{"a.go": "x\ny"}, model, "", nil)
+	_, err := DiscoverBoundaries(context.Background(), client, map[string]string{"a.go": "x\ny"}, model, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,9 +442,9 @@ func TestDiscoverBoundaries_CacheHit(t *testing.T) {
 	files := map[string]string{"a.go": "body\nline2"}
 
 	excerpts := buildBoundaryExcerpts(files, 80, 200)
-	wantHash := hashBoundaryInputs(excerpts, nil)
+	wantHash := hashBoundaryInputs(excerpts, nil, "")
 
-	res, err := DiscoverBoundaries(context.Background(), client, files, nil, wantHash, nil)
+	res, err := DiscoverBoundaries(context.Background(), client, files, nil, "", wantHash, nil)
 	if err != nil {
 		t.Fatalf("DiscoverBoundaries: %v", err)
 	}
@@ -454,7 +458,7 @@ func TestDiscoverBoundaries_CacheHit(t *testing.T) {
 
 func TestDiscoverBoundaries_EmptyFilesShortCircuits(t *testing.T) {
 	client := &boundaryStubClient{response: "should not be called"}
-	res, err := DiscoverBoundaries(context.Background(), client, nil, nil, "", nil)
+	res, err := DiscoverBoundaries(context.Background(), client, nil, nil, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +473,7 @@ func TestDiscoverBoundaries_EmptyFilesShortCircuits(t *testing.T) {
 func TestDiscoverBoundaries_LLMError(t *testing.T) {
 	client := &boundaryStubClient{err: errors.New("model not found")}
 	_, err := DiscoverBoundaries(context.Background(), client,
-		map[string]string{"a.go": "body"}, nil, "", nil)
+		map[string]string{"a.go": "body"}, nil, "", "", nil)
 	if err == nil {
 		t.Fatal("expected LLM error to surface")
 	}
@@ -478,7 +482,7 @@ func TestDiscoverBoundaries_LLMError(t *testing.T) {
 func TestDiscoverBoundaries_GarbageResponseFails(t *testing.T) {
 	client := &boundaryStubClient{response: "I can't determine the boundaries."}
 	_, err := DiscoverBoundaries(context.Background(), client,
-		map[string]string{"a.go": "body"}, nil, "", nil)
+		map[string]string{"a.go": "body"}, nil, "", "", nil)
 	if err == nil {
 		t.Fatal("expected parse error on prose-only response")
 	}
@@ -486,7 +490,7 @@ func TestDiscoverBoundaries_GarbageResponseFails(t *testing.T) {
 
 func TestDiscoverBoundaries_NilClient(t *testing.T) {
 	_, err := DiscoverBoundaries(context.Background(), nil,
-		map[string]string{"a.go": "body"}, nil, "", nil)
+		map[string]string{"a.go": "body"}, nil, "", "", nil)
 	if err == nil {
 		t.Fatal("expected error on nil client")
 	}

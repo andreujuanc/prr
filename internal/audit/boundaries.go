@@ -62,6 +62,7 @@ func DiscoverBoundaries(
 	client ai.Client,
 	files map[string]string,
 	runtimeModel *state.RuntimeModel,
+	bugPriors string,
 	cachedHash string,
 	onProgress func(string),
 ) (*BoundaryDiscoveryResult, error) {
@@ -82,14 +83,14 @@ func DiscoverBoundaries(
 		return &BoundaryDiscoveryResult{}, nil
 	}
 
-	inputHash := hashBoundaryInputs(excerpts, runtimeModel)
+	inputHash := hashBoundaryInputs(excerpts, runtimeModel, bugPriors)
 	if cachedHash != "" && cachedHash == inputHash {
 		onProgress("Boundary inventory unchanged (cache hit)")
 		return &BoundaryDiscoveryResult{InputHash: inputHash, FromCache: true}, nil
 	}
 
 	onProgress("Scanning file headers for boundaries...")
-	boundaries, err := summarizeBoundaries(ctx, client, excerpts, runtimeModel)
+	boundaries, err := summarizeBoundaries(ctx, client, excerpts, runtimeModel, bugPriors)
 	if err != nil {
 		return nil, err
 	}
@@ -154,11 +155,12 @@ func trimToLines(s string, n int) string {
 }
 
 // hashBoundaryInputs hashes the ordered excerpts plus the runtime
-// model (when present) plus the boundary-inventory prompt itself.
-// Mixing the prompt in means a later edit to boundary_inventory.md
-// auto-invalidates the cached inventory rather than silently serving
-// boundaries produced by the previous prompt.
-func hashBoundaryInputs(excerpts []boundaryExcerpt, model *state.RuntimeModel) string {
+// model (when present) plus the boundary-inventory prompt itself
+// plus the bug-priors content (when --bug-priors is on). Mixing the
+// prompt in means a later edit to boundary_inventory.md auto-
+// invalidates the cached inventory; mixing the priors content in
+// means a new fix-commit invalidates as well.
+func hashBoundaryInputs(excerpts []boundaryExcerpt, model *state.RuntimeModel, bugPriors string) string {
 	h := sha256.New()
 	for _, e := range excerpts {
 		h.Write([]byte(e.Path))
@@ -175,6 +177,8 @@ func hashBoundaryInputs(excerpts []boundaryExcerpt, model *state.RuntimeModel) s
 	h.Write([]byte{0})
 	promptHash := sha256.Sum256([]byte(boundaryInventorySystemPrompt))
 	h.Write(promptHash[:])
+	h.Write([]byte{0})
+	h.Write([]byte(bugPriors))
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
@@ -182,17 +186,26 @@ func hashBoundaryInputs(excerpts []boundaryExcerpt, model *state.RuntimeModel) s
 // system prompt and a user message built from the excerpts. The
 // runtime model (when present) is rendered into the user message so
 // the LLM has the codebase's entry-point classes for context.
+// bugPriors (when non-empty) is rendered as a third section so the
+// LLM knows which bug classes are recurring — useful for boundary
+// classification when "this codebase has shipped X" is a signal.
 func summarizeBoundaries(
 	ctx context.Context,
 	client ai.Client,
 	excerpts []boundaryExcerpt,
 	model *state.RuntimeModel,
+	bugPriors string,
 ) ([]state.Boundary, error) {
 	var user strings.Builder
 
 	if rendered := model.Render(); rendered != "" {
 		user.WriteString("=== Runtime Model ===\n")
 		user.WriteString(rendered)
+		user.WriteString("\n\n")
+	}
+
+	if bugPriors != "" {
+		user.WriteString(bugPriors)
 		user.WriteString("\n\n")
 	}
 
