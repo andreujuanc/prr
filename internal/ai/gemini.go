@@ -23,6 +23,35 @@ import (
 // silent truncation if the cap is ever hit.
 const sseBufferMax = 8 * 1024 * 1024
 
+// DefaultResponseHeaderTimeout bounds the time we wait for the first
+// response byte from the upstream after the request body has been
+// written. Currently observed failure: Gemini accepts the TCP
+// connection, receives our request, and never sends a response header
+// — the goroutine then parks for the full RequestTimeout (15 min)
+// before retrying. Setting ResponseHeaderTimeout on the Transport
+// converts that into a fast, retryable failure.
+//
+// Sized so a slow-but-alive backend (cold-start, large prompt) still
+// has room to respond, while a true silent hang is caught within a
+// minute and a half.
+const DefaultResponseHeaderTimeout = 90 * time.Second
+
+// defaultGeminiHTTPClient is shared across GeminiProvider instances so
+// HTTP/2 connections pool correctly. ResponseHeaderTimeout is the
+// load-bearing setting; the rest mirror http.DefaultTransport.
+var defaultGeminiHTTPClient = &http.Client{
+	Transport: newProviderTransport(),
+}
+
+// newProviderTransport clones http.DefaultTransport and sets
+// ResponseHeaderTimeout. We clone rather than mutate the package
+// default to avoid surprising callers that also use net/http.
+func newProviderTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = DefaultResponseHeaderTimeout
+	return t
+}
+
 // Gemini retries live in retry.go's RetryTransient. doHTTPRequest
 // returns a *TransientError for 429 / 5xx (with the parsed retryDelay
 // when present) so callers wrapped in RetryTransient honour the
@@ -66,15 +95,17 @@ type GeminiProvider struct {
 }
 
 // httpClient returns the configured HTTP client or a sensible default.
-// No Timeout is set because http.Client.Timeout covers the entire request
-// lifecycle including reading the streaming response body — which can take
-// minutes for long-thinking models. Cancellation is handled via the
-// request context instead.
+// No Client.Timeout is set because that bounds the full request
+// lifecycle including streaming, which can take many minutes for
+// long-thinking models. Cancellation is handled via the request
+// context. The default transport sets ResponseHeaderTimeout so a
+// silent hang before headers fails fast and retries instead of
+// burning the full RequestTimeout.
 func (g *GeminiProvider) httpClient() *http.Client {
 	if g.HTTPClient != nil {
 		return g.HTTPClient
 	}
-	return &http.Client{}
+	return defaultGeminiHTTPClient
 }
 
 func (g *GeminiProvider) Name() string    { return "gemini" }

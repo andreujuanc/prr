@@ -59,8 +59,12 @@ type OpenAIProvider struct {
 // http.Client.Timeout is set — total-request timeouts are the wrong
 // shape for streaming completions (a legitimate generation can take
 // many minutes). Per-call timeouts are applied at the provider level
-// via RequestTimeout and context.WithTimeout.
-var defaultHTTPClient = &http.Client{}
+// via RequestTimeout and context.WithTimeout. The Transport sets
+// ResponseHeaderTimeout (see gemini.go DefaultResponseHeaderTimeout)
+// so a silent hang before headers fails fast.
+var defaultHTTPClient = &http.Client{
+	Transport: newProviderTransport(),
+}
 
 func (o *OpenAIProvider) httpClient() *http.Client {
 	if o.HTTPClient != nil {
