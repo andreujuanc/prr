@@ -566,7 +566,7 @@ func parseEvidenceCorrections(raw string) []evidenceCorrection {
 		Corrections []evidenceCorrection `json:"corrections"`
 	}
 	if err := unmarshalLLMResponse([]byte(s), &resp); err != nil {
-		log.Printf("review: failed to parse evidence corrector response: %v", err)
+		log.Printf("review: failed to parse evidence corrector response: %v — response prefix: %q", err, previewForLog([]byte(s), 500))
 		return nil
 	}
 	return resp.Corrections
@@ -825,7 +825,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			DismissedRationale  string               `json:"dismissed_rationale"`
 		}
 		if err := unmarshalLLMResponse([]byte(s), &parsed); err != nil {
-			return result, fmt.Errorf("%w: parse individual response: %v", errReviewParse, err)
+			return result, fmt.Errorf("%w: parse individual response: %v — response prefix: %q", errReviewParse, err, previewForLog([]byte(s), 500))
 		}
 		result.RawOutput = json.RawMessage(s)
 		if parsed.Status == "finding" {
@@ -886,7 +886,7 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			} `json:"results"`
 		}
 		if err := unmarshalLLMResponse([]byte(s), &parsed); err != nil {
-			return result, fmt.Errorf("%w: parse grouped response: %v", errReviewParse, err)
+			return result, fmt.Errorf("%w: parse grouped response: %v — response prefix: %q", errReviewParse, err, previewForLog([]byte(s), 500))
 		}
 		result.RawOutput = json.RawMessage(s)
 		result.CrossCutting = parsed.CrossCutting

@@ -769,7 +769,7 @@ func newLiveAgent(t *testing.T, cfg *config.Config) *ai.Agent {
 		APIKey:          pc.APIKey,
 		BaseURL:         pc.BaseURL,
 		MaxOutputTokens: mcfg.MaxOutputTokens,
-		Temperature:     mcfg.Temperature,
+		Temperature:     ai.TempPtr(mcfg.Temperature),
 		ThinkingBudget:  mcfg.ThinkingBudget.Review,
 	})
 	if err != nil {

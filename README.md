@@ -236,6 +236,79 @@ Excluded files still appear in the file tree (dimmed with a tag) but aren't sent
 
 Review state is stored per-PR at `.git/pr-tui/<pr_number>.json`. This includes review status per file, cached AI findings, and chat history. State is local to your clone and not committed.
 
+## Troubleshooting
+
+If prr misbehaves — hangs during a phase, returns empty findings, or
+crashes — the steps below collect the data needed to diagnose it.
+
+### Debug log
+
+Every run writes to `~/.cache/prr/debug.log`. It captures cache misses,
+batch retries, parse failures with response prefixes, AOI routing, and
+any warnings emitted by the pipeline. The file is append-only across
+runs, so timestamps matter.
+
+```bash
+# Last 200 lines of the most recent activity
+tail -200 ~/.cache/prr/debug.log
+```
+
+For verbose output, pass `--debug` on the command line. Extra detail
+from the agent loop (per-round LLM calls, tool calls, tool results)
+goes to the same file.
+
+### Capturing a hang without killing the process
+
+If prr appears stuck in a phase, send `SIGUSR1` to dump every
+goroutine's stack to a file. The process keeps running and the file is
+readable while it's open. You can dump as many times as you like —
+each dump gets its own timestamp.
+
+```bash
+# In another terminal:
+kill -USR1 $(pgrep -f 'prr')
+
+# Find the latest dump:
+ls -ltr ~/.cache/prr/goroutines-*.txt | tail -1
+```
+
+The dump shows which goroutine is doing what. The ones to look at:
+
+- A goroutine in `parseSSEStream` → `http2pipe.Read` is actively
+  receiving from the model.
+- A goroutine in `http2ClientConn.roundTrip` with no body read going
+  means we sent the request and never got a response — likely an
+  upstream silent hang. The provider's `ResponseHeaderTimeout` (90s
+  default) should turn this into a fast retry.
+- Multiple goroutines parked in `sync.WaitGroup.Wait` are the
+  orchestration layer waiting on those workers above.
+
+### Parse failures
+
+When the AI's response can't be parsed as JSON, the log records the
+first 500 chars of the response so you can see what the model
+actually said. Look for lines like:
+
+```
+Warning: failed to parse batch JSON: invalid character 'm' looking for beginning of value — response prefix: "my analysis ..."
+```
+
+This tells you whether the model went conversational, hit a refusal,
+returned markdown without code fences, or something else — the fix
+depends on which.
+
+### What to share when reporting an issue
+
+1. `~/.cache/prr/debug.log` (or just the last few hundred lines around
+   the failure).
+2. The most recent `~/.cache/prr/goroutines-*.txt` if the run hung.
+3. The exact command you ran (`prr 42 --no-cache`, etc.).
+4. Your model selection (`gemini-2.5-pro`, etc.) — visible in the
+   first lines of debug.log.
+
+That set is enough to reconstruct what happened without needing your
+repo content.
+
 ## License
 
 MIT

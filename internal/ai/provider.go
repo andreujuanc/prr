@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 )
 
 // ── Roles ───────────────────────────────────────────────────────────────
@@ -80,6 +82,18 @@ type ToolResultBlock struct {
 
 func (ToolResultBlock) blockType() string { return "tool_result" }
 
+// BlobBlock carries inline binary data — typically an image. MimeType
+// is the IANA type (e.g. "image/png", "image/jpeg"). Translated to
+// Gemini's inlineData part and OpenAI's image_url content part with a
+// base64 data URI. Existing providers without binary support drop
+// BlobBlock silently.
+type BlobBlock struct {
+	Data     []byte
+	MimeType string
+}
+
+func (BlobBlock) blockType() string { return "blob" }
+
 // ── Provider messages ───────────────────────────────────────────────────
 
 // ProviderMessage is a rich message for the Provider interface.
@@ -143,16 +157,67 @@ type ToolParams struct {
 }
 
 // ToolParam describes a single parameter.
+//
+// Properties and Required let callers describe nested objects — for
+// example, an array of objects (Type="array", Items={Type:"object",
+// Properties:...}). The Gemini and OpenAI converters recurse through
+// these fields, so nested shape no longer gets silently flattened.
 type ToolParam struct {
 	Type        string
 	Description string
-	Enum        []string   // optional enum values
-	Items       *ToolParam // for array types
+	Enum        []string             // optional enum values (string-valued only)
+	Items       *ToolParam           // for array types
+	Properties  map[string]ToolParam // for object types
+	Required    []string             // required keys when Type == "object"
+}
+
+// ValidateToolDef walks a ToolDef and returns the first structural
+// issue found. Currently checks: Enum values are only attached to
+// string-typed parameters, which is the only shape ToolParam.Enum can
+// represent. Misuse silently corrupts the schema sent to the model
+// (Gemini accepts the field but ignores the constraint), so callers
+// should run this at startup time on every ToolDef they emit.
+func ValidateToolDef(td ToolDef) error {
+	return validateToolParams(td.Name, td.Parameters)
+}
+
+func validateToolParams(toolName string, p ToolParams) error {
+	for name, sub := range p.Properties {
+		if err := validateToolParam(toolName+"."+name, sub); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateToolParam(path string, p ToolParam) error {
+	if len(p.Enum) > 0 && p.Type != "string" {
+		return fmt.Errorf("tool param %s: Enum requires Type=\"string\", got %q", path, p.Type)
+	}
+	for name, sub := range p.Properties {
+		if err := validateToolParam(path+"."+name, sub); err != nil {
+			return err
+		}
+	}
+	if p.Items != nil {
+		if err := validateToolParam(path+"[]", *p.Items); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ── Request / Response ──────────────────────────────────────────────────
 
 // ChatRequest is the canonical request to a provider.
+//
+// Temperature is *float64 so an explicit 0 (greedy decoding) is
+// distinguishable from "use the provider's default". nil = default.
+//
+// RequestTimeout, when non-zero, overrides the provider's configured
+// RequestTimeout for this one call. Useful for short calls (a quick
+// classification, an embedding lookup) that shouldn't pay the
+// 15-minute synthesis-sized budget the factory sets globally.
 type ChatRequest struct {
 	Model           string
 	System          string
@@ -160,9 +225,22 @@ type ChatRequest struct {
 	Tools           []ToolDef
 	ToolChoice      ToolChoice
 	MaxOutputTokens int
-	Temperature     float64
-	JSONSchema      *JSONSchema // structured output, optional
-	CachePrefix     bool        // hint: cache system + leading messages if supported
+	Temperature     *float64
+	JSONSchema      *JSONSchema   // structured output, optional
+	CachePrefix     bool          // hint: cache system + leading messages if supported
+	RequestTimeout  time.Duration // per-call override; 0 = use provider's RequestTimeout
+}
+
+// TempPtr converts a config float64 to *float64, treating values
+// <= 0 as "unset / use provider default". This preserves the
+// historical behaviour where a 0 in models.json meant "don't send
+// temperature" — explicit greedy decoding requires setting the
+// pointer directly, not by writing 0 in JSON.
+func TempPtr(v float64) *float64 {
+	if v <= 0 {
+		return nil
+	}
+	return &v
 }
 
 // ChatResponse is the canonical response from a provider.
@@ -178,20 +256,28 @@ type ChatResponse struct {
 type ChatEventType int
 
 const (
-	EventText     ChatEventType = iota // regular text chunk
-	EventThinking                      // thinking/reasoning text
-	EventToolUse                       // tool call
-	EventDone                          // final event with complete response
-	EventError                         // error during streaming
+	EventText      ChatEventType = iota // regular text chunk
+	EventThinking                       // thinking/reasoning text
+	EventToolUse                        // tool call
+	EventDone                           // final event with complete response
+	EventError                          // error during streaming
+	EventHeartbeat                      // no data received for HeartbeatInterval
 )
 
 // ChatEvent is a single streaming event from a provider.
+//
+// EventHeartbeat carries the silence duration in Silence; it fires
+// when a stream has not produced a data line within the provider's
+// HeartbeatInterval. Consumers that don't care can ignore the type
+// (the agent loop uses a switch without a default, so heartbeats fall
+// through harmlessly). Existing handlers stay correct without edits.
 type ChatEvent struct {
 	Type     ChatEventType
 	Text     string        // EventText, EventThinking
 	ToolUse  *ToolUseBlock // EventToolUse
 	Response *ChatResponse // EventDone
 	Err      error         // EventError
+	Silence  time.Duration // EventHeartbeat
 }
 
 // ── Provider interface ──────────────────────────────────────────────────

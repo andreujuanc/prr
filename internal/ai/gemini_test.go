@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -403,7 +404,43 @@ func TestGeminiStreamChat_HTTPError(t *testing.T) {
 	}
 }
 
-func TestGeminiStreamChat_RetryOn429(t *testing.T) {
+// TestGeminiStreamChat_429ReturnsTransientError pins the contract that
+// a bare StreamChat call returns a *TransientError on 429 — without any
+// inline retry. Callers that want retries wrap in RetryTransient.
+func TestGeminiStreamChat_429ReturnsTransientError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		fmt.Fprint(w, `{"error":{"message":"rate limited","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"7s"}]}}`)
+	}))
+	defer srv.Close()
+
+	provider := newTestProvider(srv.URL)
+
+	_, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{
+			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error on 429, got nil")
+	}
+	var te *TransientError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *TransientError, got %T: %v", err, err)
+	}
+	if te.RetryAfter != 7*time.Second {
+		t.Errorf("RetryAfter = %v, want 7s", te.RetryAfter)
+	}
+	if !IsTransientError(err, context.Background()) {
+		t.Error("IsTransientError should report true for a 429 TransientError")
+	}
+}
+
+// TestGeminiStreamChat_RetryTransientHonoursRetryAfter integrates the
+// retry path: a server that returns 429 with retryDelay=0s then 200
+// is recovered by RetryTransient. Mirrors the production wrap used by
+// every call site in review/, audit/, security/, project/, etc.
+func TestGeminiStreamChat_RetryTransientHonoursRetryAfter(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
 
@@ -425,21 +462,22 @@ func TestGeminiStreamChat_RetryOn429(t *testing.T) {
 
 	provider := newTestProvider(srv.URL)
 
-	ch, err := provider.StreamChat(context.Background(), ChatRequest{
-		Messages: []ProviderMessage{
-			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
-		},
+	resp, err := RetryTransient(context.Background(), 3, "gemini-test", func(ctx context.Context) (*ChatResponse, error) {
+		return provider.Chat(ctx, ChatRequest{
+			Messages: []ProviderMessage{
+				{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+			},
+		})
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	text, _, err := collectText(ch)
-	if err != nil {
-		t.Fatalf("unexpected stream error: %v", err)
+	if len(resp.Content) == 0 {
+		t.Fatal("empty response after retry")
 	}
-	if text != "retried ok" {
-		t.Errorf("got %q, want %q", text, "retried ok")
+	tb, ok := resp.Content[0].(TextBlock)
+	if !ok || tb.Text != "retried ok" {
+		t.Errorf("got %#v, want TextBlock{Text:\"retried ok\"}", resp.Content[0])
 	}
 
 	mu.Lock()
@@ -954,7 +992,7 @@ func TestGeminiTranslation_GenerationConfig(t *testing.T) {
 	t.Run("with thinking enabled", func(t *testing.T) {
 		provider := &GeminiProvider{APIKey: "k", Model: "gemini-3.1-pro-preview"}
 		provider.ModelConfig.MaxOutputTokens = 65536
-		provider.ModelConfig.Temperature = 0.2
+		provider.ModelConfig.Temperature = TempPtr(0.2)
 		provider.ModelConfig.ThinkingBudget = 8192
 
 		native := provider.toNativeRequest(ChatRequest{
@@ -984,10 +1022,45 @@ func TestGeminiTranslation_GenerationConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit zero temperature is sent", func(t *testing.T) {
+		// Pin the bugfix: *float64 lets a caller request greedy
+		// decoding (0). The earlier `Temperature > 0` check dropped 0
+		// silently as "unset".
+		zero := 0.0
+		provider := &GeminiProvider{APIKey: "k", Model: "m"}
+		provider.ModelConfig.Temperature = &zero
+		native := provider.toNativeRequest(ChatRequest{
+			Messages: []ProviderMessage{
+				{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+			},
+		})
+		gc := native.GenerationConfig
+		if gc == nil || gc.Temperature == nil {
+			t.Fatalf("expected temperature on the wire, got gc=%v", gc)
+		}
+		if *gc.Temperature != 0 {
+			t.Errorf("temperature = %v, want 0 (greedy)", *gc.Temperature)
+		}
+	})
+
+	t.Run("nil temperature is omitted", func(t *testing.T) {
+		provider := &GeminiProvider{APIKey: "k", Model: "m"}
+		// ModelConfig.Temperature left nil
+		native := provider.toNativeRequest(ChatRequest{
+			Messages: []ProviderMessage{
+				{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+			},
+		})
+		gc := native.GenerationConfig
+		if gc != nil && gc.Temperature != nil {
+			t.Errorf("temperature should be omitted when ModelConfig.Temperature is nil, got %v", *gc.Temperature)
+		}
+	})
+
 	t.Run("without thinking (legacy model)", func(t *testing.T) {
 		provider := &GeminiProvider{APIKey: "k", Model: "gemini-1.5-pro"}
 		provider.ModelConfig.MaxOutputTokens = 8192
-		provider.ModelConfig.Temperature = 0.2
+		provider.ModelConfig.Temperature = TempPtr(0.2)
 		provider.ModelConfig.ThinkingBudget = 0
 
 		native := provider.toNativeRequest(ChatRequest{
@@ -1464,6 +1537,90 @@ func TestGeminiProvider_Capabilities(t *testing.T) {
 	}
 	if caps.MaxContextTokens != 1_000_000 {
 		t.Errorf("MaxContextTokens = %d", caps.MaxContextTokens)
+	}
+}
+
+// TestGeminiStreamChat_ResponseSchemaOnTheWire pins the structured-output
+// wiring: ChatRequest.JSONSchema → generationConfig.responseMimeType +
+// generationConfig.responseSchema in the outbound request body.
+func TestGeminiStreamChat_ResponseSchemaOnTheWire(t *testing.T) {
+	var mu sync.Mutex
+	var body string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := readBody(r)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseEvent(ssePartSpec{Text: "{}"}))
+	}))
+	defer srv.Close()
+
+	provider := newTestProvider(srv.URL)
+
+	schema := json.RawMessage(`{"type":"object","properties":{"verdict":{"type":"string"}}}`)
+	ch, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{
+			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "score"}}},
+		},
+		JSONSchema: &JSONSchema{Name: "verdict", Schema: schema},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	for range ch {
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(body, `"responseMimeType":"application/json"`) {
+		t.Errorf("request body missing responseMimeType, body=%s", body)
+	}
+	if !strings.Contains(body, `"responseSchema"`) {
+		t.Errorf("request body missing responseSchema, body=%s", body)
+	}
+	if !strings.Contains(body, `"verdict"`) {
+		t.Errorf("request body missing schema content, body=%s", body)
+	}
+}
+
+// TestGeminiStreamChat_NoSchemaOmitsResponseFields pins that without a
+// JSONSchema, no responseSchema / responseMimeType is sent (avoids
+// constraining unrelated calls).
+func TestGeminiStreamChat_NoSchemaOmitsResponseFields(t *testing.T) {
+	var mu sync.Mutex
+	var body string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := readBody(r)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseEvent(ssePartSpec{Text: "ok"}))
+	}))
+	defer srv.Close()
+
+	provider := newTestProvider(srv.URL)
+	ch, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{
+			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	for range ch {
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(body, "responseMimeType") {
+		t.Errorf("responseMimeType should be omitted, body=%s", body)
+	}
+	if strings.Contains(body, "responseSchema") {
+		t.Errorf("responseSchema should be omitted, body=%s", body)
 	}
 }
 

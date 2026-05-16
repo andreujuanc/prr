@@ -77,6 +77,37 @@ func strContains(haystack, needle string) bool {
 	return false
 }
 
+// previewForLog returns the first n bytes of raw rendered as a
+// printable one-line string suitable for inclusion in a log message:
+// newlines collapse to spaces, control bytes are escaped \xNN, and
+// the string is suffixed with "…" when truncated. Used at LLM-JSON
+// parse-failure sites so we can see what the model actually returned
+// instead of guessing from a one-character error message.
+func previewForLog(raw []byte, n int) string {
+	truncated := false
+	data := raw
+	if len(data) > n {
+		data = data[:n]
+		truncated = true
+	}
+	var out bytes.Buffer
+	out.Grow(len(data) + 8)
+	for _, c := range data {
+		switch {
+		case c == '\n' || c == '\r':
+			out.WriteByte(' ')
+		case c < 0x20 || c == 0x7f:
+			out.WriteString(fmt.Sprintf("\\x%02x", c))
+		default:
+			out.WriteByte(c)
+		}
+	}
+	if truncated {
+		out.WriteString("…")
+	}
+	return out.String()
+}
+
 // escapeControlCharsInStrings walks the JSON byte stream and replaces
 // literal U+0000..U+001F characters that appear inside string values
 // with their JSON-escape equivalents.

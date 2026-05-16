@@ -331,7 +331,7 @@ func createProvider(spec modelSpec) (ai.Provider, error) {
 		APIKey:          spec.apiKey,
 		BaseURL:         spec.baseURL,
 		MaxOutputTokens: spec.maxOutput,
-		Temperature:     spec.temperature,
+		Temperature:     ai.TempPtr(spec.temperature),
 		ThinkingBudget:  spec.thinkingBudget,
 	})
 }

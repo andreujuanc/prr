@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,48 @@ import (
 	"time"
 )
 
+// sseBufferMax caps a single SSE "data:" line. Long thinking or fat
+// tool-call args land on one line, so the cap must be generous; 8MB
+// is well above Gemini's documented response limits and gives a clear
+// failure mode (EventError carrying bufio.ErrTooLong) rather than a
+// silent truncation if the cap is ever hit.
+const sseBufferMax = 8 * 1024 * 1024
+
+// DefaultResponseHeaderTimeout bounds the time we wait for the first
+// response byte from the upstream after the request body has been
+// written. Currently observed failure: Gemini accepts the TCP
+// connection, receives our request, and never sends a response header
+// — the goroutine then parks for the full RequestTimeout (15 min)
+// before retrying. Setting ResponseHeaderTimeout on the Transport
+// converts that into a fast, retryable failure.
+//
+// Sized so a slow-but-alive backend (cold-start, large prompt) still
+// has room to respond, while a true silent hang is caught within a
+// minute and a half.
+const DefaultResponseHeaderTimeout = 90 * time.Second
+
+// defaultGeminiHTTPClient is shared across GeminiProvider instances so
+// HTTP/2 connections pool correctly. ResponseHeaderTimeout is the
+// load-bearing setting; the rest mirror http.DefaultTransport.
+var defaultGeminiHTTPClient = &http.Client{
+	Transport: newProviderTransport(),
+}
+
+// newProviderTransport clones http.DefaultTransport and sets
+// ResponseHeaderTimeout. We clone rather than mutate the package
+// default to avoid surprising callers that also use net/http.
+func newProviderTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = DefaultResponseHeaderTimeout
+	return t
+}
+
+// Gemini retries live in retry.go's RetryTransient. doHTTPRequest
+// returns a *TransientError for 429 / 5xx (with the parsed retryDelay
+// when present) so callers wrapped in RetryTransient honour the
+// upstream's preferred backoff. Direct, unwrapped callers see the
+// underlying error and fail fast.
+
 // GeminiProvider implements Provider for the Google Gemini API.
 // It handles single request/response translation; the iterative
 // tool-calling loop lives in Agent.
@@ -22,6 +65,7 @@ type GeminiProvider struct {
 	APIKey     string
 	Model      string
 	BaseURL    string       // override for testing; empty uses the real Gemini API
+	APIVersion string       // "v1beta" (default) or "v1"; only consulted when BaseURL is empty
 	HTTPClient *http.Client // optional; defaults to a client with no timeout (context-based cancellation)
 
 	// RequestTimeout bounds a single HTTP call (POST → final SSE event).
@@ -31,25 +75,37 @@ type GeminiProvider struct {
 	// each retry attempt gets a fresh budget.
 	RequestTimeout time.Duration
 
+	// HeartbeatInterval emits an EventHeartbeat on the stream when no
+	// SSE data line has been seen for that long. Zero disables. The
+	// production factory sets DefaultHeartbeatInterval; UI consumers
+	// can render this as a "still thinking…" indicator without having
+	// to invent their own timer.
+	HeartbeatInterval time.Duration
+
 	// ModelConfig holds per-model tuning (maxOutputTokens, temperature,
 	// thinkingBudget). Set by the caller from config.GetModelConfig().
+	//
+	// Temperature is *float64 so an explicit 0 (greedy decoding) is
+	// distinguishable from "use Gemini's default". nil = omit the field.
 	ModelConfig struct {
 		MaxOutputTokens int
-		Temperature     float64
+		Temperature     *float64
 		ThinkingBudget  int
 	}
 }
 
 // httpClient returns the configured HTTP client or a sensible default.
-// No Timeout is set because http.Client.Timeout covers the entire request
-// lifecycle including reading the streaming response body — which can take
-// minutes for long-thinking models. Cancellation is handled via the
-// request context instead.
+// No Client.Timeout is set because that bounds the full request
+// lifecycle including streaming, which can take many minutes for
+// long-thinking models. Cancellation is handled via the request
+// context. The default transport sets ResponseHeaderTimeout so a
+// silent hang before headers fails fast and retries instead of
+// burning the full RequestTimeout.
 func (g *GeminiProvider) httpClient() *http.Client {
 	if g.HTTPClient != nil {
 		return g.HTTPClient
 	}
-	return &http.Client{}
+	return defaultGeminiHTTPClient
 }
 
 func (g *GeminiProvider) Name() string    { return "gemini" }
@@ -95,8 +151,12 @@ func (g *GeminiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 // released early.
 func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
 	cancel := func() {}
-	if g.RequestTimeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, g.RequestTimeout)
+	timeout := req.RequestTimeout
+	if timeout == 0 {
+		timeout = g.RequestTimeout
+	}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 
 	nativeReq := g.toNativeRequest(req)
@@ -146,6 +206,12 @@ type geminiPart struct {
 	ThoughtSignature string              `json:"thoughtSignature,omitempty"`
 	FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFuncResponse `json:"functionResponse,omitempty"`
+	InlineData       *geminiBlob         `json:"inlineData,omitempty"`
+}
+
+type geminiBlob struct {
+	MimeType string `json:"mimeType"`
+	Data     []byte `json:"data"` // base64-encoded by encoding/json
 }
 
 type geminiFunctionCall struct {
@@ -181,9 +247,11 @@ type geminiSchema struct {
 
 // Generation config types
 type geminiGenConfig struct {
-	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
-	Temperature     *float64              `json:"temperature,omitempty"`
-	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	MaxOutputTokens  int                   `json:"maxOutputTokens,omitempty"`
+	Temperature      *float64              `json:"temperature,omitempty"`
+	ThinkingConfig   *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseMimeType string                `json:"responseMimeType,omitempty"`
+	ResponseSchema   json.RawMessage       `json:"responseSchema,omitempty"`
 }
 
 type geminiThinkingConfig struct {
@@ -277,6 +345,10 @@ func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
 						Response: map[string]string{"result": b.Content},
 					},
 				})
+			case BlobBlock:
+				parts = append(parts, geminiPart{
+					InlineData: &geminiBlob{MimeType: b.MimeType, Data: b.Data},
+				})
 			}
 		}
 
@@ -292,6 +364,18 @@ func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
 
 	// Generation config: temperature, max tokens, thinking
 	native.GenerationConfig = g.buildGenConfig()
+
+	// Structured output: when a caller passes JSONSchema, ask Gemini
+	// to constrain decoding to the schema and emit JSON. The schema
+	// must already be in a Gemini-compatible OpenAPI-Schema shape;
+	// translation lives at the caller, not here.
+	if req.JSONSchema != nil && len(req.JSONSchema.Schema) > 0 {
+		if native.GenerationConfig == nil {
+			native.GenerationConfig = &geminiGenConfig{}
+		}
+		native.GenerationConfig.ResponseMimeType = "application/json"
+		native.GenerationConfig.ResponseSchema = req.JSONSchema.Schema
+	}
 
 	// Tool config: use VALIDATED mode for constrained decoding when tools are present
 	if len(req.Tools) > 0 {
@@ -320,8 +404,8 @@ func (g *GeminiProvider) buildGenConfig() *geminiGenConfig {
 		cfg.MaxOutputTokens = g.ModelConfig.MaxOutputTokens
 	}
 
-	if g.ModelConfig.Temperature > 0 {
-		t := g.ModelConfig.Temperature
+	if g.ModelConfig.Temperature != nil {
+		t := *g.ModelConfig.Temperature
 		cfg.Temperature = &t
 	}
 
@@ -367,6 +451,13 @@ func convertToolParam(p ToolParam) geminiSchema {
 		Type:        strings.ToUpper(p.Type),
 		Description: p.Description,
 		Enum:        p.Enum,
+		Required:    p.Required,
+	}
+	if len(p.Properties) > 0 {
+		schema.Properties = make(map[string]geminiSchema, len(p.Properties))
+		for name, sub := range p.Properties {
+			schema.Properties[name] = convertToolParam(sub)
+		}
 	}
 	if p.Items != nil {
 		items := convertToolParam(*p.Items)
@@ -377,65 +468,70 @@ func convertToolParam(p ToolParam) geminiSchema {
 
 // ── HTTP request with retry ─────────────────────────────────────────────
 
-func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.Response, error) {
+// resolveURL builds the streaming-generate URL, honouring BaseURL when
+// set and otherwise applying APIVersion (default v1beta) against the
+// public endpoint. Extracted for test access.
+func (g *GeminiProvider) resolveURL() string {
 	base := g.BaseURL
 	if base == "" {
-		base = "https://generativelanguage.googleapis.com/v1beta"
+		v := g.APIVersion
+		if v == "" {
+			v = "v1beta"
+		}
+		base = "https://generativelanguage.googleapis.com/" + v
 	}
-	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", base, g.Model)
+	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", base, g.Model)
+}
 
-	maxRetries := 2
-	var resp *http.Response
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("gemini: failed to create request: %w", err)
+func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.Response, error) {
+	url := g.resolveURL()
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("gemini: failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-goog-api-key", g.APIKey)
+	// x-server-timeout hints to the backend how long we'll wait, so it
+	// can shed load gracefully instead of holding a hung worker after
+	// we've given up. Matches googleapis/go-genai's buildRequest
+	// pattern; value is seconds-until-deadline rounded up. Omitted when
+	// ctx has no deadline.
+	if deadline, ok := ctx.Deadline(); ok {
+		seconds := int64(math.Ceil(time.Until(deadline).Seconds()))
+		if seconds > 0 {
+			httpReq.Header.Set("x-server-timeout", strconv.FormatInt(seconds, 10))
 		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("x-goog-api-key", g.APIKey)
-		// x-server-timeout hints to the backend how long we'll wait, so
-		// it can shed load gracefully instead of holding a hung worker
-		// after we've given up. Matches googleapis/go-genai's
-		// buildRequest pattern; value is seconds-until-deadline rounded
-		// up. Omitted when ctx has no deadline.
-		if deadline, ok := ctx.Deadline(); ok {
-			seconds := int64(math.Ceil(time.Until(deadline).Seconds()))
-			if seconds > 0 {
-				httpReq.Header.Set("x-server-timeout", strconv.FormatInt(seconds, 10))
-			}
+	}
+
+	resp, err := g.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: request failed: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+
+	errBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	apiErr := fmt.Errorf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+
+	switch {
+	case resp.StatusCode == 429 || resp.StatusCode == 503:
+		delay := parseGeminiRetryDelay(errBody)
+		if delay == 0 {
+			delay = parseHTTPRetryAfter(resp.Header)
 		}
-
-		resp, err = g.httpClient().Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("gemini: request failed: %w", err)
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-
-		errBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attempt < maxRetries {
-			delay := parseRetryDelay(errBody)
-			log.Printf("Gemini API rate limited (HTTP %d), retrying in %v (attempt %d/%d)",
-				resp.StatusCode, delay, attempt+1, maxRetries)
-			select {
-			case <-time.After(delay):
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-
+		log.Printf("Gemini API rate limited (HTTP %d), retryDelay=%v", resp.StatusCode, delay)
+		return nil, &TransientError{Err: apiErr, RetryAfter: delay}
+	case resp.StatusCode >= 500 && resp.StatusCode < 600:
+		log.Printf("Gemini API server error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, &TransientError{Err: apiErr}
+	default:
 		log.Printf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
-		return nil, fmt.Errorf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, apiErr
 	}
-
-	// Unreachable: the loop always returns from the StatusOK branch or the error branch.
-	// If we somehow get here, return a clear error rather than a closed response body.
-	return nil, fmt.Errorf("gemini: exhausted retries without a response")
 }
 
 // ── SSE stream parsing ──────────────────────────────────────────────────
@@ -444,8 +540,16 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	var contentBlocks []ContentBlock
 	var usage TokenUsage
 
+	hb := newStreamHeartbeat(ch, g.HeartbeatInterval)
+	defer hb.stop()
+
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// A single SSE "data:" line can be large — long thinking content or
+	// fat tool-call args both arrive on one line. Cap at 8MB; Gemini's
+	// documented response limits sit well under this. If the line is
+	// still too long, scanner.Err returns bufio.ErrTooLong and the
+	// terminal handler below surfaces it as EventError.
+	scanner.Buffer(make([]byte, 0, 64*1024), sseBufferMax)
 
 	for scanner.Scan() {
 		// Respect context cancellation during parsing
@@ -460,6 +564,8 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
+
+		hb.tick()
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "" {
@@ -553,6 +659,9 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	}
 
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			err = fmt.Errorf("gemini: SSE line exceeded %d-byte cap: %w", sseBufferMax, err)
+		}
 		log.Printf("Gemini stream read error: %v", err)
 		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
 		return
@@ -581,38 +690,3 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 
 //go:fix inline
 func boolPtr(v bool) *bool { return new(v) }
-
-// parseRetryDelay extracts the retry delay from a Gemini error response body.
-// Falls back to 5 seconds if parsing fails.
-func parseRetryDelay(body []byte) time.Duration {
-	const fallback = 5 * time.Second
-
-	var errResp struct {
-		Error struct {
-			Details []struct {
-				Type       string `json:"@type"`
-				RetryDelay string `json:"retryDelay"`
-			} `json:"details"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &errResp); err != nil {
-		return fallback
-	}
-	for _, d := range errResp.Error.Details {
-		if d.RetryDelay != "" {
-			// Format is like "41s" or "41.5s"
-			d.RetryDelay = strings.TrimSuffix(d.RetryDelay, "s")
-			if secs, err := strconv.ParseFloat(d.RetryDelay, 64); err == nil {
-				if secs <= 0 {
-					return 100 * time.Millisecond // immediate retry with small buffer
-				}
-				// Cap at 60 seconds to avoid unreasonable waits
-				if secs > 60 {
-					secs = 60
-				}
-				return time.Duration(secs * float64(time.Second))
-			}
-		}
-	}
-	return fallback
-}

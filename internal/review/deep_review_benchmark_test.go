@@ -469,7 +469,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 		ModelID:         "gemini-3.1-flash-lite",
 		APIKey:          geminiKey,
 		ThinkingBudget:  2048,
-		Temperature:     0.1,
+		Temperature:     ai.TempPtr(0.1),
 		MaxOutputTokens: 65536,
 	})
 	if err != nil {
@@ -580,8 +580,13 @@ func TestDeepReviewModelComparison(t *testing.T) {
 					APIKey:          specCopy.apiKey,
 					BaseURL:         specCopy.baseURL,
 					MaxOutputTokens: specCopy.maxOutput,
-					Temperature:     specCopy.temperature,
-					ThinkingBudget:  specCopy.thinkingBudget,
+					// This benchmark exists to compare temperature settings,
+					// including the explicit-zero (greedy) case. Bypass
+					// ai.TempPtr here — it folds 0 to nil, which silently
+					// makes PRR_DEEP_TEMP="0.0" a no-op against the
+					// provider default.
+					Temperature:    &specCopy.temperature,
+					ThinkingBudget: specCopy.thinkingBudget,
 				})
 				if err != nil {
 					t.Fatalf("create provider: %v", err)

@@ -39,6 +39,11 @@ func main() {
 	// Force truecolor early so styled error output works too
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
+	// Install SIGUSR1 → goroutine dump handler so a hung phase can be
+	// diagnosed via `kill -USR1 <pid>` without losing the process to a
+	// terminating signal. Files land in ~/.cache/prr/goroutines-*.txt.
+	installGoroutineDumpHandler()
+
 	// Parse global flags — but pass through flags after "audit" subcommand
 	debug := false
 	useChroma := false
@@ -740,7 +745,7 @@ func createAIClient(cfg *config.Config) ai.Client {
 		APIKey:          apiKey,
 		BaseURL:         pc.BaseURL,
 		MaxOutputTokens: modelCfg.MaxOutputTokens,
-		Temperature:     modelCfg.Temperature,
+		Temperature:     ai.TempPtr(modelCfg.Temperature),
 		ThinkingBudget:  modelCfg.ThinkingBudget.Review,
 	})
 	if err != nil {
@@ -805,7 +810,7 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 		APIKey:          apiKey,
 		BaseURL:         pc.BaseURL,
 		MaxOutputTokens: modelCfg.MaxOutputTokens,
-		Temperature:     modelCfg.Temperature,
+		Temperature:     ai.TempPtr(modelCfg.Temperature),
 		ThinkingBudget:  modelCfg.ThinkingBudget.Fast,
 	})
 	if err != nil {

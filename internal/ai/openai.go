@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -28,6 +30,10 @@ type OpenAIProvider struct {
 	// googleapis/go-genai's HTTPOptions.Timeout pattern.
 	RequestTimeout time.Duration
 
+	// HeartbeatInterval emits an EventHeartbeat when no SSE data line
+	// has been seen for that long. Zero disables.
+	HeartbeatInterval time.Duration
+
 	// ProviderName overrides the name returned by Name() — useful for
 	// distinguishing "github-copilot" from "openai" while sharing impl.
 	ProviderLabel string
@@ -37,9 +43,12 @@ type OpenAIProvider struct {
 	ExtraHeaders map[string]string
 
 	// ModelConfig holds per-model tuning.
+	//
+	// Temperature is *float64 so explicit 0 (greedy decoding) is
+	// distinguishable from "use the provider's default". nil = omit.
 	ModelConfig struct {
 		MaxOutputTokens int
-		Temperature     float64
+		Temperature     *float64
 		ThinkingBudget  int
 	}
 }
@@ -50,8 +59,12 @@ type OpenAIProvider struct {
 // http.Client.Timeout is set — total-request timeouts are the wrong
 // shape for streaming completions (a legitimate generation can take
 // many minutes). Per-call timeouts are applied at the provider level
-// via RequestTimeout and context.WithTimeout.
-var defaultHTTPClient = &http.Client{}
+// via RequestTimeout and context.WithTimeout. The Transport sets
+// ResponseHeaderTimeout (see gemini.go DefaultResponseHeaderTimeout)
+// so a silent hang before headers fails fast.
+var defaultHTTPClient = &http.Client{
+	Transport: newProviderTransport(),
+}
 
 func (o *OpenAIProvider) httpClient() *http.Client {
 	if o.HTTPClient != nil {
@@ -107,8 +120,12 @@ func (o *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 // released early.
 func (o *OpenAIProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
 	cancel := func() {}
-	if o.RequestTimeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, o.RequestTimeout)
+	timeout := req.RequestTimeout
+	if timeout == 0 {
+		timeout = o.RequestTimeout
+	}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 
 	nativeReq := o.toNativeRequest(req)
@@ -163,8 +180,13 @@ type oaiMessage struct {
 }
 
 type oaiContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string       `json:"type"`
+	Text     string       `json:"text,omitempty"`
+	ImageURL *oaiImageURL `json:"image_url,omitempty"`
+}
+
+type oaiImageURL struct {
+	URL string `json:"url"` // either http(s):// or data:<mime>;base64,...
 }
 
 type oaiTool struct {
@@ -243,9 +265,12 @@ func (o *OpenAIProvider) toNativeRequest(req ChatRequest) oaiRequest {
 		maxTokens = 8192
 	}
 
-	// Temperature
-	temp := req.Temperature
-	if temp <= 0 {
+	// Temperature: request overrides provider default; nil = omit.
+	var temp *float64
+	switch {
+	case req.Temperature != nil:
+		temp = req.Temperature
+	case o.ModelConfig.Temperature != nil:
 		temp = o.ModelConfig.Temperature
 	}
 
@@ -256,8 +281,9 @@ func (o *OpenAIProvider) toNativeRequest(req ChatRequest) oaiRequest {
 		MaxCompletionToks: maxTokens,
 		StreamOpts:        &oaiStreamOpt{IncludeUsage: true},
 	}
-	if temp > 0 {
-		native.Temperature = &temp
+	if temp != nil {
+		v := *temp
+		native.Temperature = &v
 	}
 	// NOTE: reasoning_effort is NOT sent here because the Chat Completions API
 	// rejects it when tools are present ("Function tools with reasoning_effort
@@ -301,6 +327,7 @@ func (o *OpenAIProvider) translateUserMessage(msg ProviderMessage) []oaiMessage 
 	// Check if it contains tool results
 	var toolResults []oaiMessage
 	var textParts []string
+	var blobs []BlobBlock
 
 	for _, block := range msg.Content {
 		switch b := block.(type) {
@@ -312,6 +339,8 @@ func (o *OpenAIProvider) translateUserMessage(msg ProviderMessage) []oaiMessage 
 				Content:    b.Content,
 				ToolCallID: b.ToolUseID,
 			})
+		case BlobBlock:
+			blobs = append(blobs, b)
 		}
 	}
 
@@ -320,8 +349,22 @@ func (o *OpenAIProvider) translateUserMessage(msg ProviderMessage) []oaiMessage 
 	if len(toolResults) > 0 {
 		result = append(result, toolResults...)
 	}
-	// Text parts go as a user message
-	if len(textParts) > 0 {
+	// Text alone → plain string content (back-compat with text-only path).
+	// Text + blobs → multi-part content array.
+	switch {
+	case len(blobs) > 0:
+		parts := make([]oaiContentPart, 0, len(textParts)+len(blobs))
+		if len(textParts) > 0 {
+			parts = append(parts, oaiContentPart{Type: "text", Text: strings.Join(textParts, "\n")})
+		}
+		for _, b := range blobs {
+			parts = append(parts, oaiContentPart{
+				Type:     "image_url",
+				ImageURL: &oaiImageURL{URL: blobDataURI(b)},
+			})
+		}
+		result = append(result, oaiMessage{Role: "user", Content: parts})
+	case len(textParts) > 0:
 		result = append(result, oaiMessage{
 			Role:    "user",
 			Content: strings.Join(textParts, "\n"),
@@ -329,6 +372,17 @@ func (o *OpenAIProvider) translateUserMessage(msg ProviderMessage) []oaiMessage 
 	}
 
 	return result
+}
+
+// blobDataURI encodes a BlobBlock as a data: URI suitable for OpenAI's
+// image_url content part. Missing MimeType falls back to image/png —
+// most callers attach a screenshot.
+func blobDataURI(b BlobBlock) string {
+	mime := b.MimeType
+	if mime == "" {
+		mime = "image/png"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b.Data)
 }
 
 func (o *OpenAIProvider) translateAssistantMessage(msg ProviderMessage) []oaiMessage {
@@ -368,30 +422,44 @@ func (o *OpenAIProvider) translateAssistantMessage(msg ProviderMessage) []oaiMes
 
 func (o *OpenAIProvider) toolParamsToJSON(params ToolParams) json.RawMessage {
 	schema := map[string]any{
-		"type": "object",
+		"type":       "object",
+		"properties": toolParamPropsToJSON(params.Properties),
 	}
-	props := make(map[string]any)
-	for name, p := range params.Properties {
-		prop := map[string]any{
-			"type":        p.Type,
-			"description": p.Description,
-		}
-		if len(p.Enum) > 0 {
-			prop["enum"] = p.Enum
-		}
-		if p.Items != nil {
-			prop["items"] = map[string]any{
-				"type": p.Items.Type,
-			}
-		}
-		props[name] = prop
-	}
-	schema["properties"] = props
 	if len(params.Required) > 0 {
 		schema["required"] = params.Required
 	}
 	raw, _ := json.Marshal(schema)
 	return raw
+}
+
+func toolParamPropsToJSON(props map[string]ToolParam) map[string]any {
+	out := make(map[string]any, len(props))
+	for name, p := range props {
+		out[name] = toolParamToJSON(p)
+	}
+	return out
+}
+
+func toolParamToJSON(p ToolParam) map[string]any {
+	m := map[string]any{
+		"type": p.Type,
+	}
+	if p.Description != "" {
+		m["description"] = p.Description
+	}
+	if len(p.Enum) > 0 {
+		m["enum"] = p.Enum
+	}
+	if len(p.Properties) > 0 {
+		m["properties"] = toolParamPropsToJSON(p.Properties)
+	}
+	if len(p.Required) > 0 {
+		m["required"] = p.Required
+	}
+	if p.Items != nil {
+		m["items"] = toolParamToJSON(*p.Items)
+	}
+	return m
 }
 
 // ── HTTP request with retry ─────────────────────────────────────────────
@@ -403,48 +471,41 @@ func (o *OpenAIProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.
 	}
 	url := base + "/chat/completions"
 
-	maxRetries := 2
-	var resp *http.Response
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("openai: failed to create request: %w", err)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
-		for k, v := range o.ExtraHeaders {
-			httpReq.Header.Set(k, v)
-		}
-
-		resp, err = o.httpClient().Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("openai: request failed: %w", err)
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-
-		errBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attempt < maxRetries {
-			delay := 2 * time.Second * time.Duration(attempt+1)
-			log.Printf("OpenAI API rate limited (HTTP %d), retrying in %v (attempt %d/%d)",
-				resp.StatusCode, delay, attempt+1, maxRetries)
-			select {
-			case <-time.After(delay):
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-
-		log.Printf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(errBody))
-		return nil, fmt.Errorf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("openai: failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
+	for k, v := range o.ExtraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 
-	return nil, fmt.Errorf("openai: exhausted retries without a response")
+	resp, err := o.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai: request failed: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+
+	errBody, _ := io.ReadAll(resp.Body)
+	delay := parseHTTPRetryAfter(resp.Header)
+	resp.Body.Close()
+	apiErr := fmt.Errorf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+
+	switch {
+	case resp.StatusCode == 429 || resp.StatusCode == 503:
+		log.Printf("OpenAI API rate limited (HTTP %d), retryAfter=%v", resp.StatusCode, delay)
+		return nil, &TransientError{Err: apiErr, RetryAfter: delay}
+	case resp.StatusCode >= 500 && resp.StatusCode < 600:
+		log.Printf("OpenAI API server error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, &TransientError{Err: apiErr}
+	default:
+		log.Printf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, apiErr
+	}
 }
 
 // ── SSE stream parsing ──────────────────────────────────────────────────
@@ -470,6 +531,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	var usage TokenUsage
 	var stopReason StopReason
 
+	hb := newStreamHeartbeat(ch, o.HeartbeatInterval)
+	defer hb.stop()
+
 	// Track tool calls being accumulated across deltas
 	type toolCallAccum struct {
 		ID   string
@@ -479,7 +543,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	toolCalls := make(map[int]*toolCallAccum)
 
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// sseBufferMax (8MB) — see gemini.go. Same rationale: long
+	// reasoning or fat tool-call args land on one SSE line.
+	scanner.Buffer(make([]byte, 0, 64*1024), sseBufferMax)
 
 	for scanner.Scan() {
 		select {
@@ -493,6 +559,8 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
+
+		hb.tick()
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
@@ -563,6 +631,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	// user cancel). Surface the error so callers don't get a fake
 	// EventDone with truncated content.
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			err = fmt.Errorf("openai: SSE line exceeded %d-byte cap: %w", sseBufferMax, err)
+		}
 		log.Printf("OpenAI stream read error: %v", err)
 		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
 		return
