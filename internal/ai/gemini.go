@@ -71,8 +71,13 @@ func (g *GeminiProvider) ModelID() string { return g.Model }
 
 func (g *GeminiProvider) Capabilities() Capabilities {
 	return Capabilities{
-		PromptCaching:     true,
-		StructuredOutput:  true,
+		PromptCaching: true,
+		// StructuredOutput is false until toNativeRequest reads
+		// ChatRequest.JSONSchema and sets responseSchema /
+		// responseMimeType on the wire. Wiring lands in the next
+		// commit; this flip stops callers from relying on a feature
+		// that does nothing today.
+		StructuredOutput:  false,
 		ParallelToolCalls: true,
 		MaxContextTokens:  1_000_000,
 	}

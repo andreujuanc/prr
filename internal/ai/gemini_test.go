@@ -1494,8 +1494,10 @@ func TestGeminiProvider_Capabilities(t *testing.T) {
 	if !caps.PromptCaching {
 		t.Error("expected PromptCaching=true")
 	}
-	if !caps.StructuredOutput {
-		t.Error("expected StructuredOutput=true")
+	// StructuredOutput is false until toNativeRequest wires up the
+	// responseSchema path. See gemini.go Capabilities comment.
+	if caps.StructuredOutput {
+		t.Error("expected StructuredOutput=false until wired")
 	}
 	if !caps.ParallelToolCalls {
 		t.Error("expected ParallelToolCalls=true")
