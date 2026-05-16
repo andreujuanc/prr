@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -171,8 +172,13 @@ type oaiMessage struct {
 }
 
 type oaiContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string       `json:"type"`
+	Text     string       `json:"text,omitempty"`
+	ImageURL *oaiImageURL `json:"image_url,omitempty"`
+}
+
+type oaiImageURL struct {
+	URL string `json:"url"` // either http(s):// or data:<mime>;base64,...
 }
 
 type oaiTool struct {
@@ -313,6 +319,7 @@ func (o *OpenAIProvider) translateUserMessage(msg ProviderMessage) []oaiMessage 
 	// Check if it contains tool results
 	var toolResults []oaiMessage
 	var textParts []string
+	var blobs []BlobBlock
 
 	for _, block := range msg.Content {
 		switch b := block.(type) {
@@ -324,6 +331,8 @@ func (o *OpenAIProvider) translateUserMessage(msg ProviderMessage) []oaiMessage 
 				Content:    b.Content,
 				ToolCallID: b.ToolUseID,
 			})
+		case BlobBlock:
+			blobs = append(blobs, b)
 		}
 	}
 
@@ -332,8 +341,22 @@ func (o *OpenAIProvider) translateUserMessage(msg ProviderMessage) []oaiMessage 
 	if len(toolResults) > 0 {
 		result = append(result, toolResults...)
 	}
-	// Text parts go as a user message
-	if len(textParts) > 0 {
+	// Text alone → plain string content (back-compat with text-only path).
+	// Text + blobs → multi-part content array.
+	switch {
+	case len(blobs) > 0:
+		parts := make([]oaiContentPart, 0, len(textParts)+len(blobs))
+		if len(textParts) > 0 {
+			parts = append(parts, oaiContentPart{Type: "text", Text: strings.Join(textParts, "\n")})
+		}
+		for _, b := range blobs {
+			parts = append(parts, oaiContentPart{
+				Type:     "image_url",
+				ImageURL: &oaiImageURL{URL: blobDataURI(b)},
+			})
+		}
+		result = append(result, oaiMessage{Role: "user", Content: parts})
+	case len(textParts) > 0:
 		result = append(result, oaiMessage{
 			Role:    "user",
 			Content: strings.Join(textParts, "\n"),
@@ -341,6 +364,17 @@ func (o *OpenAIProvider) translateUserMessage(msg ProviderMessage) []oaiMessage 
 	}
 
 	return result
+}
+
+// blobDataURI encodes a BlobBlock as a data: URI suitable for OpenAI's
+// image_url content part. Missing MimeType falls back to image/png —
+// most callers attach a screenshot.
+func blobDataURI(b BlobBlock) string {
+	mime := b.MimeType
+	if mime == "" {
+		mime = "image/png"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b.Data)
 }
 
 func (o *OpenAIProvider) translateAssistantMessage(msg ProviderMessage) []oaiMessage {

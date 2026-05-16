@@ -82,6 +82,18 @@ type ToolResultBlock struct {
 
 func (ToolResultBlock) blockType() string { return "tool_result" }
 
+// BlobBlock carries inline binary data — typically an image. MimeType
+// is the IANA type (e.g. "image/png", "image/jpeg"). Translated to
+// Gemini's inlineData part and OpenAI's image_url content part with a
+// base64 data URI. Existing providers without binary support drop
+// BlobBlock silently.
+type BlobBlock struct {
+	Data     []byte
+	MimeType string
+}
+
+func (BlobBlock) blockType() string { return "blob" }
+
 // ── Provider messages ───────────────────────────────────────────────────
 
 // ProviderMessage is a rich message for the Provider interface.

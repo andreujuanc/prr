@@ -170,6 +170,12 @@ type geminiPart struct {
 	ThoughtSignature string              `json:"thoughtSignature,omitempty"`
 	FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFuncResponse `json:"functionResponse,omitempty"`
+	InlineData       *geminiBlob         `json:"inlineData,omitempty"`
+}
+
+type geminiBlob struct {
+	MimeType string `json:"mimeType"`
+	Data     []byte `json:"data"` // base64-encoded by encoding/json
 }
 
 type geminiFunctionCall struct {
@@ -302,6 +308,10 @@ func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
 						Name:     b.Name,
 						Response: map[string]string{"result": b.Content},
 					},
+				})
+			case BlobBlock:
+				parts = append(parts, geminiPart{
+					InlineData: &geminiBlob{MimeType: b.MimeType, Data: b.Data},
 				})
 			}
 		}
