@@ -416,13 +416,12 @@ func recheckConsolidateBatch(
 		),
 	}}
 
-	// Tap the idle watchdog every 30s for the duration of this call.
-	// The consolidator doesn't stream tokens (nil onToken), so without
-	// the heartbeat a slow call would trip the upstream IdleWatch.
-	stop := ai.HeartbeatTap(ctx)
-	defer stop()
-
-	raw, err := client.ChatStream(ctx, systemPrompt, messages, nil)
+	// Retry transient HTTP errors. Recheck consolidation is the
+	// pre-step to per-file dedup; a transient blip shouldn't kill
+	// the cross-file pattern detection.
+	raw, err := ai.RetryTransient(ctx, 3, "recheck-consolidate", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, systemPrompt, messages, nil)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("recheck consolidate call: %w", err)
 	}
@@ -500,12 +499,11 @@ func recheckDismissBatch(
 		),
 	}}
 
-	// Heartbeat the idle watchdog for the duration of this silent
-	// call. See recheckConsolidateBatch for context.
-	stop := ai.HeartbeatTap(ctx)
-	defer stop()
-
-	raw, err := client.ChatStream(ctx, systemPrompt, messages, nil)
+	// Retry transient HTTP errors. Recheck dismiss is the
+	// final-quality gate before findings reach the user.
+	raw, err := ai.RetryTransient(ctx, 3, "recheck-dismiss", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, systemPrompt, messages, nil)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("recheck dismiss call: %w", err)
 	}

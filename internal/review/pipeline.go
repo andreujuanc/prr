@@ -46,12 +46,6 @@ type PRReviewOptions struct {
 
 	// Debug enables verbose output.
 	Debug bool
-
-	// WatchdogTap (optional) is called on every pipeline activity event
-	// — phase boundaries AND streamed tokens. Headless callers wire
-	// this to an ai.IdleWatch so stalls during long synthesis runs are
-	// detected even though no phase events are firing.
-	WatchdogTap func(string)
 }
 
 // PRReviewResult holds the output of a headless PR review.
@@ -185,13 +179,8 @@ func RunPRReview(
 	// path and the TUI path go through there.
 	prMeta := BuildPRMeta(pr)
 
-	// Run the shared core pipeline. If a watchdog tap is provided,
-	// wrap the reporter so streamed tokens (which progressReporter
-	// ignores) still reset the watchdog.
+	// Run the shared core pipeline.
 	var rr Reporter = &progressReporter{onProgress: onProgress}
-	if opts.WatchdogTap != nil {
-		rr = &WatchdogReporter{Inner: rr, Tap: opts.WatchdogTap}
-	}
 	coreResult, err := RunReviewCore(ctx, reviewClient, aoiClient, CoreOptions{
 		PRMeta:             prMeta,
 		RawDiffs:           rawDiffs,
@@ -316,9 +305,7 @@ func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
 	// flip the detail line chaotically (Batch 12: active → Batch 8:
 	// active → Batch 14: active …) without conveying real progress.
 	// The inline counter "X/Y" plus terminal-status messages give
-	// users an honest read of how much is done. The watchdog still
-	// taps on all BatchProgress calls via WatchdogReporter, so
-	// in-flight activity continues to reset the idle timer.
+	// users an honest read of how much is done.
 	label := "done"
 	switch status {
 	case StatusActive:

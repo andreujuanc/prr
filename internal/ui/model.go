@@ -737,19 +737,15 @@ func pollActionsTick() tea.Cmd {
 }
 
 // streamAIChat runs a single ChatStream call as a tea.Cmd, streaming
-// tokens back via tea.Msg. watchdogTap (nullable) is called on every
-// streamed token so an ai.IdleWatch associated with ctx can detect
-// stalls. stopWatchdog (nullable) is invoked when the stream returns to
-// release the watchdog goroutine.
-func streamAIChat(client ai.Client, ctx context.Context, systemPrompt string, messages []ai.Message, p *tea.Program, watchdogTap func(string), stopWatchdog func()) tea.Cmd {
+// tokens back via tea.Msg. cleanup (nullable) is invoked when the
+// stream returns — used to release the parent context-cancel so Esc
+// hooks can be cleared.
+func streamAIChat(client ai.Client, ctx context.Context, systemPrompt string, messages []ai.Message, p *tea.Program, cleanup func()) tea.Cmd {
 	return func() tea.Msg {
-		if stopWatchdog != nil {
-			defer stopWatchdog()
+		if cleanup != nil {
+			defer cleanup()
 		}
 		fullResponse, err := client.ChatStream(ctx, systemPrompt, messages, func(token string) {
-			if watchdogTap != nil {
-				watchdogTap(token)
-			}
 			p.Send(AIChatDeltaMsg{Token: token})
 		})
 		return AIChatDoneMsg{FullResponse: fullResponse, Err: err}
@@ -2485,14 +2481,12 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	// Render chat with the new user message and streaming indicator
 	m.updateChatViewWithStream()
 
-	// User-cancellable parent + idle watchdog. 240s of total silence
-	// (no tokens, no thinking, no tool events) is treated as a stall;
-	// active streams run to completion. The aiCancelFn hook still
-	// gives the user Esc-cancel via the parent.
-	parentCtx, parentCancel := context.WithCancel(context.Background())
+	// User-cancellable parent context. Esc fires parentCancel via
+	// aiCancelFn. Per-call HTTP timeouts (provider RequestTimeout)
+	// + RetryTransient now handle stalls at the HTTP layer; the
+	// previous IdleWatch watchdog has been retired.
+	ctx, parentCancel := context.WithCancel(context.Background())
 	m.aiCancelFn = parentCancel
-	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
-	ctx = ai.ContextWithTap(ctx, watchdogTap)
 
 	// Use chat thinking budget (lower than review for responsiveness)
 	if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
@@ -2503,7 +2497,7 @@ func (m *Model) sendChatMessage() tea.Cmd {
 		}
 	}
 
-	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program, watchdogTap, stopWatchdog))
+	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program, parentCancel))
 }
 
 func (m *Model) appendMessageToState(msg state.Message) {
@@ -3579,13 +3573,10 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		m.reviewProgress.Start(defaultReviewPhases())
 		m.updateChatViewWithStream()
 
-		// Idle watchdog instead of wall-clock timeout. 240s of zero
-		// activity (no tokens, no batch progress, no AOI updates)
-		// cancels the run; slow-but-active multi-pass reviews finish.
-		parentCtx, parentCancel := context.WithCancel(context.Background())
+		// User-cancellable parent context. Esc fires parentCancel via
+		// aiCancelFn. Per-call HTTP timeouts + retry handle stalls.
+		ctx, parentCancel := context.WithCancel(context.Background())
 		m.aiCancelFn = parentCancel
-		ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
-		ctx = ai.ContextWithTap(ctx, watchdogTap)
 
 		// Ensure review thinking budget is active (chat may have lowered it)
 		if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
@@ -3596,7 +3587,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 			}
 		}
 
-		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, m.pr, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines, m.repoRoot, watchdogTap, stopWatchdog))
+		return tea.Batch(m.spinner.Tick, streamMultiPassReview(ctx, m.aiClient, m.aoiClient, m.pr, prMeta, m.rawDiffs, m.customInstructions, m.reviewState, m.parallelReviews, teaReporter{p: program}, m.pr.BaseRefName, m.pr.HeadRefName, m.aoiContextLines, m.repoRoot, parentCancel))
 	}
 
 	// Single file mode
@@ -3661,10 +3652,8 @@ func (m *Model) triggerAIReview() tea.Cmd {
 
 	// Idle watchdog: 240s of zero activity cancels the call. Esc still
 	// works as a user cancel via parentCancel.
-	parentCtx, parentCancel := context.WithCancel(context.Background())
+	ctx, parentCancel := context.WithCancel(context.Background())
 	m.aiCancelFn = parentCancel
-	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(parentCtx, 240*time.Second, nil)
-	ctx = ai.ContextWithTap(ctx, watchdogTap)
 
 	// Use review thinking budget (same depth as batch review)
 	if tbs, ok := m.aiClient.(ai.ThinkingBudgetSetter); ok {
@@ -3675,7 +3664,7 @@ func (m *Model) triggerAIReview() tea.Cmd {
 		}
 	}
 
-	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program, watchdogTap, stopWatchdog))
+	return tea.Batch(m.spinner.Tick, streamAIChat(m.aiClient, ctx, systemPrompt, aiMessages, program, parentCancel))
 }
 
 // forceReReview clears all cached batch findings and triggers a fresh PR review.

@@ -1,6 +1,20 @@
 package ai
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
+
+// DefaultRequestTimeout is the per-HTTP-call deadline applied to every
+// LLM request constructed via NewProvider. Sized to be generous for big
+// reasoning runs (synthesis on large PRs with thinking-budget models)
+// while still bounding a true hang.
+//
+// Per-call: each provider.StreamChat invocation gets its own fresh
+// timer. A multi-round agent loop or a retry wrapper can spend many
+// such windows back-to-back; the cap is on individual HTTP calls, not
+// on a whole prr review/audit run.
+const DefaultRequestTimeout = 15 * time.Minute
 
 // ProviderConfig holds the parameters needed to create a Provider.
 type ProviderConfig struct {
@@ -20,9 +34,10 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	switch cfg.ProviderName {
 	case "gemini":
 		gp := &GeminiProvider{
-			APIKey:  cfg.APIKey,
-			Model:   cfg.ModelID,
-			BaseURL: cfg.BaseURL,
+			APIKey:         cfg.APIKey,
+			Model:          cfg.ModelID,
+			BaseURL:        cfg.BaseURL,
+			RequestTimeout: DefaultRequestTimeout,
 		}
 		gp.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 		gp.ModelConfig.Temperature = cfg.Temperature
@@ -31,9 +46,10 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 
 	case "openai":
 		op := &OpenAIProvider{
-			APIKey:  cfg.APIKey,
-			Model:   cfg.ModelID,
-			BaseURL: cfg.BaseURL,
+			APIKey:         cfg.APIKey,
+			Model:          cfg.ModelID,
+			BaseURL:        cfg.BaseURL,
+			RequestTimeout: DefaultRequestTimeout,
 		}
 		op.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 		op.ModelConfig.Temperature = cfg.Temperature
@@ -46,10 +62,11 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			baseURL = cfg.BaseURL
 		}
 		op := &OpenAIProvider{
-			APIKey:        cfg.APIKey,
-			Model:         cfg.ModelID,
-			BaseURL:       baseURL,
-			ProviderLabel: "github-copilot",
+			APIKey:         cfg.APIKey,
+			Model:          cfg.ModelID,
+			BaseURL:        baseURL,
+			RequestTimeout: DefaultRequestTimeout,
+			ProviderLabel:  "github-copilot",
 			ExtraHeaders: map[string]string{
 				"Openai-Intent": "conversation-edits",
 				"User-Agent":    "prr",

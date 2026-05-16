@@ -228,10 +228,8 @@ func collectCachedFindings(batch reviewBatch, reviewState *state.State) (string,
 // ── streamMultiPassReview ───────────────────────────────────────────────
 
 // streamMultiPassReview runs a multi-pass PR review using the shared
-// pipeline core. watchdogTap (nullable) is called on every reporter
-// event so an associated ai.IdleWatch sees all progress as activity;
-// stopWatchdog (nullable) is invoked when the run finishes to release
-// the watchdog goroutine.
+// pipeline core. cleanup (nullable) is invoked when the run returns —
+// used to release the parent ctx-cancel so Esc hooks can be cleared.
 func streamMultiPassReview(
 	ctx context.Context,
 	client ai.Client,
@@ -246,21 +244,13 @@ func streamMultiPassReview(
 	base, head string,
 	aoiContextLines int,
 	repoRoot string,
-	watchdogTap func(string),
-	stopWatchdog func(),
+	cleanup func(),
 ) tea.Cmd {
 	return func() tea.Msg {
-		if stopWatchdog != nil {
-			defer stopWatchdog()
+		if cleanup != nil {
+			defer cleanup()
 		}
-		adapter := &reviewReporterAdapter{rr: rr}
-		// Wrap adapter so every Token / BatchProgress / AOIProgress
-		// resets the idle watchdog — stalls during the long synthesis
-		// phase still get caught, but active phases run unimpeded.
-		var reporter review.Reporter = adapter
-		if watchdogTap != nil {
-			reporter = &review.WatchdogReporter{Inner: adapter, Tap: watchdogTap}
-		}
+		var reporter review.Reporter = &reviewReporterAdapter{rr: rr}
 
 		coreResult, err := review.RunReviewCore(ctx, client, aoiClient, review.CoreOptions{
 			PRMeta:             prMeta,

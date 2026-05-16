@@ -151,13 +151,12 @@ func runOneClusterCall(ctx context.Context, client ai.Client, candidates []clust
 	}
 	messages := []ai.Message{{Role: "user", Content: string(user)}}
 
-	// Heartbeat the idle watchdog for the duration of this silent
-	// call so a slow cluster pass doesn't trip the upstream
-	// IdleWatch.
-	stop := ai.HeartbeatTap(ctx)
-	defer stop()
-
-	raw, err := client.ChatStream(ctx, siblingClusterSystemPrompt, messages, nil)
+	// Retry transient errors. Sibling clustering is experimental and
+	// fail-soft; retrying still helps when a transient blip is the
+	// only thing preventing cluster discovery.
+	raw, err := ai.RetryTransient(ctx, 3, "audit-cluster", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, siblingClusterSystemPrompt, messages, nil)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("LLM call: %w", err)
 	}

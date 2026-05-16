@@ -202,13 +202,12 @@ func summarizeBoundaries(
 
 	messages := []ai.Message{{Role: "user", Content: user.String()}}
 
-	// Heartbeat the idle watchdog for the duration of this silent
-	// call so a slow boundary discovery doesn't trip the upstream
-	// IdleWatch.
-	stop := ai.HeartbeatTap(ctx)
-	defer stop()
-
-	raw, err := client.ChatStream(ctx, boundaryInventorySystemPrompt, messages, nil)
+	// Retry transient HTTP errors (per-call timeout, rate-limit, 5xx,
+	// EOF). Boundary inventory is optional context; falling through
+	// after retries is acceptable.
+	raw, err := ai.RetryTransient(ctx, 3, "audit-boundaries", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, boundaryInventorySystemPrompt, messages, nil)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("LLM call: %w", err)
 	}

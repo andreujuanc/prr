@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,6 +23,13 @@ type GeminiProvider struct {
 	Model      string
 	BaseURL    string       // override for testing; empty uses the real Gemini API
 	HTTPClient *http.Client // optional; defaults to a client with no timeout (context-based cancellation)
+
+	// RequestTimeout bounds a single HTTP call (POST → final SSE event).
+	// Zero disables the wrapper; tests typically leave it zero. The
+	// production factory sets DefaultRequestTimeout. Per-call timeout
+	// matches googleapis/go-genai's HTTPOptions.Timeout pattern —
+	// each retry attempt gets a fresh budget.
+	RequestTimeout time.Duration
 
 	// ModelConfig holds per-model tuning (maxOutputTokens, temperature,
 	// thinkingBudget). Set by the caller from config.GetModelConfig().
@@ -80,16 +88,28 @@ func (g *GeminiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 // StreamChat makes a single streaming API call and returns a channel of events.
 // It translates ChatRequest to Gemini's native format, streams the SSE response,
 // and emits canonical ChatEvents. The channel is closed when the response ends.
+//
+// When RequestTimeout is set, ctx is wrapped with a per-call deadline that
+// covers both the request send and the entire SSE read. The cancel function
+// is held until the streaming goroutine completes so the deadline isn't
+// released early.
 func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
+	cancel := func() {}
+	if g.RequestTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, g.RequestTimeout)
+	}
+
 	nativeReq := g.toNativeRequest(req)
 
 	body, err := json.Marshal(nativeReq)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("gemini: failed to marshal request: %w", err)
 	}
 
 	resp, err := g.doHTTPRequest(ctx, body)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
@@ -97,6 +117,7 @@ func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
+		defer cancel()
 		g.parseSSEStream(ctx, resp.Body, ch)
 	}()
 
@@ -372,6 +393,17 @@ func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("x-goog-api-key", g.APIKey)
+		// x-server-timeout hints to the backend how long we'll wait, so
+		// it can shed load gracefully instead of holding a hung worker
+		// after we've given up. Matches googleapis/go-genai's
+		// buildRequest pattern; value is seconds-until-deadline rounded
+		// up. Omitted when ctx has no deadline.
+		if deadline, ok := ctx.Deadline(); ok {
+			seconds := int64(math.Ceil(time.Until(deadline).Seconds()))
+			if seconds > 0 {
+				httpReq.Header.Set("x-server-timeout", strconv.FormatInt(seconds, 10))
+			}
+		}
 
 		resp, err = g.httpClient().Do(httpReq)
 		if err != nil {

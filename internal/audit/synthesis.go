@@ -200,8 +200,12 @@ const hierarchicalPartialFloor = 0.5
 
 // runSynthesisChatStreamWithRetry wraps a single ChatStream call with
 // one retry after synthesisRetryBackoff for transient errors. Parse
-// failures (errSynthesisParse) and context cancellation short-circuit
-// immediately — neither benefits from retry.
+// failures (errSynthesisParse) short-circuit on the caller side.
+//
+// Transient classification (rate-limit, 5xx, EOF, per-call timeout
+// with live parent) lives in ai.IsTransientError — shared with the
+// review-pipeline retry. User cancel and parent-deadline are treated
+// as terminal there.
 //
 // Returns the raw LLM response on success. The caller still parses
 // the response separately so parse-error wrapping happens close to
@@ -218,7 +222,7 @@ func runSynthesisChatStreamWithRetry(
 	if err == nil {
 		return raw, nil
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if !ai.IsTransientError(err, ctx) {
 		return "", err
 	}
 

@@ -117,10 +117,13 @@ func TestReviewBatchWithRetry_AllRetriesExhausted(t *testing.T) {
 	}
 }
 
-func TestReviewBatchWithRetry_APIError(t *testing.T) {
+// TestReviewBatchWithRetry_TerminalAPIError pins that non-transient
+// API errors (bad credentials, malformed requests) short-circuit
+// without retry — retrying would just waste tokens.
+func TestReviewBatchWithRetry_TerminalAPIError(t *testing.T) {
 	client := &mockClient{
 		responses: []mockResponse{
-			{err: fmt.Errorf("rate limited")},
+			{err: fmt.Errorf("invalid api key")},
 		},
 	}
 	batch := reviewBatch{Label: "pkg", Files: []string{"main.go"}, Diffs: "diff"}
@@ -129,11 +132,38 @@ func TestReviewBatchWithRetry_APIError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if err.Error() != "rate limited" {
+	if err.Error() != "invalid api key" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if client.calls() != 1 {
-		t.Fatalf("expected 1 call (no retry on API error), got %d", client.calls())
+		t.Fatalf("expected 1 call (no retry on terminal API error), got %d", client.calls())
+	}
+}
+
+// TestReviewBatchWithRetry_TransientAPIErrorThenSuccess pins the
+// retry-on-transient-error contract added when we removed the
+// watchdog ceremony. A rate-limit blip on attempt 1 followed by a
+// clean response on attempt 2 must succeed without surfacing an
+// error — without this, a single transient hiccup would silently
+// drop findings for the whole batch.
+func TestReviewBatchWithRetry_TransientAPIErrorThenSuccess(t *testing.T) {
+	client := &mockClient{
+		responses: []mockResponse{
+			{err: fmt.Errorf("rate limited")},
+			{result: validBatchJSON()},
+		},
+	}
+	batch := reviewBatch{Label: "pkg", Files: []string{"main.go"}, Diffs: "diff"}
+
+	result, err := reviewBatchWithRetry(context.Background(), client, "system", batch, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != validBatchJSON() {
+		t.Fatalf("unexpected result: %s", result)
+	}
+	if client.calls() != 2 {
+		t.Fatalf("expected 2 calls (retry then success), got %d", client.calls())
 	}
 }
 
@@ -1143,7 +1173,7 @@ func TestLive_StreamMultiPassReview(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := streamMultiPassReview(ctx, agent, nil, nil, samplePRMeta, rawDiffs, "", rs, 1, rr, "", "", 3, "", nil, nil)
+	cmd := streamMultiPassReview(ctx, agent, nil, nil, samplePRMeta, rawDiffs, "", rs, 1, rr, "", "", 3, "", nil)
 	msg := cmd() // execute the tea.Cmd
 
 	done, ok := msg.(AIChatDoneMsg)

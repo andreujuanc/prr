@@ -143,14 +143,11 @@ func summarizeRuntimeModel(
 		{Role: "user", Content: user.String()},
 	}
 
-	// Heartbeat the idle watchdog: this call is silent (nil onToken)
-	// and emits exactly one upstream progress event ("Summarizing
-	// runtime model..."), so without the heartbeat a slow LLM would
-	// trip the upstream IdleWatch.
-	stop := ai.HeartbeatTap(ctx)
-	defer stop()
-
-	raw, err := client.ChatStream(ctx, runtimeModelSystemPrompt, messages, nil)
+	// Retry transient HTTP errors. The runtime-model card is optional
+	// context for Phase 0.5; falling through after retries is fine.
+	raw, err := ai.RetryTransient(ctx, 3, "project-runtime-model", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, runtimeModelSystemPrompt, messages, nil)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("LLM call: %w", err)
 	}

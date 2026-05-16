@@ -485,21 +485,12 @@ func runReview(debug bool, args []string) {
 	log.Printf("Starting headless PR review for PR #%s (strong: %s, fast: %s)",
 		prNumber, cfg.StrongModel, cfg.FastModel)
 
-	// Run the review pipeline with an idle watchdog. The headless path
-	// has no user-facing cancel, but a stalled agent shouldn't burn
-	// budget indefinitely in CI. 240s of zero activity (no tokens, no
-	// phase events) cancels the run with ai.ErrIdle.
-	//
-	// Silent single-shot LLM calls (recheck consolidator + dismiss,
-	// runtime model, boundary inventory, sibling cluster) don't stream
-	// tokens, so their watchdog reset has to come from somewhere else.
-	// Attaching the tap to ctx lets each silent call site call
-	// ai.HeartbeatTap(ctx) and tap on a 30s timer for the duration of
-	// its LLM call — without plumbing a "tap" field through every
-	// options struct.
-	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(context.Background(), 240*time.Second, nil)
-	defer stopWatchdog()
-	ctx = ai.ContextWithTap(ctx, watchdogTap)
+	// Plain cancellable context — stalls are now bounded at the HTTP
+	// layer (provider RequestTimeout = ai.DefaultRequestTimeout) and
+	// per-call retry (ai.RetryTransient) handles transient errors.
+	// The previous watchdog ceremony has been retired.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	opts := review.PRReviewOptions{
 		PRNumber:           prNumber,
@@ -510,10 +501,6 @@ func runReview(debug bool, args []string) {
 		AOIContextLines:    aoiCtxLines,
 		CustomInstructions: config.LoadCustomInstructions(),
 		Debug:              reviewDebug,
-		// WatchdogTap routes streamed-token activity into the watchdog
-		// reset. Phase events also flow through it via the reporter
-		// wrapping inside RunPRReview.
-		WatchdogTap: watchdogTap,
 	}
 
 	// Default: shared progress TUI (same as `prr audit`). Falls back
