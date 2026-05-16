@@ -398,6 +398,13 @@ func convertToolParam(p ToolParam) geminiSchema {
 		Type:        strings.ToUpper(p.Type),
 		Description: p.Description,
 		Enum:        p.Enum,
+		Required:    p.Required,
+	}
+	if len(p.Properties) > 0 {
+		schema.Properties = make(map[string]geminiSchema, len(p.Properties))
+		for name, sub := range p.Properties {
+			schema.Properties[name] = convertToolParam(sub)
+		}
 	}
 	if p.Items != nil {
 		items := convertToolParam(*p.Items)

@@ -376,30 +376,44 @@ func (o *OpenAIProvider) translateAssistantMessage(msg ProviderMessage) []oaiMes
 
 func (o *OpenAIProvider) toolParamsToJSON(params ToolParams) json.RawMessage {
 	schema := map[string]any{
-		"type": "object",
+		"type":       "object",
+		"properties": toolParamPropsToJSON(params.Properties),
 	}
-	props := make(map[string]any)
-	for name, p := range params.Properties {
-		prop := map[string]any{
-			"type":        p.Type,
-			"description": p.Description,
-		}
-		if len(p.Enum) > 0 {
-			prop["enum"] = p.Enum
-		}
-		if p.Items != nil {
-			prop["items"] = map[string]any{
-				"type": p.Items.Type,
-			}
-		}
-		props[name] = prop
-	}
-	schema["properties"] = props
 	if len(params.Required) > 0 {
 		schema["required"] = params.Required
 	}
 	raw, _ := json.Marshal(schema)
 	return raw
+}
+
+func toolParamPropsToJSON(props map[string]ToolParam) map[string]any {
+	out := make(map[string]any, len(props))
+	for name, p := range props {
+		out[name] = toolParamToJSON(p)
+	}
+	return out
+}
+
+func toolParamToJSON(p ToolParam) map[string]any {
+	m := map[string]any{
+		"type": p.Type,
+	}
+	if p.Description != "" {
+		m["description"] = p.Description
+	}
+	if len(p.Enum) > 0 {
+		m["enum"] = p.Enum
+	}
+	if len(p.Properties) > 0 {
+		m["properties"] = toolParamPropsToJSON(p.Properties)
+	}
+	if len(p.Required) > 0 {
+		m["required"] = p.Required
+	}
+	if p.Items != nil {
+		m["items"] = toolParamToJSON(*p.Items)
+	}
+	return m
 }
 
 // ── HTTP request with retry ─────────────────────────────────────────────

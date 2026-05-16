@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 // ── Roles ───────────────────────────────────────────────────────────────
@@ -143,11 +144,54 @@ type ToolParams struct {
 }
 
 // ToolParam describes a single parameter.
+//
+// Properties and Required let callers describe nested objects — for
+// example, an array of objects (Type="array", Items={Type:"object",
+// Properties:...}). The Gemini and OpenAI converters recurse through
+// these fields, so nested shape no longer gets silently flattened.
 type ToolParam struct {
 	Type        string
 	Description string
-	Enum        []string   // optional enum values
-	Items       *ToolParam // for array types
+	Enum        []string             // optional enum values (string-valued only)
+	Items       *ToolParam           // for array types
+	Properties  map[string]ToolParam // for object types
+	Required    []string             // required keys when Type == "object"
+}
+
+// ValidateToolDef walks a ToolDef and returns the first structural
+// issue found. Currently checks: Enum values are only attached to
+// string-typed parameters, which is the only shape ToolParam.Enum can
+// represent. Misuse silently corrupts the schema sent to the model
+// (Gemini accepts the field but ignores the constraint), so callers
+// should run this at startup time on every ToolDef they emit.
+func ValidateToolDef(td ToolDef) error {
+	return validateToolParams(td.Name, td.Parameters)
+}
+
+func validateToolParams(toolName string, p ToolParams) error {
+	for name, sub := range p.Properties {
+		if err := validateToolParam(toolName+"."+name, sub); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateToolParam(path string, p ToolParam) error {
+	if len(p.Enum) > 0 && p.Type != "string" {
+		return fmt.Errorf("tool param %s: Enum requires Type=\"string\", got %q", path, p.Type)
+	}
+	for name, sub := range p.Properties {
+		if err := validateToolParam(path+"."+name, sub); err != nil {
+			return err
+		}
+	}
+	if p.Items != nil {
+		if err := validateToolParam(path+"[]", *p.Items); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ── Request / Response ──────────────────────────────────────────────────
