@@ -3,13 +3,10 @@ package review
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"maps"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -31,8 +28,14 @@ type Batch struct {
 
 // BatchFinding is one structured finding from a batch review (new format).
 type BatchFinding struct {
-	Severity       string `json:"severity,omitempty"`
-	Confidence     string `json:"confidence,omitempty"`
+	Severity string `json:"severity,omitempty"`
+
+	// Confidence is the legacy string band kept for backward
+	// compatibility. New prompts emit ConfidenceScore.
+	Confidence          string `json:"confidence,omitempty"`
+	ConfidenceScore     int    `json:"confidence_score,omitempty"`
+	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
+
 	Dimension      string `json:"dimension,omitempty"`
 	Title          string `json:"title,omitempty"`
 	Line           int    `json:"line,omitempty"`
@@ -108,7 +111,9 @@ func (bf BatchFindings) Text() string {
 		if f.Severity != "" {
 			b.WriteString("[severity: " + f.Severity + "] ")
 		}
-		if f.Confidence != "" {
+		if f.ConfidenceScore > 0 {
+			fmt.Fprintf(&b, "[confidence: %d/100] ", f.ConfidenceScore)
+		} else if f.Confidence != "" {
 			b.WriteString("[confidence: " + f.Confidence + "] ")
 		}
 		if f.Dimension != "" {
@@ -170,10 +175,24 @@ const (
 	StatusFailed
 )
 
+// BatchKind distinguishes AOI-driven calls (targeted by the security
+// pre-scan's findings) from generic fallback batches (cover files the
+// pre-scan didn't flag — every diffed file still gets read). The split
+// drives the breakdown shown in the Deep Review progress row; without
+// it users see "Initialized 12 batches" then "0 AOIs" and can't tell
+// what kind of work is queued.
+type BatchKind int
+
+const (
+	BatchAOIDriven BatchKind = iota
+	BatchGeneral
+)
+
 // BatchInfo describes a single batch for progress reporting.
 type BatchInfo struct {
 	Label    string
 	NumFiles int
+	Kind     BatchKind
 }
 
 // Reporter decouples review orchestration from the UI layer.
@@ -211,65 +230,6 @@ func (NopReporter) BatchProgress(int, BatchStatus)       {}
 func (NopReporter) RecheckProgress(string)               {}
 func (NopReporter) SynthesisStarted()                    {}
 func (NopReporter) Token(string)                         {}
-
-// WatchdogReporter wraps an existing Reporter and calls `tap` on every
-// method invocation. Used to feed an ai.IdleWatch — any progress event
-// (token, batch update, AOI progress, synthesis start) counts as
-// activity, not just streamed tokens. This catches stalls during long
-// tool calls or between phases when nothing is being streamed.
-type WatchdogReporter struct {
-	Inner Reporter
-	Tap   func(string)
-}
-
-func (r *WatchdogReporter) DiscoveryProgress(status string) {
-	if r.Tap != nil {
-		r.Tap(status)
-	}
-	r.Inner.DiscoveryProgress(status)
-}
-func (r *WatchdogReporter) ClassifyProgress(status string) {
-	if r.Tap != nil {
-		r.Tap(status)
-	}
-	r.Inner.ClassifyProgress(status)
-}
-func (r *WatchdogReporter) AOIPrescanProgress(status string, done bool, aoiCount int) {
-	if r.Tap != nil {
-		r.Tap(status)
-	}
-	r.Inner.AOIPrescanProgress(status, done, aoiCount)
-}
-func (r *WatchdogReporter) InitBatches(batches []BatchInfo) {
-	if r.Tap != nil {
-		r.Tap("init batches")
-	}
-	r.Inner.InitBatches(batches)
-}
-func (r *WatchdogReporter) BatchProgress(batch int, status BatchStatus) {
-	if r.Tap != nil {
-		r.Tap("batch progress")
-	}
-	r.Inner.BatchProgress(batch, status)
-}
-func (r *WatchdogReporter) RecheckProgress(status string) {
-	if r.Tap != nil {
-		r.Tap(status)
-	}
-	r.Inner.RecheckProgress(status)
-}
-func (r *WatchdogReporter) SynthesisStarted() {
-	if r.Tap != nil {
-		r.Tap("synthesis started")
-	}
-	r.Inner.SynthesisStarted()
-}
-func (r *WatchdogReporter) Token(token string) {
-	if r.Tap != nil {
-		r.Tap(token)
-	}
-	r.Inner.Token(token)
-}
 
 // OffsetReporter wraps a Reporter and adds an offset to batch indices.
 type OffsetReporter struct {
@@ -412,7 +372,9 @@ func ParseBatchResult(raw string) []BatchFileReview {
 // ── Retry logic ─────────────────────────────────────────────────────────
 
 // ReviewBatchWithRetry calls ChatStream for a batch and retries up to MaxRetries
-// times if the result is empty or unparseable.
+// times if the result is empty, unparseable, OR a transient HTTP error
+// (per-call timeout, rate-limit, 5xx, network blip). Terminal errors —
+// bad credentials, user cancel, parent-ctx deadline — return immediately.
 func ReviewBatchWithRetry(
 	ctx context.Context,
 	client ai.Client,
@@ -432,6 +394,19 @@ func ReviewBatchWithRetry(
 
 		result, err := client.ChatStream(ctx, systemPrompt, BuildBatchMessages(batch), onToken)
 		if err != nil {
+			// Transient HTTP errors (per-call timeout with live parent,
+			// rate-limit, 5xx, EOF) get retried with backoff. Without
+			// this, a single hung gemini call kills the whole batch.
+			if ai.IsTransientError(err, ctx) && attempt < MaxRetries {
+				backoff := ai.TransientBackoff(attempt)
+				log.Printf("Batch %q attempt %d/%d: transient error (%v), retrying in %v", batch.Label, attempt, MaxRetries, err, backoff)
+				select {
+				case <-time.After(backoff):
+					continue
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+			}
 			return "", err
 		}
 
@@ -474,12 +449,13 @@ func SynthesisWithRetry(
 
 		result, err := client.ChatStream(ctx, systemPrompt, messages, onToken)
 		if err != nil {
-			// Transient errors (rate-limit, 5xx, network blip) are
-			// worth one or two more shots — the per-phase work upstream
-			// is already cached, so losing synthesis to a flap and then
-			// restarting from scratch is wasteful.
-			if isTransientClientError(err) && attempt < MaxRetries {
-				backoff := transientBackoff(attempt)
+			// Transient errors (rate-limit, 5xx, network blip, per-call
+			// timeout with live parent) are worth one or two more shots —
+			// the per-phase work upstream is already cached, so losing
+			// synthesis to a flap and then restarting from scratch is
+			// wasteful.
+			if ai.IsTransientError(err, ctx) && attempt < MaxRetries {
+				backoff := ai.TransientBackoff(attempt)
 				log.Printf("Synthesis attempt %d/%d: transient error (%v), retrying in %v", attempt, MaxRetries, err, backoff)
 				lastErr = err
 				select {
@@ -506,54 +482,9 @@ func SynthesisWithRetry(
 	return "", lastErr
 }
 
-// transientStatusCodeRe matches HTTP status codes that are worth
-// retrying when they appear as standalone tokens in an error message.
-// Word-bounded so we don't false-positive on "exceeded 500 tokens" or
-// "duration 5000ms".
-var transientStatusCodeRe = regexp.MustCompile(`\b(429|500|502|503|504)\b`)
-
-// transientPhraseRe matches phrase-level signals of transient failure.
-// All matches are lowercase; the haystack is lowercased before checking.
-// EOF is bounded on both sides — "eof " or " eof" or " eof," — so it
-// doesn't match inside words like "endpointoflist".
-var transientPhraseRe = regexp.MustCompile(
-	`rate limit|timeout|temporary failure|connection reset|\beof\b`,
-)
-
-// isTransientClientError reports whether the underlying AI client error
-// is the kind that may succeed on retry (rate limit, server error,
-// transient network issue). User-initiated cancellation and watchdog
-// idle-cancel are NOT considered transient — the caller already decided
-// to stop.
-func isTransientClientError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// User cancel / context deadline / watchdog idle: terminal.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	// io.EOF wrapped through fmt.Errorf — common when an upstream
-	// stream closes unexpectedly. Bare io.EOF check first (cheap), then
-	// fall through to text matching for wrapped-string variants.
-	if errors.Is(err, io.EOF) {
-		return true
-	}
-	s := strings.ToLower(err.Error())
-	if transientStatusCodeRe.MatchString(s) {
-		return true
-	}
-	if transientPhraseRe.MatchString(s) {
-		return true
-	}
-	return false
-}
-
-// transientBackoff returns a quadratic backoff suitable for retry
-// attempt n (1-indexed): 1s, 4s, 9s, …
-func transientBackoff(attempt int) time.Duration {
-	return time.Duration(attempt*attempt) * time.Second
-}
+// Transient-error classification and retry backoff live in
+// internal/ai/retry.go (IsTransientError, TransientBackoff) — single
+// source of truth shared by all retry call sites.
 
 // ── Batch persistence ───────────────────────────────────────────────────
 
@@ -722,12 +653,6 @@ func RunSynthesis(
 
 	summary, err := SynthesisWithRetry(ctx, client, synthesisSystem, synthesisMessages, onToken)
 	if err != nil {
-		// Surface idle-cancellation distinctly so the user understands
-		// what happened and that re-running will resume from the cached
-		// batch findings rather than redoing the whole pipeline.
-		if cause := context.Cause(ctx); errors.Is(cause, ai.ErrIdle) {
-			return nil, fmt.Errorf("synthesis stalled (no AI activity for the idle window) — re-run will resume from cached batch findings: %w", cause)
-		}
 		return nil, fmt.Errorf("synthesis: %w", err)
 	}
 
@@ -941,8 +866,13 @@ func AppendDeepFindings(b *strings.Builder, fileFindings map[string]string, find
 		b.WriteString(fmt.Sprintf("**File:** %s:%s\n", f.File, f.Lines))
 		b.WriteString(fmt.Sprintf("**Category:** %s/%s\n", f.Category, f.Subcategory))
 		b.WriteString(fmt.Sprintf("**Description:** %s\n", f.Description))
-		if f.Trigger != "" {
-			b.WriteString(fmt.Sprintf("**Trigger:** %s\n", f.Trigger))
+		if !f.Trigger.IsZero() {
+			if f.Trigger.Repro != "" {
+				b.WriteString(fmt.Sprintf("**Trigger:** %s\n", f.Trigger.Repro))
+			}
+			if f.Trigger.Observable != "" {
+				b.WriteString(fmt.Sprintf("**Observable:** %s\n", f.Trigger.Observable))
+			}
 		}
 		if f.Suggestion != "" {
 			b.WriteString(fmt.Sprintf("**Suggestion:** %s\n", f.Suggestion))

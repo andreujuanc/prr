@@ -6,6 +6,7 @@ import (
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/security"
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 // Mode distinguishes between PR review and audit mode for prompt framing.
@@ -17,7 +18,9 @@ const (
 )
 
 // BuildIndividualPrompt composes the system prompt for reviewing a single AOI.
-func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string, aoi security.AreaOfInterest) string {
+// runtimeModel may be nil — when present, a `## Runtime Model` section is
+// appended after the project context.
+func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string, runtimeModel *state.RuntimeModel, aoi security.AreaOfInterest) string {
 	var sb strings.Builder
 
 	// Mode-specific preamble
@@ -37,6 +40,13 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string,
 	// Project context
 	if projectContext != "" {
 		appendProjectContext(&sb, projectContext)
+	}
+
+	// Runtime model — appended after project context so the reviewer
+	// sees the structured shape after the prose briefing.
+	if rendered := runtimeModel.Render(); rendered != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(rendered)
 	}
 
 	// AOI details
@@ -60,7 +70,9 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string,
 }
 
 // BuildGroupedPrompt composes the system prompt for reviewing a subcategory group.
-func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, call ReviewCall) string {
+// runtimeModel may be nil — when present, a `## Runtime Model` section is
+// appended after the project context.
+func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, runtimeModel *state.RuntimeModel, call ReviewCall) string {
 	var sb strings.Builder
 
 	// Mode-specific preamble
@@ -80,6 +92,12 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, ca
 	// Project context
 	if projectContext != "" {
 		appendProjectContext(&sb, projectContext)
+	}
+
+	// Runtime model — appended after project context.
+	if rendered := runtimeModel.Render(); rendered != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(rendered)
 	}
 
 	// AOI list
@@ -147,6 +165,25 @@ func formatAOI(aoi security.AreaOfInterest) string {
 
 	if aoi.Snippet != "" {
 		sb.WriteString(fmt.Sprintf("**Code:** `%s`\n", aoi.Snippet))
+	}
+
+	// Sibling deviation: when this AOI was synthesized by Phase 2.5
+	// clustering, surface the conforming pattern and the sibling
+	// references so the reviewer can frame the investigation around
+	// "is this deviation intentional or a bug?" rather than judging
+	// the line in isolation.
+	if aoi.SiblingDeviation != nil {
+		sb.WriteString("\n**Sibling pattern:** ")
+		sb.WriteString(strings.TrimSpace(aoi.SiblingDeviation.Pattern))
+		sb.WriteString("\n")
+		if ids := aoi.SiblingDeviation.SiblingIDs; len(ids) > 0 {
+			capped := ids
+			if len(capped) > 8 {
+				capped = capped[:8]
+			}
+			sb.WriteString(fmt.Sprintf("**Conforming siblings (compare against):** %s\n", strings.Join(capped, ", ")))
+		}
+		sb.WriteString("**Anchor the investigation on:** Is this deviation intentional (note in nearby code, different invariant, deliberate exception) or is it a bug? Read both this code and at least one conforming sibling before concluding.\n")
 	}
 
 	return sb.String()

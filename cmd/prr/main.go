@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -160,10 +161,18 @@ func runAudit(debug bool, args []string) {
 		} else if after, ok := strings.CutPrefix(arg, "--include="); ok {
 			includeStr = after
 		} else if after, ok := strings.CutPrefix(arg, "--max-reviews="); ok {
-			fmt.Sscanf(after, "%d", &opts.MaxReviews)
-		} else if strings.HasPrefix(arg, "--concurrency=") {
-			var n int
-			fmt.Sscanf(strings.TrimPrefix(arg, "--concurrency="), "%d", &n)
+			n, err := strconv.Atoi(after)
+			if err != nil {
+				printError(fmt.Errorf("--max-reviews=%s: %w", after, err))
+				os.Exit(1)
+			}
+			opts.MaxReviews = n
+		} else if after, ok := strings.CutPrefix(arg, "--concurrency="); ok {
+			n, err := strconv.Atoi(after)
+			if err != nil {
+				printError(fmt.Errorf("--concurrency=%s: %w", after, err))
+				os.Exit(1)
+			}
 			if n > 0 {
 				opts.Concurrency.Classify = n
 				opts.Concurrency.AOIScan = n
@@ -183,6 +192,15 @@ func runAudit(debug bool, args []string) {
 			opts.Debug = true
 		} else if after, ok := strings.CutPrefix(arg, "--file="); ok {
 			opts.DebugFile = after
+		} else if after, ok := strings.CutPrefix(arg, "--audit-recent="); ok {
+			n, err := strconv.Atoi(after)
+			if err != nil {
+				printError(fmt.Errorf("--audit-recent=%s: %w", after, err))
+				os.Exit(1)
+			}
+			opts.AuditRecent = n
+		} else if arg == "--sibling-cluster" {
+			opts.SiblingClustering = true
 		} else if arg == "--help" || arg == "-h" {
 			printAuditUsage()
 			os.Exit(0)
@@ -387,6 +405,8 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "                         (compact by default; set PRR_DEBUG_VERBOSE=1 to include\n")
 	fmt.Fprintf(os.Stderr, "                          full system prompts and unelided file content)\n")
 	fmt.Fprintf(os.Stderr, "    --file=<path>        Restrict audit to a single file (relative to repo root)\n")
+	fmt.Fprintf(os.Stderr, "    --audit-recent=<n>   Restrict audit to files touched in the last <n> commits\n")
+	fmt.Fprintf(os.Stderr, "    --sibling-cluster    Enable Phase 2.5 sibling-outlier detection (experimental)\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available dimensions:"))
 	fmt.Fprintf(os.Stderr, "    authentication, authorization, input-validation, data-integrity,\n")
@@ -479,12 +499,12 @@ func runReview(debug bool, args []string) {
 	log.Printf("Starting headless PR review for PR #%s (strong: %s, fast: %s)",
 		prNumber, cfg.StrongModel, cfg.FastModel)
 
-	// Run the review pipeline with an idle watchdog. The headless path
-	// has no user-facing cancel, but a stalled agent shouldn't burn
-	// budget indefinitely in CI. 240s of zero activity (no tokens, no
-	// phase events) cancels the run with ai.ErrIdle.
-	ctx, watchdogTap, stopWatchdog := ai.IdleWatch(context.Background(), 240*time.Second, nil)
-	defer stopWatchdog()
+	// Plain cancellable context — stalls are now bounded at the HTTP
+	// layer (provider RequestTimeout = ai.DefaultRequestTimeout) and
+	// per-call retry (ai.RetryTransient) handles transient errors.
+	// The previous watchdog ceremony has been retired.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	opts := review.PRReviewOptions{
 		PRNumber:           prNumber,
@@ -495,10 +515,6 @@ func runReview(debug bool, args []string) {
 		AOIContextLines:    aoiCtxLines,
 		CustomInstructions: config.LoadCustomInstructions(),
 		Debug:              reviewDebug,
-		// WatchdogTap routes streamed-token activity into the watchdog
-		// reset. Phase events also flow through it via the reporter
-		// wrapping inside RunPRReview.
-		WatchdogTap: watchdogTap,
 	}
 
 	// Default: shared progress TUI (same as `prr audit`). Falls back
@@ -1155,8 +1171,13 @@ func renderDeepFindings(findings []state.DeepFinding) {
 		if f.Description != "" {
 			fmt.Fprintf(os.Stderr, "    %s\n", cliDim.Render(f.Description))
 		}
-		if f.Trigger != "" {
-			fmt.Fprintf(os.Stderr, "    Trigger: %s\n", cliDim.Render(f.Trigger))
+		if !f.Trigger.IsZero() {
+			if f.Trigger.Repro != "" {
+				fmt.Fprintf(os.Stderr, "    Trigger: %s\n", cliDim.Render(f.Trigger.Repro))
+			}
+			if f.Trigger.Observable != "" {
+				fmt.Fprintf(os.Stderr, "    Observable: %s\n", cliDim.Render(f.Trigger.Observable))
+			}
 		}
 		if f.Suggestion != "" {
 			fmt.Fprintf(os.Stderr, "    Fix: %s\n", cliDim.Render(f.Suggestion))

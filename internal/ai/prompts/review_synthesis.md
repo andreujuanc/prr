@@ -29,7 +29,8 @@ Produce a JSON object with these fields:
   "findings": [
     {
       "severity": "critical | high | medium | low | nit",
-      "confidence": "high | medium | low",
+      "confidence_score": 78,
+      "confidence_reasoning": "carried from the source finding's reasoning, possibly trimmed",
       "category": "bug | security | performance | testing | style | architecture | docs",
       "source_ids": ["F-001", "F-007"],
       "file": "path/to/file.go",
@@ -63,6 +64,12 @@ Produce a JSON object with these fields:
   ranges live in the source deep findings — consumers dereference).
 - Severity comes from upstream; don't adjust unless consolidation
   warrants (multiple medium → systemic high).
+- **Confidence is upstream-only — do NOT re-grade.** Carry
+  `confidence_score` and `confidence_reasoning` from the input
+  finding. On consolidation of multiple input findings into one,
+  use the LOWEST confidence_score among the group (uncertainty
+  dominates) and keep its reasoning. You do not have tools and
+  cannot verify; the upstream phases already did that work.
 - `detail`: one or two sentences. Full evidence and triggers live in
   the source deep findings.
 - `suggestion` scope is absolute: do NOT propose new utilities,

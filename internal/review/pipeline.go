@@ -46,12 +46,6 @@ type PRReviewOptions struct {
 
 	// Debug enables verbose output.
 	Debug bool
-
-	// WatchdogTap (optional) is called on every pipeline activity event
-	// — phase boundaries AND streamed tokens. Headless callers wire
-	// this to an ai.IdleWatch so stalls during long synthesis runs are
-	// detected even though no phase events are firing.
-	WatchdogTap func(string)
 }
 
 // PRReviewResult holds the output of a headless PR review.
@@ -185,13 +179,8 @@ func RunPRReview(
 	// path and the TUI path go through there.
 	prMeta := BuildPRMeta(pr)
 
-	// Run the shared core pipeline. If a watchdog tap is provided,
-	// wrap the reporter so streamed tokens (which progressReporter
-	// ignores) still reset the watchdog.
+	// Run the shared core pipeline.
 	var rr Reporter = &progressReporter{onProgress: onProgress}
-	if opts.WatchdogTap != nil {
-		rr = &WatchdogReporter{Inner: rr, Tap: opts.WatchdogTap}
-	}
 	coreResult, err := RunReviewCore(ctx, reviewClient, aoiClient, CoreOptions{
 		PRMeta:             prMeta,
 		RawDiffs:           rawDiffs,
@@ -294,16 +283,29 @@ func (p *progressReporter) AOIPrescanProgress(status string, done bool, aoiCount
 	p.onProgress("aoi", status)
 }
 func (p *progressReporter) InitBatches(batches []BatchInfo) {
-	p.onProgress("phase1", fmt.Sprintf("Initialized %d batches", len(batches)))
+	// Emit total + breakdown in one message so the TUI's deep-review
+	// row can show "5 AOI-driven + 7 general" instead of just a flat
+	// count. When there are no AOI-driven calls the parens are still
+	// useful — the user sees "12 batches (12 general)" and can
+	// reconcile that with the upstream "0 AOIs" they just saw.
+	var aoi, general int
+	for _, b := range batches {
+		switch b.Kind {
+		case BatchAOIDriven:
+			aoi++
+		case BatchGeneral:
+			general++
+		}
+	}
+	p.onProgress("phase1", fmt.Sprintf("Initialized %d batches (%d AOI-driven, %d general)",
+		len(batches), aoi, general))
 }
 func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
 	// Skip StatusActive: with parallel batches, "active" messages
 	// flip the detail line chaotically (Batch 12: active → Batch 8:
 	// active → Batch 14: active …) without conveying real progress.
 	// The inline counter "X/Y" plus terminal-status messages give
-	// users an honest read of how much is done. The watchdog still
-	// taps on all BatchProgress calls via WatchdogReporter, so
-	// in-flight activity continues to reset the idle timer.
+	// users an honest read of how much is done.
 	label := "done"
 	switch status {
 	case StatusActive:
@@ -431,10 +433,61 @@ func DiscoverProjectContext(
 	return result.Summary, nil
 }
 
+// DiscoverRuntimeModel runs Phase 0.5 runtime-model discovery with
+// state caching. Mirrors DiscoverProjectContext's contract: returns
+// the cached model on hash match, otherwise calls the LLM and caches
+// the new result.
+//
+// The runtime model is a quality enhancement, not load-bearing — on
+// LLM or parse failure we log and return a nil model rather than
+// failing the whole audit. The caller threads the (possibly-nil)
+// model into Phase 3 prompt construction.
+func DiscoverRuntimeModel(
+	ctx context.Context,
+	client ai.Client,
+	repoRoot string,
+	projectSummary string,
+	reviewState *state.State,
+	onProgress func(string),
+) *state.RuntimeModel {
+	if onProgress == nil {
+		onProgress = func(string) {}
+	}
+
+	var cachedModel *state.RuntimeModel
+	var cachedHash string
+	if reviewState != nil {
+		cachedModel, cachedHash = reviewState.GetRuntimeModel()
+	}
+
+	res, err := project.DiscoverRuntimeModel(ctx, client, repoRoot, projectSummary, cachedHash, onProgress)
+	if err != nil {
+		// Non-fatal — log and fall back to whatever we had cached
+		// (possibly nil). Phase 3 still runs; the prompt just omits
+		// the runtime model section.
+		log.Printf("Runtime model discovery failed (non-fatal): %v", err)
+		return cachedModel
+	}
+
+	if res.FromCache {
+		return cachedModel
+	}
+
+	if reviewState != nil && res.Model != nil {
+		reviewState.SetRuntimeModel(res.Model, res.InputHash)
+	}
+	return res.Model
+}
+
 // RecheckSettings is an optional settings bundle for RunRecheck. Zero-value
 // fields fall back to defaults inside RecheckFindings.
 type RecheckSettings struct {
 	MaxConcurrency int
+
+	// RepoRoot is the absolute path to the repository root. When
+	// set, the dismiss pass runs a test-suite cross-check per
+	// finding (see RecheckOptions.RepoRoot). Empty = skip.
+	RepoRoot string
 }
 
 // RunRecheck validates and deduplicates deep findings. On failure, returns
@@ -470,6 +523,7 @@ func RunRecheck(
 	recheckResult, recheckErr := RecheckFindings(ctx, client, findings, RecheckOptions{
 		Mode:           mode,
 		ProjectContext: projectContext,
+		RepoRoot:       s.RepoRoot,
 		MaxConcurrency: s.MaxConcurrency,
 		OnLLMCall:      debugHook,
 		OnProgress: func(done, total int) {
@@ -576,6 +630,7 @@ func RunReviewCore(
 	// the project package silently degraded to a raw doc dump which
 	// then bloated every later prompt. Fail fast.
 	var projectContext string
+	var runtimeModel *state.RuntimeModel
 	if opts.RepoRoot != "" {
 		pctx, err := DiscoverProjectContext(ctx, aoiClient, opts.RepoRoot, reviewState, func(status string) {
 			rr.DiscoveryProgress("Project context: " + status)
@@ -584,6 +639,12 @@ func RunReviewCore(
 			return nil, fmt.Errorf("project context discovery: %w", err)
 		}
 		projectContext = pctx
+
+		// Phase 0.5 — runtime model. Non-fatal: failure leaves
+		// runtimeModel nil and Phase 3 prompts omit the section.
+		runtimeModel = DiscoverRuntimeModel(ctx, aoiClient, opts.RepoRoot, projectContext, reviewState, func(status string) {
+			rr.DiscoveryProgress("Runtime model: " + status)
+		})
 	}
 
 	// PR Brief discovery — condensed summary of comments / prior AI
@@ -698,7 +759,10 @@ func RunReviewCore(
 						}
 					}
 					if data, err := json.Marshal(fileResult); err == nil {
-						reviewState.SetAOIResults(filePath, data, aoiContextLines)
+						// PR review uses the diff-mode AOI prompt
+						// (auditMode=false). Hash it into the cache
+						// entry so future prompt edits auto-invalidate.
+						reviewState.SetAOIResults(filePath, data, aoiContextLines, security.AOIScanPromptHash(false))
 					} else {
 						log.Printf("Warning: failed to marshal AOI result for %s: %v", filePath, err)
 					}
@@ -764,7 +828,10 @@ func RunReviewCore(
 		return nil, fmt.Errorf("no files to review")
 	}
 
-	// Initialize batch list in reporter
+	// Initialize batch list in reporter. Kind lets the progress UI
+	// render the AOI-driven / general breakdown — without it the
+	// "Initialized N batches" row gives no hint that some calls are
+	// targeted on AOI findings while others are blanket diff reviews.
 	batchInfos := make([]BatchInfo, 0, totalCalls)
 	for _, call := range reviewCalls {
 		label := call.Category
@@ -777,12 +844,14 @@ func RunReviewCore(
 		batchInfos = append(batchInfos, BatchInfo{
 			Label:    label,
 			NumFiles: len(call.Files),
+			Kind:     BatchAOIDriven,
 		})
 	}
 	for _, b := range fallbackBatches {
 		batchInfos = append(batchInfos, BatchInfo{
 			Label:    b.Label,
 			NumFiles: len(b.Files),
+			Kind:     BatchGeneral,
 		})
 	}
 	rr.InitBatches(batchInfos)
@@ -801,6 +870,7 @@ func RunReviewCore(
 		execOpts := ExecuteOptions{
 			Mode:               ModePR,
 			ProjectContext:     projectContext,
+			RuntimeModel:       runtimeModel,
 			CustomInstructions: enhancedInstructions,
 			MaxConcurrency:     maxConc,
 			RepoRoot:           opts.RepoRoot,
@@ -901,7 +971,8 @@ func RunReviewCore(
 		}
 	}
 	rechecked, dismissals, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext,
-		func(status string) { rr.RecheckProgress(status) }, recheckDebugHook)
+		func(status string) { rr.RecheckProgress(status) }, recheckDebugHook,
+		RecheckSettings{RepoRoot: opts.RepoRoot})
 	if changed {
 		deepFindings = rechecked
 		// Rebuild synthesis input from rechecked findings

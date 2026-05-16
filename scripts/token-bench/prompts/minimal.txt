@@ -1,0 +1,4 @@
+## Review rules
+
+- Token budget: 4,000 tokens. Surface if approaching.
+- No preamble, no conclusion — findings only.

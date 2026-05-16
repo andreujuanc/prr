@@ -454,7 +454,11 @@ func summarizeWithLLM(ctx context.Context, client ai.Client, inputs *discoveredI
 		{Role: "user", Content: prompt.String()},
 	}
 
-	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
+	// Retry transient HTTP errors. Project briefing is loaded once
+	// per cache-key; a transient blip shouldn't poison the cache.
+	result, err := ai.RetryTransient(ctx, 3, "project-summarize", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, systemPrompt, messages, nil)
+	})
 	if err != nil {
 		return "", fmt.Errorf("LLM summarization: %w", err)
 	}
@@ -532,7 +536,10 @@ func extractConventionsFromAIConfigs(ctx context.Context, client ai.Client, conf
 		{Role: "user", Content: prompt.String()},
 	}
 
-	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
+	// Retry transient HTTP errors.
+	result, err := ai.RetryTransient(ctx, 3, "project-conventions", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, systemPrompt, messages, nil)
+	})
 	if err != nil {
 		return "", fmt.Errorf("LLM conventions extraction: %w", err)
 	}
@@ -588,7 +595,10 @@ func inferWithLLM(ctx context.Context, client ai.Client, inputs *discoveredInput
 		{Role: "user", Content: prompt.String()},
 	}
 
-	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
+	// Retry transient HTTP errors.
+	result, err := ai.RetryTransient(ctx, 3, "project-infer", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, systemPrompt, messages, nil)
+	})
 	if err != nil {
 		return "", fmt.Errorf("LLM inference: %w", err)
 	}

@@ -48,6 +48,24 @@ type Options struct {
 	// DebugFile restricts the audit to a single file (path relative to repo root).
 	DebugFile string
 
+	// AuditRecent restricts the audit to files touched in the last
+	// N commits (and only those — cold files are dropped entirely).
+	// Zero = no restriction; the audit covers every file that passes
+	// filtering. Either way, files touched recently are sorted to
+	// the front so --max-reviews truncates AOIs in cold files first.
+	AuditRecent int
+
+	// SiblingClustering enables Phase 2.5: after Phase 2 AOI
+	// generation, run an LLM call (or per-category calls when the
+	// AOI set is large) that groups AOIs by shape and surfaces
+	// outliers — handlers/call-sites whose pattern disagrees with
+	// the majority of their siblings. Each outlier becomes an
+	// individual-urgency AOI for Phase 3.
+	//
+	// Gated behind a flag for the first release so precision can be
+	// measured on real audits before making it default.
+	SiblingClustering bool
+
 	// LargeFileThreshold is the file count above which a warning is
 	// displayed. Defaults to 200 when zero.
 	LargeFileThreshold int
@@ -228,6 +246,28 @@ func Run(
 	onProgress("phase1", "Collecting files...")
 	go func() {
 		paths, stats, err := CollectFiles(opts.RepoRoot, opts.ExcludePatterns, opts.IncludePatterns)
+		if err == nil && len(paths) > 0 {
+			// Reorder by recency so --max-reviews truncates AOIs in
+			// cold files first. When --audit-recent N is set we also
+			// restrict to that window — cold files are dropped
+			// entirely, and the surviving set is already
+			// recency-ordered. Both operations are best-effort: a
+			// git log failure logs and falls back to the un-reordered
+			// list.
+			if opts.AuditRecent > 0 {
+				if restricted, rerr := RestrictToRecent(opts.RepoRoot, paths, opts.AuditRecent); rerr != nil {
+					log.Printf("--audit-recent restriction failed (non-fatal): %v", rerr)
+				} else {
+					paths = restricted
+				}
+			} else {
+				if reordered, rerr := OrderFilesByRecency(opts.RepoRoot, paths, recentLookbackDefault); rerr != nil {
+					log.Printf("recency reorder failed (non-fatal): %v", rerr)
+				} else {
+					paths = reordered
+				}
+			}
+		}
 		p1Ch <- p1Result{paths: paths, stats: stats, err: err}
 	}()
 
@@ -251,6 +291,21 @@ func Run(
 		dbgw.Text("%s", projectContext)
 	} else {
 		dbgw.Text("(no project context discovered)")
+	}
+
+	// Phase 0.5 — runtime model. One additional LLM call that
+	// summarizes the codebase's structured shape (auth model, entry
+	// points, validation sites, result discipline, invariants) for
+	// injection into every Phase 3 prompt. Non-fatal on failure —
+	// review.DiscoverRuntimeModel logs and returns the cached value
+	// (possibly nil) rather than erroring.
+	dbgw.Phase("PHASE 0.5: Runtime Model Discovery")
+	runtimeModel := review.DiscoverRuntimeModel(ctx, aoiClient, opts.RepoRoot, projectContext, auditState, func(status string) {
+		onProgress("phase0", status)
+	})
+	if runtimeModel != nil {
+		dbgw.Section("Runtime Model Result")
+		dbgw.Text("%s", runtimeModel.Render())
 	}
 
 	if p1.err != nil {
@@ -413,6 +468,16 @@ func Run(
 		log.Printf("Warning: failed to save audit state after Phase 1b: %v", err)
 	}
 
+	// ── Phase 1.5: Boundary Inventory ───────────────────────────────────
+	// One LLM call that scans file headers + the runtime model and
+	// emits a list of externally-reachable surfaces. Each boundary
+	// seeds 1-3 synthetic defense-coverage AOIs (after Phase 2) so the
+	// audit guarantees a review at every entry point even when the
+	// AOI scanner missed it. Non-fatal: failure leaves the inventory
+	// empty and we proceed with scanner output only.
+	dbgw.Phase("PHASE 1.5: Boundary Inventory")
+	boundaryInventory := runPhase15(ctx, aoiClient, opts, auditState, files, runtimeModel, onProgress, dbgw)
+
 	// ── Phase 2: AOI Generation ─────────────────────────────────────────
 
 	dbgw.Phase("PHASE 2: AOI Pre-scan")
@@ -432,6 +497,49 @@ func Run(
 	aoiResults, err := runPhase2(ctx, aoiClient, opts, auditState, files, classifications, onProgress, aoiDebugHook)
 	if err != nil {
 		return nil, fmt.Errorf("phase 2 AOI generation: %w", err)
+	}
+
+	// Merge the synthesized boundary-coverage AOIs into the per-file
+	// results so Phase 3 picks them up alongside scanner-produced
+	// AOIs. The synthesizer is deterministic; the merge is
+	// idempotent on AOI id collision.
+	if len(boundaryInventory) > 0 {
+		boundaryAOIs := SynthesizeBoundaryAOIs(boundaryInventory)
+		aoiResults = MergeBoundaryAOIs(aoiResults, boundaryAOIs)
+		onProgress("phase2", fmt.Sprintf("merged %d boundary-coverage AOIs from %d boundaries",
+			len(boundaryAOIs), len(boundaryInventory)))
+	}
+
+	// ── Phase 2.5: Sibling Cluster Outlier Detection ────────────────────
+	// Optional — gated on opts.SiblingClustering. Identifies AOIs
+	// whose pattern disagrees with their siblings (e.g., 9 of 11
+	// admin handlers call guardAdmin and this one doesn't). The
+	// outliers are merged into aoiResults as individual-urgency
+	// AOIs with a SiblingDeviation tag so Phase 3 can anchor the
+	// investigation on "is this deviation intentional or a bug?"
+	if opts.SiblingClustering {
+		dbgw.Phase("PHASE 2.5: Sibling Cluster Outlier Detection")
+		outlierAOIs := runPhase25(ctx, aoiClient, aoiResults, auditState, opts.NoCache, onProgress)
+		if len(outlierAOIs) > 0 {
+			aoiResults = MergeBoundaryAOIs(aoiResults, outlierAOIs) // reuse the same merge — same shape/contract
+			onProgress("phase2.5", fmt.Sprintf("merged %d sibling-outlier AOIs", len(outlierAOIs)))
+			dbgw.Section("Sibling Outliers")
+			for _, a := range outlierAOIs {
+				dbgw.Text("- [%s] %s — %s", a.Category, a.File, a.Concern)
+			}
+		}
+	}
+
+	// Emit the terminal phase-2 summary the TUI parser needs to populate
+	// aoi_count. Without this, the summary row renders "0 AOIs" forever
+	// even when the scan found dozens — the review pipeline emits the
+	// same message at the equivalent point; keep them symmetrical.
+	{
+		total := 0
+		for _, r := range aoiResults {
+			total += len(r.AreasOfInterest)
+		}
+		onProgress("phase2", fmt.Sprintf("found %d areas of interest", total))
 	}
 
 	// Debug: show parsed AOIs
@@ -504,7 +612,7 @@ func Run(
 		log.Printf("Phase 3: using review model %s/%s", mi.ProviderName(), mi.ModelName())
 	}
 	findings, dismissals, crossCutting, failed, failedAOIIDs, err := runPhase3(
-		ctx, reviewClient, opts, auditState, projectContext, calls, onProgress, phase3DebugHook, phase3ToolHook,
+		ctx, reviewClient, opts, auditState, projectContext, runtimeModel, calls, onProgress, phase3DebugHook, phase3ToolHook,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("phase 3 deep review: %w", err)
@@ -554,7 +662,7 @@ func Run(
 		var dismissals []state.DismissedRecord
 		findings, dismissals, changed = review.RunRecheck(ctx, reviewClient, findings, review.ModeAudit, projectContext,
 			func(status string) { onProgress("recheck", status) }, recheckDebugHook,
-			review.RecheckSettings{MaxConcurrency: opts.Concurrency.Recheck})
+			review.RecheckSettings{MaxConcurrency: opts.Concurrency.Recheck, RepoRoot: opts.RepoRoot})
 
 		// Persist on success — both the deduped finding set (used for
 		// cache hits next run) AND the dismissal rationale log (used
@@ -626,6 +734,122 @@ func runPhase1b(
 	return result, nil
 }
 
+// ── Phase 1.5: Boundary Inventory ───────────────────────────────────────
+
+// runPhase15 runs the boundary discovery LLM call and persists the
+// result on state. Non-fatal: a discovery failure logs and returns
+// the cached inventory (possibly empty/nil) so the audit can
+// continue with scanner-only AOIs.
+func runPhase15(
+	ctx context.Context,
+	aoiClient ai.Client,
+	opts Options,
+	auditState *state.State,
+	files []classify.File,
+	runtimeModel *state.RuntimeModel,
+	onProgress OnProgress,
+	dbgw *dbg.Writer,
+) []state.Boundary {
+	cachedInventory, cachedHash := auditState.GetBoundaryInventory()
+	if opts.NoCache {
+		cachedHash = ""
+	}
+
+	// Build the input map. We pass the full file content; the
+	// discovery function truncates to the first N lines internally
+	// to keep the prompt bounded.
+	fileContents := make(map[string]string, len(files))
+	for _, f := range files {
+		fileContents[f.Path] = f.Content
+	}
+
+	res, err := DiscoverBoundaries(ctx, aoiClient, fileContents, runtimeModel, cachedHash, func(status string) {
+		onProgress("phase1.5", status)
+	})
+	if err != nil {
+		log.Printf("Phase 1.5 boundary discovery failed (non-fatal): %v", err)
+		return cachedInventory
+	}
+	if res.FromCache {
+		dbgw.Section("Boundary Inventory (cache hit)")
+		dbgw.Text("%d boundaries", len(cachedInventory))
+		return cachedInventory
+	}
+
+	auditState.SetBoundaryInventory(res.Boundaries, res.InputHash)
+	if err := state.Save(auditState); err != nil {
+		log.Printf("Warning: failed to save audit state after Phase 1.5: %v", err)
+	}
+	if dbgw != nil {
+		dbgw.Section("Boundary Inventory Result")
+		for _, b := range res.Boundaries {
+			dbgw.Text("- [%s] %s — %s", b.Kind, b.File, b.Description)
+		}
+	}
+	return res.Boundaries
+}
+
+// ── Phase 2.5: Sibling Cluster Outlier Detection ──────────────────────
+
+// runPhase25 collects all AOIs across the per-file results and runs
+// sibling-cluster discovery, with state-backed caching. Non-fatal:
+// an LLM/parse failure logs and returns an empty outlier list (the
+// audit proceeds with just the regular AOIs).
+//
+// Caching: cluster output is stored on state.State.SiblingClusterCache
+// as opaque JSON keyed by hashClusterInputs (which mixes both the
+// AOI set and the cluster prompt). On hit, we unmarshal and skip the
+// LLM call entirely. NoCache forces a re-run.
+func runPhase25(
+	ctx context.Context,
+	aoiClient ai.Client,
+	results []security.AOIScanResult,
+	auditState *state.State,
+	noCache bool,
+	onProgress OnProgress,
+) []security.AreaOfInterest {
+	var all []security.AreaOfInterest
+	for _, r := range results {
+		all = append(all, r.AreasOfInterest...)
+	}
+	if len(all) < siblingClusterMinSize {
+		return nil
+	}
+
+	var cachedHash string
+	if !noCache {
+		_, cachedHash = auditState.GetSiblingClusterCache()
+	}
+
+	res, err := DiscoverSiblingOutliers(ctx, aoiClient, all, cachedHash, func(status string) {
+		onProgress("phase2.5", status)
+	})
+	if err != nil {
+		log.Printf("Phase 2.5 sibling clustering failed (non-fatal): %v", err)
+		return nil
+	}
+
+	if res.FromCache {
+		// Cache hit — load the previously-persisted outliers.
+		raw, _ := auditState.GetSiblingClusterCache()
+		if len(raw) == 0 {
+			return nil
+		}
+		var outliers []security.AreaOfInterest
+		if err := json.Unmarshal(raw, &outliers); err != nil {
+			log.Printf("Phase 2.5: failed to unmarshal cached outliers (non-fatal): %v", err)
+			return nil
+		}
+		return outliers
+	}
+
+	// Persist fresh outliers for next run.
+	if data, err := json.Marshal(res.Outliers); err == nil {
+		auditState.SetSiblingClusterCache(data, res.InputHash)
+	}
+	return res.Outliers
+}
+
 // ── Phase 2: AOI Generation ─────────────────────────────────────────────
 
 func runPhase2(
@@ -646,13 +870,19 @@ func runPhase2(
 		filePath := f.Path
 		contentStr := f.Content
 
-		// Check cache: if file content hash matches, reuse cached AOI results
+		// Check cache: file content + AOI scanner prompt must both
+		// be unchanged. The prompt hash gate ensures commit 7's
+		// (and any later) scanner-prompt edits auto-invalidate stale
+		// AOI cache entries instead of silently serving results
+		// produced by the previous prompt.
 		contentHash := hashContent(contentStr)
+		currentPromptHash := security.AOIScanPromptHash(true)
 		if !opts.NoCache {
 			raw, cachedCtxLines := auditState.GetAOIResults(filePath)
 			if raw != nil && cachedCtxLines == opts.AOIContextLines {
-				// Check if the content hash matches
-				if fs, ok := auditState.Files[filePath]; ok && fs.DiffHash == contentHash {
+				if fs, ok := auditState.Files[filePath]; ok &&
+					fs.DiffHash == contentHash &&
+					(fs.AOIPromptHash == "" || fs.AOIPromptHash == currentPromptHash) {
 					var cached security.AOIScanResult
 					if err := json.Unmarshal(raw, &cached); err == nil {
 						cached.NormalizeAOIs()
@@ -685,6 +915,15 @@ func runPhase2(
 		fileDimensions[path] = classify.DimensionsForType(ft)
 	}
 
+	// Surface the partial-cache hit count so the TUI's AOI summary
+	// row can render "K cached". The scanner only emits this when it
+	// sees cached entries in rawDiffs — and we filtered them out
+	// upstream, so the scanner counts 0 cached. Emit it here from
+	// the count we already have.
+	if len(cachedResults) > 0 {
+		onProgress("phase2", fmt.Sprintf("using cached AOI results for %d file(s)", len(cachedResults)))
+	}
+
 	// Run AOI scan on uncached files
 	report, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, fileContents, cachedResults, fileDimensions, func(status string) {
 		onProgress("phase2", status)
@@ -693,15 +932,32 @@ func runPhase2(
 		return nil, err
 	}
 
-	// Cache results per-file
+	// Cache results per-file (fresh results only — cached entries are
+	// already in state). Promptt hash is captured at write time so a
+	// later prompt edit auto-invalidates these entries on read.
+	aoiPromptHash := security.AOIScanPromptHash(true)
 	for _, fileResult := range report.Files {
 		data, err := json.Marshal(fileResult)
 		if err != nil {
 			continue
 		}
-		auditState.SetAOIResults(fileResult.File, data, opts.AOIContextLines)
+		auditState.SetAOIResults(fileResult.File, data, opts.AOIContextLines, aoiPromptHash)
 	}
 
+	// Merge cached results into the return value. The scanner's internal
+	// merge loop iterates rawDiffs (the uncached-only map we passed in)
+	// looking up each path in cachedResults — none of those paths are
+	// in the cache, so its cachedAOIs slice stays empty and report.Files
+	// contains only fresh scans. Without this merge, Phase 3 would route
+	// only the freshly-scanned AOIs and silently lose all cache-hit ones.
+	if len(cachedResults) > 0 {
+		combined := make([]security.AOIScanResult, 0, len(report.Files)+len(cachedResults))
+		combined = append(combined, report.Files...)
+		for _, r := range cachedResults {
+			combined = append(combined, *r)
+		}
+		return combined, nil
+	}
 	return report.Files, nil
 }
 
@@ -718,6 +974,7 @@ func runPhase3(
 	opts Options,
 	auditState *state.State,
 	projectContext string,
+	runtimeModel *state.RuntimeModel,
 	calls []review.ReviewCall,
 	onProgress OnProgress,
 	debugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string),
@@ -726,6 +983,7 @@ func runPhase3(
 	execOpts := review.ExecuteOptions{
 		Mode:            review.ModeAudit,
 		ProjectContext:  projectContext,
+		RuntimeModel:    runtimeModel,
 		FocusDimensions: opts.Focus,
 		MaxConcurrency:  concurrencyOr(opts.Concurrency.DeepReview, phase3MaxConcurrency),
 		NoCache:         opts.NoCache,

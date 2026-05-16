@@ -53,7 +53,12 @@ func summarizeWithLLM(ctx context.Context, client ai.Client, inputs *rawInputs) 
 		{Role: "user", Content: userMsg.String()},
 	}
 
-	result, err := client.ChatStream(ctx, briefSystemPrompt, messages, nil)
+	// Retry transient HTTP errors. The PR brief is non-essential —
+	// the review pipeline degrades gracefully without it — but retry
+	// is still cheap insurance against rate-limit blips.
+	result, err := ai.RetryTransient(ctx, 3, "prcontext-brief", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, briefSystemPrompt, messages, nil)
+	})
 	if err != nil {
 		return "", fmt.Errorf("LLM summarization: %w", err)
 	}

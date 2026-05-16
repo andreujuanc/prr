@@ -2,7 +2,9 @@ package security
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,18 @@ var revalidatePrompt string
 
 // AOIScanPrompt returns the AOI scan system prompt for PR review mode.
 func AOIScanPrompt() string { return buildAOIScanPrompt(false) }
+
+// AOIScanPromptHash returns a short sha256 hash of the AOI scan
+// prompt for cache-invalidation purposes. Mixed into the Phase 2
+// AOI cache key so prompt edits (e.g. commit 7's TODO/FIXME +
+// unit-type rules) auto-invalidate stale entries.
+//
+// auditMode selects which prompt variant to hash. The two modes
+// embed different mode-specific rules so they need separate hashes.
+func AOIScanPromptHash(auditMode bool) string {
+	h := sha256.Sum256([]byte(buildAOIScanPrompt(auditMode)))
+	return hex.EncodeToString(h[:])
+}
 
 // AOIAuditPrompt returns the AOI scan system prompt for full-project audit mode.
 func AOIAuditPrompt() string { return buildAOIScanPrompt(true) }
@@ -361,7 +375,10 @@ func RevalidateFindings(
 		)},
 	}
 
-	result, err := client.ChatStream(ctx, revalidatePrompt, messages, nil)
+	// Retry transient HTTP errors.
+	result, err := ai.RetryTransient(ctx, 3, "security-revalidate", func(ctx context.Context) (string, error) {
+		return client.ChatStream(ctx, revalidatePrompt, messages, nil)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("revalidation: %w", err)
 	}
@@ -572,9 +589,9 @@ func shouldAggregateFailAOI(failed, total int) bool {
 }
 
 // scanBatchWithRetry runs scanBatch and retries ONCE on transient
-// errors. Parse failures and context cancellation short-circuit. The
-// retry catches the common rate-limit/5xx cases that currently
-// silently lose AOIs for entire batches (8-15 files at a time).
+// errors. Parse failures (errAOIParse) short-circuit — they reflect
+// a model issue, not a network blip. Per-call HTTP timeouts on a live
+// parent are treated as transient via ai.IsTransientError.
 func scanBatchWithRetry(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
 	res, err := scanBatch(ctx, client, batch, debugHook, auditMode)
 	if err == nil {
@@ -583,7 +600,7 @@ func scanBatchWithRetry(ctx context.Context, client ai.Client, batch aoiBatch, d
 	if errors.Is(err, errAOIParse) {
 		return res, err
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if !ai.IsTransientError(err, ctx) {
 		return res, err
 	}
 
@@ -616,6 +633,9 @@ func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook 
 
 	log.Printf("[aoi-debug] calling LLM for batch %q (%d files, %d chars)", batch.label, len(batch.files), len(userMsg))
 
+	// Single ChatStream call. Retry for transient HTTP errors lives
+	// in scanBatchWithRetry one level up — nesting retries here would
+	// multiply attempts and confuse the batch-error accounting.
 	result, err := client.ChatStream(ctx, systemPrompt, messages, nil)
 	if err != nil {
 		return nil, err

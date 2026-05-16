@@ -335,10 +335,10 @@ var errClassifyParse = errors.New("classify: parse failure")
 const classifyRetryBackoff = 750 * time.Millisecond
 
 // classifyBatchWithRetry runs classifyBatch and retries ONCE on
-// non-parse errors. Parse failures (bad JSON, missing types, model
-// returned prose, etc.) and context cancellation are returned
-// immediately — retrying parses just duplicates token spend without
-// changing the outcome.
+// transient HTTP errors (per-call timeout, rate-limit, 5xx, EOF).
+// Parse failures (errClassifyParse) and parent-ctx cancellation
+// short-circuit — retrying parses just duplicates token spend
+// without changing the outcome.
 func classifyBatchWithRetry(ctx context.Context, client ai.Client, files []File) ([]FileClassification, error) {
 	res, err := classifyBatch(ctx, client, files)
 	if err == nil {
@@ -347,7 +347,7 @@ func classifyBatchWithRetry(ctx context.Context, client ai.Client, files []File)
 	if errors.Is(err, errClassifyParse) {
 		return res, err
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if !ai.IsTransientError(err, ctx) {
 		return res, err
 	}
 
@@ -378,6 +378,9 @@ func classifyBatch(ctx context.Context, client ai.Client, files []File) ([]FileC
 		{Role: "user", Content: sb.String()},
 	}
 
+	// Single ChatStream call. Retry for transient HTTP errors lives
+	// in classifyBatchWithRetry one level up — nesting retries here
+	// would multiply attempts and confuse the batch-error accounting.
 	raw, err := client.ChatStream(ctx, classifyPrompt, messages, nil)
 	if err != nil {
 		return nil, fmt.Errorf("classify LLM call: %w", err)

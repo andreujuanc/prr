@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func TestSetGetAOIResults(t *testing.T) {
 	data := json.RawMessage(`{"areas":["auth","crypto"]}`)
 
 	// Set on a file that doesn't exist yet — should create FileState
-	s.SetAOIResults("main.go", data, 5)
+	s.SetAOIResults("main.go", data, 5, "")
 
 	got, ctx := s.GetAOIResults("main.go")
 	if got == nil {
@@ -100,7 +101,7 @@ func TestSetAOIResults_OverwritesExisting(t *testing.T) {
 	s.Files["f.go"] = &FileState{Status: StatusReviewed, DiffHash: "abc"}
 
 	data := json.RawMessage(`{"new": true}`)
-	s.SetAOIResults("f.go", data, 10)
+	s.SetAOIResults("f.go", data, 10, "")
 
 	// Should overwrite AOI data but preserve other fields
 	if s.Files["f.go"].Status != StatusReviewed {
@@ -613,5 +614,552 @@ func TestGetRecheckDismissals_EmptyReturnsNil(t *testing.T) {
 	s := NewState("1")
 	if got := s.GetRecheckDismissals(); got != nil {
 		t.Errorf("expected nil for empty state, got %d entries", len(got))
+	}
+}
+
+// ── FindingTrigger: structured + legacy-string back-compat ──────────────
+
+func TestFindingTrigger_UnmarshalLegacyString(t *testing.T) {
+	// Older cached state and the previous prompt schema both serialized
+	// the trigger as a bare string. The structured type must still accept
+	// it, dropping the value into Repro with Observable empty.
+	raw := `"user spams the login endpoint"`
+	var got FindingTrigger
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal legacy string: %v", err)
+	}
+	if got.Repro != "user spams the login endpoint" {
+		t.Errorf("Repro = %q, want %q", got.Repro, "user spams the login endpoint")
+	}
+	if got.Observable != "" {
+		t.Errorf("Observable = %q, want empty", got.Observable)
+	}
+}
+
+func TestFindingTrigger_UnmarshalStructured(t *testing.T) {
+	raw := `{"repro": "POST /admin/users body {\"role\": \"admin\"}", "observable": "200 OK"}`
+	var got FindingTrigger
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal structured: %v", err)
+	}
+	if got.Repro != `POST /admin/users body {"role": "admin"}` {
+		t.Errorf("Repro = %q", got.Repro)
+	}
+	if got.Observable != "200 OK" {
+		t.Errorf("Observable = %q, want %q", got.Observable, "200 OK")
+	}
+}
+
+func TestFindingTrigger_RoundTrip(t *testing.T) {
+	orig := FindingTrigger{Repro: "trigger thing", Observable: "side effect"}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got FindingTrigger
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got != orig {
+		t.Errorf("round trip = %+v, want %+v", got, orig)
+	}
+}
+
+func TestFindingTrigger_UnmarshalEmpty(t *testing.T) {
+	cases := []string{`""`, `null`, ``, `{}`}
+	for _, raw := range cases {
+		var got FindingTrigger
+		if err := json.Unmarshal([]byte(raw), &got); err != nil && raw != "" {
+			t.Errorf("unmarshal %q: %v", raw, err)
+			continue
+		}
+		if !got.IsZero() {
+			t.Errorf("unmarshal %q: want zero, got %+v", raw, got)
+		}
+	}
+}
+
+func TestDeepFinding_UnmarshalLegacyStringTrigger(t *testing.T) {
+	// A DeepFinding cached before commit 2 carries trigger as a string.
+	// Loading it now must place the value in Trigger.Repro.
+	raw := `{
+		"aoi_id": "aoi-1",
+		"file": "foo.go",
+		"lines": "10",
+		"severity": "high",
+		"trigger": "user posts a malformed payload"
+	}`
+	var got DeepFinding
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Trigger.Repro != "user posts a malformed payload" {
+		t.Errorf("Trigger.Repro = %q", got.Trigger.Repro)
+	}
+}
+
+func TestDeepFinding_TraceRoundTrip(t *testing.T) {
+	orig := DeepFinding{
+		AOIID:    "aoi-1",
+		Severity: "high",
+		Trace: []TraceHop{
+			{Role: "suspect", File: "a.go", Lines: "10", Evidence: "cited"},
+			{Role: "caller", File: "b.go", Lines: "50", Evidence: "calls a"},
+			{Role: "boundary", File: "c.go", Lines: "120", Evidence: "returns to client"},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepFinding
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Trace) != 3 {
+		t.Fatalf("Trace length = %d, want 3", len(got.Trace))
+	}
+	if got.Trace[2].Role != "boundary" || got.Trace[2].File != "c.go" {
+		t.Errorf("Trace[2] round-trip lost data: %+v", got.Trace[2])
+	}
+}
+
+func TestDeepFinding_TraceOmittedWhenEmpty(t *testing.T) {
+	// Findings at medium/low/nit don't include a trace — make sure the
+	// field is omitempty and doesn't bloat the JSON.
+	f := DeepFinding{AOIID: "x", Severity: "medium"}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "trace") {
+		t.Errorf("empty Trace should be omitted from JSON, got %s", data)
+	}
+}
+
+func TestDeepFinding_DefensesCheckedRoundTrip(t *testing.T) {
+	orig := DeepFinding{
+		AOIID:           "aoi-1",
+		Category:        "authorization",
+		Severity:        "high",
+		DefensesChecked: []string{"boundary-authz", "handler-guard", "other:custom-check"},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepFinding
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.DefensesChecked) != 3 {
+		t.Fatalf("DefensesChecked length = %d, want 3", len(got.DefensesChecked))
+	}
+	if got.DefensesChecked[2] != "other:custom-check" {
+		t.Errorf("DefensesChecked[2] = %q, want 'other:custom-check'", got.DefensesChecked[2])
+	}
+}
+
+func TestDeepFinding_DefensesCheckedOmittedWhenEmpty(t *testing.T) {
+	f := DeepFinding{AOIID: "x", Severity: "medium", Category: "correctness"}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "defenses_checked") {
+		t.Errorf("empty DefensesChecked should be omitted, got %s", data)
+	}
+}
+
+// ── ConfidenceBand: derived from score, falls back to legacy string ─────
+
+func TestConfidenceBand(t *testing.T) {
+	tests := []struct {
+		score      int
+		legacy     string
+		wantBand   string
+		wantReason string
+	}{
+		{score: 95, wantBand: "high"},
+		{score: 80, wantBand: "high"},
+		{score: 79, wantBand: "medium"},
+		{score: 50, wantBand: "medium"},
+		{score: 49, wantBand: "low"},
+		{score: 0, legacy: "high", wantBand: "high"},     // legacy fallback (cached state)
+		{score: 0, legacy: "medium", wantBand: "medium"}, // legacy fallback (cached state)
+		// Penalized-to-zero finding with no legacy field falls through
+		// to the switch and renders as "low" — previously this returned
+		// "" and the UI blanked the confidence column.
+		{score: 0, legacy: "", wantBand: "low"},
+	}
+	for _, tt := range tests {
+		f := ReviewFinding{ConfidenceScore: tt.score, Confidence: tt.legacy}
+		if got := f.ConfidenceBand(); got != tt.wantBand {
+			t.Errorf("ConfidenceBand(score=%d legacy=%q) = %q, want %q",
+				tt.score, tt.legacy, got, tt.wantBand)
+		}
+	}
+}
+
+// Regression: a finding produced by the new pipeline gets penalized
+// down to ConfidenceScore=0 (e.g. a starting score of 40 with both
+// missing-trace (-30) and defenses-not-checked (-25) applied). The
+// legacy Confidence field is empty because the new pipeline doesn't
+// populate it. Previously ConfidenceBand() returned "" here and the
+// UI blanked the confidence column. Now it falls through to the
+// switch and returns "low".
+func TestConfidenceBand_PenalizedToZeroRendersAsLow(t *testing.T) {
+	f := ReviewFinding{ConfidenceScore: 0, Confidence: ""}
+	if got := f.ConfidenceBand(); got != "low" {
+		t.Errorf("ConfidenceBand() = %q, want %q", got, "low")
+	}
+}
+
+func TestReviewFinding_UnmarshalLegacyConfidence(t *testing.T) {
+	// Older cached state carries confidence as a string band only.
+	// Unmarshal must preserve it so ConfidenceBand() still renders.
+	raw := `{"severity":"high","confidence":"medium","title":"t","file":"f","line":1,"category":"bug","detail":"d"}`
+	var got ReviewFinding
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Confidence != "medium" {
+		t.Errorf("Confidence = %q", got.Confidence)
+	}
+	if got.ConfidenceScore != 0 {
+		t.Errorf("ConfidenceScore = %d, want 0 for legacy data", got.ConfidenceScore)
+	}
+	if band := got.ConfidenceBand(); band != "medium" {
+		t.Errorf("ConfidenceBand() = %q, want medium (legacy fallback)", band)
+	}
+}
+
+func TestReviewFinding_NewConfidenceWins(t *testing.T) {
+	// When both fields are present (transitional state during the
+	// migration window), ConfidenceBand prefers the structured score.
+	raw := `{"severity":"high","confidence":"low","confidence_score":85,"title":"t","file":"f","line":1,"category":"bug","detail":"d"}`
+	var got ReviewFinding
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ConfidenceBand() != "high" {
+		t.Errorf("ConfidenceBand() = %q, want high (score-derived)", got.ConfidenceBand())
+	}
+}
+
+// ── RuntimeModel: schema + render + persistence ─────────────────────────
+
+func TestRuntimeModel_IsZero(t *testing.T) {
+	var nilModel *RuntimeModel
+	if !nilModel.IsZero() {
+		t.Error("nil model should be zero")
+	}
+	if !(&RuntimeModel{}).IsZero() {
+		t.Error("empty struct should be zero")
+	}
+	if (&RuntimeModel{AuthModel: "x"}).IsZero() {
+		t.Error("model with AuthModel should not be zero")
+	}
+	if (&RuntimeModel{EntryPoints: []RuntimeEntryPoint{{Kind: "http"}}}).IsZero() {
+		t.Error("model with entry points should not be zero")
+	}
+}
+
+func TestRuntimeModel_Render_Empty(t *testing.T) {
+	var m *RuntimeModel
+	if got := m.Render(); got != "" {
+		t.Errorf("nil render = %q, want empty", got)
+	}
+	if got := (&RuntimeModel{}).Render(); got != "" {
+		t.Errorf("empty render = %q, want empty", got)
+	}
+}
+
+func TestRuntimeModel_Render_Full(t *testing.T) {
+	m := &RuntimeModel{
+		AuthModel: "API Gateway authorizer validates JWT; in-handler `guardAdmin` for admin writes.",
+		ValidationSites: []string{
+			"All HTTP handlers parse body through a declared schema before reaching business logic",
+			"Queue consumers parse each record through a declared schema",
+		},
+		EntryPoints: []RuntimeEntryPoint{
+			{Kind: "http", RetryModel: "no retries — caller's job", BatchModel: "single-record", ValidationAt: "boundary"},
+			{Kind: "queue", RetryModel: "exponential backoff per record", BatchModel: "batched, per-record isolated", ValidationAt: "handler"},
+		},
+		ResultDiscipline: "Result type with safeTry — all error paths propagate, no silent swallows.",
+		Invariants: []string{
+			"All IDs are UUID v4",
+			"Amounts stored in minor units (cents)",
+		},
+	}
+
+	out := m.Render()
+	if !strings.HasPrefix(out, "## Runtime Model\n") {
+		t.Errorf("render must start with the section header; got %q...", out[:50])
+	}
+
+	// Each field's content must appear.
+	for _, want := range []string{
+		"API Gateway authorizer",
+		"All HTTP handlers parse body",
+		"`http`",
+		"validation at boundary",
+		"retries: no retries",
+		"`queue`",
+		"batching: batched, per-record isolated",
+		"Result type with safeTry",
+		"UUID v4",
+		"minor units",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+
+	// Compact: budget is ~1KB so the section doesn't crowd the prompt.
+	if len(out) > 2048 {
+		t.Errorf("render size = %d bytes; budget is ~1KB (hard cap 2KB)", len(out))
+	}
+}
+
+func TestRuntimeModel_Render_PartialOmitsEmptyFields(t *testing.T) {
+	m := &RuntimeModel{AuthModel: "single auth check at the gateway"}
+	out := m.Render()
+	if !strings.Contains(out, "single auth check") {
+		t.Errorf("output should contain auth content: %q", out)
+	}
+	for _, banned := range []string{"Validation sites", "Entry points", "Result discipline", "Invariants"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("output should not include empty section %q\n%s", banned, out)
+		}
+	}
+}
+
+func TestRuntimeModel_RoundTrip(t *testing.T) {
+	orig := &RuntimeModel{
+		AuthModel:       "gateway authorizer",
+		ValidationSites: []string{"boundary"},
+		EntryPoints: []RuntimeEntryPoint{
+			{Kind: "http", ValidationAt: "boundary"},
+		},
+		Invariants: []string{"x"},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got RuntimeModel
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.AuthModel != orig.AuthModel {
+		t.Errorf("AuthModel mismatch")
+	}
+	if len(got.EntryPoints) != 1 || got.EntryPoints[0].Kind != "http" {
+		t.Errorf("EntryPoints round-trip lost data: %+v", got.EntryPoints)
+	}
+}
+
+func TestStateSetGetRuntimeModel(t *testing.T) {
+	s := NewState("1")
+
+	// Empty state returns nil model.
+	if m, h := s.GetRuntimeModel(); m != nil || h != "" {
+		t.Errorf("empty state should return nil/empty, got %+v / %q", m, h)
+	}
+
+	m := &RuntimeModel{AuthModel: "gateway authorizer"}
+	s.SetRuntimeModel(m, "hash-abc")
+
+	got, hash := s.GetRuntimeModel()
+	if got == nil || got.AuthModel != "gateway authorizer" {
+		t.Errorf("GetRuntimeModel = %+v, want with AuthModel set", got)
+	}
+	if hash != "hash-abc" {
+		t.Errorf("hash = %q, want hash-abc", hash)
+	}
+}
+
+func TestStateClearAllCachesAlsoClearsRuntimeModel(t *testing.T) {
+	s := NewState("1")
+	s.SetRuntimeModel(&RuntimeModel{AuthModel: "gateway"}, "h1")
+	s.ClearAllCaches()
+	if m, h := s.GetRuntimeModel(); m != nil || h != "" {
+		t.Errorf("ClearAllCaches should clear the runtime model, got %+v / %q", m, h)
+	}
+}
+
+// ── BoundaryInventory: schema + persistence ─────────────────────────────
+
+func TestBoundary_RoundTrip(t *testing.T) {
+	orig := []Boundary{
+		{Kind: "http", File: "handler.go", Lines: "10-50", Symbol: "createUser", Description: "POST /users"},
+		{Kind: "queue", File: "consumer.go", Description: "SNS payments-topic"},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got []Boundary
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 || got[0].Kind != "http" || got[1].Kind != "queue" {
+		t.Errorf("round trip lost data: %+v", got)
+	}
+	if got[0].Lines != "10-50" || got[0].Symbol != "createUser" {
+		t.Errorf("optional fields lost: %+v", got[0])
+	}
+}
+
+func TestStateSetGetBoundaryInventory(t *testing.T) {
+	s := NewState("1")
+
+	if b, h := s.GetBoundaryInventory(); b != nil || h != "" {
+		t.Errorf("empty state should return nil/empty, got %+v / %q", b, h)
+	}
+
+	inv := []Boundary{{Kind: "http", File: "h.go", Description: "x"}}
+	s.SetBoundaryInventory(inv, "hash-xyz")
+
+	got, hash := s.GetBoundaryInventory()
+	if len(got) != 1 || got[0].File != "h.go" {
+		t.Errorf("GetBoundaryInventory = %+v, want one entry for h.go", got)
+	}
+	if hash != "hash-xyz" {
+		t.Errorf("hash = %q, want hash-xyz", hash)
+	}
+}
+
+func TestStateClearAllCachesAlsoClearsBoundaryInventory(t *testing.T) {
+	s := NewState("1")
+	s.SetBoundaryInventory([]Boundary{{Kind: "http", File: "h.go", Description: "x"}}, "h1")
+	s.ClearAllCaches()
+	if b, h := s.GetBoundaryInventory(); b != nil || h != "" {
+		t.Errorf("ClearAllCaches should clear the boundary inventory, got %+v / %q", b, h)
+	}
+}
+
+// ── SiblingDeviation: schema + DeepFinding round-trip ───────────────────
+
+func TestSiblingDeviation_RoundTrip(t *testing.T) {
+	orig := SiblingDeviation{
+		Pattern:    "9 of 11 handlers call guardAdmin",
+		SiblingIDs: []string{"a-id", "b-id", "c-id"},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got SiblingDeviation
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Pattern != orig.Pattern || len(got.SiblingIDs) != 3 {
+		t.Errorf("round-trip lost data: %+v", got)
+	}
+}
+
+func TestDeepFinding_SiblingDeviationRoundTrip(t *testing.T) {
+	orig := DeepFinding{
+		AOIID:    "aoi-1",
+		Severity: "high",
+		SiblingDeviation: &SiblingDeviation{
+			Pattern:    "9 of 11 handlers call guardAdmin",
+			SiblingIDs: []string{"a", "b"},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepFinding
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.SiblingDeviation == nil {
+		t.Fatal("SiblingDeviation should round-trip")
+	}
+	if got.SiblingDeviation.Pattern != orig.SiblingDeviation.Pattern {
+		t.Errorf("pattern lost: %q", got.SiblingDeviation.Pattern)
+	}
+}
+
+func TestDeepFinding_SiblingDeviationOmittedWhenNil(t *testing.T) {
+	f := DeepFinding{AOIID: "x", Severity: "medium"}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "sibling_deviation") {
+		t.Errorf("nil SiblingDeviation should be omitted, got %s", data)
+	}
+}
+
+// ── SiteRef + AffectedSites ─────────────────────────────────────────────
+
+func TestDeepFinding_AffectedSitesRoundTrip(t *testing.T) {
+	orig := DeepFinding{
+		AOIID:    "aoi-1",
+		Severity: "medium",
+		Systemic: true,
+		AffectedSites: []SiteRef{
+			{File: "a.go", Lines: "10-20", Symbol: "createUser"},
+			{File: "b.go", Lines: "55-70", Symbol: "updateUser"},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepFinding
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.AffectedSites) != 2 {
+		t.Fatalf("AffectedSites length = %d, want 2", len(got.AffectedSites))
+	}
+	if got.AffectedSites[0].File != "a.go" || got.AffectedSites[0].Symbol != "createUser" {
+		t.Errorf("site round-trip lost data: %+v", got.AffectedSites[0])
+	}
+}
+
+func TestDeepFinding_AffectedSitesOmittedWhenEmpty(t *testing.T) {
+	f := DeepFinding{AOIID: "x", Severity: "medium"}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "affected_sites") {
+		t.Errorf("empty AffectedSites should be omitted, got %s", data)
+	}
+}
+
+// ── SiblingClusterCache: opaque JSON + hash persistence ─────────────────
+
+func TestStateSetGetSiblingClusterCache(t *testing.T) {
+	s := NewState("1")
+	if raw, h := s.GetSiblingClusterCache(); raw != nil || h != "" {
+		t.Errorf("empty state should return nil/empty, got %s / %q", raw, h)
+	}
+
+	payload := json.RawMessage(`[{"id":"deviant-x","file":"h.go"}]`)
+	s.SetSiblingClusterCache(payload, "hash-xyz")
+
+	gotRaw, gotHash := s.GetSiblingClusterCache()
+	if string(gotRaw) != string(payload) {
+		t.Errorf("payload round-trip failed: got %s", gotRaw)
+	}
+	if gotHash != "hash-xyz" {
+		t.Errorf("hash = %q, want hash-xyz", gotHash)
+	}
+}
+
+func TestStateClearAllCachesAlsoClearsSiblingClusterCache(t *testing.T) {
+	s := NewState("1")
+	s.SetSiblingClusterCache(json.RawMessage(`[]`), "h1")
+	s.ClearAllCaches()
+	if raw, h := s.GetSiblingClusterCache(); raw != nil || h != "" {
+		t.Errorf("ClearAllCaches should clear the cluster cache, got %s / %q", raw, h)
 	}
 }

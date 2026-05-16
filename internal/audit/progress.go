@@ -86,10 +86,19 @@ func aoiSummary(s *progress.State) string {
 	files := s.Counters["aoi_total"]
 	aois := s.Counters["aoi_count"]
 	cached := s.Counters["aoi_cached"]
-	if files == 0 && aois == 0 {
+	if files == 0 && aois == 0 && cached == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d AOIs across %d files · %d cached", aois, files, cached)
+	// Audit has no fallback path — if AOIs=0 the audit ends here, so
+	// say so. Deep Review row will get "No areas of interest found —
+	// audit complete." separately and skip running anything.
+	if aois == 0 && files > 0 {
+		if cached > 0 {
+			return fmt.Sprintf("no AOIs · %d file(s) scanned · %d cached", files, cached)
+		}
+		return fmt.Sprintf("no AOIs · %d file(s) scanned", files)
+	}
+	return fmt.Sprintf("%d AOIs across %d file(s) · %d cached", aois, files, cached)
 }
 
 func reviewSummary(s *progress.State) string {
@@ -101,7 +110,16 @@ func reviewSummary(s *progress.State) string {
 	cached := s.Counters["review_cached"]
 	failed := s.Counters["review_failed"]
 	fresh := max(done-cached-failed, 0)
-	return fmt.Sprintf("%d done · %d cached · %d failed", fresh, cached, failed)
+	base := fmt.Sprintf("%d done · %d cached · %d failed", fresh, cached, failed)
+	// If the routing breakdown was captured ("N AOIs → X individual +
+	// Y grouped"), append it so users see what kind of calls ran
+	// rather than just the run-tally.
+	individual := s.Counters["review_individual"]
+	grouped := s.Counters["review_grouped"]
+	if individual == 0 && grouped == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s (%d individual + %d grouped)", base, individual, grouped)
 }
 
 func recheckSummary(s *progress.State) string {
@@ -122,8 +140,12 @@ func recheckSummary(s *progress.State) string {
 // aoiCounter / reviewCounter expose the same counters that drive the
 // progress bar so the TUI can render an inline "X/Y" alongside the
 // phase label.
+//
+// AOI inline counter advances per batch (one tick per LLM call). The
+// summary row uses aoi_total (file count from phase 1) for the
+// "across N files" wording.
 func aoiCounter(s *progress.State) (done, total int) {
-	return s.Counters["aoi_scanned"], s.Counters["aoi_total"]
+	return s.Counters["aoi_batches_done"], s.Counters["aoi_batches_total"]
 }
 
 func reviewCounter(s *progress.State) (done, total int) {
@@ -144,13 +166,14 @@ func recheckProgress(s *progress.State) float64 {
 	return float64(s.Counters["recheck_done"]) / float64(total)
 }
 
-// aoiProgress reports the AOI pre-scan progress bar value.
+// aoiProgress reports the AOI pre-scan progress bar value. Advances
+// per batch since that's the only mid-run granularity from the scanner.
 func aoiProgress(s *progress.State) float64 {
-	total := s.Counters["aoi_total"]
+	total := s.Counters["aoi_batches_total"]
 	if total == 0 {
 		return 0
 	}
-	return float64(s.Counters["aoi_scanned"]) / float64(total)
+	return float64(s.Counters["aoi_batches_done"]) / float64(total)
 }
 
 // reviewProgress reports the deep-review progress bar value.
@@ -253,18 +276,39 @@ func parseAuditEvent(s *progress.State, phase, message string) {
 			s.Counters["aoi_total"] = n
 		}
 	case phase == "phase2" && strings.HasPrefix(message, "AOI scan "):
-		// Counter-only emit: "AOI scan %d/%d". Previously the message
-		// trailed with "complete" which was redundant with the inline
-		// counter the TUI already shows.
+		// Counter-only emit: "AOI scan %d/%d" where X/Y are BATCH counts
+		// (from internal/security/scanner.go). Stored separately from
+		// aoi_total — that one holds the file count from phase 1 ("Phase 1
+		// complete: N files to audit"). Previously this branch overwrote
+		// aoi_total mid-run, so the AOI summary "N AOIs across M files"
+		// reported batches instead of files.
 		var done, total int
 		if scanCounter(phase, message, "AOI scan %d/%d", &done, &total) {
-			s.Counters["aoi_scanned"] = done
-			s.Counters["aoi_total"] = total
+			s.Counters["aoi_batches_done"] = done
+			s.Counters["aoi_batches_total"] = total
 		}
 	case phase == "phase3" && strings.Contains(message, "Executing"):
 		var n int
 		if scanCounter(phase, message, "Executing %d review calls...", &n) {
 			s.Counters["review_total"] = n
+		}
+	case phase == "phase3" && strings.Contains(message, "AOIs →") && strings.Contains(message, "individual"):
+		// routing.FormatSummary(): "N AOIs → X individual review(s) +
+		// Y grouped review(s) across Z subcategorie(s) = T total call(s)"
+		// Capture the X/Y so reviewSummary can show the routing split
+		// alongside the run-tally.
+		var aois, individual, grouped, subcats, totalCalls int
+		if scanCounter(phase, message,
+			"%d AOIs → %d individual review(s) + %d grouped review(s) across %d subcategorie(s) = %d total call(s)",
+			&aois, &individual, &grouped, &subcats, &totalCalls) {
+			s.Counters["review_individual"] = individual
+			s.Counters["review_grouped"] = grouped
+			// aoi_count is normally set by "found N areas of interest"
+			// from the scanner; the routing line is a second source of
+			// truth, useful as a fallback if the upstream emit drifts.
+			if s.Counters["aoi_count"] == 0 {
+				s.Counters["aoi_count"] = aois
+			}
 		}
 	case phase == "phase3" && strings.HasPrefix(message, "Review "):
 		// Counter-only emit: "Review %d/%d". The runPhase3 callback

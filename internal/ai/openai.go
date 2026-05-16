@@ -20,7 +20,13 @@ type OpenAIProvider struct {
 	APIKey     string
 	Model      string
 	BaseURL    string       // defaults to "https://api.openai.com/v1"
-	HTTPClient *http.Client // optional; defaults to a client with no timeout
+	HTTPClient *http.Client // optional; defaults to a shared client with no http-level timeout
+
+	// RequestTimeout bounds a single HTTP call (POST → final SSE event).
+	// Zero disables the wrapper; the production factory sets
+	// DefaultRequestTimeout. Per-call timeout matches
+	// googleapis/go-genai's HTTPOptions.Timeout pattern.
+	RequestTimeout time.Duration
 
 	// ProviderName overrides the name returned by Name() — useful for
 	// distinguishing "github-copilot" from "openai" while sharing impl.
@@ -40,10 +46,12 @@ type OpenAIProvider struct {
 
 // defaultHTTPClient is shared across providers so connection pooling
 // works — every doHTTPRequest call previously allocated a fresh
-// http.Client which threw away the keep-alive connection. The
-// 10-minute timeout is intentionally generous: streaming completions
-// from large models genuinely take several minutes.
-var defaultHTTPClient = &http.Client{Timeout: 10 * time.Minute}
+// http.Client which threw away the keep-alive connection. No
+// http.Client.Timeout is set — total-request timeouts are the wrong
+// shape for streaming completions (a legitimate generation can take
+// many minutes). Per-call timeouts are applied at the provider level
+// via RequestTimeout and context.WithTimeout.
+var defaultHTTPClient = &http.Client{}
 
 func (o *OpenAIProvider) httpClient() *http.Client {
 	if o.HTTPClient != nil {
@@ -92,16 +100,28 @@ func (o *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 }
 
 // StreamChat makes a streaming request to the OpenAI-compatible API.
+//
+// When RequestTimeout is set, ctx is wrapped with a per-call deadline that
+// covers both the request send and the entire SSE read. The cancel function
+// is held until the streaming goroutine completes so the deadline isn't
+// released early.
 func (o *OpenAIProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
+	cancel := func() {}
+	if o.RequestTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, o.RequestTimeout)
+	}
+
 	nativeReq := o.toNativeRequest(req)
 
 	body, err := json.Marshal(nativeReq)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("openai: failed to marshal request: %w", err)
 	}
 
 	resp, err := o.doHTTPRequest(ctx, body)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
@@ -109,6 +129,7 @@ func (o *OpenAIProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
+		defer cancel()
 		o.parseSSEStream(ctx, resp.Body, ch)
 	}()
 
@@ -535,6 +556,24 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 				stopReason = StopMaxTokens
 			}
 		}
+	}
+
+	// scanner.Scan() returned false: either we hit [DONE] (clean) or the
+	// underlying body read errored (network drop, per-call ctx deadline,
+	// user cancel). Surface the error so callers don't get a fake
+	// EventDone with truncated content.
+	if err := scanner.Err(); err != nil {
+		log.Printf("OpenAI stream read error: %v", err)
+		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
+		return
+	}
+	// scanner.Err() returns nil on ctx-driven Body.Close (the http.Client
+	// closes the body when ctx fires, surfacing as io.EOF which Scanner
+	// hides). Check ctx directly so per-call timeouts and parent cancels
+	// don't silently produce an empty Done event.
+	if err := ctx.Err(); err != nil {
+		ch <- ChatEvent{Type: EventError, Err: err}
+		return
 	}
 
 	// Finalize text block

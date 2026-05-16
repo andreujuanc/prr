@@ -53,7 +53,7 @@ func makeFindings(n int) []state.DeepFinding {
 			Dimension:   "security",
 			Title:       fmt.Sprintf("Finding %d", i),
 			Description: fmt.Sprintf("Description for finding %d", i),
-			Trigger:     "trigger",
+			Trigger:     state.FindingTrigger{Repro: "trigger"},
 			Suggestion:  "fix it",
 		}
 	}

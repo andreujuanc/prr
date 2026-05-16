@@ -37,9 +37,27 @@ type ReviewOutput struct {
 
 // ReviewFinding is a single finding from the structured review.
 type ReviewFinding struct {
-	Severity   string `json:"severity"`             // "critical", "high", "medium", "low", "nit"
-	Confidence string `json:"confidence,omitempty"` // "high", "medium", "low" — set by synthesis after verification
-	Category   string `json:"category"`             // "bug", "security", "performance", "testing", "style", "architecture", "docs"
+	Severity string `json:"severity"` // "critical", "high", "medium", "low", "nit"
+
+	// Confidence is the legacy string band ("high"|"medium"|"low") kept
+	// for backward compatibility with cached state and older prompts.
+	// New code should read ConfidenceScore; render via ConfidenceBand().
+	Confidence string `json:"confidence,omitempty"`
+
+	// ConfidenceScore is the 0-100 certainty that the finding is real,
+	// independent of its severity. Severity = "how bad if real";
+	// ConfidenceScore = "how sure I am it's real". 0 means unknown
+	// (e.g., a finding loaded from legacy state that only had the
+	// string band).
+	ConfidenceScore int `json:"confidence_score,omitempty"`
+
+	// ConfidenceReasoning is a short one-line justification for the
+	// score. Concrete signals like "missing-trace" or
+	// "defenses-not-checked" are appended by downstream validators
+	// (see commits 4 + 5 in the audit-quality plan).
+	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
+
+	Category   string `json:"category"` // "bug", "security", "performance", "testing", "style", "architecture", "docs"
 	File       string `json:"file"`
 	Line       int    `json:"line"`
 	Title      string `json:"title"`
@@ -64,11 +82,240 @@ type ReviewFinding struct {
 	Revalidation *FindingRevalidation `json:"revalidation,omitempty"`
 }
 
+// RuntimeModel captures the codebase's runtime shape so Phase 3 review
+// can ground findings in the project's actual entry points, validation
+// sites, and error-handling discipline. Produced once per audit by
+// Phase 0.5 and injected verbatim into every Phase 3 prompt.
+//
+// The fields are intentionally narrow and prose-based — they encode
+// the same answers a senior engineer would give a new hire on their
+// first day. Downstream review prompts reference these answers when
+// judging whether a finding traces through the runtime model or
+// contradicts it.
+type RuntimeModel struct {
+	// AuthModel describes who guards what — gateway authorizers,
+	// middleware, in-handler checks. 1-2 sentences.
+	AuthModel string `json:"auth_model,omitempty"`
+
+	// ValidationSites lists where user/network input gets validated
+	// before reaching business logic. Short strings, one per layer
+	// or location.
+	ValidationSites []string `json:"validation_sites,omitempty"`
+
+	// EntryPoints enumerates the externally-reachable surfaces. Each
+	// entry classifies its kind, retry model, batching model, and
+	// where validation happens. Empty list means "no entry points
+	// identified" (could be a library/CLI-only repo).
+	EntryPoints []RuntimeEntryPoint `json:"entry_points,omitempty"`
+
+	// ResultDiscipline describes how errors propagate — Result types,
+	// exception handling, error wrapping, sentinel values. One line.
+	ResultDiscipline string `json:"result_discipline,omitempty"`
+
+	// Invariants lists the load-bearing assumptions the codebase
+	// relies on but doesn't necessarily enforce in every call site
+	// (e.g., "all IDs are UUID v4", "amounts are stored in minor
+	// units", "the inbox table is append-only"). Short statements.
+	Invariants []string `json:"invariants,omitempty"`
+}
+
+// RuntimeEntryPoint describes one externally-reachable surface.
+type RuntimeEntryPoint struct {
+	// Kind classifies the surface: "http", "queue", "scheduled",
+	// "cli", "rpc", "webhook", "other".
+	Kind string `json:"kind"`
+
+	// RetryModel describes who retries on failure and what triggers
+	// retry (e.g., "API Gateway does not retry — caller's job",
+	// "SNS retries with exponential backoff per record").
+	RetryModel string `json:"retry_model,omitempty"`
+
+	// BatchModel describes batching: single-record vs. batched, and
+	// whether one bad record fails the batch.
+	BatchModel string `json:"batch_model,omitempty"`
+
+	// ValidationAt is one of "boundary", "handler", "both", "none".
+	// Where in the call chain inputs get validated.
+	ValidationAt string `json:"validation_at,omitempty"`
+}
+
+// SiteRef is one call site in a Systemic / consolidated finding. It
+// names the specific file (and optionally line range + caller
+// symbol) where the cross-file pattern manifests. The consolidator
+// prompt asks for at least three distinct sites before allowing a
+// "Systemic:" title — a heuristic the validator enforces.
+type SiteRef struct {
+	File   string `json:"file"`
+	Lines  string `json:"lines,omitempty"`
+	Symbol string `json:"symbol,omitempty"` // calling function/handler when identifiable
+}
+
+// SiblingDeviation captures a "1 of N doesn't follow the pattern"
+// observation produced by Phase 2.5 sibling clustering. The pattern
+// field is a one-line description ("9 of 11 admin POSTs call
+// guardAdmin()") and SiblingIDs lists the AOI ids that DO follow the
+// pattern (the conforming siblings), so a reviewer can compare the
+// deviant against them.
+//
+// Carried verbatim from the AreaOfInterest into the DeepFinding so
+// the audit report can render the deviation alongside the finding.
+type SiblingDeviation struct {
+	Pattern    string   `json:"pattern"`
+	SiblingIDs []string `json:"sibling_ids,omitempty"`
+}
+
+// Boundary is one concrete externally-reachable surface located in a
+// specific file. It is the persisted output of Phase 1.5 (boundary
+// discovery). Each boundary seeds 1-3 defense-coverage AOIs for
+// Phase 3 so the audit can guarantee at least one review pass at
+// every boundary regardless of what the AOI scanner caught on its
+// own.
+//
+// Boundary differs from RuntimeEntryPoint: RuntimeEntryPoint
+// describes the codebase's *classes* of entry points abstractly
+// ("HTTP routes use schema validation at the boundary"); Boundary
+// names a specific surface at a specific path so review can be
+// targeted.
+type Boundary struct {
+	// Kind matches RuntimeEntryPoint.Kind. One of: "http", "queue",
+	// "scheduled", "cli", "rpc", "webhook", "other".
+	Kind string `json:"kind"`
+
+	// File is the path holding the boundary declaration (e.g. the
+	// route file, queue subscription, scheduled job).
+	File string `json:"file"`
+
+	// Lines is the optional line range hint within File. Best-effort
+	// from the LLM's read of the file header.
+	Lines string `json:"lines,omitempty"`
+
+	// Symbol is the boundary's identifier (route name, handler
+	// function, subscription topic) when one is identifiable. Used
+	// to anchor the synthesized AOIs to specific code.
+	Symbol string `json:"symbol,omitempty"`
+
+	// Description is a one-line free-form explanation: "POST
+	// /admin/users — admin creation handler", "SNS subscription to
+	// payment-events topic", "scheduled daily reconciliation".
+	Description string `json:"description"`
+}
+
+// IsZero reports whether the model carries no information.
+func (m *RuntimeModel) IsZero() bool {
+	if m == nil {
+		return true
+	}
+	return m.AuthModel == "" &&
+		len(m.ValidationSites) == 0 &&
+		len(m.EntryPoints) == 0 &&
+		m.ResultDiscipline == "" &&
+		len(m.Invariants) == 0
+}
+
+// Render formats the model for injection into a Phase 3 prompt under a
+// `## Runtime Model` section. Returns the empty string when the model
+// is zero so callers can skip the section entirely.
+//
+// The output is compact (well under 1KB on a typical repo) so it
+// doesn't crowd out the rest of the prompt. Each field gets a labeled
+// line; empty fields are omitted.
+func (m *RuntimeModel) Render() string {
+	if m.IsZero() {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Runtime Model\n\n")
+	b.WriteString("A finding that contradicts the runtime model is a strong signal of a bug. ")
+	b.WriteString("A finding that doesn't trace through the runtime model is a strong false-positive candidate.\n\n")
+
+	if m.AuthModel != "" {
+		b.WriteString("**Auth model:** ")
+		b.WriteString(strings.TrimSpace(m.AuthModel))
+		b.WriteString("\n\n")
+	}
+	if len(m.ValidationSites) > 0 {
+		b.WriteString("**Validation sites:**\n")
+		for _, s := range m.ValidationSites {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		b.WriteString("\n")
+	}
+	if len(m.EntryPoints) > 0 {
+		b.WriteString("**Entry points:**\n")
+		for _, ep := range m.EntryPoints {
+			kind := strings.TrimSpace(ep.Kind)
+			if kind == "" {
+				kind = "other"
+			}
+			fmt.Fprintf(&b, "- `%s`", kind)
+			if v := strings.TrimSpace(ep.ValidationAt); v != "" {
+				fmt.Fprintf(&b, " — validation at %s", v)
+			}
+			if r := strings.TrimSpace(ep.RetryModel); r != "" {
+				fmt.Fprintf(&b, "; retries: %s", r)
+			}
+			if bm := strings.TrimSpace(ep.BatchModel); bm != "" {
+				fmt.Fprintf(&b, "; batching: %s", bm)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if m.ResultDiscipline != "" {
+		b.WriteString("**Result discipline:** ")
+		b.WriteString(strings.TrimSpace(m.ResultDiscipline))
+		b.WriteString("\n\n")
+	}
+	if len(m.Invariants) > 0 {
+		b.WriteString("**Invariants:**\n")
+		for _, inv := range m.Invariants {
+			inv = strings.TrimSpace(inv)
+			if inv == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s\n", inv)
+		}
+		b.WriteString("\n")
+	}
+
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
 // FindingRevalidation holds the result of a security revalidation pass.
 type FindingRevalidation struct {
 	Verdict    string `json:"verdict"` // "true-positive", "false-positive", "fixed", "uncertain"
 	Reasoning  string `json:"reasoning"`
 	Confidence string `json:"confidence"` // "high", "medium", "low"
+}
+
+// ConfidenceBand returns a coarse band derived from ConfidenceScore for
+// UIs that still want a "high"|"medium"|"low" label.
+//
+// Bands: >=80 high, 50-79 medium, <50 low.
+//
+// Legacy-fallback rule: only when ConfidenceScore is zero AND the
+// legacy Confidence string is populated do we treat that as "this
+// finding came from old cached state, use its string band as-is."
+// A score of zero with an empty legacy field means the score was
+// either never set OR was penalized to zero by ApplyConfidencePenalties
+// — both render as "low" so the UI doesn't blank out the band.
+func (f ReviewFinding) ConfidenceBand() string {
+	if f.ConfidenceScore == 0 && f.Confidence != "" {
+		return f.Confidence
+	}
+	switch {
+	case f.ConfidenceScore >= 80:
+		return "high"
+	case f.ConfidenceScore >= 50:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
 // SeverityRank returns a numeric rank for sorting findings by severity
@@ -115,14 +362,20 @@ type AIReview struct {
 
 // FileState holds the review status and chat history for a specific file
 type FileState struct {
-	Status          ReviewStatus    `json:"status"`
-	DiffHash        string          `json:"diff_hash"`
-	Chat            []Message       `json:"chat,omitempty"`
-	Purpose         string          `json:"purpose,omitempty"`           // AI-generated description of what the file does
-	BatchFindings   string          `json:"batch_findings,omitempty"`    // cached findings from PR-level batch review
-	AOIResults      json.RawMessage `json:"aoi_results,omitempty"`       // cached AOI scan result (AOIScanResult JSON)
-	AOIContextLines int             `json:"aoi_context_lines,omitempty"` // context lines used when AOI was generated
-	FileType        string          `json:"file_type,omitempty"`         // cached file classification (e.g. "handler", "test")
+	Status        ReviewStatus    `json:"status"`
+	DiffHash      string          `json:"diff_hash"`
+	Chat          []Message       `json:"chat,omitempty"`
+	Purpose       string          `json:"purpose,omitempty"`        // AI-generated description of what the file does
+	BatchFindings string          `json:"batch_findings,omitempty"` // cached findings from PR-level batch review
+	AOIResults    json.RawMessage `json:"aoi_results,omitempty"`    // cached AOI scan result (AOIScanResult JSON)
+	// AOIPromptHash is sha256 of the AOI scanner prompt at the time
+	// AOIResults was written. The audit pipeline includes this in the
+	// cache-hit check so prompt changes (e.g. commit 7's TODO/FIXME
+	// + unit-type rules) auto-invalidate stale entries rather than
+	// silently serving results produced by the previous prompt.
+	AOIPromptHash   string `json:"aoi_prompt_hash,omitempty"`
+	AOIContextLines int    `json:"aoi_context_lines,omitempty"` // context lines used when AOI was generated
+	FileType        string `json:"file_type,omitempty"`         // cached file classification (e.g. "handler", "test")
 }
 
 // State represents the persisted review state for a single pull request
@@ -137,6 +390,35 @@ type State struct {
 	ProjectContextHash string                `json:"project_context_hash,omitempty"` // hash of inputs used to generate it
 	PRBrief            string                `json:"pr_brief,omitempty"`             // cached PR-specific briefing (comments, prior reviews, CI)
 	PRBriefHash        string                `json:"pr_brief_hash,omitempty"`        // hash of inputs used to generate the PR brief
+
+	// RuntimeModel is the structured codebase shape produced by Phase
+	// 0.5 — auth model, validation sites, entry points, result
+	// discipline, invariants. Injected into every Phase 3 prompt so
+	// the reviewer can ground findings in "what this codebase looks
+	// like at runtime". RuntimeModelHash carries the hash of inputs
+	// used to produce it.
+	RuntimeModel     *RuntimeModel `json:"runtime_model,omitempty"`
+	RuntimeModelHash string        `json:"runtime_model_hash,omitempty"`
+
+	// BoundaryInventory is the Phase 1.5 list of externally-reachable
+	// surfaces (HTTP routes, queue consumers, schedulers, storage
+	// triggers, CAS-shaped DB writes). Each entry seeds 1-3 defense-
+	// coverage AOIs synthesized before Phase 3 so every boundary is
+	// guaranteed to be reviewed for the standard defense questions
+	// (schema validation, error handling, authorization, per-record
+	// isolation, result discipline).
+	BoundaryInventory     []Boundary `json:"boundary_inventory,omitempty"`
+	BoundaryInventoryHash string     `json:"boundary_inventory_hash,omitempty"`
+
+	// SiblingClusterOutliers caches the outlier AOIs synthesized by
+	// Phase 2.5 sibling clustering. Stored as opaque JSON because the
+	// outliers are typed []security.AreaOfInterest and state must not
+	// import security (security already imports state for
+	// SiblingDeviation). On cache hit the audit package unmarshals
+	// into its own typed slice. Hash covers the candidate AOI set
+	// + the cluster prompt; either rolls the cache.
+	SiblingClusterOutliers json.RawMessage `json:"sibling_cluster_outliers,omitempty"`
+	SiblingClusterHash     string          `json:"sibling_cluster_hash,omitempty"`
 
 	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
 	// review inputs (file content + AOI content + focus dimensions for individual;
@@ -259,6 +541,74 @@ type DeepReviewResult struct {
 	CrossCutting string `json:"cross_cutting,omitempty"`
 }
 
+// FindingTrigger is the concrete scenario that exercises a finding.
+// Repro is the input or request to send (e.g., a curl command, a
+// payload, an API call). Observable is what the caller sees when the
+// bug fires (status code, returned value, side effect). Both are
+// short strings — the prompt asks for the smallest concrete thing
+// that distinguishes "real bug" from "theoretical concern".
+type FindingTrigger struct {
+	Repro      string `json:"repro,omitempty"`
+	Observable string `json:"observable,omitempty"`
+}
+
+// IsZero reports whether the trigger carries no information.
+func (t FindingTrigger) IsZero() bool {
+	return t.Repro == "" && t.Observable == ""
+}
+
+// UnmarshalJSON accepts either the structured object form or a legacy
+// string (which becomes Repro with Observable empty). Older cached
+// state and the previous prompt schema both produced strings; the
+// new prompt schema produces objects.
+func (t *FindingTrigger) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		t.Repro = s
+		return nil
+	}
+	type alias FindingTrigger
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*t = FindingTrigger(a)
+	return nil
+}
+
+// TraceHop is one step of the end-to-end trace the reviewer walked
+// before flagging a finding. The 3-hop minimum (suspect line →
+// caller → boundary) is enforced for critical/high severity by the
+// confidence-penalty rule in applyConfidencePenalties.
+//
+// Role is one of:
+//   - "suspect"  — the cited line itself; the alleged bug location.
+//   - "caller"   — the immediate function/handler that invokes the
+//     suspect code.
+//   - "boundary" — the next system boundary the value reaches
+//     (transport: HTTP response, RPC reply, message send;
+//     persistence: any write that may CAS, versioned column, or
+//     conditional update; trust: input from network, file, env,
+//     message body). The runtime model from Phase 0.5 anchors which
+//     boundaries exist in this codebase.
+//
+// Findings can include additional hops between caller and boundary
+// when the data flow passes through layered helpers; the validator
+// only requires that at least 3 hops are present.
+type TraceHop struct {
+	Role     string `json:"role"`               // "suspect" | "caller" | "boundary" | free-form
+	File     string `json:"file,omitempty"`     // path of the hop's file
+	Lines    string `json:"lines,omitempty"`    // line range within the file
+	Evidence string `json:"evidence,omitempty"` // 1-line summary of what was confirmed at this hop
+}
+
 // DeepFinding is a confirmed issue from Phase 3 review.
 type DeepFinding struct {
 	FindingID   string `json:"finding_id,omitempty"` // assigned before recheck (e.g. "F-001")
@@ -279,9 +629,66 @@ type DeepFinding struct {
 	// actually exists at the cited location. Findings whose snippet
 	// doesn't match get one refinement round trip and, if still
 	// unmatched, are dropped.
-	EvidenceSnippet string `json:"evidence_snippet,omitempty"`
-	Trigger         string `json:"trigger"`
-	Suggestion      string `json:"suggestion,omitempty"`
+	EvidenceSnippet string         `json:"evidence_snippet,omitempty"`
+	Trigger         FindingTrigger `json:"trigger"`
+	Suggestion      string         `json:"suggestion,omitempty"`
+
+	// ConfidenceScore (0-100) is the model's certainty that the
+	// finding is real, independent of severity. Downstream validators
+	// (commits 4 + 5 in the audit-quality plan) subtract from this
+	// score when required evidence is missing without touching
+	// severity. 0 means unknown (legacy data).
+	ConfidenceScore int `json:"confidence_score,omitempty"`
+
+	// ConfidenceReasoning is a short justification. Validators append
+	// concrete tags (e.g., "missing-trace", "defenses-not-checked")
+	// so the reviewer can see why the score moved.
+	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
+
+	// Trace is the end-to-end path the reviewer walked from the
+	// suspect line to the next system boundary. The Phase 3 prompt
+	// asks for at least three hops for findings at severity
+	// critical/high so a snippet-in-isolation flag can't survive at
+	// severe severity without the reviewer showing their work.
+	// Findings at lower severity (medium/low/nit) don't require a
+	// trace.
+	Trace []TraceHop `json:"trace,omitempty"`
+
+	// DefensesChecked lists the canonical defense layers the
+	// reviewer inspected before flagging this finding. Each entry
+	// is a short tag from a fixed vocabulary the Phase 3 prompts
+	// enumerate (boundary-authz, handler-guard, conditional-write,
+	// idempotency-key, schema-validation, framework-escape,
+	// result-discipline, native-limit) or a free-form
+	// `other:<tag>` for cases outside the list.
+	//
+	// For findings whose category is in the "required" set
+	// (authorization, concurrency, input-validation, external-io),
+	// an empty list triggers a confidence penalty in
+	// ApplyConfidencePenalties — the reviewer didn't show which
+	// defenses they ruled out, so we can't trust the finding as
+	// fully as one that does. Other categories leave this
+	// optional.
+	DefensesChecked []string `json:"defenses_checked,omitempty"`
+
+	// SiblingDeviation is carried over from the AOI when the
+	// finding came from a Phase 2.5 outlier — the AOI scanner
+	// noticed N siblings all follow a pattern and this one doesn't.
+	// Set when the AOI's SiblingDeviation was non-nil and the
+	// reviewer confirmed the deviation as a real finding (rather
+	// than dismissing it as intentional). Carried so the audit
+	// report can render "9 of 11 admin POSTs call guardAdmin —
+	// this one doesn't" under the finding.
+	SiblingDeviation *SiblingDeviation `json:"sibling_deviation,omitempty"`
+
+	// AffectedSites lists the specific call sites a Systemic /
+	// consolidated finding covers. Required (3+ distinct files) for
+	// any finding whose Title starts with "Systemic:" — see
+	// ApplySystemicGate. Optional and typically empty for per-file
+	// findings; the consolidator populates this when merging
+	// findings across files so the audit report can render each
+	// site explicitly rather than burying them in description text.
+	AffectedSites []SiteRef `json:"affected_sites,omitempty"`
 
 	// Systemic is set by the recheck parser when a finding came out
 	// of the `consolidated` bucket — i.e. it represents a cross-file
@@ -315,9 +722,12 @@ func NewState(prNumber string) *State {
 // directly mutating FileState fields, because the Bubble Tea main loop reads
 // the same fields for rendering.
 
-// SetAOIResults stores AOI scan results for a file along with the context
-// lines used to generate them. Creates the FileState if it doesn't exist.
-func (s *State) SetAOIResults(path string, data json.RawMessage, contextLines int) {
+// SetAOIResults stores AOI scan results for a file along with the
+// context lines and the AOI scanner prompt hash used to generate
+// them. Creates the FileState if it doesn't exist. The promptHash is
+// what gates cache reuse on prompt edits — passing "" disables that
+// check (useful for tests).
+func (s *State) SetAOIResults(path string, data json.RawMessage, contextLines int, promptHash string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fs, ok := s.Files[path]
@@ -327,6 +737,7 @@ func (s *State) SetAOIResults(path string, data json.RawMessage, contextLines in
 	}
 	fs.AOIResults = data
 	fs.AOIContextLines = contextLines
+	fs.AOIPromptHash = promptHash
 }
 
 // GetAOIResults returns the cached AOI results for a file, or nil.
@@ -407,6 +818,12 @@ func (s *State) ClearAllCaches() {
 	s.ProjectContextHash = ""
 	s.PRBrief = ""
 	s.PRBriefHash = ""
+	s.RuntimeModel = nil
+	s.RuntimeModelHash = ""
+	s.BoundaryInventory = nil
+	s.BoundaryInventoryHash = ""
+	s.SiblingClusterOutliers = nil
+	s.SiblingClusterHash = ""
 	s.LastReview = nil
 }
 
@@ -606,6 +1023,61 @@ func (s *State) ClearPRBrief() {
 	defer s.mu.Unlock()
 	s.PRBrief = ""
 	s.PRBriefHash = ""
+}
+
+// SetRuntimeModel stores the discovered runtime model and the hash of
+// the inputs used to produce it. Mirrors SetProjectContext.
+func (s *State) SetRuntimeModel(model *RuntimeModel, inputHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.RuntimeModel = model
+	s.RuntimeModelHash = inputHash
+}
+
+// GetRuntimeModel returns the cached runtime model and its input hash.
+// The returned pointer is the live one held by State; treat it as
+// read-only.
+func (s *State) GetRuntimeModel() (model *RuntimeModel, inputHash string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.RuntimeModel, s.RuntimeModelHash
+}
+
+// SetBoundaryInventory stores the Phase 1.5 boundary inventory and
+// its input hash.
+func (s *State) SetBoundaryInventory(boundaries []Boundary, inputHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.BoundaryInventory = boundaries
+	s.BoundaryInventoryHash = inputHash
+}
+
+// GetBoundaryInventory returns the cached boundary inventory and its
+// input hash. The returned slice is the live one held by State;
+// treat it as read-only.
+func (s *State) GetBoundaryInventory() (boundaries []Boundary, inputHash string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.BoundaryInventory, s.BoundaryInventoryHash
+}
+
+// SetSiblingClusterCache stores the Phase 2.5 outlier list (as opaque
+// JSON) along with its input hash. The audit package owns the typed
+// shape of the JSON; state stores it opaquely to avoid importing
+// the security package.
+func (s *State) SetSiblingClusterCache(outliers json.RawMessage, inputHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SiblingClusterOutliers = outliers
+	s.SiblingClusterHash = inputHash
+}
+
+// GetSiblingClusterCache returns the cached outlier JSON and its
+// input hash. Returns (nil, "") when no cache entry exists.
+func (s *State) GetSiblingClusterCache() (outliers json.RawMessage, inputHash string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.SiblingClusterOutliers, s.SiblingClusterHash
 }
 
 // SetDeepReview stores a Phase 3 deep review result by cache key.

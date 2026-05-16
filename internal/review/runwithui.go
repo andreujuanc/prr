@@ -81,10 +81,20 @@ func aoiSummary(s *progress.State) string {
 	files := s.Counters["aoi_total"]
 	aois := s.Counters["aoi_count"]
 	cached := s.Counters["aoi_cached"]
-	if files == 0 && aois == 0 {
+	if files == 0 && aois == 0 && cached == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d AOIs across %d files · %d cached", aois, files, cached)
+	// The 0-AOI case is what tripped users: they'd see "0 AOIs across
+	// N files" and assume Deep Review had nothing to do, then watch it
+	// fire off batches anyway. Spell out that those batches are the
+	// general fallback pass — independent of AOI findings.
+	if aois == 0 && files > 0 {
+		if cached > 0 {
+			return fmt.Sprintf("no security AOIs · %d file(s) scanned · %d cached (general review will run)", files, cached)
+		}
+		return fmt.Sprintf("no security AOIs · %d file(s) scanned (general review will run)", files)
+	}
+	return fmt.Sprintf("%d AOIs across %d file(s) · %d cached", aois, files, cached)
 }
 
 func deepReviewSummary(s *progress.State) string {
@@ -96,9 +106,23 @@ func deepReviewSummary(s *progress.State) string {
 	cached := s.Counters["batches_cached"]
 	failed := s.Counters["batches_failed"]
 	if done == 0 && cached == 0 && failed == 0 {
-		return ""
+		// Mid-init, before any batch has completed — still useful to
+		// show the AOI/general split so the user knows what kind of
+		// work is queued. The bar already shows 0/N from batchCounter.
+		aoi := s.Counters["batches_aoi_driven"]
+		general := s.Counters["batches_general"]
+		if aoi == 0 && general == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d AOI-driven + %d general", aoi, general)
 	}
-	return fmt.Sprintf("%d done · %d cached · %d failed", done, cached, failed)
+	aoi := s.Counters["batches_aoi_driven"]
+	general := s.Counters["batches_general"]
+	base := fmt.Sprintf("%d done · %d cached · %d failed", done, cached, failed)
+	if aoi == 0 && general == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s (%d AOI-driven + %d general)", base, aoi, general)
 }
 
 func recheckSummary(s *progress.State) string {
@@ -116,8 +140,13 @@ func recheckSummary(s *progress.State) string {
 // aoiCounter / batchCounter expose the same counters that drive the
 // progress bar so the TUI can render an inline "X/Y" alongside the
 // phase label.
+//
+// The inline counter ticks per BATCH (one tick per LLM call complete),
+// not per file — that's the only thing the scanner gives us mid-run.
+// The summary row uses aoi_total (files) so the "across N files" stays
+// honest.
 func aoiCounter(s *progress.State) (done, total int) {
-	return s.Counters["aoi_scanned"], s.Counters["aoi_total"]
+	return s.Counters["aoi_batches_done"], s.Counters["aoi_batches_total"]
 }
 
 func batchCounter(s *progress.State) (done, total int) {
@@ -143,14 +172,15 @@ func recheckProgress(s *progress.State) float64 {
 	return float64(s.Counters["recheck_done"]) / float64(total)
 }
 
-// aoiProgress reports the AOI pre-scan ratio. The pipeline emits
-// "AOI scan X/Y complete" lines during scanning.
+// aoiProgress reports the AOI pre-scan ratio. The bar advances per
+// batch, since that's the only granularity the scanner emits (one
+// "AOI scan X/Y" per batch completion).
 func aoiProgress(s *progress.State) float64 {
-	total := s.Counters["aoi_total"]
+	total := s.Counters["aoi_batches_total"]
 	if total == 0 {
 		return 0
 	}
-	return float64(s.Counters["aoi_scanned"]) / float64(total)
+	return float64(s.Counters["aoi_batches_done"]) / float64(total)
 }
 
 // batchProgress reports the deep-review batch ratio. The pipeline emits
@@ -207,20 +237,32 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 		if scanCounter(phase, message, "scanning %d file(s)", &n) {
 			s.Counters["aoi_total"] = n
 		}
-	case phase == "aoi" && strings.Contains(message, "AOI scan") && strings.Contains(message, "complete"):
-		// "AOI scan X/Y complete"
+	case phase == "aoi" && strings.HasPrefix(message, "AOI scan "):
+		// Counter-only emit from internal/security/scanner.go:
+		// "AOI scan X/Y" where X/Y are BATCH counts. Stored separately
+		// from aoi_total (which is the file count from the "scanning N
+		// file(s)" emit) — previously these collided and aoi_total
+		// flipped from "files scanned" to "batches completed" mid-run,
+		// making the summary line render "0 AOIs across 3 files" when
+		// actually 40 files in 3 batches had been scanned.
 		var done, total int
-		if scanCounter(phase, message, "AOI scan %d/%d complete", &done, &total) {
-			s.Counters["aoi_scanned"] = done
-			s.Counters["aoi_total"] = total
+		if scanCounter(phase, message, "AOI scan %d/%d", &done, &total) {
+			s.Counters["aoi_batches_done"] = done
+			s.Counters["aoi_batches_total"] = total
 		}
 
 	// phase1: batch progress
-	case phase == "phase1" && strings.Contains(message, "Initialized") && strings.Contains(message, "batches"):
-		// "Initialized N batches"
-		var n int
-		if scanCounter(phase, message, "Initialized %d batches", &n) {
-			s.Counters["batches_total"] = n
+	case phase == "phase1" && strings.HasPrefix(message, "Initialized ") && strings.Contains(message, "batches "):
+		// "Initialized N batches (X AOI-driven, Y general)" — the
+		// breakdown is what answers "if AOIs were 0, why is Deep Review
+		// running anything?" for the user.
+		var total, aoi, general int
+		if scanCounter(phase, message,
+			"Initialized %d batches (%d AOI-driven, %d general)",
+			&total, &aoi, &general) {
+			s.Counters["batches_total"] = total
+			s.Counters["batches_aoi_driven"] = aoi
+			s.Counters["batches_general"] = general
 		}
 	case phase == "phase1" && strings.HasPrefix(message, "Batch "):
 		// "Batch K: done|cached|failed|active" — increment per-status

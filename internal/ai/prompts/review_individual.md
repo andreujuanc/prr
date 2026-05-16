@@ -36,6 +36,100 @@ If no `### Conventions` section is present, this rule doesn't apply.
 
 Do NOT skip steps. Do NOT report a finding based solely on the code snippet in the prompt.
 
+## Defenses Checked (required for security-shaped categories)
+
+For findings whose `category` is in this set, you MUST list every
+defense layer you inspected when judging the bug:
+
+- `authorization`
+- `concurrency`
+- `input-validation`
+- `external-io`
+
+Each entry in `defenses_checked` is one tag from the canonical
+vocabulary below, or `other:<tag>` for cases outside the list. The
+goal is to make the rebuttal explicit: when you flag a missing
+auth check, the reader should see that you actually looked at the
+boundary authorizer / middleware / in-handler guard before concluding
+the check is missing.
+
+Canonical tags (language-agnostic — describe the shape, not the
+framework):
+
+- `boundary-authz` — gateway/middleware authentication or
+  authorization layer; the check that runs before any handler sees
+  the request.
+- `handler-guard` — in-function permission / role check
+  (e.g., `if !user.IsAdmin { return 403 }`).
+- `conditional-write` — write that succeeds only when a precondition
+  holds: compare-and-swap, versioned column, "if-not-exists",
+  optimistic-lock retry.
+- `idempotency-key` — dedup table, nonce, request-ID lookup, or any
+  mechanism that makes the operation safe to repeat.
+- `schema-validation` — declared schema (JSON Schema, OpenAPI body,
+  protobuf, brand types) that parses the input at the boundary
+  before business logic sees it.
+- `framework-escape` — template engine auto-escape, ORM
+  parameterization, prepared-statement substitution, header sanitizer.
+- `result-discipline` — the caller awaits the result and propagates
+  the error/Result type instead of fire-and-forget or silent swallow.
+- `native-limit` — platform's documented payload / batch / size
+  ceiling that bounds the input before it ever reaches the handler
+  (e.g., API Gateway's 6MB payload cap, DynamoDB's 100-item
+  BatchWrite limit).
+
+For each tag listed, the `evidence` field should describe what you
+saw at that layer — "boundary-authz: API Gateway authorizer
+referenced in routes.yaml validates JWT scope `admin:write`".
+
+For findings in OTHER categories (correctness, error-handling,
+performance, etc.), `defenses_checked` is optional — leave it empty
+when no defense layer applies (e.g., an off-by-one in arithmetic has
+nothing to defend against).
+
+If a required-category finding ships with an empty
+`defenses_checked` list, the validator will subtract 25 from your
+confidence score and tag the reasoning with `defenses-not-checked`.
+Severity is unchanged — but a low-confidence severe finding is a
+weaker signal than a high-confidence one.
+
+**Always emit the `defenses_checked` field, even if the value is
+`[]`.** An omitted field and an empty array are treated the same way
+by the validator, but emitting the field explicitly proves you
+considered it rather than forgetting.
+
+## End-to-End Trace (required at critical/high)
+
+If you intend to emit this finding at `critical` or `high` severity,
+you MUST produce a `trace` array of at least THREE hops showing how
+the suspect value reaches the next system boundary. Findings at
+`medium` / `low` / `nit` don't need a trace — local-scope bugs that
+never reach a boundary aren't `high`-severity to begin with.
+
+Hop roles:
+
+- `suspect` — the cited line itself (the alleged bug).
+- `caller` — the function/handler that invokes the suspect code.
+- `boundary` — the next *system* boundary the value reaches.
+  - *transport boundary*: HTTP response, RPC reply, message-queue send.
+  - *persistence boundary*: any write that may CAS, versioned column,
+    or conditional update.
+  - *trust boundary*: input from network, file, env, message body.
+
+The Runtime Model section above enumerates the entry-point classes for
+this codebase — use it to classify what counts as a boundary here. You
+may include additional hops between caller and boundary when the data
+flow passes through layered helpers; the minimum is 3.
+
+Each hop carries `role`, `file`, `lines`, and a one-line `evidence`
+field summarizing what you confirmed at that step.
+
+If you cannot write the trace, your understanding of the bug is
+incomplete. **Either re-investigate or downgrade severity to medium**
+— don't ship a severe finding without a trace. (The validator will
+penalize confidence on severe findings without a 3-hop trace, so
+shipping anyway just produces low-confidence noise.)
+
 ## Severity Calibration
 
 Pick `severity` from CONCRETE IMPACT, not feel. Anchor to these:
@@ -82,13 +176,24 @@ Return ONLY a JSON object — no prose before or after:
   "description": "what's wrong, why it matters, concrete impact",
   "evidence": "what you verified and what you found — summarize key tool results that support this conclusion",
   "evidence_snippet": "verbatim copy of 1-3 lines from the cited file:lines that prove the issue",
-  "trigger": "specific input or scenario that triggers this issue",
+  "trigger": {
+    "repro": "concrete input/request that triggers this — e.g., 'POST /admin/X body {...}' or 'call Foo(nil)'",
+    "observable": "what the caller sees when the bug fires — e.g., '500 with stack trace' or 'returns wrong value 42'"
+  },
+  "trace": [
+    {"role": "suspect",  "file": "path/to/file.go", "lines": "45-62", "evidence": "one line summary of what you confirmed here"},
+    {"role": "caller",   "file": "path/to/caller.go", "lines": "100-110", "evidence": "..."},
+    {"role": "boundary", "file": "path/to/route.go",  "lines": "12-20",   "evidence": "HTTP handler returns this value to the client"}
+  ],
+  "defenses_checked": ["boundary-authz", "handler-guard"],
+  "confidence_score": 78,
+  "confidence_reasoning": "one short sentence: what made you confident or uncertain",
   "suggestion": "concrete fix — code snippet preferred",
   "dismissed_rationale": "if dismissed: brief explanation of why this is not a real issue"
 }
 ```
 
-- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/suggestion
+- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
 - If this is NOT a real issue: set status to "dismissed", fill evidence and dismissed_rationale (evidence_snippet not required for dismissals)
 - "evidence" is REQUIRED for both findings and dismissals — summarize what you checked and what you found
   - Good: "found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open"
@@ -100,4 +205,10 @@ Return ONLY a JSON object — no prose before or after:
   - Bad: `the error from Close() is ignored` (description, not a snippet)
   - Bad: `\\\\json.Decode without error check\\\\` (paraphrase)
 - For security findings: include a CWE ID in the title when applicable
-- "trigger" must be a concrete scenario, not "if an attacker..." generalities
+- "trigger" must describe a CONCRETE scenario, not "if an attacker..." generalities. `repro` is the smallest input that fires the bug; `observable` is what the caller actually sees. If you cannot fill both fields with concrete content, your understanding of the bug is incomplete — re-investigate or downgrade.
+- "confidence_score" (0-100) is your certainty that this finding is REAL, separate from how bad it would be if true. Severity says "how bad if real"; confidence_score says "how sure I am it's real". Anchor:
+  - 90-100: verified end-to-end; you saw the bug fire (or could trivially make it fire)
+  - 70-89: strong evidence; one reasonable defense layer would defuse it, but you couldn't find one
+  - 50-69: plausible based on the cited line + general patterns, but you haven't traced the full data flow
+  - <50: speculative; pattern-match without verification
+- "confidence_reasoning" is one short sentence justifying the score (what you traced, what you couldn't verify).

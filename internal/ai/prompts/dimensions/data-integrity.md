@@ -35,3 +35,28 @@ Code that manages state, enforces business rules, or maintains consistency.
 - Data replicated to multiple stores without consistency guarantees
 - Denormalized data that can diverge from source of truth
 - Time-of-check to time-of-use (TOCTOU) races on data
+
+**unit-mismatch** — Named units, branded types, and producer/consumer drift:
+- A function/variable/return type whose **name** implies one unit
+  but whose **body** returns a value in a different unit. The
+  classic case: an accessor named `…Seconds()` that returns
+  milliseconds, or `getUsdAmount()` that returns a value in the
+  smallest currency subunit.
+- A type alias or branded type wrapping a primitive (TypeScript:
+  `type UserID = string`; Go: `type Cents int64`; Python:
+  `class OrderId(str)`; Rust: `pub struct AccountId(u64)`) crossing
+  a boundary where the receiver expects the raw primitive or a
+  *different* brand.
+- Identifier-suffix conventions diverging between callsites — one
+  call uses `feeBps` (basis points) and another consumes the value
+  as if it were a percentage; or one path uses `delayMs` and the
+  consumer treats it as seconds.
+- A producer and consumer agreeing on the primitive type but
+  disagreeing on the **scale** (cents vs. dollars, bytes vs. KB,
+  milliseconds vs. nanoseconds) without any conversion at the hop.
+
+This subcategory is language-agnostic. The pattern is "the name
+or type encodes a meaning the value doesn't carry." Look for it
+wherever a typed value crosses a function boundary — the most
+common bugs hide one hop downstream from where the unit was
+declared.

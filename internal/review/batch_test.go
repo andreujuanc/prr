@@ -3,13 +3,9 @@ package review
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/state"
@@ -125,171 +121,18 @@ func TestSynthesisWithRetry_NonTransientErrorIsReturnedImmediately(t *testing.T)
 	}
 }
 
-func TestIsTransientClientError_ClassifiesCorrectly(t *testing.T) {
-	transient := []error{
-		errors.New("provider returned 429 Too Many Requests"),
-		errors.New("503 Service Unavailable"),
-		errors.New("net/http: request canceled (Client.Timeout exceeded)"),
-		errors.New("read tcp: connection reset by peer"),
-		errors.New("rate limit exceeded"),
-		fmt.Errorf("upstream %w", errors.New("EOF")),
-		fmt.Errorf("stream closed: %w", io.EOF),
-	}
-	for _, err := range transient {
-		if !isTransientClientError(err) {
-			t.Errorf("isTransientClientError(%q) = false, want true", err)
-		}
-	}
+// Transient-error classification + backoff tests live in
+// internal/ai/retry_test.go alongside the implementation. The old
+// duplicate tests here were removed when isTransientClientError /
+// transientBackoff moved into the ai package as IsTransientError /
+// TransientBackoff.
 
-	terminal := []error{
-		nil,
-		errors.New("invalid api key"),
-		errors.New("400 bad request: malformed json"),
-		context.Canceled,
-		context.DeadlineExceeded,
-		fmt.Errorf("user-cancelled: %w", context.Canceled),
-	}
-	for _, err := range terminal {
-		if isTransientClientError(err) {
-			t.Errorf("isTransientClientError(%v) = true, want false", err)
-		}
-	}
-}
-
-// TestIsTransientClientError_NoFalsePositives pins the boundary cases
-// that motivated tightening the matcher from substring to word-bounded
-// regex. A naive substring match for "500" / "eof" would have wrongly
-// flagged each of these as retryable; the regex with word boundaries
-// must correctly leave them as terminal.
-func TestIsTransientClientError_NoFalsePositives(t *testing.T) {
-	falsePositiveTraps := []error{
-		errors.New("input exceeded 5000 token limit"),       // "500" inside "5000"
-		errors.New("rejected: prompt over 50000 chars"),     // 50000 contains 5000 contains 500
-		errors.New("request took 502ms before failing"),     // 502 inside larger number? no, 502 alone — but follows context that's NOT a status code
-		errors.New("endpointoflist not configured"),         // "eof" inside word
-		errors.New("invalid useofdeprecated_field setting"), // "eof" inside word
-		errors.New("error: model claude-haiku-4-5 unknown"), // contains "504" - wait, does it? no. ok.
-		errors.New("malformed: chunk #5034 missing tail"),   // "503" inside 5034
-	}
-	// Build a sanity list — we want each NOT to be classified as transient.
-	for _, err := range falsePositiveTraps {
-		if isTransientClientError(err) {
-			t.Errorf("isTransientClientError(%q) = true (false positive), want false", err)
-		}
-	}
-}
-
-// countingReporter is the inner Reporter for WatchdogReporter stress
-// tests — counts every method call so we can assert all of them
-// arrived under concurrent access. Atomic counters avoid needing its
-// own lock; methods may be invoked from many goroutines.
-type countingReporter struct {
-	aoi       int64
-	init      int64
-	batch     int64
-	synthesis int64
-	tokens    int64
-}
-
-func (c *countingReporter) DiscoveryProgress(string)             { atomic.AddInt64(&c.aoi, 1) }
-func (c *countingReporter) ClassifyProgress(string)              { atomic.AddInt64(&c.aoi, 1) }
-func (c *countingReporter) AOIPrescanProgress(string, bool, int) { atomic.AddInt64(&c.aoi, 1) }
-func (c *countingReporter) InitBatches([]BatchInfo)              { atomic.AddInt64(&c.init, 1) }
-func (c *countingReporter) BatchProgress(int, BatchStatus)       { atomic.AddInt64(&c.batch, 1) }
-func (c *countingReporter) RecheckProgress(string)               { atomic.AddInt64(&c.aoi, 1) }
-func (c *countingReporter) SynthesisStarted()                    { atomic.AddInt64(&c.synthesis, 1) }
-func (c *countingReporter) Token(string)                         { atomic.AddInt64(&c.tokens, 1) }
-
-// TestWatchdogReporter_ConcurrentCalls pins the race-free guarantee
-// that matters most in production: when parallel batch goroutines fire
-// reporter events at the same time (every batch's progress, every
-// streamed token), neither the wrapper nor the tap leaks state across
-// goroutines. The -race detector is the authority here.
-func TestWatchdogReporter_ConcurrentCalls(t *testing.T) {
-	inner := &countingReporter{}
-	var tapCalls int64
-	rr := &WatchdogReporter{
-		Inner: inner,
-		Tap:   func(string) { atomic.AddInt64(&tapCalls, 1) },
-	}
-
-	const goroutines = 32
-	const callsPerGoroutine = 200
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
-	for i := range goroutines {
-		go func(id int) {
-			defer wg.Done()
-			for j := range callsPerGoroutine {
-				// Mix of methods, like a real parallel review:
-				// token streams + batch updates + AOI ticks.
-				rr.Token("tok")
-				rr.BatchProgress(id, StatusActive)
-				if j%10 == 0 {
-					rr.AOIPrescanProgress("progress", false, 0)
-				}
-			}
-		}(i)
-	}
-	wg.Wait()
-
-	wantPerKind := int64(goroutines * callsPerGoroutine)
-	if got := atomic.LoadInt64(&inner.tokens); got != wantPerKind {
-		t.Errorf("inner.tokens = %d, want %d", got, wantPerKind)
-	}
-	if got := atomic.LoadInt64(&inner.batch); got != wantPerKind {
-		t.Errorf("inner.batch = %d, want %d", got, wantPerKind)
-	}
-	wantAOI := int64(goroutines * (callsPerGoroutine / 10))
-	if got := atomic.LoadInt64(&inner.aoi); got != wantAOI {
-		t.Errorf("inner.aoi = %d, want %d", got, wantAOI)
-	}
-	// tap fires on every method, so total = tokens + batch + aoi.
-	wantTap := wantPerKind*2 + wantAOI
-	if got := atomic.LoadInt64(&tapCalls); got != wantTap {
-		t.Errorf("tap calls = %d, want %d", got, wantTap)
-	}
-}
-
-// TestWatchdogReporter_NilTapIsSafe — concurrent callers must not race
-// even when no tap is wired (legitimate config when only inner-side
-// counting matters).
-func TestWatchdogReporter_NilTapIsSafe(t *testing.T) {
-	inner := &countingReporter{}
-	rr := &WatchdogReporter{Inner: inner, Tap: nil}
-
-	var wg sync.WaitGroup
-	wg.Add(8)
-	for range 8 {
-		go func() {
-			defer wg.Done()
-			for range 100 {
-				rr.Token("x")
-			}
-		}()
-	}
-	wg.Wait()
-
-	if got := atomic.LoadInt64(&inner.tokens); got != 800 {
-		t.Errorf("inner.tokens = %d, want 800", got)
-	}
-}
-
-func TestTransientBackoff_QuadraticGrowth(t *testing.T) {
-	cases := []struct {
-		attempt int
-		want    time.Duration
-	}{
-		{1, 1 * time.Second},
-		{2, 4 * time.Second},
-		{3, 9 * time.Second},
-	}
-	for _, c := range cases {
-		if got := transientBackoff(c.attempt); got != c.want {
-			t.Errorf("transientBackoff(%d) = %v, want %v", c.attempt, got, c.want)
-		}
-	}
-}
+// WatchdogReporter and its concurrency tests were removed when the
+// watchdog ceremony was retired in favor of HTTP-layer per-call
+// timeouts (provider RequestTimeout) + RetryTransient. Stall
+// detection now lives at the HTTP layer where it can actually
+// observe the network, not at the reporter layer where it could
+// only see progress events.
 
 func TestParseBatchResult(t *testing.T) {
 	tests := []struct {

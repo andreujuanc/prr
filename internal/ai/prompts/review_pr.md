@@ -122,6 +122,18 @@ Find callers of modified functions and verify compatibility.
 
 Quality bar:
 - A "low" or "nit" finding should be the exception, not the rule.
+- Every finding MUST include a `confidence_score` (0-100) and a
+  one-line `confidence_reasoning`. The score is your certainty that
+  the finding is REAL, separate from how bad it would be if true.
+  Severity = "how bad if real"; confidence_score = "how sure I am
+  it's real". Anchor:
+  - 90-100: verified end-to-end; you saw the bug fire (or could
+    trivially make it fire)
+  - 70-89: strong evidence; one reasonable defense layer would
+    defuse it, but you couldn't find one
+  - 50-69: plausible based on the cited line + general patterns,
+    but you haven't traced the full data flow
+  - <50: speculative; pattern-match without verification
 - Uncertain findings without a concrete trigger scenario belong in
   `questions_for_author`, not `findings`. If you cannot describe the
   specific input or state that triggers the bug, ask instead of asserting.
@@ -142,6 +154,8 @@ GOOD finding — actionable, cites file+line, explains impact:
 ```json
 {
   "severity": "high",
+  "confidence_score": 92,
+  "confidence_reasoning": "verified by reading the comparison and its single call site; no surrounding guard catches the boundary case",
   "category": "bug",
   "file": "internal/auth/token.go",
   "line": 87,

@@ -110,7 +110,64 @@ func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) err
 					cat += " / " + f.Subcategory
 				}
 				fmt.Fprintf(&b, "**Category:** %s  \n", cat)
-				fmt.Fprintf(&b, "**Trigger:** %s  \n", f.Trigger)
+				if f.Trigger.Repro != "" {
+					fmt.Fprintf(&b, "**Trigger:** %s  \n", f.Trigger.Repro)
+				}
+				if f.Trigger.Observable != "" {
+					fmt.Fprintf(&b, "**Observable:** %s  \n", f.Trigger.Observable)
+				}
+				if f.ConfidenceScore > 0 {
+					if f.ConfidenceReasoning != "" {
+						fmt.Fprintf(&b, "**Confidence:** %d/100 — %s  \n", f.ConfidenceScore, f.ConfidenceReasoning)
+					} else {
+						fmt.Fprintf(&b, "**Confidence:** %d/100  \n", f.ConfidenceScore)
+					}
+				}
+				if len(f.Trace) > 0 {
+					b.WriteString("**Trace:**\n")
+					for _, h := range f.Trace {
+						role := h.Role
+						if role == "" {
+							role = "?"
+						}
+						loc := h.File
+						if h.Lines != "" {
+							loc += ":" + h.Lines
+						}
+						if h.Evidence != "" {
+							fmt.Fprintf(&b, "- `%s` %s — %s\n", role, loc, h.Evidence)
+						} else {
+							fmt.Fprintf(&b, "- `%s` %s\n", role, loc)
+						}
+					}
+				}
+				if len(f.DefensesChecked) > 0 {
+					fmt.Fprintf(&b, "**Defenses checked:** %s  \n", strings.Join(f.DefensesChecked, ", "))
+				}
+				if f.SiblingDeviation != nil {
+					fmt.Fprintf(&b, "**Sibling pattern:** %s  \n", strings.TrimSpace(f.SiblingDeviation.Pattern))
+					if ids := f.SiblingDeviation.SiblingIDs; len(ids) > 0 {
+						capped := ids
+						if len(capped) > 5 {
+							capped = capped[:5]
+						}
+						fmt.Fprintf(&b, "**Conforming siblings:** %s  \n", strings.Join(capped, ", "))
+					}
+				}
+				if len(f.AffectedSites) > 0 {
+					b.WriteString("**Affected sites:**\n")
+					for _, s := range f.AffectedSites {
+						loc := s.File
+						if s.Lines != "" {
+							loc += ":" + s.Lines
+						}
+						if s.Symbol != "" {
+							fmt.Fprintf(&b, "- %s (`%s`)\n", loc, s.Symbol)
+						} else {
+							fmt.Fprintf(&b, "- %s\n", loc)
+						}
+					}
+				}
 				if f.Suggestion != "" {
 					fmt.Fprintf(&b, "**Fix:** %s  \n", f.Suggestion)
 				}

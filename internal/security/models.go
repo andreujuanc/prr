@@ -1,5 +1,7 @@
 package security
 
+import "github.com/andreujuanc/prr/internal/state"
+
 // AreaOfInterest represents a code location identified by the AOI scanner
 // that warrants deeper review. Each AOI is tagged with a category/subcategory
 // from the review dimension taxonomy and an urgency level that controls
@@ -32,6 +34,14 @@ type AreaOfInterest struct {
 
 	// Context provides additional information about why this location matters.
 	Context string `json:"context,omitempty"`
+
+	// SiblingDeviation is set when this AOI was synthesized by Phase
+	// 2.5 sibling clustering — it identifies the AOI as a 1-of-N
+	// outlier and carries the conforming siblings so Phase 3 can
+	// frame the review around "is this deviation intentional?". Nil
+	// for AOIs produced by the regular scanner or by boundary
+	// synthesis.
+	SiblingDeviation *state.SiblingDeviation `json:"sibling_deviation,omitempty"`
 
 	// Legacy fields — kept for backward compatibility with existing cached results.
 	Snippet    string `json:"snippet,omitempty"`

@@ -1,6 +1,7 @@
 package review
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/andreujuanc/prr/internal/progress"
@@ -24,22 +25,36 @@ func TestParseReviewEvent_AOIScanTotal(t *testing.T) {
 	}
 }
 
-func TestParseReviewEvent_AOIScanProgress(t *testing.T) {
+func TestParseReviewEvent_AOIScanProgressDoesNotOverwriteFileCount(t *testing.T) {
+	// Regression: "AOI scan X/Y" emits batch counts, not file counts.
+	// Previously this branch wrote to aoi_total, stomping the file
+	// total set by "scanning N file(s)" and making the AOI summary
+	// row read "N AOIs across <batch-count> files" mid-run.
 	s := newState()
-	parseReviewEvent(s, "aoi", "AOI scan 3/5 complete")
-	if s.Counters["aoi_scanned"] != 3 {
-		t.Errorf("aoi_scanned = %d, want 3", s.Counters["aoi_scanned"])
+	parseReviewEvent(s, "aoi", "scanning 40 file(s) for areas of interest (0 cached)")
+	parseReviewEvent(s, "aoi", "AOI scan 3/5")
+	if got := s.Counters["aoi_total"]; got != 40 {
+		t.Errorf("aoi_total = %d, want 40 (must not be overwritten by batch count)", got)
 	}
-	if s.Counters["aoi_total"] != 5 {
-		t.Errorf("aoi_total = %d, want 5", s.Counters["aoi_total"])
+	if got := s.Counters["aoi_batches_done"]; got != 3 {
+		t.Errorf("aoi_batches_done = %d, want 3", got)
+	}
+	if got := s.Counters["aoi_batches_total"]; got != 5 {
+		t.Errorf("aoi_batches_total = %d, want 5", got)
 	}
 }
 
 func TestParseReviewEvent_BatchesInitialized(t *testing.T) {
 	s := newState()
-	parseReviewEvent(s, "phase1", "Initialized 39 batches")
+	parseReviewEvent(s, "phase1", "Initialized 39 batches (12 AOI-driven, 27 general)")
 	if s.Counters["batches_total"] != 39 {
 		t.Errorf("batches_total = %d, want 39", s.Counters["batches_total"])
+	}
+	if s.Counters["batches_aoi_driven"] != 12 {
+		t.Errorf("batches_aoi_driven = %d, want 12", s.Counters["batches_aoi_driven"])
+	}
+	if s.Counters["batches_general"] != 27 {
+		t.Errorf("batches_general = %d, want 27", s.Counters["batches_general"])
 	}
 }
 
@@ -48,7 +63,7 @@ func TestParseReviewEvent_BatchDoneIncrementsCounter(t *testing.T) {
 	// Summary row can render the breakdown. The inline X/Y is the
 	// sum (see batchCounter).
 	s := newState()
-	parseReviewEvent(s, "phase1", "Initialized 3 batches")
+	parseReviewEvent(s, "phase1", "Initialized 3 batches (1 AOI-driven, 2 general)")
 	parseReviewEvent(s, "phase1", "Batch 1: done")
 	parseReviewEvent(s, "phase1", "Batch 2: cached")
 	parseReviewEvent(s, "phase1", "Batch 3: failed")
@@ -71,7 +86,7 @@ func TestParseReviewEvent_BatchActiveDoesNotIncrement(t *testing.T) {
 	// "Batch K: active" fires while a batch is in flight — must not
 	// be counted as completion or progress would over-report.
 	s := newState()
-	parseReviewEvent(s, "phase1", "Initialized 5 batches")
+	parseReviewEvent(s, "phase1", "Initialized 5 batches (2 AOI-driven, 3 general)")
 	parseReviewEvent(s, "phase1", "Batch 1: active")
 	parseReviewEvent(s, "phase1", "Batch 2: active")
 	if done, _ := batchCounter(s); done != 0 {
@@ -82,14 +97,14 @@ func TestParseReviewEvent_BatchActiveDoesNotIncrement(t *testing.T) {
 // ── ProgressFn ─────────────────────────────────────────────────────────
 
 func TestAOIProgress_RatioOfCounters(t *testing.T) {
-	s := &progress.State{Counters: map[string]int{"aoi_scanned": 4, "aoi_total": 10}}
+	s := &progress.State{Counters: map[string]int{"aoi_batches_done": 4, "aoi_batches_total": 10}}
 	if got := aoiProgress(s); got != 0.4 {
 		t.Errorf("aoiProgress = %f, want 0.4", got)
 	}
 }
 
 func TestAOIProgress_ZeroTotal(t *testing.T) {
-	s := &progress.State{Counters: map[string]int{"aoi_total": 0}}
+	s := &progress.State{Counters: map[string]int{"aoi_batches_total": 0}}
 	if got := aoiProgress(s); got != 0 {
 		t.Errorf("aoiProgress with zero total = %f, want 0", got)
 	}
@@ -174,20 +189,52 @@ func TestAOISummary_BreakdownFromCounters(t *testing.T) {
 	s := &progress.State{Counters: map[string]int{
 		"aoi_total": 40, "aoi_count": 32, "aoi_cached": 10,
 	}}
-	want := "32 AOIs across 40 files · 10 cached"
+	want := "32 AOIs across 40 file(s) · 10 cached"
 	if got := aoiSummary(s); got != want {
 		t.Errorf("aoiSummary = %q, want %q", got, want)
 	}
 }
 
+func TestAOISummary_ZeroAOIsMentionsGeneralReview(t *testing.T) {
+	// The original "0 AOIs across N files" line was the user's main
+	// complaint: it read as "nothing to review" then Deep Review fired
+	// off batches anyway. The 0-AOI summary now spells out that the
+	// general fallback pass will run.
+	s := &progress.State{Counters: map[string]int{
+		"aoi_total": 12, "aoi_count": 0, "aoi_cached": 0,
+	}}
+	got := aoiSummary(s)
+	if !strings.Contains(got, "no security AOIs") || !strings.Contains(got, "general review") {
+		t.Errorf("aoiSummary for 0 AOIs = %q, want mention of 'no security AOIs' and 'general review'", got)
+	}
+}
+
 func TestDeepReviewSummary_BreakdownFromCounters(t *testing.T) {
 	s := &progress.State{Counters: map[string]int{
-		"batches_total":  39,
-		"batches_done":   35,
-		"batches_cached": 3,
-		"batches_failed": 1,
+		"batches_total":      39,
+		"batches_done":       35,
+		"batches_cached":     3,
+		"batches_failed":     1,
+		"batches_aoi_driven": 12,
+		"batches_general":    27,
 	}}
-	want := "35 done · 3 cached · 1 failed"
+	want := "35 done · 3 cached · 1 failed (12 AOI-driven + 27 general)"
+	if got := deepReviewSummary(s); got != want {
+		t.Errorf("deepReviewSummary = %q, want %q", got, want)
+	}
+}
+
+func TestDeepReviewSummary_NoBreakdownFallsBackToTallyOnly(t *testing.T) {
+	// Backwards-compat: if the AOI/general counters weren't populated
+	// (older emit, or a test path that bypasses the init message),
+	// fall back to the plain tally without the parens.
+	s := &progress.State{Counters: map[string]int{
+		"batches_total":  3,
+		"batches_done":   3,
+		"batches_cached": 0,
+		"batches_failed": 0,
+	}}
+	want := "3 done · 0 cached · 0 failed"
 	if got := deepReviewSummary(s); got != want {
 		t.Errorf("deepReviewSummary = %q, want %q", got, want)
 	}

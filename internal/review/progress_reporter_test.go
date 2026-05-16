@@ -16,11 +16,6 @@ import (
 // detail line chaotically without conveying real progress. The inline
 // X/Y counter + terminal-status messages (done/cached/failed) give
 // users an honest read of how much is done.
-//
-// Watchdog behavior is preserved by WatchdogReporter, which wraps
-// progressReporter and taps on every BatchProgress call regardless of
-// status — that's covered by TestWatchdogReporter_ConcurrentCalls in
-// batch_test.go.
 
 // TestRunReviewCalls_NoDoubleCountedBatchProgress pins the contract
 // that RunReviewCalls emits exactly one terminal BatchProgress per

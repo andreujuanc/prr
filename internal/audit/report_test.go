@@ -28,7 +28,7 @@ func sampleResult() *Result {
 				Dimension:   "security",
 				Title:       "SQL injection in user query",
 				Description: "User input concatenated into SQL",
-				Trigger:     "User input concatenated directly into SQL string",
+				Trigger:     state.FindingTrigger{Repro: "User input concatenated directly into SQL string"},
 				Suggestion:  "Use parameterized queries",
 			},
 			{
@@ -40,7 +40,7 @@ func sampleResult() *Result {
 				Dimension:   "security",
 				Title:       "Missing token expiry check",
 				Description: "Token is never validated for expiry",
-				Trigger:     "No expiry validation on JWT",
+				Trigger:     state.FindingTrigger{Repro: "No expiry validation on JWT"},
 			},
 			{
 				AOIID:       "aoi-3",
@@ -51,7 +51,7 @@ func sampleResult() *Result {
 				Dimension:   "security",
 				Title:       "Command injection via exec",
 				Description: "Unsanitized input passed to exec",
-				Trigger:     "os/exec call with user input",
+				Trigger:     state.FindingTrigger{Repro: "os/exec call with user input"},
 				Suggestion:  "Sanitize input before exec",
 			},
 		},

@@ -123,6 +123,8 @@ func TestRecheckFindings_ConsolidatorRunsFirst(t *testing.T) {
 	client := &promptRecordingClient{
 		responses: []string{
 			// Pass 1: consolidator merges all three into one systemic.
+			// affected_sites covers 3 distinct files so the systemic
+			// gate (commit 10) preserves the "Systemic:" framing.
 			consolidateResponse(t,
 				[]string{}, // nothing kept individually
 				[]map[string]any{{
@@ -139,6 +141,11 @@ func TestRecheckFindings_ConsolidatorRunsFirst(t *testing.T) {
 						"description": "Found in a.go:10, b.go:20, c.go:30",
 						"trigger":     "operation returns err",
 						"suggestion":  "log or propagate",
+						"affected_sites": []map[string]any{
+							{"file": "a.go", "lines": "10"},
+							{"file": "b.go", "lines": "20"},
+							{"file": "c.go", "lines": "30"},
+						},
 					},
 				}},
 			),
@@ -196,6 +203,8 @@ func TestRecheckFindings_ConsolidatedFindingsBypassDismissPass(t *testing.T) {
 	client := &promptRecordingClient{
 		responses: []string{
 			// Consolidator merges the 3 pattern members. F-004 stays kept.
+			// affected_sites covers 3 distinct files so the systemic
+			// gate (commit 10) keeps the Systemic flag set.
 			consolidateResponse(t,
 				[]string{"F-004"},
 				[]map[string]any{{
@@ -212,6 +221,11 @@ func TestRecheckFindings_ConsolidatedFindingsBypassDismissPass(t *testing.T) {
 						"description": "three files, same pattern",
 						"trigger":     "the trigger",
 						"suggestion":  "the fix",
+						"affected_sites": []map[string]any{
+							{"file": "a.go", "lines": "10"},
+							{"file": "b.go", "lines": "20"},
+							{"file": "c.go", "lines": "30"},
+						},
 					},
 				}},
 			),
@@ -335,16 +349,19 @@ func TestRecheckFindings_DismissPassFailureKeepsConsolidated(t *testing.T) {
 	findings := []state.DeepFinding{
 		makeFinding("", "a.go", "10", "X", "a", "low"),
 		makeFinding("", "b.go", "20", "X", "b", "low"),
+		makeFinding("", "c.go", "30", "X", "c", "low"),
 	}
 
 	client := &promptRecordingClient{
 		responses: []string{
-			// Consolidator merges a + b into one systemic and keeps
-			// nothing individually.
+			// Consolidator merges a + b + c into one systemic and keeps
+			// nothing individually. affected_sites covers ≥3 distinct
+			// files so the systemic gate (commit 10) preserves the
+			// "Systemic:" framing.
 			consolidateResponse(t,
 				[]string{},
 				[]map[string]any{{
-					"finding_ids": []string{"F-001", "F-002"},
+					"finding_ids": []string{"F-001", "F-002", "F-003"},
 					"finding": map[string]any{
 						"finding_id":  "F-001",
 						"file":        "multiple",
@@ -357,6 +374,11 @@ func TestRecheckFindings_DismissPassFailureKeepsConsolidated(t *testing.T) {
 						"description": "...",
 						"trigger":     "...",
 						"suggestion":  "...",
+						"affected_sites": []map[string]any{
+							{"file": "a.go", "lines": "10"},
+							{"file": "b.go", "lines": "20"},
+							{"file": "c.go", "lines": "30"},
+						},
 					},
 				}},
 			),
