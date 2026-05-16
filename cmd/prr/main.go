@@ -631,6 +631,21 @@ func runReview(debug bool, args []string) {
 		fmt.Fprintf(os.Stderr, "  %s %s files reviewed\n\n",
 			cliDim.Render("[stats]"),
 			cliInfo.Render(fmt.Sprintf("%d", result.FilesReviewed)))
+
+		// Coverage hint — one line summary of what got reviewed vs
+		// skipped, when available. Full per-file breakdown lives in
+		// the JSON export.
+		if result.StructuredReview != nil && result.StructuredReview.Coverage != nil {
+			cov := result.StructuredReview.Coverage
+			hint := fmt.Sprintf("Coverage: %d/%d files reviewed",
+				cov.FilesReviewed, cov.FilesInScope)
+			if n := len(cov.OrphanFiles); n > 0 {
+				hint += fmt.Sprintf(", %d orphans (see --output for detail)", n)
+			}
+			fmt.Fprintf(os.Stderr, "  %s %s\n\n",
+				cliDim.Render("[coverage]"),
+				cliInfo.Render(hint))
+		}
 	}
 
 	// Export if requested

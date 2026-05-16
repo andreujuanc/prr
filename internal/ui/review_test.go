@@ -1219,6 +1219,42 @@ func TestLive_StreamMultiPassReview(t *testing.T) {
 	}
 }
 
+// --- renderStructuredReview coverage section tests ---
+
+func TestRenderStructuredReview_CoverageSectionPresent(t *testing.T) {
+	review := &state.ReviewOutput{
+		Summary: "x",
+		Verdict: "approve",
+		Coverage: &state.ReviewCoverage{
+			Files: []state.FileCoverage{
+				{File: "a.go", AOIsScanned: 3, Findings: 1, MaxFindingSeverity: "high"},
+				{File: "b.go", AOIsScanned: 2, Dismissals: 2, AvgDismissConf: 82},
+			},
+			FilesInScope:  3,
+			FilesWithAOIs: 2,
+			FilesReviewed: 2,
+			OrphanFiles:   []string{"c.go"},
+		},
+	}
+	rendered, _ := renderStructuredReview(review, 100, -1, nil, false)
+	for _, want := range []string{
+		"COVERAGE", "a.go", "b.go", "1 findings", "2 dismissed", "avg conf 82",
+		"Orphan files", "c.go",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered coverage missing %q\nfull:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderStructuredReview_NoCoverageWhenNil(t *testing.T) {
+	review := &state.ReviewOutput{Summary: "x", Verdict: "approve"}
+	rendered, _ := renderStructuredReview(review, 80, -1, nil, false)
+	if strings.Contains(rendered, "COVERAGE") {
+		t.Errorf("coverage section must not appear when nil: %s", rendered)
+	}
+}
+
 // --- renderStructuredReview stale banner tests ---
 
 func TestRenderStructuredReview_StaleBanner(t *testing.T) {
