@@ -116,8 +116,12 @@ func (o *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 // released early.
 func (o *OpenAIProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
 	cancel := func() {}
-	if o.RequestTimeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, o.RequestTimeout)
+	timeout := req.RequestTimeout
+	if timeout == 0 {
+		timeout = o.RequestTimeout
+	}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 
 	nativeReq := o.toNativeRequest(req)

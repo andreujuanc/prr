@@ -120,8 +120,12 @@ func (g *GeminiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 // released early.
 func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
 	cancel := func() {}
-	if g.RequestTimeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, g.RequestTimeout)
+	timeout := req.RequestTimeout
+	if timeout == 0 {
+		timeout = g.RequestTimeout
+	}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 
 	nativeReq := g.toNativeRequest(req)

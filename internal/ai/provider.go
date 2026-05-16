@@ -213,6 +213,11 @@ func validateToolParam(path string, p ToolParam) error {
 //
 // Temperature is *float64 so an explicit 0 (greedy decoding) is
 // distinguishable from "use the provider's default". nil = default.
+//
+// RequestTimeout, when non-zero, overrides the provider's configured
+// RequestTimeout for this one call. Useful for short calls (a quick
+// classification, an embedding lookup) that shouldn't pay the
+// 15-minute synthesis-sized budget the factory sets globally.
 type ChatRequest struct {
 	Model           string
 	System          string
@@ -221,8 +226,9 @@ type ChatRequest struct {
 	ToolChoice      ToolChoice
 	MaxOutputTokens int
 	Temperature     *float64
-	JSONSchema      *JSONSchema // structured output, optional
-	CachePrefix     bool        // hint: cache system + leading messages if supported
+	JSONSchema      *JSONSchema   // structured output, optional
+	CachePrefix     bool          // hint: cache system + leading messages if supported
+	RequestTimeout  time.Duration // per-call override; 0 = use provider's RequestTimeout
 }
 
 // TempPtr converts a config float64 to *float64, treating zero as
