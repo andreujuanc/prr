@@ -39,6 +39,11 @@ func main() {
 	// Force truecolor early so styled error output works too
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
+	// Install SIGUSR1 → goroutine dump handler so a hung phase can be
+	// diagnosed via `kill -USR1 <pid>` without losing the process to a
+	// terminating signal. Files land in ~/.cache/prr/goroutines-*.txt.
+	installGoroutineDumpHandler()
+
 	// Parse global flags — but pass through flags after "audit" subcommand
 	debug := false
 	useChroma := false
