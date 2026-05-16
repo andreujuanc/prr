@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/andreujuanc/prr/compare/v1.6.0...v1.6.1) (2026-05-16)
+
+
+### Bug Fixes
+
+* gofmt — column alignment regressed after previous commit's edits ([0463cc5](https://github.com/andreujuanc/prr/commit/0463cc5b937b0416cb149737eaa2b526bfd53edc))
+
 ## [1.6.0](https://github.com/andreujuanc/prr/compare/v1.5.0...v1.6.0) (2026-05-16)
 
 
