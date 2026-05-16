@@ -20,7 +20,16 @@ const (
 // BuildIndividualPrompt composes the system prompt for reviewing a single AOI.
 // runtimeModel may be nil — when present, a `## Runtime Model` section is
 // appended after the project context.
-func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPriors string, runtimeModel *state.RuntimeModel, aoi security.AreaOfInterest) string {
+//
+// The call carries the single AOI under call.AOIs[0] plus the code
+// context attached upstream by AttachFileDiffs (PR mode) or
+// AttachAOISources (audit mode). Either may be empty; the prompt
+// falls back to "use tools to read the code" in that case.
+func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPriors string, runtimeModel *state.RuntimeModel, call ReviewCall) string {
+	// Contract: individual calls always carry exactly one AOI. RouteAOIs
+	// guarantees this. A panic here surfaces a routing bug in tests
+	// rather than burying it as a wasted LLM call with an empty prompt.
+	aoi := call.AOIs[0]
 	var sb strings.Builder
 
 	// Mode-specific preamble
@@ -61,6 +70,14 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPri
 	// AOI details
 	sb.WriteString("\n\n## Area of Interest\n\n")
 	sb.WriteString(formatAOI(aoi))
+
+	// Code context — diff for PR, source slice for audit. Gives the
+	// model the actual changed lines / surrounding source without a
+	// mandatory tool call.
+	if section := renderCodeContext(mode, call); section != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(section)
+	}
 
 	// Relevant dimension criteria
 	dims := relevantDimensions(aoi)
@@ -116,14 +133,30 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 		sb.WriteString(bugPriors)
 	}
 
-	// AOI list
+	// AOI list. In audit mode, attach per-AOI source context inline
+	// with each AOI so the model sees the code right next to the
+	// concern. In PR mode, render the file diffs once as a separate
+	// section below (one diff per file in the group, not per AOI).
 	subcatLabel := call.Category
 	if call.Subcategory != "" {
 		subcatLabel = call.Category + "/" + call.Subcategory
 	}
 	sb.WriteString(fmt.Sprintf("\n\n## Areas of Interest (%s)\n\n", subcatLabel))
 	for i, aoi := range call.AOIs {
-		sb.WriteString(fmt.Sprintf("%d. %s\n\n", i+1, formatAOI(aoi)))
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, formatAOI(aoi)))
+		if mode == ModeAudit && i < len(call.AOISources) && call.AOISources[i] != "" {
+			sb.WriteString("\n**Source around this AOI:**\n\n```\n")
+			sb.WriteString(call.AOISources[i])
+			sb.WriteString("```\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// PR mode: render the file diffs in a single section below the
+	// AOI list (deduped across AOIs in the group).
+	if mode == ModePR && len(call.FileDiffs) > 0 {
+		sb.WriteString("\n\n")
+		sb.WriteString(renderPRDiffsSection(call))
 	}
 
 	// Relevant dimension criteria — collect from all AOIs in the group
@@ -140,6 +173,98 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 	}
 
 	return sb.String()
+}
+
+// maxDiffLinesPerFile caps how many diff lines per file are inlined
+// into a deep review prompt. Beyond this the tail is truncated and a
+// hint points the model at git_diff for the rest. Picked generously —
+// most file diffs are well under this, and the hint covers the rest.
+const maxDiffLinesPerFile = 800
+
+// renderCodeContext returns the code-context section for an individual
+// review call. PR mode renders the diff for the AOI's file; audit
+// mode renders the AOI's source slice. Returns empty string when no
+// context is available (caller skips the section entirely).
+func renderCodeContext(mode Mode, call ReviewCall) string {
+	if len(call.AOIs) == 0 {
+		return ""
+	}
+	aoi := call.AOIs[0]
+
+	switch mode {
+	case ModePR:
+		diff, ok := call.FileDiffs[aoi.File]
+		if !ok || diff == "" {
+			return ""
+		}
+		var sb strings.Builder
+		sb.WriteString("## Changes in This File\n\n")
+		sb.WriteString("```diff\n")
+		sb.WriteString(capDiffLines(diff, maxDiffLinesPerFile, aoi.File))
+		if !strings.HasSuffix(sb.String(), "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```\n")
+		return sb.String()
+	case ModeAudit:
+		if len(call.AOISources) == 0 || call.AOISources[0] == "" {
+			return ""
+		}
+		var sb strings.Builder
+		sb.WriteString("## Source Around This AOI\n\n")
+		sb.WriteString("```\n")
+		sb.WriteString(call.AOISources[0])
+		if !strings.HasSuffix(sb.String(), "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```\n")
+		return sb.String()
+	}
+	return ""
+}
+
+// renderPRDiffsSection renders one diff block per file in a grouped
+// PR-mode call. Deduplicates by file path.
+func renderPRDiffsSection(call ReviewCall) string {
+	if len(call.FileDiffs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Changes Under Review\n\n")
+	// Iterate in Files order for deterministic output. Skip files
+	// missing from the diff map (e.g. cap'd by AttachFileDiffs).
+	for _, f := range call.Files {
+		diff, ok := call.FileDiffs[f]
+		if !ok || diff == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("### %s\n\n", f))
+		sb.WriteString("```diff\n")
+		sb.WriteString(capDiffLines(diff, maxDiffLinesPerFile, f))
+		if !strings.HasSuffix(sb.String(), "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```\n\n")
+	}
+	return strings.TrimRight(sb.String(), "\n") + "\n"
+}
+
+// capDiffLines truncates a diff to a max line count, appending a hint
+// pointing the model at git_diff for the remainder. Mirrors the
+// CapDiff pattern in internal/review/batch.go but emits a per-file
+// hint rather than a per-batch one.
+func capDiffLines(diff string, maxLines int, file string) string {
+	if maxLines <= 0 {
+		return diff
+	}
+	lines := strings.Split(diff, "\n")
+	if len(lines) <= maxLines {
+		return diff
+	}
+	dropped := len(lines) - maxLines
+	return strings.Join(lines[:maxLines], "\n") +
+		fmt.Sprintf("\n... [%d more lines truncated — use the git_diff tool with path=%q to see the rest]\n",
+			dropped, file)
 }
 
 // formatAOI formats a single AOI for inclusion in a prompt.

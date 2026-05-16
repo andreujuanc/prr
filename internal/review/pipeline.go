@@ -826,6 +826,11 @@ func RunReviewCore(
 	var reviewCalls []ReviewCall
 	if routeResult != nil && routeResult.TotalAOIs > 0 {
 		reviewCalls = routeResult.PrioritizedCalls(0)
+		// Attach the file diff to each call so the deep review prompt
+		// shows the actual changed lines without forcing a tool call.
+		// PR mode only — audit has no diff and uses AttachAOISources
+		// instead.
+		AttachFileDiffs(reviewCalls, opts.RawDiffs)
 		for _, call := range reviewCalls {
 			for _, f := range call.Files {
 				aoiCoveredFiles[f] = true

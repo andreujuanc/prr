@@ -603,6 +603,10 @@ func Run(
 	}
 
 	calls := routing.PrioritizedCalls(opts.MaxReviews)
+	// Attach source context around each AOI so the deep review prompt
+	// shows the surrounding lines without forcing a read_file call.
+	// Audit has no diff — uses source slices instead of FileDiffs.
+	review.AttachAOISources(calls, opts.RepoRoot, 0)
 	onProgress("phase3", fmt.Sprintf("Executing %d review calls...", len(calls)))
 
 	// Build Phase 3 debug hook

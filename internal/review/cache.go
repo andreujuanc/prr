@@ -12,7 +12,13 @@ import (
 )
 
 // IndividualCacheKey computes the cache key for an individual review call.
-// Key = hash(file_content + aoi_serialized + sorted_focus_dimensions + sha256(prompt) + priorsHash)
+// Key = hash(code_context + aoi_serialized + sorted_focus_dimensions + sha256(prompt) + priorsHash)
+//
+// codeContext is the diff (PR mode) or source slice (audit mode) that
+// the prompt builder will inline. Folding it into the key means any
+// change to the surrounding code yields a fresh cache miss — without
+// this, an AOI whose line number is stable could serve stale results
+// even after the diff around it changed.
 //
 // The prompt hash is part of the key so tuning review_individual.md
 // invalidates stale cache entries automatically. Without it, a prompt
@@ -27,9 +33,9 @@ import (
 // changes the key shape from the legacy version, so the first run
 // after this lands is a one-time re-review; subsequent flag-off runs
 // all match each other.
-func IndividualCacheKey(fileContent string, aoi security.AreaOfInterest, focusDimensions []string, priorsHash string) string {
+func IndividualCacheKey(codeContext string, aoi security.AreaOfInterest, focusDimensions []string, priorsHash string) string {
 	h := sha256.New()
-	h.Write([]byte(fileContent))
+	h.Write([]byte(codeContext))
 	h.Write([]byte{0}) // separator
 	h.Write([]byte(serializeAOI(aoi)))
 	h.Write([]byte{0})
@@ -43,20 +49,24 @@ func IndividualCacheKey(fileContent string, aoi security.AreaOfInterest, focusDi
 }
 
 // GroupedCacheKey computes the cache key for a grouped review call.
-// Key = hash(all_aoi_serialized + sorted_focus_dimensions + sha256(prompt) + priorsHash)
-// If any file in the group changes, the key changes because file content
-// is not included — the AOI content itself changes when file content changes
-// (since AOIs are regenerated on file change).
+// Key = hash(all_aoi_serialized + code_context + sorted_focus_dimensions + sha256(prompt) + priorsHash)
+//
+// codeContext is the per-file diff blob (PR mode) or per-AOI source
+// slice blob (audit mode) — see codeContextDigest for the format.
+// Folded into the key so changes to the surrounding diff/source
+// invalidate cached results even when the AOI line/concern is stable.
 //
 // The prompt hash is part of the key so tuning review_grouped.md
 // invalidates stale cache entries automatically. priorsHash mirrors
 // the IndividualCacheKey contract.
-func GroupedCacheKey(aois []security.AreaOfInterest, focusDimensions []string, priorsHash string) string {
+func GroupedCacheKey(aois []security.AreaOfInterest, codeContext string, focusDimensions []string, priorsHash string) string {
 	h := sha256.New()
 	for _, aoi := range aois {
 		h.Write([]byte(serializeAOI(aoi)))
 		h.Write([]byte{0})
 	}
+	h.Write([]byte{0})
+	h.Write([]byte(codeContext))
 	h.Write([]byte{0})
 	h.Write([]byte(serializeFocus(focusDimensions)))
 	h.Write([]byte{0})
@@ -65,6 +75,34 @@ func GroupedCacheKey(aois []security.AreaOfInterest, focusDimensions []string, p
 	h.Write([]byte{0})
 	h.Write([]byte(priorsHash))
 	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// codeContextDigest returns a deterministic string from a call's
+// inlined code context (FileDiffs for PR mode, AOISources for audit
+// mode). Order is deterministic — files are sorted alphabetically and
+// AOI contexts iterate in AOI order — so two equal contexts produce
+// the same digest. Used as the code-context input to the cache keys.
+func codeContextDigest(call ReviewCall) string {
+	var sb strings.Builder
+	if len(call.FileDiffs) > 0 {
+		paths := make([]string, 0, len(call.FileDiffs))
+		for p := range call.FileDiffs {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		for _, p := range paths {
+			sb.WriteString(p)
+			sb.WriteByte(0)
+			sb.WriteString(call.FileDiffs[p])
+			sb.WriteByte(0)
+		}
+	}
+	if len(call.AOISources) > 0 {
+		for i, c := range call.AOISources {
+			fmt.Fprintf(&sb, "aoi[%d]\x00%s\x00", i, c)
+		}
+	}
+	return sb.String()
 }
 
 func serializeAOI(aoi security.AreaOfInterest) string {
