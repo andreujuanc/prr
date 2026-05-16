@@ -29,6 +29,10 @@ type OpenAIProvider struct {
 	// googleapis/go-genai's HTTPOptions.Timeout pattern.
 	RequestTimeout time.Duration
 
+	// HeartbeatInterval emits an EventHeartbeat when no SSE data line
+	// has been seen for that long. Zero disables.
+	HeartbeatInterval time.Duration
+
 	// ProviderName overrides the name returned by Name() — useful for
 	// distinguishing "github-copilot" from "openai" while sharing impl.
 	ProviderLabel string
@@ -485,6 +489,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	var usage TokenUsage
 	var stopReason StopReason
 
+	hb := newStreamHeartbeat(ch, o.HeartbeatInterval)
+	defer hb.stop()
+
 	// Track tool calls being accumulated across deltas
 	type toolCallAccum struct {
 		ID   string
@@ -510,6 +517,8 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
+
+		hb.tick()
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // ── Roles ───────────────────────────────────────────────────────────────
@@ -237,20 +238,28 @@ type ChatResponse struct {
 type ChatEventType int
 
 const (
-	EventText     ChatEventType = iota // regular text chunk
-	EventThinking                      // thinking/reasoning text
-	EventToolUse                       // tool call
-	EventDone                          // final event with complete response
-	EventError                         // error during streaming
+	EventText      ChatEventType = iota // regular text chunk
+	EventThinking                       // thinking/reasoning text
+	EventToolUse                        // tool call
+	EventDone                           // final event with complete response
+	EventError                          // error during streaming
+	EventHeartbeat                      // no data received for HeartbeatInterval
 )
 
 // ChatEvent is a single streaming event from a provider.
+//
+// EventHeartbeat carries the silence duration in Silence; it fires
+// when a stream has not produced a data line within the provider's
+// HeartbeatInterval. Consumers that don't care can ignore the type
+// (the agent loop uses a switch without a default, so heartbeats fall
+// through harmlessly). Existing handlers stay correct without edits.
 type ChatEvent struct {
 	Type     ChatEventType
 	Text     string        // EventText, EventThinking
 	ToolUse  *ToolUseBlock // EventToolUse
 	Response *ChatResponse // EventDone
 	Err      error         // EventError
+	Silence  time.Duration // EventHeartbeat
 }
 
 // ── Provider interface ──────────────────────────────────────────────────

@@ -45,6 +45,13 @@ type GeminiProvider struct {
 	// each retry attempt gets a fresh budget.
 	RequestTimeout time.Duration
 
+	// HeartbeatInterval emits an EventHeartbeat on the stream when no
+	// SSE data line has been seen for that long. Zero disables. The
+	// production factory sets DefaultHeartbeatInterval; UI consumers
+	// can render this as a "still thinking…" indicator without having
+	// to invent their own timer.
+	HeartbeatInterval time.Duration
+
 	// ModelConfig holds per-model tuning (maxOutputTokens, temperature,
 	// thinkingBudget). Set by the caller from config.GetModelConfig().
 	//
@@ -476,6 +483,9 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	var contentBlocks []ContentBlock
 	var usage TokenUsage
 
+	hb := newStreamHeartbeat(ch, g.HeartbeatInterval)
+	defer hb.stop()
+
 	scanner := bufio.NewScanner(body)
 	// A single SSE "data:" line can be large — long thinking content or
 	// fat tool-call args both arrive on one line. Cap at 8MB; Gemini's
@@ -497,6 +507,8 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
+
+		hb.tick()
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "" {

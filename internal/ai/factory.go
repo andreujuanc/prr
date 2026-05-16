@@ -16,6 +16,12 @@ import (
 // on a whole prr review/audit run.
 const DefaultRequestTimeout = 15 * time.Minute
 
+// DefaultHeartbeatInterval emits a heartbeat event when a stream goes
+// silent for this long. Sized for long thinking runs: short enough to
+// be a useful "still alive" signal, long enough to avoid noise on
+// normal token-by-token output.
+const DefaultHeartbeatInterval = 60 * time.Second
+
 // ProviderConfig holds the parameters needed to create a Provider.
 //
 // Temperature is *float64 so callers can request explicit greedy
@@ -39,10 +45,11 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	switch cfg.ProviderName {
 	case "gemini":
 		gp := &GeminiProvider{
-			APIKey:         cfg.APIKey,
-			Model:          cfg.ModelID,
-			BaseURL:        cfg.BaseURL,
-			RequestTimeout: DefaultRequestTimeout,
+			APIKey:            cfg.APIKey,
+			Model:             cfg.ModelID,
+			BaseURL:           cfg.BaseURL,
+			RequestTimeout:    DefaultRequestTimeout,
+			HeartbeatInterval: DefaultHeartbeatInterval,
 		}
 		gp.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 		gp.ModelConfig.Temperature = cfg.Temperature
@@ -51,10 +58,11 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 
 	case "openai":
 		op := &OpenAIProvider{
-			APIKey:         cfg.APIKey,
-			Model:          cfg.ModelID,
-			BaseURL:        cfg.BaseURL,
-			RequestTimeout: DefaultRequestTimeout,
+			APIKey:            cfg.APIKey,
+			Model:             cfg.ModelID,
+			BaseURL:           cfg.BaseURL,
+			RequestTimeout:    DefaultRequestTimeout,
+			HeartbeatInterval: DefaultHeartbeatInterval,
 		}
 		op.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 		op.ModelConfig.Temperature = cfg.Temperature
@@ -67,11 +75,12 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			baseURL = cfg.BaseURL
 		}
 		op := &OpenAIProvider{
-			APIKey:         cfg.APIKey,
-			Model:          cfg.ModelID,
-			BaseURL:        baseURL,
-			RequestTimeout: DefaultRequestTimeout,
-			ProviderLabel:  "github-copilot",
+			APIKey:            cfg.APIKey,
+			Model:             cfg.ModelID,
+			BaseURL:           baseURL,
+			RequestTimeout:    DefaultRequestTimeout,
+			HeartbeatInterval: DefaultHeartbeatInterval,
+			ProviderLabel:     "github-copilot",
 			ExtraHeaders: map[string]string{
 				"Openai-Intent": "conversation-edits",
 				"User-Agent":    "prr",
