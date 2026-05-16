@@ -1,6 +1,8 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,18 @@ import (
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/state"
 )
+
+// priorsHash hashes the bug-priors prompt section into the cache key
+// material so that flipping --bug-priors or shipping a new fix-commit
+// invalidates stale entries. Empty input → empty string (a deliberate
+// sentinel that the cache helpers treat as "no priors").
+func priorsHash(s string) string {
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
 
 // ExecuteOptions configures RunReviewCalls.
 type ExecuteOptions struct {
@@ -37,6 +51,13 @@ type ExecuteOptions struct {
 
 	// FocusDimensions filters which AOIs are reviewed (nil = all).
 	FocusDimensions []string
+
+	// BugPriors is the rendered bug-priors prompt section produced by
+	// internal/bugpriors.Extract. When non-empty, it's spliced into
+	// the deep-review prompt and folded into the cache key (so the
+	// arrival of new fix commits invalidates stale entries). Empty
+	// string == feature disabled.
+	BugPriors string
 
 	// MaxConcurrency caps parallel review calls (default 10).
 	MaxConcurrency int
@@ -131,7 +152,7 @@ func RunReviewCalls(
 			// Check cache (individual calls only — grouped calls have unstable
 			// cache keys because the group composition changes when any member
 			// file is modified, orphaning the old cache entry).
-			cacheKey := ComputeCacheKey(call, opts.FocusDimensions)
+			cacheKey := ComputeCacheKey(call, opts.FocusDimensions, priorsHash(opts.BugPriors))
 			if !opts.NoCache && opts.CacheGet != nil && call.Type == "individual" {
 				if cached := opts.CacheGet(cacheKey); cached != nil {
 					resultsCh <- callResult{index: i, result: cached, fromCache: true}
@@ -704,11 +725,15 @@ func isValidSeverity(s string) bool {
 }
 
 // ComputeCacheKey returns the cache key for a review call.
-func ComputeCacheKey(call ReviewCall, focusDimensions []string) string {
+//
+// priorsHash is sha256 of the bug-priors content for this run (empty
+// when --bug-priors is off). Folding it in here means flipping the
+// flag or shipping a new fix-commit yields a fresh cache key.
+func ComputeCacheKey(call ReviewCall, focusDimensions []string, priorsHash string) string {
 	if call.Type == "individual" {
-		return IndividualCacheKey("", call.AOIs[0], focusDimensions)
+		return IndividualCacheKey("", call.AOIs[0], focusDimensions, priorsHash)
 	}
-	return GroupedCacheKey(call.AOIs, focusDimensions)
+	return GroupedCacheKey(call.AOIs, focusDimensions, priorsHash)
 }
 
 func userMessage(mode Mode) string {

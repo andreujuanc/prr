@@ -201,6 +201,8 @@ func runAudit(debug bool, args []string) {
 			opts.AuditRecent = n
 		} else if arg == "--sibling-cluster" {
 			opts.SiblingClustering = true
+		} else if arg == "--bug-priors" {
+			opts.BugPriors = true
 		} else if arg == "--help" || arg == "-h" {
 			printAuditUsage()
 			os.Exit(0)
@@ -407,6 +409,7 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "    --file=<path>        Restrict audit to a single file (relative to repo root)\n")
 	fmt.Fprintf(os.Stderr, "    --audit-recent=<n>   Restrict audit to files touched in the last <n> commits\n")
 	fmt.Fprintf(os.Stderr, "    --sibling-cluster    Enable Phase 2.5 sibling-outlier detection (experimental)\n")
+	fmt.Fprintf(os.Stderr, "    --bug-priors         Inject recent fix-shaped commits as known-failure priors\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available dimensions:"))
 	fmt.Fprintf(os.Stderr, "    authentication, authorization, input-validation, data-integrity,\n")
@@ -424,6 +427,7 @@ func runReview(debug bool, args []string) {
 	noCache := false
 	quiet := false
 	reviewDebug := debug
+	bugPriors := false
 
 	// Parse flags and find the PR number
 	var prNumber string
@@ -438,6 +442,8 @@ func runReview(debug bool, args []string) {
 			quiet = true
 		} else if arg == "--debug" {
 			reviewDebug = true
+		} else if arg == "--bug-priors" {
+			bugPriors = true
 		} else if arg == "--help" || arg == "-h" {
 			printReviewUsage()
 			os.Exit(0)
@@ -515,6 +521,7 @@ func runReview(debug bool, args []string) {
 		AOIContextLines:    aoiCtxLines,
 		CustomInstructions: config.LoadCustomInstructions(),
 		Debug:              reviewDebug,
+		BugPriors:          bugPriors,
 	}
 
 	// Default: shared progress TUI (same as `prr audit`). Falls back
@@ -679,7 +686,8 @@ func printReviewUsage() {
 	fmt.Fprintf(os.Stderr, "    --no-synthesis       Skip synthesis phase\n")
 	fmt.Fprintf(os.Stderr, "    --quiet, -q          Suppress terminal output (use with --output)\n")
 	fmt.Fprintf(os.Stderr, "    --debug              Print LLM tool calls, user messages, and responses\n")
-	fmt.Fprintf(os.Stderr, "                         (compact by default; PRR_DEBUG_VERBOSE=1 for full prompts)\n\n")
+	fmt.Fprintf(os.Stderr, "                         (compact by default; PRR_DEBUG_VERBOSE=1 for full prompts)\n")
+	fmt.Fprintf(os.Stderr, "    --bug-priors         Inject recent fix-shaped commits as known-failure priors\n\n")
 }
 
 func createAIClient(cfg *config.Config) ai.Client {

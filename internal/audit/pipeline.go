@@ -78,6 +78,12 @@ type Options struct {
 	// Concurrency tunes per-phase concurrency caps. Each zero field falls
 	// back to the package default (currently 5).
 	Concurrency ConcurrencyConfig
+
+	// BugPriors mines fix-shaped commits from the repo's git log and
+	// injects them as a "Known failure modes in this codebase" section
+	// into every Phase 3 deep-review prompt and recheck pass. Off by
+	// default — opt in via the --bug-priors CLI flag.
+	BugPriors bool
 }
 
 // ConcurrencyConfig holds per-phase concurrency caps. Each field is the
@@ -627,7 +633,7 @@ func Run(
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbgw.Phase("PHASE 3b: Recheck")
 	if len(findings) > 0 {
-		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit")
+		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit", "")
 		if !opts.NoCache {
 			if raw := auditState.GetRecheckCache(recheckKey); raw != nil {
 				var cached []state.DeepFinding
@@ -1052,7 +1058,12 @@ func hashContent(content string) string {
 // invalidates stale cache entries automatically. Without this, a
 // prompt change would silently serve recheck results produced by the
 // previous prompt for the duration of the cached entry.
-func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode string) string {
+//
+// priorsHash is sha256 of the bug-priors prompt section (empty when
+// --bug-priors is off). Folding it in means a new fix-commit landing
+// after a cached recheck invalidates the entry, so recheck reasoning
+// can incorporate the updated prior set.
+func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode, priorsHash string) string {
 	sorted := make([]state.DeepFinding, len(findings))
 	copy(sorted, findings)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].FindingID < sorted[j].FindingID })
@@ -1070,6 +1081,8 @@ func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode s
 	h.Write(consolHash[:])
 	dismissHash := sha256.Sum256([]byte(ai.RecheckDismissPrompt))
 	h.Write(dismissHash[:])
+	h.Write([]byte{0})
+	h.Write([]byte(priorsHash))
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 

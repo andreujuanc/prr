@@ -46,6 +46,12 @@ type PRReviewOptions struct {
 
 	// Debug enables verbose output.
 	Debug bool
+
+	// BugPriors mines fix-shaped commits from the repo's git log and
+	// injects them as a "Known failure modes in this codebase" section
+	// into every Phase 3 deep-review prompt. Off by default — opt in
+	// via the --bug-priors CLI flag.
+	BugPriors bool
 }
 
 // PRReviewResult holds the output of a headless PR review.

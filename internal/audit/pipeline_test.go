@@ -110,8 +110,8 @@ func TestComputeRecheckCacheKey_DeterministicForSameInputs(t *testing.T) {
 		recheckTestFinding("F-001", "a.go", "10-20", "high"),
 		recheckTestFinding("F-002", "b.go", "30-40", "medium"),
 	}
-	k1 := computeRecheckCacheKey(findings, "ctx", "audit")
-	k2 := computeRecheckCacheKey(findings, "ctx", "audit")
+	k1 := computeRecheckCacheKey(findings, "ctx", "audit", "")
+	k2 := computeRecheckCacheKey(findings, "ctx", "audit", "")
 	if k1 != k2 {
 		t.Errorf("same inputs must produce the same key, got %q vs %q", k1, k2)
 	}
@@ -125,8 +125,8 @@ func TestComputeRecheckCacheKey_OrderIndependent(t *testing.T) {
 	b := recheckTestFinding("F-002", "b.go", "30-40", "medium")
 	c := recheckTestFinding("F-003", "c.go", "50-60", "low")
 
-	k1 := computeRecheckCacheKey([]state.DeepFinding{a, b, c}, "ctx", "audit")
-	k2 := computeRecheckCacheKey([]state.DeepFinding{c, a, b}, "ctx", "audit")
+	k1 := computeRecheckCacheKey([]state.DeepFinding{a, b, c}, "ctx", "audit", "")
+	k2 := computeRecheckCacheKey([]state.DeepFinding{c, a, b}, "ctx", "audit", "")
 	if k1 != k2 {
 		t.Errorf("permuting findings must not change the key, got %q vs %q", k1, k2)
 	}
@@ -136,8 +136,8 @@ func TestComputeRecheckCacheKey_DiffersByFindings(t *testing.T) {
 	base := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
 	mutated := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "low")} // severity diff
 
-	k1 := computeRecheckCacheKey(base, "ctx", "audit")
-	k2 := computeRecheckCacheKey(mutated, "ctx", "audit")
+	k1 := computeRecheckCacheKey(base, "ctx", "audit", "")
+	k2 := computeRecheckCacheKey(mutated, "ctx", "audit", "")
 	if k1 == k2 {
 		t.Errorf("changing a finding field must change the key, both %q", k1)
 	}
@@ -146,8 +146,8 @@ func TestComputeRecheckCacheKey_DiffersByFindings(t *testing.T) {
 func TestComputeRecheckCacheKey_DiffersByProjectContext(t *testing.T) {
 	findings := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
 
-	k1 := computeRecheckCacheKey(findings, "context one", "audit")
-	k2 := computeRecheckCacheKey(findings, "context two", "audit")
+	k1 := computeRecheckCacheKey(findings, "context one", "audit", "")
+	k2 := computeRecheckCacheKey(findings, "context two", "audit", "")
 	if k1 == k2 {
 		t.Errorf("different projectContext must change the key, both %q", k1)
 	}
@@ -156,8 +156,8 @@ func TestComputeRecheckCacheKey_DiffersByProjectContext(t *testing.T) {
 func TestComputeRecheckCacheKey_DiffersByMode(t *testing.T) {
 	findings := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
 
-	k1 := computeRecheckCacheKey(findings, "ctx", "audit")
-	k2 := computeRecheckCacheKey(findings, "ctx", "pr")
+	k1 := computeRecheckCacheKey(findings, "ctx", "audit", "")
+	k2 := computeRecheckCacheKey(findings, "ctx", "pr", "")
 	if k1 == k2 {
 		t.Errorf("different mode must change the key, both %q", k1)
 	}
@@ -174,19 +174,33 @@ func TestComputeRecheckCacheKey_DiffersByConsolidatePrompt(t *testing.T) {
 	t.Cleanup(func() { ai.RecheckConsolidatePrompt = original })
 
 	ai.RecheckConsolidatePrompt = "CONSOLIDATE VERSION A"
-	keyA := computeRecheckCacheKey(findings, "ctx", "audit")
+	keyA := computeRecheckCacheKey(findings, "ctx", "audit", "")
 
 	ai.RecheckConsolidatePrompt = "CONSOLIDATE VERSION B"
-	keyB := computeRecheckCacheKey(findings, "ctx", "audit")
+	keyB := computeRecheckCacheKey(findings, "ctx", "audit", "")
 
 	if keyA == keyB {
 		t.Errorf("changing RecheckConsolidatePrompt must change the key, both %q", keyA)
 	}
 
 	ai.RecheckConsolidatePrompt = "CONSOLIDATE VERSION A"
-	keyARestored := computeRecheckCacheKey(findings, "ctx", "audit")
+	keyARestored := computeRecheckCacheKey(findings, "ctx", "audit", "")
 	if keyA != keyARestored {
 		t.Errorf("same consolidate prompt text must produce same key, got %q vs %q", keyA, keyARestored)
+	}
+}
+
+// TestComputeRecheckCacheKey_DiffersByPriorsHash pins the bug-priors
+// hash into the cache key so a fix-commit landing between runs doesn't
+// silently serve recheck reasoning from before the prior set grew.
+func TestComputeRecheckCacheKey_DiffersByPriorsHash(t *testing.T) {
+	findings := []state.DeepFinding{recheckTestFinding("F-001", "a.go", "10-20", "high")}
+
+	keyA := computeRecheckCacheKey(findings, "ctx", "audit", "")
+	keyB := computeRecheckCacheKey(findings, "ctx", "audit", "abc123")
+
+	if keyA == keyB {
+		t.Errorf("different priorsHash must change the key, both %q", keyA)
 	}
 }
 
@@ -199,10 +213,10 @@ func TestComputeRecheckCacheKey_DiffersByDismissPrompt(t *testing.T) {
 	t.Cleanup(func() { ai.RecheckDismissPrompt = original })
 
 	ai.RecheckDismissPrompt = "DISMISS VERSION A"
-	keyA := computeRecheckCacheKey(findings, "ctx", "audit")
+	keyA := computeRecheckCacheKey(findings, "ctx", "audit", "")
 
 	ai.RecheckDismissPrompt = "DISMISS VERSION B"
-	keyB := computeRecheckCacheKey(findings, "ctx", "audit")
+	keyB := computeRecheckCacheKey(findings, "ctx", "audit", "")
 
 	if keyA == keyB {
 		t.Errorf("changing RecheckDismissPrompt must change the key, both %q", keyA)
