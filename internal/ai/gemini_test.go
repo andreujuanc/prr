@@ -1494,16 +1494,98 @@ func TestGeminiProvider_Capabilities(t *testing.T) {
 	if !caps.PromptCaching {
 		t.Error("expected PromptCaching=true")
 	}
-	// StructuredOutput is false until toNativeRequest wires up the
-	// responseSchema path. See gemini.go Capabilities comment.
-	if caps.StructuredOutput {
-		t.Error("expected StructuredOutput=false until wired")
+	if !caps.StructuredOutput {
+		t.Error("expected StructuredOutput=true")
 	}
 	if !caps.ParallelToolCalls {
 		t.Error("expected ParallelToolCalls=true")
 	}
 	if caps.MaxContextTokens != 1_000_000 {
 		t.Errorf("MaxContextTokens = %d", caps.MaxContextTokens)
+	}
+}
+
+// TestGeminiStreamChat_ResponseSchemaOnTheWire pins the structured-output
+// wiring: ChatRequest.JSONSchema → generationConfig.responseMimeType +
+// generationConfig.responseSchema in the outbound request body.
+func TestGeminiStreamChat_ResponseSchemaOnTheWire(t *testing.T) {
+	var mu sync.Mutex
+	var body string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := readBody(r)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseEvent(ssePartSpec{Text: "{}"}))
+	}))
+	defer srv.Close()
+
+	provider := newTestProvider(srv.URL)
+
+	schema := json.RawMessage(`{"type":"object","properties":{"verdict":{"type":"string"}}}`)
+	ch, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{
+			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "score"}}},
+		},
+		JSONSchema: &JSONSchema{Name: "verdict", Schema: schema},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	for range ch {
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(body, `"responseMimeType":"application/json"`) {
+		t.Errorf("request body missing responseMimeType, body=%s", body)
+	}
+	if !strings.Contains(body, `"responseSchema"`) {
+		t.Errorf("request body missing responseSchema, body=%s", body)
+	}
+	if !strings.Contains(body, `"verdict"`) {
+		t.Errorf("request body missing schema content, body=%s", body)
+	}
+}
+
+// TestGeminiStreamChat_NoSchemaOmitsResponseFields pins that without a
+// JSONSchema, no responseSchema / responseMimeType is sent (avoids
+// constraining unrelated calls).
+func TestGeminiStreamChat_NoSchemaOmitsResponseFields(t *testing.T) {
+	var mu sync.Mutex
+	var body string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := readBody(r)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseEvent(ssePartSpec{Text: "ok"}))
+	}))
+	defer srv.Close()
+
+	provider := newTestProvider(srv.URL)
+	ch, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{
+			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	for range ch {
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(body, "responseMimeType") {
+		t.Errorf("responseMimeType should be omitted, body=%s", body)
+	}
+	if strings.Contains(body, "responseSchema") {
+		t.Errorf("responseSchema should be omitted, body=%s", body)
 	}
 }
 

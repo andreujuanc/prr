@@ -71,13 +71,8 @@ func (g *GeminiProvider) ModelID() string { return g.Model }
 
 func (g *GeminiProvider) Capabilities() Capabilities {
 	return Capabilities{
-		PromptCaching: true,
-		// StructuredOutput is false until toNativeRequest reads
-		// ChatRequest.JSONSchema and sets responseSchema /
-		// responseMimeType on the wire. Wiring lands in the next
-		// commit; this flip stops callers from relying on a feature
-		// that does nothing today.
-		StructuredOutput:  false,
+		PromptCaching:     true,
+		StructuredOutput:  true,
 		ParallelToolCalls: true,
 		MaxContextTokens:  1_000_000,
 	}
@@ -200,9 +195,11 @@ type geminiSchema struct {
 
 // Generation config types
 type geminiGenConfig struct {
-	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
-	Temperature     *float64              `json:"temperature,omitempty"`
-	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	MaxOutputTokens  int                   `json:"maxOutputTokens,omitempty"`
+	Temperature      *float64              `json:"temperature,omitempty"`
+	ThinkingConfig   *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseMimeType string                `json:"responseMimeType,omitempty"`
+	ResponseSchema   json.RawMessage       `json:"responseSchema,omitempty"`
 }
 
 type geminiThinkingConfig struct {
@@ -311,6 +308,18 @@ func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
 
 	// Generation config: temperature, max tokens, thinking
 	native.GenerationConfig = g.buildGenConfig()
+
+	// Structured output: when a caller passes JSONSchema, ask Gemini
+	// to constrain decoding to the schema and emit JSON. The schema
+	// must already be in a Gemini-compatible OpenAPI-Schema shape;
+	// translation lives at the caller, not here.
+	if req.JSONSchema != nil && len(req.JSONSchema.Schema) > 0 {
+		if native.GenerationConfig == nil {
+			native.GenerationConfig = &geminiGenConfig{}
+		}
+		native.GenerationConfig.ResponseMimeType = "application/json"
+		native.GenerationConfig.ResponseSchema = req.JSONSchema.Schema
+	}
 
 	// Tool config: use VALIDATED mode for constrained decoding when tools are present
 	if len(req.Tools) > 0 {
