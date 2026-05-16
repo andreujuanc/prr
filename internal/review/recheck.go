@@ -623,7 +623,7 @@ func parseRecheckResult(original []state.DeepFinding, raw string) (*RecheckResul
 
 	var resp recheckResponse
 	if err := unmarshalLLMResponse([]byte(s), &resp); err != nil {
-		log.Printf("Recheck: failed to parse response: %v — keeping all findings", err)
+		log.Printf("Recheck: failed to parse response: %v — response prefix: %q — keeping all findings", err, previewForLog([]byte(s), 500))
 		return &RecheckResult{Findings: original}, nil
 	}
 

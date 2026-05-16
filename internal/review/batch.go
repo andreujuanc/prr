@@ -363,7 +363,7 @@ func ParseBatchResult(raw string) []BatchFileReview {
 
 	var results []BatchFileReview
 	if err := unmarshalLLMResponse([]byte(s), &results); err != nil {
-		log.Printf("Warning: failed to parse batch JSON: %v", err)
+		log.Printf("Warning: failed to parse batch JSON: %v — response prefix: %q", err, previewForLog([]byte(s), 500))
 		return nil
 	}
 	return results
