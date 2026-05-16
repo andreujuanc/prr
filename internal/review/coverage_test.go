@@ -26,7 +26,7 @@ func TestBuildCoverage_PerFileCounts(t *testing.T) {
 		{File: "b.go", ConfidenceScore: 60},
 	}
 
-	cov := BuildCoverage(aoiScan, findings, dismissals, nil, []string{"a.go", "b.go"})
+	cov := BuildCoverage(aoiScan, findings, dismissals, nil, []string{"a.go", "b.go"}, nil)
 	if cov == nil {
 		t.Fatal("expected non-nil coverage")
 	}
@@ -62,7 +62,7 @@ func TestBuildCoverage_OrphanFiles(t *testing.T) {
 		{File: "a.go", AreasOfInterest: []security.AreaOfInterest{{ID: "a1"}}},
 	}
 	// c.go is in scope but produced no AOIs → orphan.
-	cov := BuildCoverage(aoiScan, nil, nil, nil, []string{"a.go", "b.go", "c.go"})
+	cov := BuildCoverage(aoiScan, nil, nil, nil, []string{"a.go", "b.go", "c.go"}, nil)
 	if cov == nil {
 		t.Fatal("expected non-nil coverage")
 	}
@@ -90,7 +90,7 @@ func TestBuildCoverage_FailedAOIsAttributedToFile(t *testing.T) {
 			{ID: "b1"},
 		}},
 	}
-	cov := BuildCoverage(aoiScan, nil, nil, []string{"a1", "b1"}, []string{"a.go", "b.go"})
+	cov := BuildCoverage(aoiScan, nil, nil, []string{"a1", "b1"}, []string{"a.go", "b.go"}, nil)
 	if cov == nil {
 		t.Fatal("expected non-nil coverage")
 	}
@@ -112,7 +112,7 @@ func TestBuildCoverage_FailedAOIsAttributedToFile(t *testing.T) {
 }
 
 func TestBuildCoverage_EmptyInputsReturnsNil(t *testing.T) {
-	cov := BuildCoverage(nil, nil, nil, nil, nil)
+	cov := BuildCoverage(nil, nil, nil, nil, nil, nil)
 	if cov != nil {
 		t.Errorf("expected nil coverage on empty inputs, got %+v", cov)
 	}
@@ -126,7 +126,7 @@ func TestBuildCoverage_UnknownDismissConfidenceSkipped(t *testing.T) {
 		{File: "a.go", ConfidenceScore: 0},  // legacy entry, no confidence
 		{File: "a.go", ConfidenceScore: 80}, // counted
 	}
-	cov := BuildCoverage(aoiScan, nil, dismissals, nil, []string{"a.go"})
+	cov := BuildCoverage(aoiScan, nil, dismissals, nil, []string{"a.go"}, nil)
 	if cov == nil || len(cov.Files) != 1 {
 		t.Fatalf("expected 1 file in coverage, got %+v", cov)
 	}
@@ -148,7 +148,7 @@ func TestBuildCoverage_SortOrder(t *testing.T) {
 	dismissals := []state.DeepDismissal{
 		{File: "b.go", ConfidenceScore: 90},
 	}
-	cov := BuildCoverage(aoiScan, findings, dismissals, nil, []string{"a.go", "b.go", "c.go"})
+	cov := BuildCoverage(aoiScan, findings, dismissals, nil, []string{"a.go", "b.go", "c.go"}, nil)
 	if cov == nil || len(cov.Files) != 3 {
 		t.Fatalf("expected 3 files, got %+v", cov)
 	}
@@ -172,7 +172,7 @@ func TestBuildCoverage_SystemicFindingsExcluded(t *testing.T) {
 		{File: "multiple", Severity: "high", Systemic: true},
 		{File: "a.go", Severity: "medium"},
 	}
-	cov := BuildCoverage(aoiScan, findings, nil, nil, []string{"a.go"})
+	cov := BuildCoverage(aoiScan, findings, nil, nil, []string{"a.go"}, nil)
 	if cov == nil {
 		t.Fatal("expected non-nil coverage")
 	}
@@ -192,13 +192,69 @@ func TestBuildCoverage_MaxFindingSeverityForNitFinding(t *testing.T) {
 		{File: "a.go", AreasOfInterest: []security.AreaOfInterest{{ID: "a1"}}},
 	}
 	findings := []state.DeepFinding{{File: "a.go", Severity: "nit"}}
-	cov := BuildCoverage(aoiScan, findings, nil, nil, []string{"a.go"})
+	cov := BuildCoverage(aoiScan, findings, nil, nil, []string{"a.go"}, nil)
 	if cov == nil || len(cov.Files) != 1 {
 		t.Fatalf("expected 1 file in coverage, got %+v", cov)
 	}
 	if cov.Files[0].MaxFindingSeverity != "nit" {
 		t.Errorf("MaxFindingSeverity for nit finding: want %q, got %q",
 			"nit", cov.Files[0].MaxFindingSeverity)
+	}
+}
+
+// ── Skipped files (--review-mode=aoi-only) ──────────────────────────────
+
+func TestBuildCoverage_SkippedFilesSurfaced(t *testing.T) {
+	cov := BuildCoverage(nil, nil, nil, nil, nil, []string{"c.go", "b.go", "a.go"})
+	if cov == nil {
+		t.Fatal("expected non-nil coverage when skipped files are present")
+	}
+	want := []string{"a.go", "b.go", "c.go"} // sorted
+	if len(cov.SkippedFiles) != len(want) {
+		t.Fatalf("SkippedFiles: want %d entries, got %d (%v)", len(want), len(cov.SkippedFiles), cov.SkippedFiles)
+	}
+	for i, p := range want {
+		if cov.SkippedFiles[i] != p {
+			t.Errorf("SkippedFiles[%d]: want %q, got %q", i, p, cov.SkippedFiles[i])
+		}
+	}
+}
+
+func TestBuildCoverage_SkippedFilesDedup(t *testing.T) {
+	cov := BuildCoverage(nil, nil, nil, nil, nil, []string{"a.go", "a.go", "b.go", "a.go", ""})
+	if cov == nil {
+		t.Fatal("expected non-nil coverage")
+	}
+	want := []string{"a.go", "b.go"}
+	if len(cov.SkippedFiles) != len(want) {
+		t.Fatalf("SkippedFiles: want %d, got %d (%v)", len(want), len(cov.SkippedFiles), cov.SkippedFiles)
+	}
+	for i, p := range want {
+		if cov.SkippedFiles[i] != p {
+			t.Errorf("SkippedFiles[%d]: want %q, got %q", i, p, cov.SkippedFiles[i])
+		}
+	}
+}
+
+func TestBuildCoverage_SkippedAndOrphansDistinct(t *testing.T) {
+	// File present in scope with zero AOIs → orphan.
+	// File listed in skippedFiles but not in scope → still surfaces.
+	cov := BuildCoverage(
+		nil,
+		nil,
+		nil,
+		nil,
+		[]string{"orphan.go"},
+		[]string{"skipped.go"},
+	)
+	if cov == nil {
+		t.Fatal("expected non-nil coverage")
+	}
+	if len(cov.OrphanFiles) != 1 || cov.OrphanFiles[0] != "orphan.go" {
+		t.Errorf("OrphanFiles: want [orphan.go], got %v", cov.OrphanFiles)
+	}
+	if len(cov.SkippedFiles) != 1 || cov.SkippedFiles[0] != "skipped.go" {
+		t.Errorf("SkippedFiles: want [skipped.go], got %v", cov.SkippedFiles)
 	}
 }
 

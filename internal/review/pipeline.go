@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
@@ -53,6 +54,11 @@ type PRReviewOptions struct {
 	// into every Phase 3 deep-review prompt. Off by default — opt in
 	// via the --bug-priors CLI flag.
 	BugPriors bool
+
+	// ReviewMode controls which files reach Phase 3. See ReviewMode
+	// constants for available modes. Empty string uses the package
+	// default (currently ReviewModeFull).
+	ReviewMode ReviewMode
 }
 
 // PRReviewResult holds the output of a headless PR review.
@@ -202,6 +208,7 @@ func RunPRReview(
 		PR:                 pr,
 		Debug:              opts.Debug,
 		BugPriors:          opts.BugPriors,
+		ReviewMode:         opts.ReviewMode,
 	}, rr)
 	if err != nil {
 		return nil, err
@@ -599,6 +606,12 @@ type CoreOptions struct {
 	// also folded into the deep-review cache key so a new fix-commit
 	// landing between runs invalidates stale entries cleanly.
 	BugPriors bool
+
+	// ReviewMode controls which files reach Phase 3. ReviewModeAOIOnly
+	// skips files without AOIs entirely; ReviewModeFull (the default)
+	// reviews them through the fallback diff batches. Empty string
+	// uses the package default.
+	ReviewMode ReviewMode
 }
 
 // CoreResult holds the output of the shared review pipeline core.
@@ -839,18 +852,51 @@ func RunReviewCore(
 		log.Printf("AOI routing: %s", routeResult.FormatSummary())
 	}
 
-	// Build fallback batches for files WITHOUT AOIs
+	// Resolve the review mode for this run. Empty → package default
+	// (currently ReviewModeFull). Invalid values are rejected upstream
+	// by ParseReviewMode; here we only need to branch on the resolved
+	// value. The aoi-only path skips fallback batches entirely so the
+	// AOI scan is the sole signal for "what gets reviewed."
+	mode := opts.ReviewMode
+	if mode == "" {
+		mode = defaultReviewMode
+	}
+
+	// Build fallback batches for files WITHOUT AOIs (full mode only).
+	// In aoi-only mode the non-AOI files are intentionally skipped —
+	// tracked under skippedNonAOI so the coverage report can surface
+	// what was left unreviewed.
 	fallbackDiffs := make(map[string]string)
+	var skippedNonAOI []string
 	for fp, diff := range opts.RawDiffs {
-		if !aoiCoveredFiles[fp] && !config.ShouldExcludeFromReview(fp) {
+		if config.ShouldExcludeFromReview(fp) {
+			continue
+		}
+		if aoiCoveredFiles[fp] {
+			continue
+		}
+		switch mode {
+		case ReviewModeAOIOnly:
+			skippedNonAOI = append(skippedNonAOI, fp)
+		default:
 			fallbackDiffs[fp] = diff
 		}
 	}
+	sort.Strings(skippedNonAOI)
 	fallbackBatches := BuildBatches(fallbackDiffs)
 
 	totalCalls := len(reviewCalls) + len(fallbackBatches)
 	if totalCalls == 0 {
+		if mode == ReviewModeAOIOnly && len(skippedNonAOI) > 0 {
+			return nil, fmt.Errorf(
+				"no files to review: --review-mode=aoi-only and no AOIs were found; %d file(s) skipped (use --review-mode=full to review them)",
+				len(skippedNonAOI))
+		}
 		return nil, fmt.Errorf("no files to review")
+	}
+
+	if mode == ReviewModeAOIOnly && len(skippedNonAOI) > 0 {
+		log.Printf("review-mode=aoi-only: %d file(s) skipped (no AOIs)", len(skippedNonAOI))
 	}
 
 	// Initialize batch list in reporter. Kind lets the progress UI
@@ -1044,7 +1090,7 @@ func RunReviewCore(
 	for f := range opts.RawDiffs {
 		filesInScope = append(filesInScope, f)
 	}
-	coverage := BuildCoverage(aoiScanResults, deepFindings, deepDismissals, failedAOIIDs, filesInScope)
+	coverage := BuildCoverage(aoiScanResults, deepFindings, deepDismissals, failedAOIIDs, filesInScope, skippedNonAOI)
 
 	// ── Phase 2: Synthesis ───────────────────────────────────────
 	// SkipSynthesis (TUI default): return immediately with DeepFindings

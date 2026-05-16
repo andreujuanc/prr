@@ -433,6 +433,7 @@ func runReview(debug bool, args []string) {
 	quiet := false
 	reviewDebug := debug
 	bugPriors := false
+	var reviewModeStr string
 
 	// Parse flags and find the PR number
 	var prNumber string
@@ -449,12 +450,20 @@ func runReview(debug bool, args []string) {
 			reviewDebug = true
 		} else if arg == "--bug-priors" {
 			bugPriors = true
+		} else if after, ok := strings.CutPrefix(arg, "--review-mode="); ok {
+			reviewModeStr = after
 		} else if arg == "--help" || arg == "-h" {
 			printReviewUsage()
 			os.Exit(0)
 		} else if !strings.HasPrefix(arg, "-") {
 			prNumber = arg
 		}
+	}
+
+	reviewMode, err := review.ParseReviewMode(reviewModeStr)
+	if err != nil {
+		printError(err)
+		os.Exit(1)
 	}
 
 	if prNumber == "" {
@@ -527,6 +536,7 @@ func runReview(debug bool, args []string) {
 		CustomInstructions: config.LoadCustomInstructions(),
 		Debug:              reviewDebug,
 		BugPriors:          bugPriors,
+		ReviewMode:         reviewMode,
 	}
 
 	// Default: shared progress TUI (same as `prr audit`). Falls back
@@ -707,7 +717,8 @@ func printReviewUsage() {
 	fmt.Fprintf(os.Stderr, "    --quiet, -q          Suppress terminal output (use with --output)\n")
 	fmt.Fprintf(os.Stderr, "    --debug              Print LLM tool calls, user messages, and responses\n")
 	fmt.Fprintf(os.Stderr, "                         (compact by default; PRR_DEBUG_VERBOSE=1 for full prompts)\n")
-	fmt.Fprintf(os.Stderr, "    --bug-priors         Inject recent fix-shaped commits as known-failure priors\n\n")
+	fmt.Fprintf(os.Stderr, "    --bug-priors         Inject recent fix-shaped commits as known-failure priors\n")
+	fmt.Fprintf(os.Stderr, "    --review-mode=<mode> full (default) reviews every file; aoi-only skips files without AOIs\n\n")
 }
 
 func createAIClient(cfg *config.Config) ai.Client {
