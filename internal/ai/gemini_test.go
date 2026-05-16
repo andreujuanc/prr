@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -403,7 +404,43 @@ func TestGeminiStreamChat_HTTPError(t *testing.T) {
 	}
 }
 
-func TestGeminiStreamChat_RetryOn429(t *testing.T) {
+// TestGeminiStreamChat_429ReturnsTransientError pins the contract that
+// a bare StreamChat call returns a *TransientError on 429 — without any
+// inline retry. Callers that want retries wrap in RetryTransient.
+func TestGeminiStreamChat_429ReturnsTransientError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		fmt.Fprint(w, `{"error":{"message":"rate limited","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"7s"}]}}`)
+	}))
+	defer srv.Close()
+
+	provider := newTestProvider(srv.URL)
+
+	_, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{
+			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error on 429, got nil")
+	}
+	var te *TransientError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *TransientError, got %T: %v", err, err)
+	}
+	if te.RetryAfter != 7*time.Second {
+		t.Errorf("RetryAfter = %v, want 7s", te.RetryAfter)
+	}
+	if !IsTransientError(err, context.Background()) {
+		t.Error("IsTransientError should report true for a 429 TransientError")
+	}
+}
+
+// TestGeminiStreamChat_RetryTransientHonoursRetryAfter integrates the
+// retry path: a server that returns 429 with retryDelay=0s then 200
+// is recovered by RetryTransient. Mirrors the production wrap used by
+// every call site in review/, audit/, security/, project/, etc.
+func TestGeminiStreamChat_RetryTransientHonoursRetryAfter(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
 
@@ -425,21 +462,22 @@ func TestGeminiStreamChat_RetryOn429(t *testing.T) {
 
 	provider := newTestProvider(srv.URL)
 
-	ch, err := provider.StreamChat(context.Background(), ChatRequest{
-		Messages: []ProviderMessage{
-			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
-		},
+	resp, err := RetryTransient(context.Background(), 3, "gemini-test", func(ctx context.Context) (*ChatResponse, error) {
+		return provider.Chat(ctx, ChatRequest{
+			Messages: []ProviderMessage{
+				{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+			},
+		})
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	text, _, err := collectText(ch)
-	if err != nil {
-		t.Fatalf("unexpected stream error: %v", err)
+	if len(resp.Content) == 0 {
+		t.Fatal("empty response after retry")
 	}
-	if text != "retried ok" {
-		t.Errorf("got %q, want %q", text, "retried ok")
+	tb, ok := resp.Content[0].(TextBlock)
+	if !ok || tb.Text != "retried ok" {
+		t.Errorf("got %#v, want TextBlock{Text:\"retried ok\"}", resp.Content[0])
 	}
 
 	mu.Lock()

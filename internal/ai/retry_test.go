@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -231,4 +232,102 @@ func TestRetryTransient_PerCallDeadlineRetries(t *testing.T) {
 	if result != 42 {
 		t.Errorf("result = %d, want 42", result)
 	}
+}
+
+// TestTransientError_IsTransient pins that *TransientError is always
+// classified as retryable, even when its message would not match the
+// regex (e.g. a server-side 401 wrapped accidentally).
+func TestTransientError_IsTransient(t *testing.T) {
+	te := &TransientError{Err: errors.New("something opaque")}
+	if !IsTransientError(te, context.Background()) {
+		t.Error("*TransientError must always be classified transient")
+	}
+	wrapped := fmt.Errorf("outer: %w", te)
+	if !IsTransientError(wrapped, context.Background()) {
+		t.Error("wrapped *TransientError must still be classified transient")
+	}
+}
+
+// TestTransientSleep_HonorsRetryAfter pins that a server-supplied
+// RetryAfter overrides the quadratic curve.
+func TestTransientSleep_HonorsRetryAfter(t *testing.T) {
+	te := &TransientError{Err: errors.New("429"), RetryAfter: 3 * time.Second}
+	got := transientSleep(te, 1)
+	if got != 3*time.Second {
+		t.Errorf("transientSleep with RetryAfter=3s = %v, want 3s (not the quadratic 1s)", got)
+	}
+}
+
+// TestTransientSleep_NoHintFallsBackToQuadratic pins that a
+// TransientError without a RetryAfter uses the existing backoff.
+func TestTransientSleep_NoHintFallsBackToQuadratic(t *testing.T) {
+	te := &TransientError{Err: errors.New("500")}
+	got := transientSleep(te, 2)
+	if got != 4*time.Second {
+		t.Errorf("transientSleep without hint at attempt 2 = %v, want 4s (quadratic)", got)
+	}
+}
+
+// TestTransientSleep_CapsAt60s pins that a misconfigured server
+// claiming a 1h retry-after is bounded to keep the pipeline moving.
+func TestTransientSleep_CapsAt60s(t *testing.T) {
+	te := &TransientError{Err: errors.New("429"), RetryAfter: 1 * time.Hour}
+	got := transientSleep(te, 1)
+	if got != 60*time.Second {
+		t.Errorf("transientSleep with huge RetryAfter = %v, want 60s cap", got)
+	}
+}
+
+// TestParseGeminiRetryDelay covers Gemini's body-embedded retryDelay
+// shape and the absent case (returns 0).
+func TestParseGeminiRetryDelay(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want time.Duration
+	}{
+		{"integer seconds", `{"error":{"details":[{"@type":"x","retryDelay":"41s"}]}}`, 41 * time.Second},
+		{"fractional seconds", `{"error":{"details":[{"@type":"x","retryDelay":"0.5s"}]}}`, 500 * time.Millisecond},
+		{"zero floor", `{"error":{"details":[{"@type":"x","retryDelay":"0s"}]}}`, 100 * time.Millisecond},
+		{"absent", `{"error":{"details":[]}}`, 0},
+		{"malformed", `not json`, 0},
+	}
+	for _, c := range cases {
+		got := parseGeminiRetryDelay([]byte(c.body))
+		if got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestParseHTTPRetryAfter covers OpenAI / generic Retry-After parsing:
+// plain seconds, HTTP-date, and absent.
+func TestParseHTTPRetryAfter(t *testing.T) {
+	t.Run("seconds", func(t *testing.T) {
+		h := http.Header{"Retry-After": []string{"12"}}
+		if got := parseHTTPRetryAfter(h); got != 12*time.Second {
+			t.Errorf("got %v, want 12s", got)
+		}
+	})
+	t.Run("absent", func(t *testing.T) {
+		if got := parseHTTPRetryAfter(http.Header{}); got != 0 {
+			t.Errorf("got %v, want 0", got)
+		}
+	})
+	t.Run("http date in future", func(t *testing.T) {
+		future := time.Now().Add(15 * time.Second).UTC().Format(http.TimeFormat)
+		h := http.Header{"Retry-After": []string{future}}
+		got := parseHTTPRetryAfter(h)
+		// Allow ±2s slack for scheduling jitter.
+		if got < 12*time.Second || got > 17*time.Second {
+			t.Errorf("got %v, want ~15s", got)
+		}
+	})
+	t.Run("http date in past floors to 100ms", func(t *testing.T) {
+		past := time.Now().Add(-1 * time.Hour).UTC().Format(http.TimeFormat)
+		h := http.Header{"Retry-After": []string{past}}
+		if got := parseHTTPRetryAfter(h); got != 100*time.Millisecond {
+			t.Errorf("got %v, want 100ms", got)
+		}
+	})
 }

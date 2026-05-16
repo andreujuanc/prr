@@ -15,6 +15,12 @@ import (
 	"time"
 )
 
+// Gemini retries live in retry.go's RetryTransient. doHTTPRequest
+// returns a *TransientError for 429 / 5xx (with the parsed retryDelay
+// when present) so callers wrapped in RetryTransient honour the
+// upstream's preferred backoff. Direct, unwrapped callers see the
+// underlying error and fail fast.
+
 // GeminiProvider implements Provider for the Google Gemini API.
 // It handles single request/response translation; the iterative
 // tool-calling loop lives in Agent.
@@ -384,58 +390,52 @@ func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.
 	}
 	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", base, g.Model)
 
-	maxRetries := 2
-	var resp *http.Response
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("gemini: failed to create request: %w", err)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("gemini: failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-goog-api-key", g.APIKey)
+	// x-server-timeout hints to the backend how long we'll wait, so it
+	// can shed load gracefully instead of holding a hung worker after
+	// we've given up. Matches googleapis/go-genai's buildRequest
+	// pattern; value is seconds-until-deadline rounded up. Omitted when
+	// ctx has no deadline.
+	if deadline, ok := ctx.Deadline(); ok {
+		seconds := int64(math.Ceil(time.Until(deadline).Seconds()))
+		if seconds > 0 {
+			httpReq.Header.Set("x-server-timeout", strconv.FormatInt(seconds, 10))
 		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("x-goog-api-key", g.APIKey)
-		// x-server-timeout hints to the backend how long we'll wait, so
-		// it can shed load gracefully instead of holding a hung worker
-		// after we've given up. Matches googleapis/go-genai's
-		// buildRequest pattern; value is seconds-until-deadline rounded
-		// up. Omitted when ctx has no deadline.
-		if deadline, ok := ctx.Deadline(); ok {
-			seconds := int64(math.Ceil(time.Until(deadline).Seconds()))
-			if seconds > 0 {
-				httpReq.Header.Set("x-server-timeout", strconv.FormatInt(seconds, 10))
-			}
-		}
-
-		resp, err = g.httpClient().Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("gemini: request failed: %w", err)
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-
-		errBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attempt < maxRetries {
-			delay := parseRetryDelay(errBody)
-			log.Printf("Gemini API rate limited (HTTP %d), retrying in %v (attempt %d/%d)",
-				resp.StatusCode, delay, attempt+1, maxRetries)
-			select {
-			case <-time.After(delay):
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-
-		log.Printf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
-		return nil, fmt.Errorf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
 	}
 
-	// Unreachable: the loop always returns from the StatusOK branch or the error branch.
-	// If we somehow get here, return a clear error rather than a closed response body.
-	return nil, fmt.Errorf("gemini: exhausted retries without a response")
+	resp, err := g.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: request failed: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+
+	errBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	apiErr := fmt.Errorf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+
+	switch {
+	case resp.StatusCode == 429 || resp.StatusCode == 503:
+		delay := parseGeminiRetryDelay(errBody)
+		if delay == 0 {
+			delay = parseHTTPRetryAfter(resp.Header)
+		}
+		log.Printf("Gemini API rate limited (HTTP %d), retryDelay=%v", resp.StatusCode, delay)
+		return nil, &TransientError{Err: apiErr, RetryAfter: delay}
+	case resp.StatusCode >= 500 && resp.StatusCode < 600:
+		log.Printf("Gemini API server error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, &TransientError{Err: apiErr}
+	default:
+		log.Printf("Gemini API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, apiErr
+	}
 }
 
 // ── SSE stream parsing ──────────────────────────────────────────────────
@@ -581,38 +581,3 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 
 //go:fix inline
 func boolPtr(v bool) *bool { return new(v) }
-
-// parseRetryDelay extracts the retry delay from a Gemini error response body.
-// Falls back to 5 seconds if parsing fails.
-func parseRetryDelay(body []byte) time.Duration {
-	const fallback = 5 * time.Second
-
-	var errResp struct {
-		Error struct {
-			Details []struct {
-				Type       string `json:"@type"`
-				RetryDelay string `json:"retryDelay"`
-			} `json:"details"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &errResp); err != nil {
-		return fallback
-	}
-	for _, d := range errResp.Error.Details {
-		if d.RetryDelay != "" {
-			// Format is like "41s" or "41.5s"
-			d.RetryDelay = strings.TrimSuffix(d.RetryDelay, "s")
-			if secs, err := strconv.ParseFloat(d.RetryDelay, 64); err == nil {
-				if secs <= 0 {
-					return 100 * time.Millisecond // immediate retry with small buffer
-				}
-				// Cap at 60 seconds to avoid unreasonable waits
-				if secs > 60 {
-					secs = 60
-				}
-				return time.Duration(secs * float64(time.Second))
-			}
-		}
-	}
-	return fallback
-}

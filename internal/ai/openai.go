@@ -403,48 +403,41 @@ func (o *OpenAIProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.
 	}
 	url := base + "/chat/completions"
 
-	maxRetries := 2
-	var resp *http.Response
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("openai: failed to create request: %w", err)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
-		for k, v := range o.ExtraHeaders {
-			httpReq.Header.Set(k, v)
-		}
-
-		resp, err = o.httpClient().Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("openai: request failed: %w", err)
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-
-		errBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attempt < maxRetries {
-			delay := 2 * time.Second * time.Duration(attempt+1)
-			log.Printf("OpenAI API rate limited (HTTP %d), retrying in %v (attempt %d/%d)",
-				resp.StatusCode, delay, attempt+1, maxRetries)
-			select {
-			case <-time.After(delay):
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-
-		log.Printf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(errBody))
-		return nil, fmt.Errorf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("openai: failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
+	for k, v := range o.ExtraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 
-	return nil, fmt.Errorf("openai: exhausted retries without a response")
+	resp, err := o.httpClient().Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai: request failed: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+
+	errBody, _ := io.ReadAll(resp.Body)
+	delay := parseHTTPRetryAfter(resp.Header)
+	resp.Body.Close()
+	apiErr := fmt.Errorf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+
+	switch {
+	case resp.StatusCode == 429 || resp.StatusCode == 503:
+		log.Printf("OpenAI API rate limited (HTTP %d), retryAfter=%v", resp.StatusCode, delay)
+		return nil, &TransientError{Err: apiErr, RetryAfter: delay}
+	case resp.StatusCode >= 500 && resp.StatusCode < 600:
+		log.Printf("OpenAI API server error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, &TransientError{Err: apiErr}
+	default:
+		log.Printf("OpenAI API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+		return nil, apiErr
+	}
 }
 
 // ── SSE stream parsing ──────────────────────────────────────────────────

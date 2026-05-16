@@ -2,11 +2,14 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,6 +36,34 @@ var transientStatusCodeRe = regexp.MustCompile(`\b(429|500|502|503|504)\b`)
 var transientPhraseRe = regexp.MustCompile(
 	`rate limit|timeout|temporary failure|connection reset|\beof\b`,
 )
+
+// TransientError marks an error that should be retried and may carry a
+// server-provided retry hint. Providers return this for 429 / 5xx so
+// the outer RetryTransient wrapper can honour the upstream's preferred
+// wait — Gemini's body-embedded retryDelay, OpenAI's Retry-After
+// header, etc. — instead of always falling back to the quadratic curve.
+//
+// RetryAfter == 0 means "no hint, use the default backoff". A non-zero
+// value is capped at 60s by the consumer (TransientSleep) to bound
+// worst-case latency on misconfigured servers.
+type TransientError struct {
+	Err        error
+	RetryAfter time.Duration
+}
+
+func (e *TransientError) Error() string {
+	if e == nil || e.Err == nil {
+		return "transient error"
+	}
+	return e.Err.Error()
+}
+
+func (e *TransientError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // IsTransientError reports whether err is the kind that may succeed
 // on retry, given that parentCtx is still alive. Parent cancellation
@@ -67,6 +98,11 @@ func IsTransientError(err error, parentCtx context.Context) bool {
 	if errors.Is(err, io.EOF) {
 		return true
 	}
+	// Typed TransientError from a provider — always transient.
+	var te *TransientError
+	if errors.As(err, &te) {
+		return true
+	}
 	s := strings.ToLower(err.Error())
 	if transientStatusCodeRe.MatchString(s) {
 		return true
@@ -85,9 +121,32 @@ func TransientBackoff(attempt int) time.Duration {
 	return time.Duration(attempt*attempt) * time.Second
 }
 
+// maxRetryAfter caps a server-supplied retry hint. A misbehaving
+// server could otherwise stall the pipeline for hours.
+const maxRetryAfter = 60 * time.Second
+
+// transientSleep returns the wait before the next retry. When err
+// carries a server hint via TransientError.RetryAfter, that wins
+// (clamped to [100ms, 60s]); otherwise fall through to the quadratic
+// curve.
+func transientSleep(err error, attempt int) time.Duration {
+	var te *TransientError
+	if errors.As(err, &te) && te.RetryAfter > 0 {
+		d := te.RetryAfter
+		if d < 100*time.Millisecond {
+			d = 100 * time.Millisecond
+		}
+		if d > maxRetryAfter {
+			d = maxRetryAfter
+		}
+		return d
+	}
+	return TransientBackoff(attempt)
+}
+
 // RetryTransient calls fn up to maxAttempts times, retrying when
 // IsTransientError(err, parentCtx) returns true. Each retry waits
-// TransientBackoff(attempt) before the next call, respecting
+// transientSleep(err, attempt) before the next call, respecting
 // parentCtx cancellation.
 //
 // On terminal error (parent canceled, non-transient error, or
@@ -128,7 +187,7 @@ func RetryTransient[T any](
 		if attempt >= maxAttempts {
 			break
 		}
-		backoff := TransientBackoff(attempt)
+		backoff := transientSleep(err, attempt)
 		log.Printf("%s: transient error on attempt %d/%d (%v); retrying in %v",
 			label, attempt, maxAttempts, err, backoff)
 		select {
@@ -138,4 +197,68 @@ func RetryTransient[T any](
 		}
 	}
 	return zero, fmt.Errorf("%s: exhausted %d attempts: %w", label, maxAttempts, lastErr)
+}
+
+// ── Retry-After parsing ─────────────────────────────────────────────────
+
+// parseGeminiRetryDelay extracts the retryDelay from a Gemini error
+// response body. Returns 0 when no hint is present.
+//
+// Gemini's 429 body shape:
+//
+//	{"error":{"details":[{"@type":"...RetryInfo","retryDelay":"41s"}]}}
+//
+// The value is "<seconds>s" — possibly fractional ("41.5s").
+func parseGeminiRetryDelay(body []byte) time.Duration {
+	var errResp struct {
+		Error struct {
+			Details []struct {
+				Type       string `json:"@type"`
+				RetryDelay string `json:"retryDelay"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return 0
+	}
+	for _, d := range errResp.Error.Details {
+		if d.RetryDelay == "" {
+			continue
+		}
+		v := strings.TrimSuffix(d.RetryDelay, "s")
+		secs, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			continue
+		}
+		if secs <= 0 {
+			return 100 * time.Millisecond
+		}
+		return time.Duration(secs * float64(time.Second))
+	}
+	return 0
+}
+
+// parseHTTPRetryAfter extracts a wait duration from a Retry-After
+// header. RFC 7231 allows either a decimal number of seconds or an
+// HTTP-date (RFC 1123 / RFC 850 / ANSI C asctime). Returns 0 when
+// the header is absent or unparseable.
+func parseHTTPRetryAfter(h http.Header) time.Duration {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseFloat(v, 64); err == nil {
+		if secs <= 0 {
+			return 100 * time.Millisecond
+		}
+		return time.Duration(secs * float64(time.Second))
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		d := time.Until(t)
+		if d <= 0 {
+			return 100 * time.Millisecond
+		}
+		return d
+	}
+	return 0
 }
