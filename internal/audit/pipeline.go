@@ -111,18 +111,6 @@ func concurrencyOr(n, defaultVal int) int {
 	return n
 }
 
-// priorsHashOrEmpty returns sha256 of the rendered bug-priors content
-// when present, otherwise empty string. Empty maps onto "no priors"
-// in the cache key so flipping --bug-priors invalidates cleanly while
-// keeping the off-path legacy-equivalent.
-func priorsHashOrEmpty(s string) string {
-	if s == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
 // Result holds the output of an audit run.
 type Result struct {
 	// FilesScanned is the number of files that passed Phase 1 filtering.
@@ -241,7 +229,7 @@ func Run(
 	// byte-identical to today.
 	var bugPriorsContent string
 	if opts.BugPriors && opts.RepoRoot != "" {
-		rendered, _ := bugpriors.Extract(opts.RepoRoot, 30)
+		rendered, _ := bugpriors.Extract(opts.RepoRoot, bugpriors.DefaultLookback)
 		bugPriorsContent = rendered
 	}
 
@@ -657,7 +645,7 @@ func Run(
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbgw.Phase("PHASE 3b: Recheck")
 	if len(findings) > 0 {
-		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit", priorsHashOrEmpty(bugPriorsContent))
+		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit", bugpriors.Hash(bugPriorsContent))
 		if !opts.NoCache {
 			if raw := auditState.GetRecheckCache(recheckKey); raw != nil {
 				var cached []state.DeepFinding

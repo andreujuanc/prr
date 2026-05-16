@@ -161,6 +161,32 @@ func TestBuildCoverage_SortOrder(t *testing.T) {
 	}
 }
 
+func TestBuildCoverage_SystemicFindingsExcluded(t *testing.T) {
+	aoiScan := []security.AOIScanResult{
+		{File: "a.go", AreasOfInterest: []security.AreaOfInterest{{ID: "a1"}}},
+	}
+	findings := []state.DeepFinding{
+		// Systemic finding emerges from synthesis with File="multiple";
+		// counting it per-file would inflate a.go's findings count
+		// AND create a phantom "multiple" row.
+		{File: "multiple", Severity: "high", Systemic: true},
+		{File: "a.go", Severity: "medium"},
+	}
+	cov := BuildCoverage(aoiScan, findings, nil, nil, []string{"a.go"})
+	if cov == nil {
+		t.Fatal("expected non-nil coverage")
+	}
+	for _, fc := range cov.Files {
+		if fc.File == "multiple" {
+			t.Errorf("systemic finding leaked into per-file rows: %+v", fc)
+		}
+	}
+	// a.go should show its real, non-systemic finding count.
+	if len(cov.Files) != 1 || cov.Files[0].File != "a.go" || cov.Files[0].Findings != 1 {
+		t.Errorf("a.go: want 1 finding, got %+v", cov.Files)
+	}
+}
+
 func TestBuildCoverage_MaxFindingSeverityForNitFinding(t *testing.T) {
 	aoiScan := []security.AOIScanResult{
 		{File: "a.go", AreasOfInterest: []security.AreaOfInterest{{ID: "a1"}}},

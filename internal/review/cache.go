@@ -21,10 +21,12 @@ import (
 // computeRecheckCacheKey in audit/pipeline.go.
 //
 // priorsHash is sha256 of the bug-priors content injected at runtime
-// when --bug-priors is enabled. Empty string when disabled — the key
-// reduces to the legacy shape, so flipping the flag invalidates the
-// cache cleanly. New fix commits → new priors → new hash → fresh
-// review, even when file content and AOI are unchanged.
+// when --bug-priors is enabled (empty when disabled). Folded in here
+// so new fix commits → new priors → new hash → fresh review, even
+// when file content and AOI are unchanged. The parameter's presence
+// changes the key shape from the legacy version, so the first run
+// after this lands is a one-time re-review; subsequent flag-off runs
+// all match each other.
 func IndividualCacheKey(fileContent string, aoi security.AreaOfInterest, focusDimensions []string, priorsHash string) string {
 	h := sha256.New()
 	h.Write([]byte(fileContent))

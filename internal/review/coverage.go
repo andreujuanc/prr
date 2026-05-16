@@ -90,6 +90,13 @@ func BuildCoverage(
 	}
 
 	for _, f := range findings {
+		// Systemic findings represent cross-file patterns synthesised
+		// from multiple per-file findings — they don't attribute to a
+		// single file (their File field is the "multiple" sentinel).
+		// Counting them per-file would distort the coverage view.
+		if f.Systemic {
+			continue
+		}
 		b := get(f.File)
 		if b == nil {
 			continue

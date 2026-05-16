@@ -898,7 +898,7 @@ func RunReviewCore(
 		// treats empty as "no priors section", so a miss costs nothing.
 		var bugPriorsContent string
 		if opts.BugPriors && opts.RepoRoot != "" {
-			rendered, _ := bugpriors.Extract(opts.RepoRoot, 30)
+			rendered, _ := bugpriors.Extract(opts.RepoRoot, bugpriors.DefaultLookback)
 			bugPriorsContent = rendered
 		}
 
@@ -1028,11 +1028,11 @@ func RunReviewCore(
 		}
 	}
 
-	// Coverage is computed once here from the inputs already in
-	// memory (AOI scan, findings, dismissals, failed AOIs, diff
-	// files). Stamped onto StructuredReview when synthesis runs, or
-	// surfaced through CoreResult.Coverage otherwise — see Commit 6
-	// for how downstream renders it.
+	// Coverage is computed deterministically from inputs already in
+	// memory — never authored by the LLM, so it stays trustworthy
+	// even when synthesis hallucinates. Stamped onto StructuredReview
+	// when synthesis runs; surfaced through CoreResult.Coverage in
+	// the SkipSynthesis / NoSynthesis paths.
 	filesInScope := make([]string, 0, len(opts.RawDiffs))
 	for f := range opts.RawDiffs {
 		filesInScope = append(filesInScope, f)

@@ -1,8 +1,6 @@
 package review
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,20 +13,9 @@ import (
 	"context"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/bugpriors"
 	"github.com/andreujuanc/prr/internal/state"
 )
-
-// priorsHash hashes the bug-priors prompt section into the cache key
-// material so that flipping --bug-priors or shipping a new fix-commit
-// invalidates stale entries. Empty input → empty string (a deliberate
-// sentinel that the cache helpers treat as "no priors").
-func priorsHash(s string) string {
-	if s == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
 
 // ExecuteOptions configures RunReviewCalls.
 type ExecuteOptions struct {
@@ -162,7 +149,7 @@ func RunReviewCalls(
 			// Check cache (individual calls only — grouped calls have unstable
 			// cache keys because the group composition changes when any member
 			// file is modified, orphaning the old cache entry).
-			cacheKey := ComputeCacheKey(call, opts.FocusDimensions, priorsHash(opts.BugPriors))
+			cacheKey := ComputeCacheKey(call, opts.FocusDimensions, bugpriors.Hash(opts.BugPriors))
 			if !opts.NoCache && opts.CacheGet != nil && call.Type == "individual" {
 				if cached := opts.CacheGet(cacheKey); cached != nil {
 					resultsCh <- callResult{index: i, result: cached, fromCache: true}

@@ -11,6 +11,8 @@ package bugpriors
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -18,9 +20,26 @@ import (
 	"time"
 )
 
+// DefaultLookback is the number of commits the extractor scans by
+// default. Roughly two weeks of activity for a single-author
+// codebase, long enough to surface recurring bug classes without
+// burying the most-recent failures.
+const DefaultLookback = 30
+
 // Default cap on rendered priors. Beyond this the oldest matching
 // subjects are dropped first so the most-recent failures dominate.
 const maxRendered = 20
+
+// Hash returns a deterministic identifier for rendered priors,
+// suitable for folding into cache keys. Empty input → empty string,
+// which the cache helpers treat as "no priors" (legacy-equivalent).
+func Hash(s string) string {
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
 
 // subjectPrefixRE matches the leading conventional-commit-style
 // prefix on subjects worth scanning ("fix:", "bug(scope):",

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -31,7 +32,7 @@ func TestFilterFixShaped(t *testing.T) {
 		"revert: previous release",
 		"feat(api): handle timeout properly",
 	}
-	if !equalStrings(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("filterFixShaped mismatch\n got:  %#v\n want: %#v", got, want)
 	}
 }
@@ -39,7 +40,7 @@ func TestFilterFixShaped(t *testing.T) {
 func TestDedupe(t *testing.T) {
 	subjects := []string{
 		"fix: nil deref in handler",
-		"fix: nil deref in handler", // exact dup
+		"fix: nil deref in handler",     // exact dup
 		"FIX:  nil   deref  in handler", // whitespace + case variant
 		"audit: nil deref in handler",   // prefix-only differs — should dedup
 		"fix: cache-key gap",            // distinct
@@ -49,7 +50,7 @@ func TestDedupe(t *testing.T) {
 		"fix: nil deref in handler",
 		"fix: cache-key gap",
 	}
-	if !equalStrings(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("dedupe mismatch\n got:  %#v\n want: %#v", got, want)
 	}
 }
@@ -199,16 +200,4 @@ func pathEnv() string {
 		return p
 	}
 	return "/usr/bin:/bin:/usr/local/bin"
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
