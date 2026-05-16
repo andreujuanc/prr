@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
@@ -219,9 +220,20 @@ func summarizeBoundaries(
 
 	var out []state.Boundary
 	if err := json.Unmarshal([]byte(js), &out); err != nil {
-		return nil, fmt.Errorf("parse JSON: %w", err)
+		return nil, fmt.Errorf("parse JSON: %w (snippet: %s)", err, jsonSnippet(js))
 	}
 	return out, nil
+}
+
+// jsonSnippet returns a short, log-safe excerpt of an LLM JSON response
+// for use in error messages. Capped so a multi-KB blob doesn't blow up
+// the error string.
+func jsonSnippet(s string) string {
+	const max = 240
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // extractJSONArray pulls the first balanced `[...]` substring from raw
@@ -512,18 +524,16 @@ func lastLineFromRange(s string) int {
 	return n
 }
 
-// atoiSafe trims whitespace and parses an int without panicking on
-// non-numeric input.
+// atoiSafe trims whitespace and parses an int. Uses strconv.Atoi so
+// trailing junk (e.g., "12foo") is a rejection, not a silent partial
+// parse — important for boundary range strings like "12-34" where the
+// downstream code branches on the parsed value.
 func atoiSafe(s string) (int, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, fmt.Errorf("empty")
 	}
-	var n int
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
-		return 0, err
-	}
-	return n, nil
+	return strconv.Atoi(s)
 }
 
 // MergeBoundaryAOIs inserts synthetic boundary-coverage AOIs into the

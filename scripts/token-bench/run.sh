@@ -45,7 +45,11 @@ score_output() {
 run_one() {
   local cond="$1" iter="$2"
   local tmpdir
-  tmpdir="$(mktemp -d /tmp/token-bench.XXXXXX)"
+  tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/token-bench.XXXXXX")"
+  # Clean up on any exit path (success, error, Ctrl+C, SIGTERM). The
+  # trap is cleared right before normal return so callers can rerun
+  # without inheriting state.
+  trap 'rm -rf "$tmpdir"' EXIT INT TERM
   cp -r "$FIXTURE/." "$tmpdir/"
   local raw_path="$RESULTS/outputs/${cond}-${iter}.jsonl"
   local out_path="$RESULTS/outputs/${cond}-${iter}.md"
@@ -77,6 +81,7 @@ run_one() {
   if [[ -z "$result_json" ]]; then
     echo "  WARN: no result event for $cond-$iter (see $raw_path)" >&2
     rm -rf "$tmpdir"
+    trap - EXIT INT TERM
     return 1
   fi
 
@@ -97,6 +102,7 @@ run_one() {
     "$cond" "$iter" "$input_tok" "$output_tok" "$cache_read" "$cost" "$caught"
 
   rm -rf "$tmpdir"
+  trap - EXIT INT TERM
 }
 
 for cond in $CONDITIONS; do

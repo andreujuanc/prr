@@ -1,6 +1,8 @@
 package review
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -446,7 +448,13 @@ func readBoundedFile(root *os.Root, relPath string, maxBytes int) (string, bool)
 	}
 	defer f.Close()
 	buf := make([]byte, maxBytes)
-	n, _ := f.Read(buf)
+	n, err := f.Read(buf)
+	// io.EOF is the expected sentinel for files smaller than maxBytes.
+	// Any other error means we got an incomplete read and the heuristic
+	// would lie: returning ("", false) keeps test-coverage checks honest.
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", false
+	}
 	return string(buf[:n]), true
 }
 

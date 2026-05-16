@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -160,10 +161,18 @@ func runAudit(debug bool, args []string) {
 		} else if after, ok := strings.CutPrefix(arg, "--include="); ok {
 			includeStr = after
 		} else if after, ok := strings.CutPrefix(arg, "--max-reviews="); ok {
-			fmt.Sscanf(after, "%d", &opts.MaxReviews)
-		} else if strings.HasPrefix(arg, "--concurrency=") {
-			var n int
-			fmt.Sscanf(strings.TrimPrefix(arg, "--concurrency="), "%d", &n)
+			n, err := strconv.Atoi(after)
+			if err != nil {
+				printError(fmt.Errorf("--max-reviews=%s: %w", after, err))
+				os.Exit(1)
+			}
+			opts.MaxReviews = n
+		} else if after, ok := strings.CutPrefix(arg, "--concurrency="); ok {
+			n, err := strconv.Atoi(after)
+			if err != nil {
+				printError(fmt.Errorf("--concurrency=%s: %w", after, err))
+				os.Exit(1)
+			}
 			if n > 0 {
 				opts.Concurrency.Classify = n
 				opts.Concurrency.AOIScan = n
@@ -184,7 +193,12 @@ func runAudit(debug bool, args []string) {
 		} else if after, ok := strings.CutPrefix(arg, "--file="); ok {
 			opts.DebugFile = after
 		} else if after, ok := strings.CutPrefix(arg, "--audit-recent="); ok {
-			fmt.Sscanf(after, "%d", &opts.AuditRecent)
+			n, err := strconv.Atoi(after)
+			if err != nil {
+				printError(fmt.Errorf("--audit-recent=%s: %w", after, err))
+				os.Exit(1)
+			}
+			opts.AuditRecent = n
 		} else if arg == "--sibling-cluster" {
 			opts.SiblingClustering = true
 		} else if arg == "--help" || arg == "-h" {

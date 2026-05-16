@@ -273,7 +273,10 @@ func TestGitRecentlyTouchedFiles_ReturnsRecentPaths(t *testing.T) {
 
 	paths, err := gitRecentlyTouchedFiles(repoRoot, 5)
 	if err != nil {
-		t.Fatalf("gitRecentlyTouchedFiles: %v", err)
+		// Non-git environments (source tarball, container without git,
+		// shallow checkout where `git log` rejects the request) should
+		// skip rather than fail the suite.
+		t.Skipf("gitRecentlyTouchedFiles: %v", err)
 	}
 	if len(paths) == 0 {
 		t.Fatal("expected at least one path from recent commits, got 0")
