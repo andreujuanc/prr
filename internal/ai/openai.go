@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -472,7 +473,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	toolCalls := make(map[int]*toolCallAccum)
 
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// sseBufferMax (8MB) — see gemini.go. Same rationale: long
+	// reasoning or fat tool-call args land on one SSE line.
+	scanner.Buffer(make([]byte, 0, 64*1024), sseBufferMax)
 
 	for scanner.Scan() {
 		select {
@@ -556,6 +559,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	// user cancel). Surface the error so callers don't get a fake
 	// EventDone with truncated content.
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			err = fmt.Errorf("openai: SSE line exceeded %d-byte cap: %w", sseBufferMax, err)
+		}
 		log.Printf("OpenAI stream read error: %v", err)
 		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
 		return

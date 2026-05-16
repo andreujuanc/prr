@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,13 @@ import (
 	"strings"
 	"time"
 )
+
+// sseBufferMax caps a single SSE "data:" line. Long thinking or fat
+// tool-call args land on one line, so the cap must be generous; 8MB
+// is well above Gemini's documented response limits and gives a clear
+// failure mode (EventError carrying bufio.ErrTooLong) rather than a
+// silent truncation if the cap is ever hit.
+const sseBufferMax = 8 * 1024 * 1024
 
 // Gemini retries live in retry.go's RetryTransient. doHTTPRequest
 // returns a *TransientError for 429 / 5xx (with the parsed retryDelay
@@ -445,7 +453,12 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	var usage TokenUsage
 
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// A single SSE "data:" line can be large — long thinking content or
+	// fat tool-call args both arrive on one line. Cap at 8MB; Gemini's
+	// documented response limits sit well under this. If the line is
+	// still too long, scanner.Err returns bufio.ErrTooLong and the
+	// terminal handler below surfaces it as EventError.
+	scanner.Buffer(make([]byte, 0, 64*1024), sseBufferMax)
 
 	for scanner.Scan() {
 		// Respect context cancellation during parsing
@@ -553,6 +566,9 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	}
 
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			err = fmt.Errorf("gemini: SSE line exceeded %d-byte cap: %w", sseBufferMax, err)
+		}
 		log.Printf("Gemini stream read error: %v", err)
 		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
 		return
