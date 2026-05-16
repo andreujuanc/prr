@@ -469,7 +469,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 		ModelID:         "gemini-3.1-flash-lite",
 		APIKey:          geminiKey,
 		ThinkingBudget:  2048,
-		Temperature:     0.1,
+		Temperature:     ai.TempPtr(0.1),
 		MaxOutputTokens: 65536,
 	})
 	if err != nil {
@@ -580,7 +580,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 					APIKey:          specCopy.apiKey,
 					BaseURL:         specCopy.baseURL,
 					MaxOutputTokens: specCopy.maxOutput,
-					Temperature:     specCopy.temperature,
+					Temperature:     ai.TempPtr(specCopy.temperature),
 					ThinkingBudget:  specCopy.thinkingBudget,
 				})
 				if err != nil {

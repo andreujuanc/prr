@@ -17,13 +17,18 @@ import (
 const DefaultRequestTimeout = 15 * time.Minute
 
 // ProviderConfig holds the parameters needed to create a Provider.
+//
+// Temperature is *float64 so callers can request explicit greedy
+// decoding (0) and leave nil for "use the provider default". Use
+// TempPtr to convert a config float64 with the legacy "0 = unset"
+// convention.
 type ProviderConfig struct {
 	ProviderName    string // "gemini", "openai", "github-copilot"
 	ModelID         string // e.g. "gemini-3.1-flash-lite"
 	APIKey          string
 	BaseURL         string // optional endpoint override
 	MaxOutputTokens int
-	Temperature     float64
+	Temperature     *float64
 	ThinkingBudget  int // 0 = disabled
 }
 

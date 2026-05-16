@@ -204,7 +204,7 @@ func (m *Model) switchModel(modelRef string) string {
 		APIKey:          apiKey,
 		BaseURL:         pc.BaseURL,
 		MaxOutputTokens: mcfg.MaxOutputTokens,
-		Temperature:     mcfg.Temperature,
+		Temperature:     ai.TempPtr(mcfg.Temperature),
 		ThinkingBudget:  mcfg.ThinkingBudget.Review,
 	}); err != nil {
 		return m.aiModelName
@@ -262,7 +262,7 @@ func (m *Model) switchAOIModel(modelRef string) string {
 		APIKey:          apiKey,
 		BaseURL:         pc.BaseURL,
 		MaxOutputTokens: mcfg.MaxOutputTokens,
-		Temperature:     mcfg.Temperature,
+		Temperature:     ai.TempPtr(mcfg.Temperature),
 		ThinkingBudget:  mcfg.ThinkingBudget.Fast,
 	}); err != nil {
 		return m.aoiModelName

@@ -740,7 +740,7 @@ func createAIClient(cfg *config.Config) ai.Client {
 		APIKey:          apiKey,
 		BaseURL:         pc.BaseURL,
 		MaxOutputTokens: modelCfg.MaxOutputTokens,
-		Temperature:     modelCfg.Temperature,
+		Temperature:     ai.TempPtr(modelCfg.Temperature),
 		ThinkingBudget:  modelCfg.ThinkingBudget.Review,
 	})
 	if err != nil {
@@ -805,7 +805,7 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 		APIKey:          apiKey,
 		BaseURL:         pc.BaseURL,
 		MaxOutputTokens: modelCfg.MaxOutputTokens,
-		Temperature:     modelCfg.Temperature,
+		Temperature:     ai.TempPtr(modelCfg.Temperature),
 		ThinkingBudget:  modelCfg.ThinkingBudget.Fast,
 	})
 	if err != nil {

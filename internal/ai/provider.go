@@ -153,6 +153,9 @@ type ToolParam struct {
 // ── Request / Response ──────────────────────────────────────────────────
 
 // ChatRequest is the canonical request to a provider.
+//
+// Temperature is *float64 so an explicit 0 (greedy decoding) is
+// distinguishable from "use the provider's default". nil = default.
 type ChatRequest struct {
 	Model           string
 	System          string
@@ -160,9 +163,21 @@ type ChatRequest struct {
 	Tools           []ToolDef
 	ToolChoice      ToolChoice
 	MaxOutputTokens int
-	Temperature     float64
+	Temperature     *float64
 	JSONSchema      *JSONSchema // structured output, optional
 	CachePrefix     bool        // hint: cache system + leading messages if supported
+}
+
+// TempPtr converts a config float64 to *float64, treating zero as
+// "unset / use provider default". This preserves the historical
+// behaviour where a 0 in models.json meant "don't send temperature"
+// — explicit greedy decoding requires setting the pointer directly,
+// not by writing 0 in JSON.
+func TempPtr(v float64) *float64 {
+	if v <= 0 {
+		return nil
+	}
+	return &v
 }
 
 // ChatResponse is the canonical response from a provider.

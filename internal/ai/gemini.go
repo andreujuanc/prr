@@ -47,9 +47,12 @@ type GeminiProvider struct {
 
 	// ModelConfig holds per-model tuning (maxOutputTokens, temperature,
 	// thinkingBudget). Set by the caller from config.GetModelConfig().
+	//
+	// Temperature is *float64 so an explicit 0 (greedy decoding) is
+	// distinguishable from "use Gemini's default". nil = omit the field.
 	ModelConfig struct {
 		MaxOutputTokens int
-		Temperature     float64
+		Temperature     *float64
 		ThinkingBudget  int
 	}
 }
@@ -348,8 +351,8 @@ func (g *GeminiProvider) buildGenConfig() *geminiGenConfig {
 		cfg.MaxOutputTokens = g.ModelConfig.MaxOutputTokens
 	}
 
-	if g.ModelConfig.Temperature > 0 {
-		t := g.ModelConfig.Temperature
+	if g.ModelConfig.Temperature != nil {
+		t := *g.ModelConfig.Temperature
 		cfg.Temperature = &t
 	}
 

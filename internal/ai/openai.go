@@ -38,9 +38,12 @@ type OpenAIProvider struct {
 	ExtraHeaders map[string]string
 
 	// ModelConfig holds per-model tuning.
+	//
+	// Temperature is *float64 so explicit 0 (greedy decoding) is
+	// distinguishable from "use the provider's default". nil = omit.
 	ModelConfig struct {
 		MaxOutputTokens int
-		Temperature     float64
+		Temperature     *float64
 		ThinkingBudget  int
 	}
 }
@@ -244,9 +247,12 @@ func (o *OpenAIProvider) toNativeRequest(req ChatRequest) oaiRequest {
 		maxTokens = 8192
 	}
 
-	// Temperature
-	temp := req.Temperature
-	if temp <= 0 {
+	// Temperature: request overrides provider default; nil = omit.
+	var temp *float64
+	switch {
+	case req.Temperature != nil:
+		temp = req.Temperature
+	case o.ModelConfig.Temperature != nil:
 		temp = o.ModelConfig.Temperature
 	}
 
@@ -257,8 +263,9 @@ func (o *OpenAIProvider) toNativeRequest(req ChatRequest) oaiRequest {
 		MaxCompletionToks: maxTokens,
 		StreamOpts:        &oaiStreamOpt{IncludeUsage: true},
 	}
-	if temp > 0 {
-		native.Temperature = &temp
+	if temp != nil {
+		v := *temp
+		native.Temperature = &v
 	}
 	// NOTE: reasoning_effort is NOT sent here because the Chat Completions API
 	// rejects it when tools are present ("Function tools with reasoning_effort

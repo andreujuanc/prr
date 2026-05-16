@@ -992,7 +992,7 @@ func TestGeminiTranslation_GenerationConfig(t *testing.T) {
 	t.Run("with thinking enabled", func(t *testing.T) {
 		provider := &GeminiProvider{APIKey: "k", Model: "gemini-3.1-pro-preview"}
 		provider.ModelConfig.MaxOutputTokens = 65536
-		provider.ModelConfig.Temperature = 0.2
+		provider.ModelConfig.Temperature = TempPtr(0.2)
 		provider.ModelConfig.ThinkingBudget = 8192
 
 		native := provider.toNativeRequest(ChatRequest{
@@ -1022,10 +1022,45 @@ func TestGeminiTranslation_GenerationConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit zero temperature is sent", func(t *testing.T) {
+		// Pin the bugfix: *float64 lets a caller request greedy
+		// decoding (0). The earlier `Temperature > 0` check dropped 0
+		// silently as "unset".
+		zero := 0.0
+		provider := &GeminiProvider{APIKey: "k", Model: "m"}
+		provider.ModelConfig.Temperature = &zero
+		native := provider.toNativeRequest(ChatRequest{
+			Messages: []ProviderMessage{
+				{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+			},
+		})
+		gc := native.GenerationConfig
+		if gc == nil || gc.Temperature == nil {
+			t.Fatalf("expected temperature on the wire, got gc=%v", gc)
+		}
+		if *gc.Temperature != 0 {
+			t.Errorf("temperature = %v, want 0 (greedy)", *gc.Temperature)
+		}
+	})
+
+	t.Run("nil temperature is omitted", func(t *testing.T) {
+		provider := &GeminiProvider{APIKey: "k", Model: "m"}
+		// ModelConfig.Temperature left nil
+		native := provider.toNativeRequest(ChatRequest{
+			Messages: []ProviderMessage{
+				{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+			},
+		})
+		gc := native.GenerationConfig
+		if gc != nil && gc.Temperature != nil {
+			t.Errorf("temperature should be omitted when ModelConfig.Temperature is nil, got %v", *gc.Temperature)
+		}
+	})
+
 	t.Run("without thinking (legacy model)", func(t *testing.T) {
 		provider := &GeminiProvider{APIKey: "k", Model: "gemini-1.5-pro"}
 		provider.ModelConfig.MaxOutputTokens = 8192
-		provider.ModelConfig.Temperature = 0.2
+		provider.ModelConfig.Temperature = TempPtr(0.2)
 		provider.ModelConfig.ThinkingBudget = 0
 
 		native := provider.toNativeRequest(ChatRequest{
