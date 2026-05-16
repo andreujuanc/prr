@@ -31,8 +31,8 @@ type streamHeartbeat struct {
 	// start anchors the monotonic clock reading. lastSinceStart holds
 	// time.Since(start) at the moment of the most recent activity,
 	// stored as nanoseconds for lockless updates.
-	start            time.Time
-	lastSinceStart   atomic.Int64
+	start          time.Time
+	lastSinceStart atomic.Int64
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
