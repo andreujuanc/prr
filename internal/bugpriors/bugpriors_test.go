@@ -74,7 +74,7 @@ func TestRenderContainsBulletsAndGuidance(t *testing.T) {
 	}
 }
 
-func TestExtractGitMissingReturnsEmpty(t *testing.T) {
+func TestExtractNonGitDirReturnsEmpty(t *testing.T) {
 	// Point at a path that exists but isn't a git repo. exec will
 	// succeed at starting git but git itself will fail. Extract must
 	// swallow the error and return empty.
@@ -109,12 +109,14 @@ func TestExtractFromRealRepo(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = repo
-		// Quiet env so test doesn't inherit user's gpg/sign config.
-		cmd.Env = append(cmd.Env,
+		// Inherit the OS env (PATH, SystemRoot on Windows, etc.) but
+		// override the git author/committer identity and disable
+		// global config so the test doesn't pick up the developer's
+		// gpg-sign or commit hooks.
+		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
 			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
 			"GIT_CONFIG_GLOBAL=/dev/null",
-			"PATH="+pathEnv(),
 		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -164,22 +166,24 @@ func TestExtractCapEnforced(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = repo
-		cmd.Env = append(cmd.Env,
+		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
 			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
 			"GIT_CONFIG_GLOBAL=/dev/null",
-			"PATH="+pathEnv(),
 		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	run("init", "-q", "-b", "main")
-	// Create 25 distinct fix-shaped commits (more than maxRendered).
-	for i := 0; i < 25; i++ {
+	// Seed maxRendered+5 distinct fix-shaped commits. With 25 inputs
+	// surviving filter + dedupe and a 20-bullet cap, the output must
+	// contain exactly maxRendered bullets — not fewer, not more.
+	const seeded = maxRendered + 5
+	for i := 0; i < seeded; i++ {
 		run("commit", "--allow-empty", "-m", fmt.Sprintf("fix: distinct issue %02d", i))
 	}
-	got, err := Extract(repo, 30)
+	got, err := Extract(repo, seeded+5) // lookback wider than seeded
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -187,17 +191,7 @@ func TestExtractCapEnforced(t *testing.T) {
 		t.Fatalf("expected non-empty output")
 	}
 	bulletCount := strings.Count(got, "\n- ")
-	if bulletCount > maxRendered {
-		t.Errorf("bullet count %d exceeds cap %d", bulletCount, maxRendered)
+	if bulletCount != maxRendered {
+		t.Errorf("bullet count: want exactly %d (the cap), got %d", maxRendered, bulletCount)
 	}
-	if bulletCount == 0 {
-		t.Errorf("expected at least one bullet, got 0\n%s", got)
-	}
-}
-
-func pathEnv() string {
-	if p := os.Getenv("PATH"); p != "" {
-		return p
-	}
-	return "/usr/bin:/bin:/usr/local/bin"
 }

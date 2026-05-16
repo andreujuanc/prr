@@ -194,6 +194,16 @@ func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, e
 // this we show a "... N more" footer; full data is in the JSON.
 const coverageRowCap = 15
 
+// pluralize returns "<n> <singular>" when n == 1 and "<n> <plural>"
+// otherwise. Used by the coverage renderer so single-finding rows
+// read "1 finding" instead of "1 findings".
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
 // renderCoverage writes a "COVERAGE" section to b. Files are
 // already sorted by BuildCoverage (findings first by severity,
 // then dismissals-only, then alphabetical). Orphans appear after,
@@ -220,9 +230,11 @@ func renderCoverage(b *strings.Builder, cov *state.ReviewCoverage, width int) {
 		b.WriteString("  ")
 		b.WriteString(styleTextSecondary.Render(fc.File))
 		b.WriteString(" ")
-		summary := fmt.Sprintf("%d AOIs", fc.AOIsScanned)
+		summary := pluralize(fc.AOIsScanned, "AOI", "AOIs")
 		if fc.Findings > 0 {
-			summary += fmt.Sprintf("  %d findings (max %s)", fc.Findings, fc.MaxFindingSeverity)
+			summary += fmt.Sprintf("  %s (max %s)",
+				pluralize(fc.Findings, "finding", "findings"),
+				fc.MaxFindingSeverity)
 		}
 		if fc.Dismissals > 0 {
 			if fc.AvgDismissConf > 0 {

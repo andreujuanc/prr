@@ -1238,12 +1238,19 @@ func TestRenderStructuredReview_CoverageSectionPresent(t *testing.T) {
 	}
 	rendered, _ := renderStructuredReview(review, 100, -1, nil, false)
 	for _, want := range []string{
-		"COVERAGE", "a.go", "b.go", "1 findings", "2 dismissed", "avg conf 82",
+		"COVERAGE", "a.go", "b.go", "1 finding", "2 dismissed", "avg conf 82",
 		"Orphan files", "c.go",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("rendered coverage missing %q\nfull:\n%s", want, rendered)
 		}
+	}
+	// Singular AOI count must render as "1 AOI", not "1 AOIs".
+	if strings.Contains(rendered, "1 AOIs") {
+		t.Errorf("singular AOI count should render as '1 AOI', got '1 AOIs'\n%s", rendered)
+	}
+	if strings.Contains(rendered, "1 findings") {
+		t.Errorf("singular finding count should render as '1 finding', got '1 findings'\n%s", rendered)
 	}
 }
 
