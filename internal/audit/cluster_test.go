@@ -48,7 +48,7 @@ func TestGroupByCategory(t *testing.T) {
 func TestHashClusterInputs_StableUnderReordering(t *testing.T) {
 	a := []clusterCandidate{{ID: "x"}, {ID: "y"}}
 	b := []clusterCandidate{{ID: "y"}, {ID: "x"}}
-	if hashClusterInputs(a) != hashClusterInputs(b) {
+	if hashClusterInputs(a, "") != hashClusterInputs(b, "") {
 		t.Error("hash must be stable regardless of input order (sort by ID before hashing)")
 	}
 }
@@ -56,8 +56,15 @@ func TestHashClusterInputs_StableUnderReordering(t *testing.T) {
 func TestHashClusterInputs_DifferentInputsDifferentHashes(t *testing.T) {
 	a := []clusterCandidate{{ID: "x", Concern: "missing guard"}}
 	b := []clusterCandidate{{ID: "x", Concern: "missing validation"}}
-	if hashClusterInputs(a) == hashClusterInputs(b) {
+	if hashClusterInputs(a, "") == hashClusterInputs(b, "") {
 		t.Error("different concerns must produce different hashes")
+	}
+}
+
+func TestHashClusterInputs_BugPriorsContributes(t *testing.T) {
+	a := []clusterCandidate{{ID: "x", Concern: "missing guard"}}
+	if hashClusterInputs(a, "") == hashClusterInputs(a, "abc") {
+		t.Error("bug-priors must contribute to the cluster hash")
 	}
 }
 
@@ -280,7 +287,7 @@ func TestDiscoverSiblingOutliers_ParsesValidResponse(t *testing.T) {
 			"deviation_concern": "missing guardAdmin"
 		}]`,
 	}
-	res, err := DiscoverSiblingOutliers(context.Background(), client, aois, "", nil)
+	res, err := DiscoverSiblingOutliers(context.Background(), client, aois, "", "", nil)
 	if err != nil {
 		t.Fatalf("DiscoverSiblingOutliers: %v", err)
 	}
@@ -305,7 +312,7 @@ func TestDiscoverSiblingOutliers_BelowMinSizeShortCircuits(t *testing.T) {
 	if len(aois) >= siblingClusterMinSize {
 		t.Skip("test fixture is no longer below min size")
 	}
-	res, err := DiscoverSiblingOutliers(context.Background(), client, []security.AreaOfInterest{}, "", nil)
+	res, err := DiscoverSiblingOutliers(context.Background(), client, []security.AreaOfInterest{}, "", "", nil)
 	if err != nil {
 		t.Fatalf("DiscoverSiblingOutliers: %v", err)
 	}
@@ -320,7 +327,7 @@ func TestDiscoverSiblingOutliers_BelowMinSizeShortCircuits(t *testing.T) {
 func TestDiscoverSiblingOutliers_GlobalPathOneCall(t *testing.T) {
 	aois := makeAOIs(8, "h")
 	client := &clusterStubClient{response: "[]"}
-	_, err := DiscoverSiblingOutliers(context.Background(), client, aois, "", nil)
+	_, err := DiscoverSiblingOutliers(context.Background(), client, aois, "", "", nil)
 	if err != nil {
 		t.Fatalf("DiscoverSiblingOutliers: %v", err)
 	}
@@ -334,9 +341,9 @@ func TestDiscoverSiblingOutliers_CacheHit(t *testing.T) {
 	client := &clusterStubClient{response: "should not be called"}
 
 	candidates := projectCandidates(aois)
-	wantHash := hashClusterInputs(candidates)
+	wantHash := hashClusterInputs(candidates, "")
 
-	res, err := DiscoverSiblingOutliers(context.Background(), client, aois, wantHash, nil)
+	res, err := DiscoverSiblingOutliers(context.Background(), client, aois, "", wantHash, nil)
 	if err != nil {
 		t.Fatalf("DiscoverSiblingOutliers: %v", err)
 	}
@@ -351,14 +358,14 @@ func TestDiscoverSiblingOutliers_CacheHit(t *testing.T) {
 func TestDiscoverSiblingOutliers_LLMError(t *testing.T) {
 	aois := makeAOIs(6, "h")
 	client := &clusterStubClient{err: errors.New("model unavailable")}
-	_, err := DiscoverSiblingOutliers(context.Background(), client, aois, "", nil)
+	_, err := DiscoverSiblingOutliers(context.Background(), client, aois, "", "", nil)
 	if err == nil {
 		t.Fatal("expected LLM error to surface")
 	}
 }
 
 func TestDiscoverSiblingOutliers_NilClient(t *testing.T) {
-	_, err := DiscoverSiblingOutliers(context.Background(), nil, makeAOIs(6, "h"), "", nil)
+	_, err := DiscoverSiblingOutliers(context.Background(), nil, makeAOIs(6, "h"), "", "", nil)
 	if err == nil {
 		t.Fatal("expected error on nil client")
 	}

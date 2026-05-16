@@ -13,6 +13,7 @@ import (
 	"context"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/bugpriors"
 	"github.com/andreujuanc/prr/internal/state"
 )
 
@@ -37,6 +38,13 @@ type ExecuteOptions struct {
 
 	// FocusDimensions filters which AOIs are reviewed (nil = all).
 	FocusDimensions []string
+
+	// BugPriors is the rendered bug-priors prompt section produced by
+	// internal/bugpriors.Extract. When non-empty, it's spliced into
+	// the deep-review prompt and folded into the cache key (so the
+	// arrival of new fix commits invalidates stale entries). Empty
+	// string == feature disabled.
+	BugPriors string
 
 	// MaxConcurrency caps parallel review calls (default 10).
 	MaxConcurrency int
@@ -80,8 +88,14 @@ type ExecuteOptions struct {
 
 // ExecuteResult holds the aggregate output of RunReviewCalls.
 type ExecuteResult struct {
-	Findings     []state.DeepFinding
-	Dismissals   int
+	Findings []state.DeepFinding
+
+	// Dismissals carries the full per-AOI dismissal record (file +
+	// confidence + rationale), not just a count. Per-file coverage
+	// instrumentation downstream relies on the file attribution.
+	// Callers that only want the count should use DismissalCount().
+	Dismissals []state.DeepDismissal
+
 	CrossCutting []string
 	// Failed is the count of review calls that errored. The caller should
 	// surface this — failed calls drop their AOIs from the result.
@@ -94,6 +108,10 @@ type ExecuteResult struct {
 	// to the affected AOIs.
 	FailedAOIIDs []string
 }
+
+// DismissalCount returns the number of dismissed AOIs, replacing
+// the old ExecuteResult.Dismissals int field.
+func (r ExecuteResult) DismissalCount() int { return len(r.Dismissals) }
 
 // RunReviewCalls executes all review calls concurrently with bounded concurrency.
 // This is the shared pipeline for both PR review and audit modes.
@@ -131,7 +149,7 @@ func RunReviewCalls(
 			// Check cache (individual calls only — grouped calls have unstable
 			// cache keys because the group composition changes when any member
 			// file is modified, orphaning the old cache entry).
-			cacheKey := ComputeCacheKey(call, opts.FocusDimensions)
+			cacheKey := ComputeCacheKey(call, opts.FocusDimensions, bugpriors.Hash(opts.BugPriors))
 			if !opts.NoCache && opts.CacheGet != nil && call.Type == "individual" {
 				if cached := opts.CacheGet(cacheKey); cached != nil {
 					resultsCh <- callResult{index: i, result: cached, fromCache: true}
@@ -199,7 +217,7 @@ func RunReviewCalls(
 		}
 		if cr.result != nil {
 			execResult.Findings = append(execResult.Findings, cr.result.Findings...)
-			execResult.Dismissals += len(cr.result.Dismissals)
+			execResult.Dismissals = append(execResult.Dismissals, cr.result.Dismissals...)
 			if cr.result.CrossCutting != "" {
 				execResult.CrossCutting = append(execResult.CrossCutting, cr.result.CrossCutting)
 			}
@@ -322,11 +340,11 @@ func doReviewCall(
 	var systemPrompt string
 	if call.Type == "individual" {
 		systemPrompt = BuildIndividualPrompt(
-			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.RuntimeModel, call.AOIs[0],
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.BugPriors, opts.RuntimeModel, call.AOIs[0],
 		)
 	} else {
 		systemPrompt = BuildGroupedPrompt(
-			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.RuntimeModel, call,
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.BugPriors, opts.RuntimeModel, call,
 		)
 	}
 
@@ -704,11 +722,15 @@ func isValidSeverity(s string) bool {
 }
 
 // ComputeCacheKey returns the cache key for a review call.
-func ComputeCacheKey(call ReviewCall, focusDimensions []string) string {
+//
+// priorsHash is sha256 of the bug-priors content for this run (empty
+// when --bug-priors is off). Folding it in here means flipping the
+// flag or shipping a new fix-commit yields a fresh cache key.
+func ComputeCacheKey(call ReviewCall, focusDimensions []string, priorsHash string) string {
 	if call.Type == "individual" {
-		return IndividualCacheKey("", call.AOIs[0], focusDimensions)
+		return IndividualCacheKey("", call.AOIs[0], focusDimensions, priorsHash)
 	}
-	return GroupedCacheKey(call.AOIs, focusDimensions)
+	return GroupedCacheKey(call.AOIs, focusDimensions, priorsHash)
 }
 
 func userMessage(mode Mode) string {
@@ -828,9 +850,12 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			})
 		} else {
 			result.Dismissals = append(result.Dismissals, state.DeepDismissal{
-				AOIID:     parsed.AOIID,
-				Evidence:  parsed.Evidence,
-				Rationale: parsed.DismissedRationale,
+				AOIID:               parsed.AOIID,
+				File:                parsed.File,
+				Evidence:            parsed.Evidence,
+				Rationale:           parsed.DismissedRationale,
+				ConfidenceScore:     parsed.ConfidenceScore,
+				ConfidenceReasoning: parsed.ConfidenceReasoning,
 			})
 		}
 	} else {
@@ -888,9 +913,12 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				})
 			} else {
 				result.Dismissals = append(result.Dismissals, state.DeepDismissal{
-					AOIID:     r.AOIID,
-					Evidence:  r.Evidence,
-					Rationale: r.DismissedRationale,
+					AOIID:               r.AOIID,
+					File:                r.File,
+					Evidence:            r.Evidence,
+					Rationale:           r.DismissedRationale,
+					ConfidenceScore:     r.ConfidenceScore,
+					ConfidenceReasoning: r.ConfidenceReasoning,
 				})
 			}
 		}

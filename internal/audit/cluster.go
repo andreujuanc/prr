@@ -85,6 +85,7 @@ func DiscoverSiblingOutliers(
 	ctx context.Context,
 	client ai.Client,
 	aois []security.AreaOfInterest,
+	bugPriors string,
 	cachedHash string,
 	onProgress func(string),
 ) (*SiblingClusterResult, error) {
@@ -105,7 +106,7 @@ func DiscoverSiblingOutliers(
 		return &SiblingClusterResult{}, nil
 	}
 
-	inputHash := hashClusterInputs(candidates)
+	inputHash := hashClusterInputs(candidates, bugPriors)
 	if cachedHash != "" && cachedHash == inputHash {
 		onProgress("Sibling cluster analysis unchanged (cache hit)")
 		return &SiblingClusterResult{InputHash: inputHash, FromCache: true}, nil
@@ -122,10 +123,10 @@ func DiscoverSiblingOutliers(
 	if len(candidates) > siblingClusterGlobalThreshold {
 		// Above the threshold: cluster per (category, subcategory) in
 		// parallel under the same cap as Phase 2 / classify.
-		clusters = runPerCategoryClustering(ctx, client, candidates, onProgress)
+		clusters = runPerCategoryClustering(ctx, client, candidates, bugPriors, onProgress)
 	} else {
 		// Below the threshold: one global call.
-		global, err := runOneClusterCall(ctx, client, candidates)
+		global, err := runOneClusterCall(ctx, client, candidates, bugPriors)
 		if err != nil {
 			return nil, fmt.Errorf("sibling clustering: %w", err)
 		}
@@ -143,13 +144,19 @@ func DiscoverSiblingOutliers(
 
 // runOneClusterCall runs a single LLM call on the full candidate set
 // and returns parsed clusters. Errors are wrapped and returned —
-// callers downgrade to non-fatal.
-func runOneClusterCall(ctx context.Context, client ai.Client, candidates []clusterCandidate) ([]clusterLLMResult, error) {
+// callers downgrade to non-fatal. When bugPriors is non-empty it's
+// prepended to the user message so the model has codebase-specific
+// failure history alongside the candidate set.
+func runOneClusterCall(ctx context.Context, client ai.Client, candidates []clusterCandidate, bugPriors string) ([]clusterLLMResult, error) {
 	user, err := json.Marshal(candidates)
 	if err != nil {
 		return nil, fmt.Errorf("marshal candidates: %w", err)
 	}
-	messages := []ai.Message{{Role: "user", Content: string(user)}}
+	userContent := string(user)
+	if bugPriors != "" {
+		userContent = bugPriors + "\n\n=== Candidates ===\n" + userContent
+	}
+	messages := []ai.Message{{Role: "user", Content: userContent}}
 
 	// Retry transient errors. Sibling clustering is experimental and
 	// fail-soft; retrying still helps when a transient blip is the
@@ -180,6 +187,7 @@ func runPerCategoryClustering(
 	ctx context.Context,
 	client ai.Client,
 	candidates []clusterCandidate,
+	bugPriors string,
 	onProgress func(string),
 ) []clusterLLMResult {
 	groups := groupByCategory(candidates)
@@ -204,7 +212,7 @@ func runPerCategoryClustering(
 			case <-ctx.Done():
 				return
 			}
-			clusters, err := runOneClusterCall(ctx, client, members)
+			clusters, err := runOneClusterCall(ctx, client, members, bugPriors)
 			if err != nil {
 				onProgress(fmt.Sprintf("sibling cluster %s failed (non-fatal): %v", label, err))
 				return
@@ -280,7 +288,7 @@ func groupByCategory(candidates []clusterCandidate) map[string][]clusterCandidat
 // prompt rules change. Without the prompt hash a later edit to
 // sibling_cluster.md would silently serve clusters produced by the
 // previous prompt.
-func hashClusterInputs(candidates []clusterCandidate) string {
+func hashClusterInputs(candidates []clusterCandidate, bugPriors string) string {
 	sorted := make([]clusterCandidate, len(candidates))
 	copy(sorted, candidates)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
@@ -292,6 +300,8 @@ func hashClusterInputs(candidates []clusterCandidate) string {
 	h.Write([]byte{0})
 	promptHash := sha256.Sum256([]byte(siblingClusterSystemPrompt))
 	h.Write(promptHash[:])
+	h.Write([]byte{0})
+	h.Write([]byte(bugPriors))
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 

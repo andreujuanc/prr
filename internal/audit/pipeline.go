@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/bugpriors"
 	"github.com/andreujuanc/prr/internal/classify"
 	"github.com/andreujuanc/prr/internal/dbg"
 	"github.com/andreujuanc/prr/internal/review"
@@ -78,6 +79,12 @@ type Options struct {
 	// Concurrency tunes per-phase concurrency caps. Each zero field falls
 	// back to the package default (currently 5).
 	Concurrency ConcurrencyConfig
+
+	// BugPriors mines fix-shaped commits from the repo's git log and
+	// injects them as a "Known failure modes in this codebase" section
+	// into every Phase 3 deep-review prompt and recheck pass. Off by
+	// default — opt in via the --bug-priors CLI flag.
+	BugPriors bool
 }
 
 // ConcurrencyConfig holds per-phase concurrency caps. Each field is the
@@ -214,6 +221,19 @@ func Run(
 	classify.SetMaxConcurrency(opts.Concurrency.Classify)
 	security.SetAOIConcurrency(opts.Concurrency.AOIScan)
 	SetHierarchicalSynthConcurrency(opts.Concurrency.HierarchicalSynth)
+
+	// Extract bug-priors once for the run when opted in. Threaded into
+	// Phase 1.5 (boundary discovery), Phase 2.5 (sibling clustering),
+	// Phase 3 (deep review), and Phase 3b (recheck cache key). An empty
+	// string elsewhere means "no priors section" so the off-path is
+	// byte-identical to today. Error is intentionally dropped:
+	// bugpriors.Extract documents it as best-effort and a priors miss
+	// must never fail an audit.
+	var bugPriorsContent string
+	if opts.BugPriors && opts.RepoRoot != "" {
+		rendered, _ := bugpriors.Extract(opts.RepoRoot, bugpriors.DefaultLookback)
+		bugPriorsContent = rendered
+	}
 
 	// ── Phase 0 + Phase 1 in parallel ───────────────────────────────────
 	// Phase 0 (project discovery) is one LLM call; Phase 1 (file collection)
@@ -476,7 +496,7 @@ func Run(
 	// AOI scanner missed it. Non-fatal: failure leaves the inventory
 	// empty and we proceed with scanner output only.
 	dbgw.Phase("PHASE 1.5: Boundary Inventory")
-	boundaryInventory := runPhase15(ctx, aoiClient, opts, auditState, files, runtimeModel, onProgress, dbgw)
+	boundaryInventory := runPhase15(ctx, aoiClient, opts, auditState, files, runtimeModel, bugPriorsContent, onProgress, dbgw)
 
 	// ── Phase 2: AOI Generation ─────────────────────────────────────────
 
@@ -519,7 +539,7 @@ func Run(
 	// investigation on "is this deviation intentional or a bug?"
 	if opts.SiblingClustering {
 		dbgw.Phase("PHASE 2.5: Sibling Cluster Outlier Detection")
-		outlierAOIs := runPhase25(ctx, aoiClient, aoiResults, auditState, opts.NoCache, onProgress)
+		outlierAOIs := runPhase25(ctx, aoiClient, aoiResults, auditState, opts.NoCache, bugPriorsContent, onProgress)
 		if len(outlierAOIs) > 0 {
 			aoiResults = MergeBoundaryAOIs(aoiResults, outlierAOIs) // reuse the same merge — same shape/contract
 			onProgress("phase2.5", fmt.Sprintf("merged %d sibling-outlier AOIs", len(outlierAOIs)))
@@ -612,7 +632,7 @@ func Run(
 		log.Printf("Phase 3: using review model %s/%s", mi.ProviderName(), mi.ModelName())
 	}
 	findings, dismissals, crossCutting, failed, failedAOIIDs, err := runPhase3(
-		ctx, reviewClient, opts, auditState, projectContext, runtimeModel, calls, onProgress, phase3DebugHook, phase3ToolHook,
+		ctx, reviewClient, opts, auditState, projectContext, runtimeModel, bugPriorsContent, calls, onProgress, phase3DebugHook, phase3ToolHook,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("phase 3 deep review: %w", err)
@@ -627,7 +647,7 @@ func Run(
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbgw.Phase("PHASE 3b: Recheck")
 	if len(findings) > 0 {
-		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit")
+		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit", bugpriors.Hash(bugPriorsContent))
 		if !opts.NoCache {
 			if raw := auditState.GetRecheckCache(recheckKey); raw != nil {
 				var cached []state.DeepFinding
@@ -747,6 +767,7 @@ func runPhase15(
 	auditState *state.State,
 	files []classify.File,
 	runtimeModel *state.RuntimeModel,
+	bugPriors string,
 	onProgress OnProgress,
 	dbgw *dbg.Writer,
 ) []state.Boundary {
@@ -763,7 +784,7 @@ func runPhase15(
 		fileContents[f.Path] = f.Content
 	}
 
-	res, err := DiscoverBoundaries(ctx, aoiClient, fileContents, runtimeModel, cachedHash, func(status string) {
+	res, err := DiscoverBoundaries(ctx, aoiClient, fileContents, runtimeModel, bugPriors, cachedHash, func(status string) {
 		onProgress("phase1.5", status)
 	})
 	if err != nil {
@@ -806,6 +827,7 @@ func runPhase25(
 	results []security.AOIScanResult,
 	auditState *state.State,
 	noCache bool,
+	bugPriors string,
 	onProgress OnProgress,
 ) []security.AreaOfInterest {
 	var all []security.AreaOfInterest
@@ -821,7 +843,7 @@ func runPhase25(
 		_, cachedHash = auditState.GetSiblingClusterCache()
 	}
 
-	res, err := DiscoverSiblingOutliers(ctx, aoiClient, all, cachedHash, func(status string) {
+	res, err := DiscoverSiblingOutliers(ctx, aoiClient, all, bugPriors, cachedHash, func(status string) {
 		onProgress("phase2.5", status)
 	})
 	if err != nil {
@@ -975,6 +997,7 @@ func runPhase3(
 	auditState *state.State,
 	projectContext string,
 	runtimeModel *state.RuntimeModel,
+	bugPriors string,
 	calls []review.ReviewCall,
 	onProgress OnProgress,
 	debugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string),
@@ -984,6 +1007,7 @@ func runPhase3(
 		Mode:            review.ModeAudit,
 		ProjectContext:  projectContext,
 		RuntimeModel:    runtimeModel,
+		BugPriors:       bugPriors,
 		FocusDimensions: opts.Focus,
 		MaxConcurrency:  concurrencyOr(opts.Concurrency.DeepReview, phase3MaxConcurrency),
 		NoCache:         opts.NoCache,
@@ -1028,13 +1052,13 @@ func runPhase3(
 		// callers so they can see what was lost; the error still bubbles
 		// up to abort the run.
 		if execResult != nil {
-			return execResult.Findings, execResult.Dismissals, execResult.CrossCutting,
+			return execResult.Findings, execResult.DismissalCount(), execResult.CrossCutting,
 				execResult.Failed, execResult.FailedAOIIDs, execErr
 		}
 		return nil, 0, nil, 0, nil, execErr
 	}
 
-	return execResult.Findings, execResult.Dismissals, execResult.CrossCutting,
+	return execResult.Findings, execResult.DismissalCount(), execResult.CrossCutting,
 		execResult.Failed, execResult.FailedAOIIDs, nil
 }
 
@@ -1052,7 +1076,12 @@ func hashContent(content string) string {
 // invalidates stale cache entries automatically. Without this, a
 // prompt change would silently serve recheck results produced by the
 // previous prompt for the duration of the cached entry.
-func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode string) string {
+//
+// priorsHash is sha256 of the bug-priors prompt section (empty when
+// --bug-priors is off). Folding it in means a new fix-commit landing
+// after a cached recheck invalidates the entry, so recheck reasoning
+// can incorporate the updated prior set.
+func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode, priorsHash string) string {
 	sorted := make([]state.DeepFinding, len(findings))
 	copy(sorted, findings)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].FindingID < sorted[j].FindingID })
@@ -1070,6 +1099,8 @@ func computeRecheckCacheKey(findings []state.DeepFinding, projectContext, mode s
 	h.Write(consolHash[:])
 	dismissHash := sha256.Sum256([]byte(ai.RecheckDismissPrompt))
 	h.Write(dismissHash[:])
+	h.Write([]byte{0})
+	h.Write([]byte(priorsHash))
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 

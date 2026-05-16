@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -734,6 +735,100 @@ func TestDeepFinding_TraceOmittedWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(data), "trace") {
 		t.Errorf("empty Trace should be omitted from JSON, got %s", data)
+	}
+}
+
+func TestDeepDismissal_RoundTrip(t *testing.T) {
+	orig := DeepDismissal{
+		AOIID:               "aoi-1",
+		File:                "internal/audit/cluster.go",
+		Evidence:            "checked validator at server.go:45",
+		Rationale:           "guard catches this upstream",
+		ConfidenceScore:     88,
+		ConfidenceReasoning: "traced to middleware",
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepDismissal
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got != orig {
+		t.Errorf("round-trip mismatch\n got:  %+v\n want: %+v", got, orig)
+	}
+}
+
+func TestReviewCoverage_RoundTrip(t *testing.T) {
+	orig := &ReviewOutput{
+		Summary: "x",
+		Verdict: "approve",
+		Coverage: &ReviewCoverage{
+			Files: []FileCoverage{
+				{
+					File:               "a.go",
+					AOIsScanned:        3,
+					Findings:           1,
+					Dismissals:         2,
+					Failed:             0,
+					AvgDismissConf:     85,
+					MaxFindingSeverity: "high",
+				},
+			},
+			FilesInScope:  3,
+			FilesWithAOIs: 1,
+			FilesReviewed: 1,
+			OrphanFiles:   []string{"b.go", "c.go"},
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got ReviewOutput
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Coverage == nil {
+		t.Fatal("coverage dropped on round-trip")
+	}
+	// Compare the full struct so silently dropped fields fail the
+	// test — anchoring on a couple of fields would miss e.g. an
+	// accidental `json:"-"` on AvgDismissConf or MaxFindingSeverity.
+	if !reflect.DeepEqual(got.Coverage, orig.Coverage) {
+		t.Errorf("coverage round-trip mismatch\n got:  %+v\n want: %+v", got.Coverage, orig.Coverage)
+	}
+}
+
+func TestReviewCoverage_OmittedWhenNil(t *testing.T) {
+	// Output with no coverage block must not emit "coverage":null —
+	// otherwise downstream consumers parsing strict JSON schemas
+	// would see the field present-but-null and fail.
+	r := &ReviewOutput{Summary: "x", Verdict: "approve"}
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Match the quoted JSON key so unrelated fields containing the
+	// substring "coverage" wouldn't false-positive this assertion.
+	if strings.Contains(string(data), `"coverage"`) {
+		t.Errorf("nil coverage should be omitted; got %s", data)
+	}
+}
+
+func TestDeepDismissal_OptionalFieldsOmittedWhenEmpty(t *testing.T) {
+	// Older cached state may not include File / ConfidenceScore. The
+	// JSON shape must round-trip cleanly with the new fields zero.
+	orig := DeepDismissal{AOIID: "aoi-1", Rationale: "not an issue"}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"file"`, `"confidence_score"`, `"confidence_reasoning"`} {
+		if strings.Contains(string(data), key) {
+			t.Errorf("zero-value %s should be omitted from JSON, got %s", key, data)
+		}
 	}
 }
 

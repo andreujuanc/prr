@@ -182,7 +182,102 @@ func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, e
 		}
 	}
 
+	// ── Coverage ─────────────────────────────────────────────
+	if review.Coverage != nil {
+		renderCoverage(&b, review.Coverage, width)
+	}
+
 	return b.String(), orderedFindings
+}
+
+// coverageRowCap caps the per-file rows shown in the TUI. Beyond
+// this we show a "... N more" footer; full data is in the JSON.
+const coverageRowCap = 15
+
+// pluralize returns "<n> <singular>" when n == 1 and "<n> <plural>"
+// otherwise. Used by the coverage renderer so single-finding rows
+// read "1 finding" instead of "1 findings".
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// renderCoverage writes a "COVERAGE" section to b. Files are
+// already sorted by BuildCoverage (findings first by severity,
+// then dismissals-only, then alphabetical). Orphans appear after,
+// with their own subhead so the "AOI scanner skipped this" signal
+// reads at a glance.
+func renderCoverage(b *strings.Builder, cov *state.ReviewCoverage, width int) {
+	b.WriteString("\n")
+	b.WriteString(styleTextSubtle.Render(strings.Repeat("─", width)))
+	b.WriteString("\n\n")
+
+	header := fmt.Sprintf("COVERAGE — %s in scope, %d reviewed",
+		pluralize(cov.FilesInScope, "file", "files"),
+		cov.FilesReviewed)
+	if n := len(cov.OrphanFiles); n > 0 {
+		header += fmt.Sprintf(" (%s)", pluralize(n, "orphan", "orphans"))
+	}
+	b.WriteString(styleTextSubtle.Render(header))
+	b.WriteString("\n\n")
+
+	shown := cov.Files
+	if len(shown) > coverageRowCap {
+		shown = shown[:coverageRowCap]
+	}
+	for _, fc := range shown {
+		b.WriteString("  ")
+		b.WriteString(styleTextSecondary.Render(fc.File))
+		b.WriteString(" ")
+		summary := pluralize(fc.AOIsScanned, "AOI", "AOIs")
+		if fc.Findings > 0 {
+			summary += fmt.Sprintf("  %s (max %s)",
+				pluralize(fc.Findings, "finding", "findings"),
+				fc.MaxFindingSeverity)
+		}
+		if fc.Dismissals > 0 {
+			if fc.AvgDismissConf > 0 {
+				summary += fmt.Sprintf("  %d dismissed (avg conf %d)", fc.Dismissals, fc.AvgDismissConf)
+			} else {
+				summary += fmt.Sprintf("  %d dismissed", fc.Dismissals)
+			}
+		}
+		if fc.Failed > 0 {
+			summary += fmt.Sprintf("  %d failed", fc.Failed)
+		}
+		b.WriteString(styleTextMuted.Render(summary))
+		b.WriteString("\n")
+	}
+	if remaining := len(cov.Files) - len(shown); remaining > 0 {
+		b.WriteString("  ")
+		b.WriteString(styleTextMuted.Render(fmt.Sprintf("… %s (see --output for full coverage)",
+			pluralize(remaining, "more file", "more files"))))
+		b.WriteString("\n")
+	}
+
+	if len(cov.OrphanFiles) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleTextMuted.Render("  Orphan files (in scope, zero AOIs generated):"))
+		b.WriteString("\n")
+		orphansShown := cov.OrphanFiles
+		const orphanCap = 10
+		if len(orphansShown) > orphanCap {
+			orphansShown = orphansShown[:orphanCap]
+		}
+		for _, p := range orphansShown {
+			b.WriteString("    ")
+			b.WriteString(styleTextSubtle.Render(p))
+			b.WriteString("\n")
+		}
+		if remaining := len(cov.OrphanFiles) - len(orphansShown); remaining > 0 {
+			b.WriteString("    ")
+			b.WriteString(styleTextMuted.Render(fmt.Sprintf("… %s",
+				pluralize(remaining, "more orphan", "more orphans"))))
+			b.WriteString("\n")
+		}
+	}
 }
 
 // renderFindingHeader renders the always-visible part of a finding:

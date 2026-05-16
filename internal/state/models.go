@@ -33,6 +33,39 @@ type ReviewOutput struct {
 	Findings           []ReviewFinding `json:"findings"`
 	MissingTests       []string        `json:"missing_tests"`
 	QuestionsForAuthor []string        `json:"questions_for_author"`
+
+	// Coverage is the per-file breakdown of what was reviewed and
+	// what wasn't — stamped deterministically by the pipeline after
+	// synthesis runs, not authored by the LLM. Nil when the pipeline
+	// chose not to compute it (e.g. no AOI report available).
+	Coverage *ReviewCoverage `json:"coverage,omitempty"`
+}
+
+// FileCoverage records what happened to one file's AOIs in Phase 3.
+// Surfacing dismissed-with-confidence as well as findings lets
+// downstream consumers tell "reviewed clean" from "never looked".
+type FileCoverage struct {
+	File               string `json:"file"`
+	AOIsScanned        int    `json:"aois_scanned"`
+	Findings           int    `json:"findings"`
+	Dismissals         int    `json:"dismissals"`
+	Failed             int    `json:"failed,omitempty"`
+	AvgDismissConf     int    `json:"avg_dismiss_confidence,omitempty"`
+	MaxFindingSeverity string `json:"max_finding_severity,omitempty"`
+}
+
+// ReviewCoverage is the per-run coverage view across all files in
+// the PR / audit scope. Sums and lists are computed once at the end
+// of the pipeline; values never change after stamping.
+type ReviewCoverage struct {
+	Files         []FileCoverage `json:"files"`
+	FilesInScope  int            `json:"files_in_scope"`
+	FilesWithAOIs int            `json:"files_with_aois"`
+	FilesReviewed int            `json:"files_reviewed"`
+	// OrphanFiles are in-scope files that produced zero AOIs. The
+	// most actionable signal in the coverage view: differentiates
+	// "AOI scanner skipped this" from "AOIs all came back clean".
+	OrphanFiles []string `json:"orphan_files,omitempty"`
 }
 
 // ReviewFinding is a single finding from the structured review.
@@ -702,11 +735,18 @@ type DeepFinding struct {
 	Systemic bool `json:"systemic,omitempty"`
 }
 
-// DeepDismissal is a dismissed AOI from Phase 3 review.
+// DeepDismissal is a dismissed AOI from Phase 3 review. Carries
+// enough metadata to surface per-file coverage downstream: which
+// file the dismissed AOI was on, how confident the reviewer is that
+// it isn't a bug, and a one-line reasoning. ConfidenceScore is
+// optional (0 means "unknown"); older cached state may not have it.
 type DeepDismissal struct {
-	AOIID     string `json:"aoi_id"`
-	Evidence  string `json:"evidence,omitempty"`
-	Rationale string `json:"rationale"`
+	AOIID               string `json:"aoi_id"`
+	File                string `json:"file,omitempty"`
+	Evidence            string `json:"evidence,omitempty"`
+	Rationale           string `json:"rationale"`
+	ConfidenceScore     int    `json:"confidence_score,omitempty"`
+	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
 }
 
 // NewState initializes a new empty state object for a PR

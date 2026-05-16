@@ -25,6 +25,18 @@ Flag a DEVIATION from the conventions, not the convention itself.
 
 If no `### Conventions` section is present, this rule doesn't apply.
 
+## Use Known Failure Modes
+
+The prompt may include a `## Known failure modes in this codebase`
+section listing bug classes the project has actually shipped (mined
+from recent fix-shaped commit subjects). Treat this as a strong
+codebase-specific prior: when the flagged AOI touches one of those
+classes (cache keys, identifier generation, range/threshold math,
+silent failure paths, timeout handling, etc.), give the investigation
+extra weight — the same class is more likely to recur.
+
+If no such section is present, this rule doesn't apply.
+
 ## Investigation Process
 
 1. **Read the flagged code** — read the file to see the actual code and surrounding context
@@ -193,8 +205,9 @@ Return ONLY a JSON object — no prose before or after:
 }
 ```
 
-- If this is a real issue: set status to "finding", fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
-- If this is NOT a real issue: set status to "dismissed", fill evidence and dismissed_rationale (evidence_snippet not required for dismissals)
+- `aoi_id` and `status` are REQUIRED on every emission — both findings and dismissals. Without `aoi_id` the result cannot be linked back to the area of interest and may be dropped; without `status` the parser cannot tell whether you're reporting a finding or a dismissal.
+- If this is a real issue: set status to "finding", fill aoi_id/severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
+- If this is NOT a real issue: set status to "dismissed", fill aoi_id/`file`/`evidence`/`dismissed_rationale`, AND set `confidence_score` + `confidence_reasoning` describing how sure you are this isn't a bug (same 0-100 scale, inverted meaning — 95 means "I traced it and confirmed a defense", 50 means "looks fine but I didn't pin down a specific mitigation"). `evidence_snippet` is not required for dismissals. The dismissal confidence feeds per-file coverage reporting so downstream consumers can tell "reviewed and clean" from "didn't look hard".
 - "evidence" is REQUIRED for both findings and dismissals — summarize what you checked and what you found
   - Good: "found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open"
   - Good: "confirmed middleware at server.go:45 validates all inputs via validateRequest() before handlers run"

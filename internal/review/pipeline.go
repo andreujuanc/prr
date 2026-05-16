@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/bugpriors"
 	"github.com/andreujuanc/prr/internal/classify"
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/dbg"
@@ -46,6 +47,12 @@ type PRReviewOptions struct {
 
 	// Debug enables verbose output.
 	Debug bool
+
+	// BugPriors mines fix-shaped commits from the repo's git log and
+	// injects them as a "Known failure modes in this codebase" section
+	// into every Phase 3 deep-review prompt. Off by default — opt in
+	// via the --bug-priors CLI flag.
+	BugPriors bool
 }
 
 // PRReviewResult holds the output of a headless PR review.
@@ -194,6 +201,7 @@ func RunPRReview(
 		NoSynthesis:        opts.NoSynthesis,
 		PR:                 pr,
 		Debug:              opts.Debug,
+		BugPriors:          opts.BugPriors,
 	}, rr)
 	if err != nil {
 		return nil, err
@@ -584,6 +592,13 @@ type CoreOptions struct {
 	// and recheck. Synthesis is not yet instrumented (no OnLLMCall
 	// hook on RunSynthesis).
 	Debug bool
+
+	// BugPriors, when true, mines fix-shaped commits from git log and
+	// injects them as a "Known failure modes in this codebase" section
+	// into every Phase 3 deep-review prompt. The rendered content is
+	// also folded into the deep-review cache key so a new fix-commit
+	// landing between runs invalidates stale entries cleanly.
+	BugPriors bool
 }
 
 // CoreResult holds the output of the shared review pipeline core.
@@ -592,6 +607,11 @@ type CoreResult struct {
 	StructuredReview *state.ReviewOutput
 	DeepFindings     []state.DeepFinding
 	FileFindings     map[string]string
+	// Coverage is the per-file breakdown of AOIs / findings /
+	// dismissals / orphans. Nil when the pipeline ran without an
+	// AOI scan or with empty inputs. The TUI uses this to render
+	// the Coverage section even when synthesis is skipped.
+	Coverage *state.ReviewCoverage
 }
 
 // RunReviewCore is the shared pipeline core used by both the TUI and the headless CLI.
@@ -861,10 +881,27 @@ func RunReviewCore(
 	allFileFindings := make(map[string]string)
 	var deepFindings []state.DeepFinding
 
+	// deepDismissals / failedAOIIDs flow from Phase 3 through to the
+	// coverage stamp at the end of the pipeline. Both default to nil
+	// when no review calls run.
+	var deepDismissals []state.DeepDismissal
+	var failedAOIIDs []string
+
 	if len(reviewCalls) > 0 {
 		maxConc := opts.ParallelReviews
 		if maxConc <= 0 {
 			maxConc = 5
+		}
+
+		// Extract bug-priors once when opted in. Failure / empty repo /
+		// no matches all return empty string — the prompt-builder
+		// treats empty as "no priors section", so a miss costs nothing.
+		// Error is intentionally dropped: bugpriors.Extract documents
+		// it as best-effort and a priors miss must never fail a review.
+		var bugPriorsContent string
+		if opts.BugPriors && opts.RepoRoot != "" {
+			rendered, _ := bugpriors.Extract(opts.RepoRoot, bugpriors.DefaultLookback)
+			bugPriorsContent = rendered
 		}
 
 		execOpts := ExecuteOptions{
@@ -874,6 +911,7 @@ func RunReviewCore(
 			CustomInstructions: enhancedInstructions,
 			MaxConcurrency:     maxConc,
 			RepoRoot:           opts.RepoRoot,
+			BugPriors:          bugPriorsContent,
 			OnProgress: func(completed, total int, cached bool, callErr error) {
 				idx := completed - 1
 				if idx < 0 || idx >= len(reviewCalls) {
@@ -922,6 +960,8 @@ func RunReviewCore(
 		}
 
 		deepFindings = execResult.Findings
+		deepDismissals = execResult.Dismissals
+		failedAOIIDs = execResult.FailedAOIIDs
 		AppendDeepFindings(&allFindings, allFileFindings, deepFindings)
 
 		// Persist the deep findings to state immediately so a crash,
@@ -990,6 +1030,17 @@ func RunReviewCore(
 		}
 	}
 
+	// Coverage is computed deterministically from inputs already in
+	// memory — never authored by the LLM, so it stays trustworthy
+	// even when synthesis hallucinates. Stamped onto StructuredReview
+	// when synthesis runs; surfaced through CoreResult.Coverage in
+	// the SkipSynthesis / NoSynthesis paths.
+	filesInScope := make([]string, 0, len(opts.RawDiffs))
+	for f := range opts.RawDiffs {
+		filesInScope = append(filesInScope, f)
+	}
+	coverage := BuildCoverage(aoiScanResults, deepFindings, deepDismissals, failedAOIIDs, filesInScope)
+
 	// ── Phase 2: Synthesis ───────────────────────────────────────
 	// SkipSynthesis (TUI default): return immediately with DeepFindings
 	// as the source of truth. Review is nil — the UI renders findings
@@ -999,6 +1050,7 @@ func RunReviewCore(
 		return &CoreResult{
 			DeepFindings: deepFindings,
 			FileFindings: allFileFindings,
+			Coverage:     coverage,
 		}, nil
 	}
 	if opts.NoSynthesis {
@@ -1009,6 +1061,7 @@ func RunReviewCore(
 			},
 			DeepFindings: deepFindings,
 			FileFindings: allFileFindings,
+			Coverage:     coverage,
 		}, nil
 	}
 
@@ -1016,6 +1069,14 @@ func RunReviewCore(
 		enhancedInstructions, allFindings.String(), allFileFindings, rr)
 	if synthErr != nil {
 		return nil, synthErr
+	}
+
+	// Stamp coverage onto the structured output so JSON consumers
+	// see it alongside findings. Synthesis itself doesn't author
+	// the field — we trust the upstream count exactly because no
+	// LLM authored it.
+	if synthResult.Structured != nil && coverage != nil {
+		synthResult.Structured.Coverage = coverage
 	}
 
 	synthVerdict := ""
@@ -1029,6 +1090,7 @@ func RunReviewCore(
 		StructuredReview: synthResult.Structured,
 		DeepFindings:     deepFindings,
 		FileFindings:     allFileFindings,
+		Coverage:         coverage,
 	}, nil
 }
 

@@ -20,7 +20,7 @@ const (
 // BuildIndividualPrompt composes the system prompt for reviewing a single AOI.
 // runtimeModel may be nil — when present, a `## Runtime Model` section is
 // appended after the project context.
-func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string, runtimeModel *state.RuntimeModel, aoi security.AreaOfInterest) string {
+func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPriors string, runtimeModel *state.RuntimeModel, aoi security.AreaOfInterest) string {
 	var sb strings.Builder
 
 	// Mode-specific preamble
@@ -49,6 +49,15 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string,
 		sb.WriteString(rendered)
 	}
 
+	// Bug-priors — codebase-specific failure history mined from
+	// fix-shaped commits. Appended after runtime model so the reviewer
+	// sees what this codebase has actually shipped right before the
+	// AOI it's about to investigate. Empty string skips the section.
+	if bugPriors != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(bugPriors)
+	}
+
 	// AOI details
 	sb.WriteString("\n\n## Area of Interest\n\n")
 	sb.WriteString(formatAOI(aoi))
@@ -72,7 +81,7 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions string,
 // BuildGroupedPrompt composes the system prompt for reviewing a subcategory group.
 // runtimeModel may be nil — when present, a `## Runtime Model` section is
 // appended after the project context.
-func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, runtimeModel *state.RuntimeModel, call ReviewCall) string {
+func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors string, runtimeModel *state.RuntimeModel, call ReviewCall) string {
 	var sb strings.Builder
 
 	// Mode-specific preamble
@@ -98,6 +107,13 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions string, ru
 	if rendered := runtimeModel.Render(); rendered != "" {
 		sb.WriteString("\n\n")
 		sb.WriteString(rendered)
+	}
+
+	// Bug-priors — codebase-specific failure history mined from
+	// fix-shaped commits. Appended after runtime model, before AOIs.
+	if bugPriors != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(bugPriors)
 	}
 
 	// AOI list

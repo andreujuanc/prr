@@ -29,6 +29,18 @@ pattern.
 
 If no `### Conventions` section is present, this rule doesn't apply.
 
+## Use Known Failure Modes
+
+The prompt may include a `## Known failure modes in this codebase`
+section listing bug classes the project has actually shipped (mined
+from recent fix-shaped commit subjects). Treat this as a strong
+codebase-specific prior: when any AOI in the group touches one of
+those classes (cache keys, identifier generation, range/threshold
+math, silent failure paths, timeout handling, etc.), weight its
+investigation higher — the same class is more likely to recur.
+
+If no such section is present, this rule doesn't apply.
+
 ## Investigation Process
 
 For each AOI:
@@ -179,5 +191,6 @@ Return ONLY a JSON object — no prose before or after:
 - `trigger` describes a CONCRETE scenario, not "if an attacker..." generalities. `repro` is the smallest input that fires the bug; `observable` is what the caller actually sees. If you cannot fill both fields with concrete content, your understanding of the bug is incomplete — re-investigate or downgrade.
 - `confidence_score` (0-100) is your certainty that the finding is REAL, separate from severity. Severity = "how bad if real"; confidence_score = "how sure I am it's real". Anchor: 90-100 verified end-to-end; 70-89 strong evidence but one defense layer unchecked; 50-69 plausible from cited line + general patterns; <50 speculative.
 - `confidence_reasoning` is one short sentence justifying the score.
-- For findings: fill severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
-- For dismissals: fill evidence and dismissed_rationale only.
+- `aoi_id` and `status` are REQUIRED on every result entry — both findings and dismissals. Without `aoi_id` the result cannot be linked back to its area of interest and may be dropped; without `status` the parser cannot tell whether you're reporting a finding or a dismissal.
+- For findings: set status to "finding", fill aoi_id/severity/title/description/evidence/evidence_snippet/trigger/confidence_score/confidence_reasoning/suggestion. Severity ∈ {critical, high} requires `trace` of at least 3 hops; medium/low/nit do not.
+- For dismissals: set status to "dismissed", fill aoi_id/`file`/`evidence`/`dismissed_rationale`, AND set `confidence_score` + `confidence_reasoning` describing how sure you are this isn't a bug (same 0-100 scale, inverted meaning — 95 means "I traced it and confirmed a defense", 50 means "looks fine but I didn't pin down a specific mitigation"). The dismissal confidence feeds per-file coverage reporting so downstream consumers can tell "reviewed and clean" from "didn't look hard".
