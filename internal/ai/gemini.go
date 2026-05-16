@@ -36,6 +36,7 @@ type GeminiProvider struct {
 	APIKey     string
 	Model      string
 	BaseURL    string       // override for testing; empty uses the real Gemini API
+	APIVersion string       // "v1beta" (default) or "v1"; only consulted when BaseURL is empty
 	HTTPClient *http.Client // optional; defaults to a client with no timeout (context-based cancellation)
 
 	// RequestTimeout bounds a single HTTP call (POST → final SSE event).
@@ -435,7 +436,11 @@ func convertToolParam(p ToolParam) geminiSchema {
 func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.Response, error) {
 	base := g.BaseURL
 	if base == "" {
-		base = "https://generativelanguage.googleapis.com/v1beta"
+		v := g.APIVersion
+		if v == "" {
+			v = "v1beta"
+		}
+		base = "https://generativelanguage.googleapis.com/" + v
 	}
 	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", base, g.Model)
 
