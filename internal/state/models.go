@@ -702,11 +702,18 @@ type DeepFinding struct {
 	Systemic bool `json:"systemic,omitempty"`
 }
 
-// DeepDismissal is a dismissed AOI from Phase 3 review.
+// DeepDismissal is a dismissed AOI from Phase 3 review. Carries
+// enough metadata to surface per-file coverage downstream: which
+// file the dismissed AOI was on, how confident the reviewer is that
+// it isn't a bug, and a one-line reasoning. ConfidenceScore is
+// optional (0 means "unknown"); older cached state may not have it.
 type DeepDismissal struct {
-	AOIID     string `json:"aoi_id"`
-	Evidence  string `json:"evidence,omitempty"`
-	Rationale string `json:"rationale"`
+	AOIID               string `json:"aoi_id"`
+	File                string `json:"file,omitempty"`
+	Evidence            string `json:"evidence,omitempty"`
+	Rationale           string `json:"rationale"`
+	ConfidenceScore     int    `json:"confidence_score,omitempty"`
+	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
 }
 
 // NewState initializes a new empty state object for a PR

@@ -101,8 +101,14 @@ type ExecuteOptions struct {
 
 // ExecuteResult holds the aggregate output of RunReviewCalls.
 type ExecuteResult struct {
-	Findings     []state.DeepFinding
-	Dismissals   int
+	Findings []state.DeepFinding
+
+	// Dismissals carries the full per-AOI dismissal record (file +
+	// confidence + rationale), not just a count. Per-file coverage
+	// instrumentation downstream relies on the file attribution.
+	// Callers that only want the count should use DismissalCount().
+	Dismissals []state.DeepDismissal
+
 	CrossCutting []string
 	// Failed is the count of review calls that errored. The caller should
 	// surface this — failed calls drop their AOIs from the result.
@@ -115,6 +121,10 @@ type ExecuteResult struct {
 	// to the affected AOIs.
 	FailedAOIIDs []string
 }
+
+// DismissalCount returns the number of dismissed AOIs, replacing
+// the old ExecuteResult.Dismissals int field.
+func (r ExecuteResult) DismissalCount() int { return len(r.Dismissals) }
 
 // RunReviewCalls executes all review calls concurrently with bounded concurrency.
 // This is the shared pipeline for both PR review and audit modes.
@@ -220,7 +230,7 @@ func RunReviewCalls(
 		}
 		if cr.result != nil {
 			execResult.Findings = append(execResult.Findings, cr.result.Findings...)
-			execResult.Dismissals += len(cr.result.Dismissals)
+			execResult.Dismissals = append(execResult.Dismissals, cr.result.Dismissals...)
 			if cr.result.CrossCutting != "" {
 				execResult.CrossCutting = append(execResult.CrossCutting, cr.result.CrossCutting)
 			}
@@ -853,9 +863,12 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			})
 		} else {
 			result.Dismissals = append(result.Dismissals, state.DeepDismissal{
-				AOIID:     parsed.AOIID,
-				Evidence:  parsed.Evidence,
-				Rationale: parsed.DismissedRationale,
+				AOIID:               parsed.AOIID,
+				File:                parsed.File,
+				Evidence:            parsed.Evidence,
+				Rationale:           parsed.DismissedRationale,
+				ConfidenceScore:     parsed.ConfidenceScore,
+				ConfidenceReasoning: parsed.ConfidenceReasoning,
 			})
 		}
 	} else {
@@ -913,9 +926,12 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				})
 			} else {
 				result.Dismissals = append(result.Dismissals, state.DeepDismissal{
-					AOIID:     r.AOIID,
-					Evidence:  r.Evidence,
-					Rationale: r.DismissedRationale,
+					AOIID:               r.AOIID,
+					File:                r.File,
+					Evidence:            r.Evidence,
+					Rationale:           r.DismissedRationale,
+					ConfidenceScore:     r.ConfidenceScore,
+					ConfidenceReasoning: r.ConfidenceReasoning,
 				})
 			}
 		}

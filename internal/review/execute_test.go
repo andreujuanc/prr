@@ -131,6 +131,46 @@ func TestParseDeepReviewResult_StateSaveRoundTrips(t *testing.T) {
 	}
 }
 
+// validDismissalJSON exercises the dismissal-capture path: the
+// parser must populate File + ConfidenceScore + ConfidenceReasoning
+// on the DeepDismissal record so per-file coverage instrumentation
+// downstream has the metadata it needs.
+const validDismissalJSON = `{
+  "aoi_id": "aoi-1",
+  "status": "dismissed",
+  "file": "x.go",
+  "evidence": "validateRequest at server.go:45 rejects empty tokens before this code path",
+  "dismissed_rationale": "the empty-token case is caught upstream",
+  "confidence_score": 88,
+  "confidence_reasoning": "traced to middleware; covered"
+}`
+
+func TestParseDeepReviewResult_DismissalCapturesFileAndConfidence(t *testing.T) {
+	result, err := ParseDeepReviewResult(indivCall(), validDismissalJSON)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(result.Findings) != 0 {
+		t.Errorf("expected no findings for dismissal, got %d", len(result.Findings))
+	}
+	if len(result.Dismissals) != 1 {
+		t.Fatalf("expected 1 dismissal, got %d", len(result.Dismissals))
+	}
+	d := result.Dismissals[0]
+	if d.File != "x.go" {
+		t.Errorf("File: want %q, got %q", "x.go", d.File)
+	}
+	if d.ConfidenceScore != 88 {
+		t.Errorf("ConfidenceScore: want 88, got %d", d.ConfidenceScore)
+	}
+	if d.ConfidenceReasoning != "traced to middleware; covered" {
+		t.Errorf("ConfidenceReasoning: got %q", d.ConfidenceReasoning)
+	}
+	if d.Rationale != "the empty-token case is caught upstream" {
+		t.Errorf("Rationale: got %q", d.Rationale)
+	}
+}
+
 // TestParseDeepReviewResult_FencedYieldsSameParsedFields confirms the
 // parser's structured-field extraction is fence-robust today (the bug
 // was only on the RawOutput field, not the parsing). If this test ever

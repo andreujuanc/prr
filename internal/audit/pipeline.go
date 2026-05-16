@@ -1062,13 +1062,13 @@ func runPhase3(
 		// callers so they can see what was lost; the error still bubbles
 		// up to abort the run.
 		if execResult != nil {
-			return execResult.Findings, execResult.Dismissals, execResult.CrossCutting,
+			return execResult.Findings, execResult.DismissalCount(), execResult.CrossCutting,
 				execResult.Failed, execResult.FailedAOIIDs, execErr
 		}
 		return nil, 0, nil, 0, nil, execErr
 	}
 
-	return execResult.Findings, execResult.Dismissals, execResult.CrossCutting,
+	return execResult.Findings, execResult.DismissalCount(), execResult.CrossCutting,
 		execResult.Failed, execResult.FailedAOIIDs, nil
 }
 

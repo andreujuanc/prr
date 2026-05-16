@@ -737,6 +737,43 @@ func TestDeepFinding_TraceOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestDeepDismissal_RoundTrip(t *testing.T) {
+	orig := DeepDismissal{
+		AOIID:               "aoi-1",
+		File:                "internal/audit/cluster.go",
+		Evidence:            "checked validator at server.go:45",
+		Rationale:           "guard catches this upstream",
+		ConfidenceScore:     88,
+		ConfidenceReasoning: "traced to middleware",
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeepDismissal
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got != orig {
+		t.Errorf("round-trip mismatch\n got:  %+v\n want: %+v", got, orig)
+	}
+}
+
+func TestDeepDismissal_OptionalFieldsOmittedWhenEmpty(t *testing.T) {
+	// Older cached state may not include File / ConfidenceScore. The
+	// JSON shape must round-trip cleanly with the new fields zero.
+	orig := DeepDismissal{AOIID: "aoi-1", Rationale: "not an issue"}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"file"`, `"confidence_score"`, `"confidence_reasoning"`} {
+		if strings.Contains(string(data), key) {
+			t.Errorf("zero-value %s should be omitted from JSON, got %s", key, data)
+		}
+	}
+}
+
 func TestDeepFinding_DefensesCheckedRoundTrip(t *testing.T) {
 	orig := DeepFinding{
 		AOIID:           "aoi-1",
