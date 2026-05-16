@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
+	"github.com/andreujuanc/prr/internal/bugpriors"
 	"github.com/andreujuanc/prr/internal/classify"
 	"github.com/andreujuanc/prr/internal/config"
 	"github.com/andreujuanc/prr/internal/dbg"
@@ -200,6 +201,7 @@ func RunPRReview(
 		NoSynthesis:        opts.NoSynthesis,
 		PR:                 pr,
 		Debug:              opts.Debug,
+		BugPriors:          opts.BugPriors,
 	}, rr)
 	if err != nil {
 		return nil, err
@@ -590,6 +592,13 @@ type CoreOptions struct {
 	// and recheck. Synthesis is not yet instrumented (no OnLLMCall
 	// hook on RunSynthesis).
 	Debug bool
+
+	// BugPriors, when true, mines fix-shaped commits from git log and
+	// injects them as a "Known failure modes in this codebase" section
+	// into every Phase 3 deep-review prompt. The rendered content is
+	// also folded into the deep-review cache key so a new fix-commit
+	// landing between runs invalidates stale entries cleanly.
+	BugPriors bool
 }
 
 // CoreResult holds the output of the shared review pipeline core.
@@ -873,6 +882,15 @@ func RunReviewCore(
 			maxConc = 5
 		}
 
+		// Extract bug-priors once when opted in. Failure / empty repo /
+		// no matches all return empty string — the prompt-builder
+		// treats empty as "no priors section", so a miss costs nothing.
+		var bugPriorsContent string
+		if opts.BugPriors && opts.RepoRoot != "" {
+			rendered, _ := bugpriors.Extract(opts.RepoRoot, 30)
+			bugPriorsContent = rendered
+		}
+
 		execOpts := ExecuteOptions{
 			Mode:               ModePR,
 			ProjectContext:     projectContext,
@@ -880,6 +898,7 @@ func RunReviewCore(
 			CustomInstructions: enhancedInstructions,
 			MaxConcurrency:     maxConc,
 			RepoRoot:           opts.RepoRoot,
+			BugPriors:          bugPriorsContent,
 			OnProgress: func(completed, total int, cached bool, callErr error) {
 				idx := completed - 1
 				if idx < 0 || idx >= len(reviewCalls) {

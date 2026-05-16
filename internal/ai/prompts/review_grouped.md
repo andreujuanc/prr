@@ -29,6 +29,18 @@ pattern.
 
 If no `### Conventions` section is present, this rule doesn't apply.
 
+## Use Known Failure Modes
+
+The prompt may include a `## Known failure modes in this codebase`
+section listing bug classes the project has actually shipped (mined
+from recent fix-shaped commit subjects). Treat this as a strong
+codebase-specific prior: when any AOI in the group touches one of
+those classes (cache keys, identifier generation, range/threshold
+math, silent failure paths, timeout handling, etc.), weight its
+investigation higher — the same class is more likely to recur.
+
+If no such section is present, this rule doesn't apply.
+
 ## Investigation Process
 
 For each AOI:

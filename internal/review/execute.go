@@ -343,11 +343,11 @@ func doReviewCall(
 	var systemPrompt string
 	if call.Type == "individual" {
 		systemPrompt = BuildIndividualPrompt(
-			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.RuntimeModel, call.AOIs[0],
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.BugPriors, opts.RuntimeModel, call.AOIs[0],
 		)
 	} else {
 		systemPrompt = BuildGroupedPrompt(
-			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.RuntimeModel, call,
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.BugPriors, opts.RuntimeModel, call,
 		)
 	}
 
