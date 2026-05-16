@@ -108,10 +108,9 @@ func TestThoughtSignature_ToolUseInheritsFromPriorThinking(t *testing.T) {
 	}
 
 	var tub *ToolUseBlock
-	for i, b := range chResp.Content {
+	for _, b := range chResp.Content {
 		if t2, ok := b.(ToolUseBlock); ok {
 			tub = &t2
-			_ = i
 			break
 		}
 	}

@@ -231,11 +231,11 @@ type ChatRequest struct {
 	RequestTimeout  time.Duration // per-call override; 0 = use provider's RequestTimeout
 }
 
-// TempPtr converts a config float64 to *float64, treating zero as
-// "unset / use provider default". This preserves the historical
-// behaviour where a 0 in models.json meant "don't send temperature"
-// — explicit greedy decoding requires setting the pointer directly,
-// not by writing 0 in JSON.
+// TempPtr converts a config float64 to *float64, treating values
+// <= 0 as "unset / use provider default". This preserves the
+// historical behaviour where a 0 in models.json meant "don't send
+// temperature" — explicit greedy decoding requires setting the
+// pointer directly, not by writing 0 in JSON.
 func TempPtr(v float64) *float64 {
 	if v <= 0 {
 		return nil

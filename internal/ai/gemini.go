@@ -437,7 +437,10 @@ func convertToolParam(p ToolParam) geminiSchema {
 
 // ── HTTP request with retry ─────────────────────────────────────────────
 
-func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.Response, error) {
+// resolveURL builds the streaming-generate URL, honouring BaseURL when
+// set and otherwise applying APIVersion (default v1beta) against the
+// public endpoint. Extracted for test access.
+func (g *GeminiProvider) resolveURL() string {
 	base := g.BaseURL
 	if base == "" {
 		v := g.APIVersion
@@ -446,7 +449,11 @@ func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.
 		}
 		base = "https://generativelanguage.googleapis.com/" + v
 	}
-	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", base, g.Model)
+	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", base, g.Model)
+}
+
+func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.Response, error) {
+	url := g.resolveURL()
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {

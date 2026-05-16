@@ -44,8 +44,8 @@ var transientPhraseRe = regexp.MustCompile(
 // header, etc. — instead of always falling back to the quadratic curve.
 //
 // RetryAfter == 0 means "no hint, use the default backoff". A non-zero
-// value is capped at 60s by the consumer (TransientSleep) to bound
-// worst-case latency on misconfigured servers.
+// value is capped at 60s by transientSleep to bound worst-case latency
+// on misconfigured servers.
 type TransientError struct {
 	Err        error
 	RetryAfter time.Duration
