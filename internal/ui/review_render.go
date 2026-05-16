@@ -278,6 +278,28 @@ func renderCoverage(b *strings.Builder, cov *state.ReviewCoverage, width int) {
 			b.WriteString("\n")
 		}
 	}
+
+	if len(cov.SkippedFiles) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleTextMuted.Render("  Skipped files (--review-mode=aoi-only, no AOIs):"))
+		b.WriteString("\n")
+		shown := cov.SkippedFiles
+		const skippedCap = 10
+		if len(shown) > skippedCap {
+			shown = shown[:skippedCap]
+		}
+		for _, p := range shown {
+			b.WriteString("    ")
+			b.WriteString(styleTextSubtle.Render(p))
+			b.WriteString("\n")
+		}
+		if remaining := len(cov.SkippedFiles) - len(shown); remaining > 0 {
+			b.WriteString("    ")
+			b.WriteString(styleTextMuted.Render(fmt.Sprintf("… %s",
+				pluralize(remaining, "more file", "more files"))))
+			b.WriteString("\n")
+		}
+	}
 }
 
 // renderFindingHeader renders the always-visible part of a finding:

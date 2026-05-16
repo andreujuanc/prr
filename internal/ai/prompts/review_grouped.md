@@ -43,8 +43,17 @@ If no such section is present, this rule doesn't apply.
 
 ## Investigation Process
 
+A `## Changes Under Review` section (PR mode) lists the diff for each
+file touched by this group; an inline `**Source around this AOI:**`
+block (audit mode) sits under each AOI in the list. Read these first
+before using tools — they show the actual changed lines or surrounding
+source so you do not start blind. Use tools when you need to look
+outside those windows.
+
 For each AOI:
-1. **Read the flagged code** — read the file to see the actual code and surrounding context
+1. **Read the flagged code** — the section below shows the changed
+   lines (PR) or surrounding source (audit). Read it. If you need
+   more, fetch via tools.
 2. **Verify the concern** — check whether it's handled elsewhere in the codebase
 3. **Determine severity** if real — based on concrete impact, not theoretical risk
 

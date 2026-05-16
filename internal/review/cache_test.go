@@ -37,10 +37,10 @@ func TestGroupedCacheKey_PromptChangeInvalidates(t *testing.T) {
 	t.Cleanup(func() { ai.ReviewGroupedPrompt = orig })
 
 	ai.ReviewGroupedPrompt = "prompt A"
-	keyA := GroupedCacheKey(aois, nil, "")
+	keyA := GroupedCacheKey(aois, "", nil, "")
 
 	ai.ReviewGroupedPrompt = "prompt B"
-	keyB := GroupedCacheKey(aois, nil, "")
+	keyB := GroupedCacheKey(aois, "", nil, "")
 
 	if keyA == keyB {
 		t.Fatalf("expected different cache keys when the prompt changes, got %s for both", keyA)
@@ -88,7 +88,7 @@ func TestGroupedCacheKey_AOIChangeInvalidates(t *testing.T) {
 		{File: "b.go", Line: 3, Category: "correctness"}, // line differs
 	}
 
-	if GroupedCacheKey(base, nil, "") == GroupedCacheKey(other, nil, "") {
+	if GroupedCacheKey(base, "", nil, "") == GroupedCacheKey(other, "", nil, "") {
 		t.Fatalf("expected different cache keys when any AOI in the group changes")
 	}
 }
@@ -115,9 +115,80 @@ func TestGroupedCacheKey_PriorsHashInvalidates(t *testing.T) {
 	aois := []security.AreaOfInterest{
 		{File: "a.go", Line: 1, Category: "correctness"},
 	}
-	keyA := GroupedCacheKey(aois, nil, "")
-	keyB := GroupedCacheKey(aois, nil, "abc123")
+	keyA := GroupedCacheKey(aois, "", nil, "")
+	keyB := GroupedCacheKey(aois, "", nil, "abc123")
 	if keyA == keyB {
 		t.Fatalf("expected different cache keys when priorsHash differs")
+	}
+}
+
+// ── Code-context invalidation ───────────────────────────────────────────
+
+func TestIndividualCacheKey_CodeContextChangeInvalidates(t *testing.T) {
+	aoi := security.AreaOfInterest{File: "foo.go", Line: 10, Category: "correctness"}
+	keyA := IndividualCacheKey("diff A", aoi, nil, "")
+	keyB := IndividualCacheKey("diff B", aoi, nil, "")
+	if keyA == keyB {
+		t.Fatalf("expected different cache keys when the code context changes")
+	}
+}
+
+func TestGroupedCacheKey_CodeContextChangeInvalidates(t *testing.T) {
+	aois := []security.AreaOfInterest{
+		{File: "a.go", Line: 1, Category: "correctness"},
+	}
+	keyA := GroupedCacheKey(aois, "diff A", nil, "")
+	keyB := GroupedCacheKey(aois, "diff B", nil, "")
+	if keyA == keyB {
+		t.Fatalf("expected different cache keys when the code context changes")
+	}
+}
+
+func TestComputeCacheKey_DiffChangeInvalidates(t *testing.T) {
+	aoi := security.AreaOfInterest{File: "a.go", Line: 1, Category: "correctness"}
+	callA := ReviewCall{
+		Type:      "individual",
+		AOIs:      []security.AreaOfInterest{aoi},
+		Files:     []string{"a.go"},
+		FileDiffs: map[string]string{"a.go": "diff A"},
+	}
+	callB := callA
+	callB.FileDiffs = map[string]string{"a.go": "diff B"}
+
+	if ComputeCacheKey(callA, nil, "") == ComputeCacheKey(callB, nil, "") {
+		t.Fatalf("expected different cache keys when the file diff changes")
+	}
+}
+
+func TestComputeCacheKey_AuditContextChangeInvalidates(t *testing.T) {
+	aoi := security.AreaOfInterest{File: "a.go", Line: 1, Category: "correctness"}
+	callA := ReviewCall{
+		Type:       "individual",
+		AOIs:       []security.AreaOfInterest{aoi},
+		Files:      []string{"a.go"},
+		AOISources: []string{"source A"},
+	}
+	callB := callA
+	callB.AOISources = []string{"source B"}
+
+	if ComputeCacheKey(callA, nil, "") == ComputeCacheKey(callB, nil, "") {
+		t.Fatalf("expected different cache keys when the AOI source context changes")
+	}
+}
+
+func TestCodeContextDigest_DeterministicAcrossFileDiffMapOrder(t *testing.T) {
+	// Map iteration order is random; ensure the digest is stable.
+	call := ReviewCall{
+		FileDiffs: map[string]string{
+			"a.go": "diff A",
+			"b.go": "diff B",
+			"c.go": "diff C",
+		},
+	}
+	first := codeContextDigest(call)
+	for i := 0; i < 20; i++ {
+		if got := codeContextDigest(call); got != first {
+			t.Fatalf("digest should be stable across iterations; got mismatch")
+		}
 	}
 }

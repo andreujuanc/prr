@@ -23,6 +23,10 @@ import (
 //   - filesInScope: every file the audit / review considered (diff
 //     files for review, classified-then-filtered files for audit).
 //     Files appearing here but with zero AOIs become orphans.
+//   - skippedFiles: files the user-selected review mode intentionally
+//     left unreviewed (e.g. --review-mode=aoi-only skipping files
+//     with no AOIs). Surfaced on the coverage so the reader can tell
+//     "skipped on purpose" from "left out by accident".
 //
 // The dismiss-confidence average uses an integer mean, skipping
 // dismissals with ConfidenceScore == 0 (the "unknown" sentinel for
@@ -35,8 +39,9 @@ func BuildCoverage(
 	dismissals []state.DeepDismissal,
 	failedAOIIDs []string,
 	filesInScope []string,
+	skippedFiles []string,
 ) *state.ReviewCoverage {
-	if len(aoiScan) == 0 && len(filesInScope) == 0 && len(findings) == 0 && len(dismissals) == 0 {
+	if len(aoiScan) == 0 && len(filesInScope) == 0 && len(findings) == 0 && len(dismissals) == 0 && len(skippedFiles) == 0 {
 		return nil
 	}
 
@@ -177,10 +182,29 @@ func BuildCoverage(
 	})
 	sort.Strings(orphans)
 
+	// Files the review mode intentionally skipped are not "orphans"
+	// (which are unintended) — surface them separately so the reader
+	// can see "skipped on purpose" distinct from "scanner missed it."
+	// Sort for stable output and dedupe in case the caller passed
+	// duplicates.
+	var skipped []string
+	if len(skippedFiles) > 0 {
+		seen := make(map[string]bool, len(skippedFiles))
+		for _, f := range skippedFiles {
+			if f == "" || seen[f] {
+				continue
+			}
+			seen[f] = true
+			skipped = append(skipped, f)
+		}
+		sort.Strings(skipped)
+	}
+
 	cov := &state.ReviewCoverage{
 		Files:        files,
 		FilesInScope: len(scopeSet),
 		OrphanFiles:  orphans,
+		SkippedFiles: skipped,
 	}
 	for _, fc := range files {
 		if fc.AOIsScanned > 0 {

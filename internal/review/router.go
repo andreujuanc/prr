@@ -28,6 +28,26 @@ type ReviewCall struct {
 
 	// Files lists all unique files referenced by AOIs in this call.
 	Files []string
+
+	// FileDiffs holds the unified diff for each file the call touches,
+	// keyed by file path. Populated in PR mode only — the prompt
+	// builder renders these in a "Changes in This File" section so
+	// the model can see the actual changed lines without making a
+	// tool call. Empty in audit mode (no diff exists).
+	FileDiffs map[string]string
+
+	// AOISources holds a slice of source code around each AOI's
+	// line range, parallel to AOIs (AOISources[i] corresponds to
+	// AOIs[i]). Populated in audit mode only — gives the model the
+	// surrounding code without a mandatory read_file round-trip.
+	// Empty in PR mode (FileDiffs carries the equivalent info).
+	//
+	// Invariant: do NOT reorder AOIs after AttachAOISources has run.
+	// AOISources is a parallel slice — sorting or shuffling AOIs
+	// without also reindexing AOISources will silently misalign the
+	// source slice with its AOI, and the prompt will show the wrong
+	// code for each concern.
+	AOISources []string
 }
 
 // RouteResult holds the organized review calls after Phase 3 routing.

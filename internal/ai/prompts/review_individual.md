@@ -39,7 +39,16 @@ If no such section is present, this rule doesn't apply.
 
 ## Investigation Process
 
-1. **Read the flagged code** — read the file to see the actual code and surrounding context
+A `## Changes in This File` (PR mode) or `## Source Around This AOI`
+(audit mode) section is included below when available. Read it first
+before using tools — it gives you the actual changed lines or the
+surrounding source so you do not start blind. Use tools when you need
+to look outside that window: callers, types, mitigations elsewhere in
+the codebase.
+
+1. **Read the flagged code** — the section below shows the changed
+   lines (PR) or surrounding source (audit). Read it. If you need
+   more, fetch via tools.
 2. **Check callers and consumers** — find who calls this code and what data flows in
 3. **Trace data flow** — follow inputs upstream and outputs downstream
 4. **Check for mitigations** — search for guards, validators, sanitizers that might handle this

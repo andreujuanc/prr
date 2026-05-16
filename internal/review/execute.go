@@ -340,7 +340,7 @@ func doReviewCall(
 	var systemPrompt string
 	if call.Type == "individual" {
 		systemPrompt = BuildIndividualPrompt(
-			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.BugPriors, opts.RuntimeModel, call.AOIs[0],
+			opts.Mode, opts.ProjectContext, opts.CustomInstructions, opts.BugPriors, opts.RuntimeModel, call,
 		)
 	} else {
 		systemPrompt = BuildGroupedPrompt(
@@ -726,11 +726,18 @@ func isValidSeverity(s string) bool {
 // priorsHash is sha256 of the bug-priors content for this run (empty
 // when --bug-priors is off). Folding it in here means flipping the
 // flag or shipping a new fix-commit yields a fresh cache key.
+//
+// The call's inlined code context (FileDiffs / AOISources) is also
+// folded in so that changes to the surrounding diff or source code
+// invalidate cached results — without it, an AOI whose line/concern
+// is stable could serve stale review verdicts after nearby code
+// changed.
 func ComputeCacheKey(call ReviewCall, focusDimensions []string, priorsHash string) string {
+	codeContext := codeContextDigest(call)
 	if call.Type == "individual" {
-		return IndividualCacheKey("", call.AOIs[0], focusDimensions, priorsHash)
+		return IndividualCacheKey(codeContext, call.AOIs[0], focusDimensions, priorsHash)
 	}
-	return GroupedCacheKey(call.AOIs, focusDimensions, priorsHash)
+	return GroupedCacheKey(call.AOIs, codeContext, focusDimensions, priorsHash)
 }
 
 func userMessage(mode Mode) string {

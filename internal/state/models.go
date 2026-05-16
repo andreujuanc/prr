@@ -66,6 +66,13 @@ type ReviewCoverage struct {
 	// most actionable signal in the coverage view: differentiates
 	// "AOI scanner skipped this" from "AOIs all came back clean".
 	OrphanFiles []string `json:"orphan_files,omitempty"`
+	// SkippedFiles are in-scope files that the pipeline did not send
+	// to any review call. Populated when the user opts into
+	// --review-mode=aoi-only and one or more files had no AOIs.
+	// Different from OrphanFiles (which means "AOIs not generated
+	// for this file"): SkippedFiles is the user-chosen consequence
+	// of the review-mode flag, not a quirk of the scanner.
+	SkippedFiles []string `json:"skipped_files,omitempty"`
 }
 
 // ReviewFinding is a single finding from the structured review.

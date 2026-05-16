@@ -1,12 +1,25 @@
 package review
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/andreujuanc/prr/internal/security"
 	"github.com/andreujuanc/prr/internal/state"
 )
+
+// individualCall wraps a single AOI into a ReviewCall suitable for
+// BuildIndividualPrompt, keeping the tests concise.
+func individualCall(aoi security.AreaOfInterest) ReviewCall {
+	return ReviewCall{
+		Type:        "individual",
+		Category:    aoi.Category,
+		Subcategory: aoi.Subcategory,
+		AOIs:        []security.AreaOfInterest{aoi},
+		Files:       []string{aoi.File},
+	}
+}
 
 func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
 	aoi := security.AreaOfInterest{
@@ -22,7 +35,7 @@ func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
 		Dimensions:  []string{"correctness", "financial"},
 	}
 
-	prompt := BuildIndividualPrompt(ModeAudit, "This is a billing system.", "Always check money math.", "", nil, aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "This is a billing system.", "Always check money math.", "", nil, individualCall(aoi))
 
 	checks := []struct {
 		name    string
@@ -55,7 +68,7 @@ func TestBuildIndividualPrompt_PRMode(t *testing.T) {
 		Category: "error-handling",
 	}
 
-	prompt := BuildIndividualPrompt(ModePR, "", "", "", nil, aoi)
+	prompt := BuildIndividualPrompt(ModePR, "", "", "", nil, individualCall(aoi))
 
 	if !strings.Contains(prompt, "pull request") {
 		t.Error("PR mode preamble should mention pull request")
@@ -107,7 +120,7 @@ func TestBuildIndividualPrompt_LegacyAOI(t *testing.T) {
 		Confidence: "high",
 	}
 
-	prompt := BuildIndividualPrompt(ModePR, "", "", "", nil, aoi)
+	prompt := BuildIndividualPrompt(ModePR, "", "", "", nil, individualCall(aoi))
 
 	if !strings.Contains(prompt, "db.Query(s)") {
 		t.Error("should include snippet from legacy AOI")
@@ -128,7 +141,7 @@ func TestBuildIndividualPrompt_RuntimeModelInjected(t *testing.T) {
 	}
 	aoi := security.AreaOfInterest{File: "main.go", Line: 1, Category: "correctness"}
 
-	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", rm, aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", rm, individualCall(aoi))
 
 	if !strings.Contains(prompt, "## Runtime Model") {
 		t.Error("prompt should contain the runtime model section header")
@@ -143,7 +156,7 @@ func TestBuildIndividualPrompt_RuntimeModelInjected(t *testing.T) {
 
 func TestBuildIndividualPrompt_NilRuntimeModelOmitsSection(t *testing.T) {
 	aoi := security.AreaOfInterest{File: "main.go", Line: 1, Category: "correctness"}
-	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, individualCall(aoi))
 	if strings.Contains(prompt, "## Runtime Model") {
 		t.Error("nil runtime model should not emit the section header")
 	}
@@ -184,7 +197,7 @@ func TestBuildIndividualPrompt_SiblingDeviationInjected(t *testing.T) {
 			SiblingIDs: []string{"a-id", "b-id", "c-id"},
 		},
 	}
-	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, individualCall(aoi))
 
 	if !strings.Contains(prompt, "Sibling pattern:") {
 		t.Error("prompt should include the sibling pattern label")
@@ -210,7 +223,7 @@ func TestBuildIndividualPrompt_NilSiblingDeviationOmitted(t *testing.T) {
 		Category: "authorization",
 		ID:       "regular-aoi",
 	}
-	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, individualCall(aoi))
 	if strings.Contains(prompt, "Sibling pattern:") {
 		t.Error("regular AOI should not emit a sibling-pattern section")
 	}
@@ -227,7 +240,7 @@ func TestBuildIndividualPrompt_BugPriorsInjected(t *testing.T) {
 	aoi := security.AreaOfInterest{File: "main.go", Line: 1, Category: "correctness"}
 	priors := "## Known failure modes in this codebase\n\n- fix: cache-key gap\n"
 
-	prompt := BuildIndividualPrompt(ModeAudit, "", "", priors, nil, aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", priors, nil, individualCall(aoi))
 
 	if !strings.Contains(prompt, "- fix: cache-key gap") {
 		t.Error("prompt should contain the bug-priors bullet content")
@@ -243,7 +256,7 @@ func TestBuildIndividualPrompt_BugPriorsInjected(t *testing.T) {
 
 func TestBuildIndividualPrompt_EmptyBugPriorsOmitted(t *testing.T) {
 	aoi := security.AreaOfInterest{File: "main.go", Line: 1, Category: "correctness"}
-	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, individualCall(aoi))
 	// No injected bullet content should appear when priors is empty.
 	if strings.Contains(prompt, "- fix:") {
 		t.Error("empty bug-priors must not emit injected bullet content")
@@ -268,6 +281,156 @@ func TestBuildGroupedPrompt_BugPriorsInjected(t *testing.T) {
 	}
 }
 
+// ── Code-context section ────────────────────────────────────────────────
+
+func TestBuildIndividualPrompt_PRDiffSection(t *testing.T) {
+	aoi := security.AreaOfInterest{File: "a.go", Line: 1, Category: "correctness"}
+	call := ReviewCall{
+		Type:  "individual",
+		AOIs:  []security.AreaOfInterest{aoi},
+		Files: []string{"a.go"},
+		FileDiffs: map[string]string{
+			"a.go": "@@ -1,1 +1,1 @@\n-old\n+new\n",
+		},
+	}
+	prompt := BuildIndividualPrompt(ModePR, "", "", "", nil, call)
+
+	if !strings.Contains(prompt, "## Changes in This File\n\n```diff") {
+		t.Error("PR mode should render the Changes in This File section with a diff fence")
+	}
+	if !strings.Contains(prompt, "+new") {
+		t.Error("PR mode should inline the diff content")
+	}
+	if strings.Contains(prompt, "## Source Around This AOI\n\n```") {
+		t.Error("PR mode should not render the audit-mode source section")
+	}
+}
+
+func TestBuildIndividualPrompt_AuditSourceSection(t *testing.T) {
+	aoi := security.AreaOfInterest{File: "a.go", Line: 5, Category: "correctness"}
+	call := ReviewCall{
+		Type:       "individual",
+		AOIs:       []security.AreaOfInterest{aoi},
+		Files:      []string{"a.go"},
+		AOISources: []string{"  5  the line of interest\n"},
+	}
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, call)
+
+	if !strings.Contains(prompt, "## Source Around This AOI\n\n```") {
+		t.Error("audit mode should render the Source Around This AOI section")
+	}
+	if !strings.Contains(prompt, "the line of interest") {
+		t.Error("audit mode should inline the source slice")
+	}
+	if strings.Contains(prompt, "## Changes in This File\n\n```") {
+		t.Error("audit mode should not render the PR-mode diff section")
+	}
+}
+
+func TestBuildIndividualPrompt_NoContextOmitsSection(t *testing.T) {
+	aoi := security.AreaOfInterest{File: "a.go", Line: 1, Category: "correctness"}
+	call := individualCall(aoi)
+	prompt := BuildIndividualPrompt(ModePR, "", "", "", nil, call)
+
+	if strings.Contains(prompt, "## Changes in This File\n\n```") {
+		t.Error("empty FileDiffs should not render the Changes section")
+	}
+	if strings.Contains(prompt, "## Source Around This AOI\n\n```") {
+		t.Error("empty AOISources should not render the Source section")
+	}
+}
+
+func TestBuildGroupedPrompt_PRDiffsSection(t *testing.T) {
+	call := ReviewCall{
+		Type:        "grouped",
+		Category:    "error-handling",
+		Subcategory: "swallowed-errors",
+		AOIs: []security.AreaOfInterest{
+			{File: "a.go", Line: 10, Category: "error-handling"},
+			{File: "b.go", Line: 20, Category: "error-handling"},
+		},
+		Files: []string{"a.go", "b.go"},
+		FileDiffs: map[string]string{
+			"a.go": "@@ -10 +10 @@\n-x\n+y",
+			"b.go": "@@ -20 +20 @@\n-p\n+q",
+		},
+	}
+	prompt := BuildGroupedPrompt(ModePR, "", "", "", nil, call)
+
+	if !strings.Contains(prompt, "## Changes Under Review\n\n###") {
+		t.Error("grouped PR prompt should render Changes Under Review with per-file blocks")
+	}
+	if !strings.Contains(prompt, "### a.go") || !strings.Contains(prompt, "### b.go") {
+		t.Error("grouped PR prompt should list each file under its own header")
+	}
+	if !strings.Contains(prompt, "+y") || !strings.Contains(prompt, "+q") {
+		t.Error("grouped PR prompt should inline both file diffs")
+	}
+}
+
+func TestBuildGroupedPrompt_AuditInlineSource(t *testing.T) {
+	call := ReviewCall{
+		Type:        "grouped",
+		Category:    "error-handling",
+		Subcategory: "swallowed-errors",
+		AOIs: []security.AreaOfInterest{
+			{File: "a.go", Line: 10, Category: "error-handling"},
+			{File: "b.go", Line: 20, Category: "error-handling"},
+		},
+		Files:      []string{"a.go", "b.go"},
+		AOISources: []string{"src around a\n", "src around b\n"},
+	}
+	prompt := BuildGroupedPrompt(ModeAudit, "", "", "", nil, call)
+
+	if !strings.Contains(prompt, "Source around this AOI") {
+		t.Error("grouped audit prompt should include per-AOI source markers")
+	}
+	if !strings.Contains(prompt, "src around a") || !strings.Contains(prompt, "src around b") {
+		t.Error("grouped audit prompt should inline each AOI's source slice")
+	}
+	if strings.Contains(prompt, "## Changes Under Review\n\n###") {
+		t.Error("grouped audit prompt should not render the PR diffs section")
+	}
+}
+
+func TestRenderCodeContext_TruncatesLongPRDiff(t *testing.T) {
+	// Build a diff with more lines than the cap, each line distinct so
+	// we can assert exactly which lines survived the truncation.
+	const overflow = 50
+	lines := make([]string, maxDiffLinesPerFile+overflow)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("+line%d", i)
+	}
+	bigDiff := strings.Join(lines, "\n")
+
+	call := ReviewCall{
+		Type:      "individual",
+		AOIs:      []security.AreaOfInterest{{File: "a.go", Line: 1}},
+		Files:     []string{"a.go"},
+		FileDiffs: map[string]string{"a.go": bigDiff},
+	}
+	section := renderCodeContext(ModePR, call)
+	if !strings.Contains(section, "truncated") {
+		t.Errorf("expected truncation hint in section; got:\n%s", section)
+	}
+	if !strings.Contains(section, "git_diff") {
+		t.Errorf("expected pointer to git_diff tool in truncation hint")
+	}
+	// Content guarantee: the first line must survive, but any line at
+	// or past the cap must be dropped. Without these checks a broken
+	// capDiffLines that appends the hint but keeps all lines would
+	// still pass the substring checks above.
+	if !strings.Contains(section, "+line0") {
+		t.Errorf("expected first line to survive truncation; got:\n%s", section)
+	}
+	for _, dropped := range []int{maxDiffLinesPerFile, maxDiffLinesPerFile + overflow - 1} {
+		marker := fmt.Sprintf("+line%d", dropped)
+		if strings.Contains(section, marker) {
+			t.Errorf("expected line %d to be truncated, but it survived; got:\n%s", dropped, section)
+		}
+	}
+}
+
 func TestBuildIndividualPrompt_SiblingDeviationCapsSiblingList(t *testing.T) {
 	// More than 8 siblings — should cap to keep the prompt small.
 	manyIDs := []string{"s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12"}
@@ -280,7 +443,7 @@ func TestBuildIndividualPrompt_SiblingDeviationCapsSiblingList(t *testing.T) {
 			SiblingIDs: manyIDs,
 		},
 	}
-	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, aoi)
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, individualCall(aoi))
 	// The 9th-12th ids should NOT appear (capped at 8).
 	for _, late := range []string{"s9", "s10", "s11", "s12"} {
 		if strings.Contains(prompt, late) {
