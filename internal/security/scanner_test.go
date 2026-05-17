@@ -1,6 +1,7 @@
 package security
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -375,7 +376,7 @@ func TestBuildAOIBatchesClassified_GroupsByDimensions(t *testing.T) {
 		"repo.go":         {"input-validation", "error-handling"}, // same as handler.go
 	}
 
-	batches := buildAOIBatchesClassified(rawDiffs, fileDimensions)
+	batches := buildAOIBatchesClassified(rawDiffs, fileDimensions, false)
 
 	// handler.go and repo.go share dimensions, so they should be in the same batch
 	// handler_test.go has different dimensions, so it should be in a separate batch
@@ -426,7 +427,7 @@ func TestBuildAOIBatchesClassified_NilDimensions(t *testing.T) {
 	}
 
 	// nil fileDimensions — all files should end up in same batch (all dims)
-	batches := buildAOIBatchesClassified(rawDiffs, nil)
+	batches := buildAOIBatchesClassified(rawDiffs, nil, false)
 
 	if len(batches) != 1 {
 		t.Fatalf("got %d batches, want 1", len(batches))
@@ -445,7 +446,7 @@ func TestBuildAOIBatchesClassified_ExcludesFiles(t *testing.T) {
 		"go.sum":  "lock file",
 	}
 
-	batches := buildAOIBatchesClassified(rawDiffs, nil)
+	batches := buildAOIBatchesClassified(rawDiffs, nil, false)
 
 	totalFiles := 0
 	for _, b := range batches {
@@ -513,6 +514,52 @@ func TestFormatDigest_ContainsCategories(t *testing.T) {
 	}
 	if !containsStr(digest, "auth: 1") {
 		t.Error("digest should show auth category count")
+	}
+}
+
+func TestPrefixLineNumbers(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "single line, no trailing newline",
+			in:   "package main",
+			want: "1: package main",
+		},
+		{
+			name: "trailing newline is preserved",
+			in:   "a\nb\n",
+			want: "1: a\n2: b\n",
+		},
+		{
+			name: "no trailing newline",
+			in:   "a\nb",
+			want: "1: a\n2: b",
+		},
+		{
+			name: "blank lines keep their numbers",
+			in:   "a\n\nc\n",
+			want: "1: a\n2: \n3: c\n",
+		},
+		{
+			name: "width pads when count crosses powers of ten",
+			in:   strings.Repeat("x\n", 12),
+			// 12 lines → width 2. First line should be " 1:", last "12:".
+			want: " 1: x\n 2: x\n 3: x\n 4: x\n 5: x\n 6: x\n 7: x\n 8: x\n 9: x\n10: x\n11: x\n12: x\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := prefixLineNumbers(tc.in)
+			if got != tc.want {
+				t.Errorf("prefixLineNumbers(%q):\n got: %q\nwant: %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

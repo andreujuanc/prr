@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -168,7 +169,7 @@ func ScanAreasOfInterestClassified(
 		onProgress(fmt.Sprintf("using cached AOI results for %d file(s)", len(cachedAOIs)))
 	}
 
-	batches := buildAOIBatchesClassified(uncachedDiffs, fileDimensions)
+	batches := buildAOIBatchesClassified(uncachedDiffs, fileDimensions, auditMode)
 	log.Printf("[aoi-debug] built %d batches from %d uncached files", len(batches), len(uncachedDiffs))
 	if len(batches) == 0 && len(cachedAOIs) == 0 {
 		return &AOIReport{}, nil
@@ -409,7 +410,37 @@ type aoiBatch struct {
 }
 
 func buildAOIBatches(rawDiffs map[string]string) []aoiBatch {
-	return buildAOIBatchesClassified(rawDiffs, nil)
+	return buildAOIBatchesClassified(rawDiffs, nil, false)
+}
+
+// prefixLineNumbers returns body with every line prefixed by its 1-based
+// source line number followed by ": ". Numbers are right-padded to the
+// width of the largest line number for readable alignment. A trailing
+// newline in the input produces a trailing newline in the output; no
+// content is added or removed. Intended for audit mode, where the
+// scanner sees whole files — PR mode passes unified diffs whose own
+// "@@" headers are the canonical line metadata and must not be
+// re-numbered.
+func prefixLineNumbers(body string) string {
+	if body == "" {
+		return ""
+	}
+	hadTrailingNewline := body[len(body)-1] == '\n'
+	trimmed := body
+	if hadTrailingNewline {
+		trimmed = body[:len(body)-1]
+	}
+	lines := strings.Split(trimmed, "\n")
+	width := len(strconv.Itoa(len(lines)))
+	var b strings.Builder
+	b.Grow(len(body) + (width+2)*len(lines))
+	for i, line := range lines {
+		fmt.Fprintf(&b, "%*d: %s", width, i+1, line)
+		if i < len(lines)-1 || hadTrailingNewline {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // dimensionKey returns a stable string key for a set of dimension slugs.
@@ -424,7 +455,7 @@ func dimensionKey(dims []string) string {
 	return strings.Join(sorted, ",")
 }
 
-func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[string][]string) []aoiBatch {
+func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[string][]string, auditMode bool) []aoiBatch {
 	// Group by dimension set, skip excluded files
 	type fileEntry struct {
 		path string
@@ -468,7 +499,11 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 		var curDiff strings.Builder
 
 		for _, e := range entries {
-			entry := fmt.Sprintf("=== %s ===\n%s\n\n", e.path, e.diff)
+			content := e.diff
+			if auditMode {
+				content = prefixLineNumbers(content)
+			}
+			entry := fmt.Sprintf("=== %s ===\n%s\n\n", e.path, content)
 
 			if curDiff.Len() > 0 && curDiff.Len()+len(entry) > aoiBatchMaxChars {
 				batches = append(batches, aoiBatch{
