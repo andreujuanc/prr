@@ -6,21 +6,34 @@ import (
 )
 
 // DefaultRequestTimeout is the per-HTTP-call deadline applied to every
-// LLM request constructed via NewProvider. Sized to be generous for big
-// reasoning runs (synthesis on large PRs with thinking-budget models)
-// while still bounding a true hang.
+// LLM request constructed via NewProvider. Sized from real Gemini Pro
+// traffic: a deep-review-shaped call with 32K thinking budget
+// completed in 2.7 minutes wall-clock; the theoretical worst case
+// where the model also fills its 65K output budget pushes to ~9
+// minutes. 10 minutes is the smallest ceiling that comfortably
+// covers both, with the mid-stream silence cap
+// (DefaultMaxStreamSilence) handling stuck-but-alive calls within
+// 30s so this timer rarely needs to fire.
 //
 // Per-call: each provider.StreamChat invocation gets its own fresh
 // timer. A multi-round agent loop or a retry wrapper can spend many
 // such windows back-to-back; the cap is on individual HTTP calls, not
 // on a whole prr review/audit run.
-const DefaultRequestTimeout = 15 * time.Minute
+const DefaultRequestTimeout = 10 * time.Minute
 
 // DefaultHeartbeatInterval emits a heartbeat event when a stream goes
 // silent for this long. Sized for long thinking runs: short enough to
 // be a useful "still alive" signal, long enough to avoid noise on
 // normal token-by-token output.
 const DefaultHeartbeatInterval = 60 * time.Second
+
+// DefaultMaxStreamSilence aborts a streaming request when no SSE data
+// has been seen for this long. Sized from real Gemini Pro traffic:
+// on a 37KB prompt with a 32K thinking budget, the worst observed
+// inter-chunk gap was 4.4s. 30s gives ~7× headroom over healthy
+// traffic and fires within seconds of a true hang — vastly tighter
+// than waiting for RequestTimeout.
+const DefaultMaxStreamSilence = 30 * time.Second
 
 // ProviderConfig holds the parameters needed to create a Provider.
 //
@@ -50,6 +63,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			BaseURL:           cfg.BaseURL,
 			RequestTimeout:    DefaultRequestTimeout,
 			HeartbeatInterval: DefaultHeartbeatInterval,
+			MaxStreamSilence:  DefaultMaxStreamSilence,
 		}
 		gp.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 		gp.ModelConfig.Temperature = cfg.Temperature
@@ -63,6 +77,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			BaseURL:           cfg.BaseURL,
 			RequestTimeout:    DefaultRequestTimeout,
 			HeartbeatInterval: DefaultHeartbeatInterval,
+			MaxStreamSilence:  DefaultMaxStreamSilence,
 		}
 		op.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 		op.ModelConfig.Temperature = cfg.Temperature
@@ -80,6 +95,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			BaseURL:           baseURL,
 			RequestTimeout:    DefaultRequestTimeout,
 			HeartbeatInterval: DefaultHeartbeatInterval,
+			MaxStreamSilence:  DefaultMaxStreamSilence,
 			ProviderLabel:     "github-copilot",
 			ExtraHeaders: map[string]string{
 				"Openai-Intent": "conversation-edits",

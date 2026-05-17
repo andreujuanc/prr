@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -77,6 +78,69 @@ func TestStreamHeartbeat_FiresAfterSilence(t *testing.T) {
 	}
 	if minSilence < interval {
 		t.Errorf("heartbeat Silence = %v, expected >= %v", minSilence, interval)
+	}
+}
+
+// TestStreamHeartbeat_SilenceCapFiresCancel pins that the silence cap
+// invokes the cancel callback when no tick lands within maxSilence,
+// and reports silenceCapFired() = true. Heartbeat emission is
+// disabled (interval = 0) to isolate the cap behavior. We wait on a
+// channel that the cancel callback closes rather than time.Sleep, so
+// the test does not race the watchdog goroutine on heavily loaded CI.
+func TestStreamHeartbeat_SilenceCapFiresCancel(t *testing.T) {
+	ch := make(chan ChatEvent, 16)
+	var cancelCount int32
+	cancelled := make(chan struct{})
+	cancel := func() {
+		if atomic.AddInt32(&cancelCount, 1) == 1 {
+			close(cancelled)
+		}
+	}
+
+	hb := newStreamHeartbeat(ch, 0, 100*time.Millisecond, cancel)
+	defer hb.stop()
+
+	select {
+	case <-cancelled:
+		// silence cap fired
+	case <-time.After(2 * time.Second):
+		t.Fatal("silence cap did not fire within 2s (cap=100ms)")
+	}
+
+	if got := atomic.LoadInt32(&cancelCount); got != 1 {
+		t.Fatalf("cancel call count = %d, want 1", got)
+	}
+	if !hb.silenceCapFired() {
+		t.Fatal("silenceCapFired() = false, want true")
+	}
+}
+
+// TestStreamHeartbeat_SilenceCapNotFiredOnTicks pins that ticks reset
+// the silence clock, so regular ticks prevent the cap from firing.
+// Margin is generous (1s cap, 100ms sleep, ~10× headroom) so an 80ms
+// sleep stretching to ~200ms on loaded CI does not produce a false
+// positive — the cap fires only if a single sleep exceeds 1s, which
+// is extreme jitter.
+func TestStreamHeartbeat_SilenceCapNotFiredOnTicks(t *testing.T) {
+	ch := make(chan ChatEvent, 16)
+	var cancelCount int32
+	cancel := func() {
+		atomic.AddInt32(&cancelCount, 1)
+	}
+
+	hb := newStreamHeartbeat(ch, 0, 1*time.Second, cancel)
+	stop := time.Now().Add(800 * time.Millisecond)
+	for time.Now().Before(stop) {
+		hb.tick()
+		time.Sleep(100 * time.Millisecond)
+	}
+	hb.stop()
+
+	if got := atomic.LoadInt32(&cancelCount); got != 0 {
+		t.Fatalf("cancel call count = %d, want 0 (regular ticks should prevent silence cap)", got)
+	}
+	if hb.silenceCapFired() {
+		t.Fatal("silenceCapFired() = true with regular ticks; want false")
 	}
 }
 

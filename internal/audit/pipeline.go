@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/andreujuanc/prr/internal/ai"
 	"github.com/andreujuanc/prr/internal/bugpriors"
@@ -501,6 +502,7 @@ func Run(
 	// ── Phase 2: AOI Generation ─────────────────────────────────────────
 
 	dbgw.Phase("PHASE 2: AOI Pre-scan")
+	phase2Start := time.Now()
 	onProgress("phase2", fmt.Sprintf("Scanning %d files for areas of interest...", len(files)))
 
 	// Build AOI debug hook
@@ -581,10 +583,17 @@ func Run(
 		log.Printf("Warning: failed to save audit state after Phase 2: %v", err)
 	}
 	aoiUsage := ai.SnapshotUsage(aoiClient)
+	phase2AOICount := 0
+	for _, r := range aoiResults {
+		phase2AOICount += len(r.AreasOfInterest)
+	}
+	log.Printf("Phase 2 complete: %d AOIs across %d file-result(s) in %v",
+		phase2AOICount, len(aoiResults), time.Since(phase2Start).Round(time.Second))
 
 	// ── Phase 3: Deep Review (routing + execution) ──────────────────────
 
 	dbgw.Phase("PHASE 3: Deep Review")
+	phase3Start := time.Now()
 	routing := review.RouteAOIs(aoiResults, opts.Focus, 10)
 	onProgress("phase3", routing.FormatSummary())
 	dbgw.Text("Routing: %s", routing.FormatSummary())
@@ -647,6 +656,8 @@ func Run(
 		log.Printf("Warning: failed to save audit state after Phase 3: %v", err)
 	}
 	reviewUsage := ai.SnapshotUsage(reviewClient)
+	log.Printf("Phase 3 complete: %d call(s) (%d failed), %d findings, %d dismissals in %v",
+		len(calls), failed, len(findings), dismissals, time.Since(phase3Start).Round(time.Second))
 
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbgw.Phase("PHASE 3b: Recheck")

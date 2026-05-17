@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -268,6 +269,114 @@ func TestGeminiStreamChat_ServerTimeoutHeader(t *testing.T) {
 	// 30s deadline minus a tiny amount of in-flight; allow [25, 31].
 	if seen < 25 || seen > 31 {
 		t.Errorf("x-server-timeout = %ds, want [25, 31]", seen)
+	}
+}
+
+// TestGeminiStreamChat_MaxStreamSilence_FiresMidStream pins the
+// silence cap: a server that sends headers + one SSE chunk and then
+// stalls must surface as a canceled stream within ~maxSilence,
+// without waiting for RequestTimeout. This is the load-bearing
+// safety net for the mid-stream hang investigated 2026-05-16.
+func TestGeminiStreamChat_MaxStreamSilence_FiresMidStream(t *testing.T) {
+	const silence = 250 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, sseEvent(ssePartSpec{Text: "first"}))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// Stall mid-stream — simulates Gemini going silent after
+		// headers + first chunk. Bail out when r.Context() ends so
+		// srv.Close() doesn't deadlock.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	provider := &GeminiProvider{
+		APIKey:           "test-key",
+		Model:            "test-model",
+		BaseURL:          srv.URL,
+		RequestTimeout:   10 * time.Second, // generous — silence cap should fire first
+		MaxStreamSilence: silence,
+	}
+
+	start := time.Now()
+	ch, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{
+			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+
+	var gotErr error
+	for ev := range ch {
+		if ev.Type == EventError {
+			gotErr = ev.Err
+		}
+	}
+	elapsed := time.Since(start)
+
+	if gotErr == nil {
+		t.Fatalf("expected EventError after silence cap, channel closed cleanly after %v", elapsed)
+	}
+	if !errors.Is(gotErr, context.Canceled) {
+		t.Fatalf("expected context.Canceled from silence cap, got: %v", gotErr)
+	}
+	// Should fire within a small multiple of the silence threshold,
+	// well below RequestTimeout. Cap at 5× silence to absorb scheduling
+	// jitter while still proving the cap fired and not the deadline.
+	if elapsed > 5*silence {
+		t.Errorf("silence cap fired too late: elapsed=%v (silence=%v)", elapsed, silence)
+	}
+}
+
+// TestGeminiStreamChat_MaxStreamSilence_DisabledByDefault pins the
+// opt-out: zero MaxStreamSilence means no cancellation regardless of
+// how long the stream stalls (other timers still apply).
+func TestGeminiStreamChat_MaxStreamSilence_DisabledByDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, sseEvent(ssePartSpec{Text: "first"}))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// Pause briefly then send done — should succeed end-to-end.
+		time.Sleep(150 * time.Millisecond)
+		fmt.Fprint(w, sseEvent(ssePartSpec{Text: "second"}))
+	}))
+	defer srv.Close()
+
+	provider := &GeminiProvider{
+		APIKey:         "test-key",
+		Model:          "test-model",
+		BaseURL:        srv.URL,
+		RequestTimeout: 5 * time.Second,
+		// MaxStreamSilence: 0 — disabled
+	}
+
+	ch, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{
+			{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	text, _, err := collectText(ch)
+	if err != nil {
+		t.Fatalf("unexpected stream error with silence cap disabled: %v", err)
+	}
+	if text != "firstsecond" {
+		t.Errorf("got text %q, want %q", text, "firstsecond")
 	}
 }
 
