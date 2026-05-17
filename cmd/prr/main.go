@@ -763,12 +763,7 @@ func createAIClient(cfg *config.Config) ai.Client {
 		log.Fatalf("Failed to create AI provider: %v", err)
 	}
 
-	var opts []ai.AgentOption
-	if cfg.Debug {
-		opts = append(opts, ai.WithDebugLogger(log.Writer()))
-	}
-
-	return ai.NewAgent(provider, toolExec, opts...)
+	return ai.NewAgent(provider, toolExec, ai.WithDebugLogger(log.Writer()))
 }
 
 // createAOIClient creates a lightweight AI client for the security AOI pre-scan.
@@ -829,7 +824,7 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 	}
 
 	// AOI client has no tool executor — it only analyzes the diffs passed to it
-	return ai.NewAgent(provider, nil), nil
+	return ai.NewAgent(provider, nil, ai.WithDebugLogger(log.Writer())), nil
 }
 
 // ── Pre-flight checks ──────────────────────────────────────────────────

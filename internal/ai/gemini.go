@@ -150,6 +150,7 @@ func (g *GeminiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 // is held until the streaming goroutine completes so the deadline isn't
 // released early.
 func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
+	start := time.Now()
 	cancel := func() {}
 	timeout := req.RequestTimeout
 	if timeout == 0 {
@@ -167,8 +168,11 @@ func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 		return nil, fmt.Errorf("gemini: failed to marshal request: %w", err)
 	}
 
+	log.Printf("[gemini] StreamChat start (model=%s, req=%dB)", g.Model, len(body))
+
 	resp, err := g.doHTTPRequest(ctx, body)
 	if err != nil {
+		log.Printf("[gemini] StreamChat end (elapsed=%v, status=request-error)", time.Since(start).Round(time.Millisecond))
 		cancel()
 		return nil, err
 	}
@@ -178,7 +182,8 @@ func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 		defer close(ch)
 		defer resp.Body.Close()
 		defer cancel()
-		g.parseSSEStream(ctx, resp.Body, ch)
+		status := g.parseSSEStream(ctx, resp.Body, ch)
+		log.Printf("[gemini] StreamChat end (elapsed=%v, status=%s)", time.Since(start).Round(time.Millisecond), status)
 	}()
 
 	return ch, nil
@@ -536,7 +541,11 @@ func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.
 
 // ── SSE stream parsing ──────────────────────────────────────────────────
 
-func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent) {
+// parseSSEStream returns a short status string describing why the loop
+// exited: "done" (clean EventDone sent), "error" (stream read error),
+// "deadline" (per-call timeout), "canceled" (parent ctx cancelled).
+// The status is consumed only by the StreamChat debug log line.
+func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent) string {
 	var contentBlocks []ContentBlock
 	var usage TokenUsage
 
@@ -556,7 +565,7 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		select {
 		case <-ctx.Done():
 			ch <- ChatEvent{Type: EventError, Err: ctx.Err()}
-			return
+			return ctxExitStatus(ctx)
 		default:
 		}
 
@@ -664,7 +673,18 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		}
 		log.Printf("Gemini stream read error: %v", err)
 		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
-		return
+		if ctx.Err() != nil {
+			return ctxExitStatus(ctx)
+		}
+		return "error"
+	}
+
+	// scanner.Scan() can return false from a ctx-driven Body.Close without
+	// surfacing an error (the io.EOF gets swallowed). Catch that here so a
+	// per-call timeout or parent cancel doesn't produce a fake EventDone.
+	if err := ctx.Err(); err != nil {
+		ch <- ChatEvent{Type: EventError, Err: err}
+		return ctxExitStatus(ctx)
 	}
 
 	// Determine stop reason from content
@@ -683,6 +703,20 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 			StopReason: stopReason,
 			Usage:      usage,
 		},
+	}
+	return "done"
+}
+
+// ctxExitStatus maps ctx.Err() to a short status string for the
+// StreamChat debug log.
+func ctxExitStatus(ctx context.Context) string {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(ctx.Err(), context.Canceled):
+		return "canceled"
+	default:
+		return "unknown"
 	}
 }
 

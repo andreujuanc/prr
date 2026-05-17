@@ -119,6 +119,7 @@ func (o *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 // is held until the streaming goroutine completes so the deadline isn't
 // released early.
 func (o *OpenAIProvider) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
+	start := time.Now()
 	cancel := func() {}
 	timeout := req.RequestTimeout
 	if timeout == 0 {
@@ -136,8 +137,12 @@ func (o *OpenAIProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 		return nil, fmt.Errorf("openai: failed to marshal request: %w", err)
 	}
 
+	label := o.Name()
+	log.Printf("[%s] StreamChat start (model=%s, req=%dB)", label, o.Model, len(body))
+
 	resp, err := o.doHTTPRequest(ctx, body)
 	if err != nil {
+		log.Printf("[%s] StreamChat end (elapsed=%v, status=request-error)", label, time.Since(start).Round(time.Millisecond))
 		cancel()
 		return nil, err
 	}
@@ -147,7 +152,8 @@ func (o *OpenAIProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 		defer close(ch)
 		defer resp.Body.Close()
 		defer cancel()
-		o.parseSSEStream(ctx, resp.Body, ch)
+		status := o.parseSSEStream(ctx, resp.Body, ch)
+		log.Printf("[%s] StreamChat end (elapsed=%v, status=%s)", label, time.Since(start).Round(time.Millisecond), status)
 	}()
 
 	return ch, nil
@@ -525,7 +531,9 @@ type oaiStreamChunk struct {
 	} `json:"usage"`
 }
 
-func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent) {
+// parseSSEStream returns a short status string describing why the loop
+// exited. See gemini.go parseSSEStream comment for the value set.
+func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent) string {
 	var contentBlocks []ContentBlock
 	var textBuf strings.Builder
 	var usage TokenUsage
@@ -551,7 +559,7 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		select {
 		case <-ctx.Done():
 			ch <- ChatEvent{Type: EventError, Err: ctx.Err()}
-			return
+			return ctxExitStatus(ctx)
 		default:
 		}
 
@@ -636,7 +644,10 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		}
 		log.Printf("OpenAI stream read error: %v", err)
 		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
-		return
+		if ctx.Err() != nil {
+			return ctxExitStatus(ctx)
+		}
+		return "error"
 	}
 	// scanner.Err() returns nil on ctx-driven Body.Close (the http.Client
 	// closes the body when ctx fires, surfacing as io.EOF which Scanner
@@ -644,7 +655,7 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	// don't silently produce an empty Done event.
 	if err := ctx.Err(); err != nil {
 		ch <- ChatEvent{Type: EventError, Err: err}
-		return
+		return ctxExitStatus(ctx)
 	}
 
 	// Finalize text block
@@ -676,4 +687,5 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 			Usage:      usage,
 		},
 	}
+	return "done"
 }
