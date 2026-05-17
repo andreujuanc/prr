@@ -178,6 +178,10 @@ func runAudit(debug bool, args []string) {
 				printError(fmt.Errorf("--max-reviews=%s: %w", after, err))
 				os.Exit(1)
 			}
+			if n <= 0 {
+				printError(fmt.Errorf("--max-reviews must be a positive integer (got %d)", n))
+				os.Exit(1)
+			}
 			opts.MaxReviews = n
 		} else if after, ok := strings.CutPrefix(arg, "--concurrency="); ok {
 			n, err := strconv.Atoi(after)
@@ -185,13 +189,15 @@ func runAudit(debug bool, args []string) {
 				printError(fmt.Errorf("--concurrency=%s: %w", after, err))
 				os.Exit(1)
 			}
-			if n > 0 {
-				opts.Concurrency.Classify = n
-				opts.Concurrency.AOIScan = n
-				opts.Concurrency.DeepReview = n
-				opts.Concurrency.Recheck = n
-				opts.Concurrency.HierarchicalSynth = n
+			if n <= 0 {
+				printError(fmt.Errorf("--concurrency must be a positive integer (got %d)", n))
+				os.Exit(1)
 			}
+			opts.Concurrency.Classify = n
+			opts.Concurrency.AOIScan = n
+			opts.Concurrency.DeepReview = n
+			opts.Concurrency.Recheck = n
+			opts.Concurrency.HierarchicalSynth = n
 		} else if after, ok := strings.CutPrefix(arg, "--output="); ok {
 			outputPath = after
 		} else if arg == "--no-cache" {
@@ -301,14 +307,16 @@ func runAudit(debug bool, args []string) {
 	// Load previous findings for comparison
 	previousFindings, _ := audit.LoadSnapshot(repoRoot)
 
-	// Run audit with progress UI (or plain mode in debug)
+	// Run audit. Both --debug and --quiet route through RunPlain — debug
+	// to keep LLM trace output legible, quiet to avoid the alt-screen
+	// TUI failing when stdout isn't a terminal (or when the user
+	// explicitly asked for no UI).
 	ctx := context.Background()
 	var result *audit.Result
 	var synthesis *audit.SynthesisResult
-	if opts.Debug {
-		// In debug mode, skip Bubble Tea UI — run directly with simple progress to stderr
+	if opts.Debug || quiet {
 		result, synthesis, err = audit.RunPlain(ctx, reviewClient, aoiClient, opts,
-			cfg.StrongModel, cfg.FastModel, noSynth)
+			cfg.StrongModel, cfg.FastModel, noSynth, quiet)
 	} else {
 		result, synthesis, err = audit.RunWithUI(ctx, reviewClient, aoiClient, opts,
 			cfg.StrongModel, cfg.FastModel, noSynth)

@@ -174,6 +174,61 @@ func TestAgent_ToolCall(t *testing.T) {
 	}
 }
 
+// TestAgent_ToolCall_InvalidArgsSurfacesError pins the contract for
+// malformed tool-call arguments: instead of silently running the tool
+// with an empty map (the old behaviour), the agent must return an
+// IsError tool result so the model sees the failure on its next turn
+// and can correct course.
+func TestAgent_ToolCall_InvalidArgsSurfacesError(t *testing.T) {
+	mock := &mockProvider{
+		responses: []*ChatResponse{
+			{
+				Content: []ContentBlock{
+					// Args is not valid JSON. The old code did
+					// `_ = json.Unmarshal(...)` and dropped the error,
+					// then called ExecuteTool with an empty map.
+					ToolUseBlock{ID: "call_1", Name: "list_dir", Args: json.RawMessage(`{not json`)},
+				},
+				StopReason: StopToolUse,
+			},
+			{
+				Content:    []ContentBlock{TextBlock{Text: "ok"}},
+				StopReason: StopEndTurn,
+			},
+		},
+	}
+
+	agent := NewAgent(mock, &ToolExecutor{})
+	if _, err := agent.ChatStream(context.Background(), "", []Message{
+		{Role: "user", Content: "go"},
+	}, nil); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.calls) < 2 {
+		t.Fatalf("expected 2 provider calls (tool result feedback), got %d", len(mock.calls))
+	}
+	last := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
+	var saw ToolResultBlock
+	for _, b := range last.Content {
+		if tr, ok := b.(ToolResultBlock); ok {
+			saw = tr
+			break
+		}
+	}
+	if saw.ToolUseID != "call_1" {
+		t.Fatalf("missing tool result for call_1; got %+v", last.Content)
+	}
+	if !saw.IsError {
+		t.Errorf("invalid args should produce IsError=true tool result; got Content=%q", saw.Content)
+	}
+	if !strings.Contains(saw.Content, "invalid JSON") {
+		t.Errorf("tool result content should mention invalid JSON; got %q", saw.Content)
+	}
+}
+
 func TestAgent_ThinkingWithToolCall(t *testing.T) {
 	argsJSON := json.RawMessage(`{"path":"main.go"}`)
 

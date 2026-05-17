@@ -3424,11 +3424,15 @@ func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
 		return m.setFlash(fmt.Sprintf("Too many running tasks (max %d) — wait for one to finish", maxConcurrentTasks))
 	}
 
-	// Ensure the server is started (lazy init on first task)
+	// Ensure the server is started (lazy init on first task). Cap with a
+	// timeout so a hung Start (network issue, process crash) doesn't
+	// orphan the goroutine for the rest of the session.
 	if m.opencodeMgr.Status() != opencode.ServerConnected {
 		mgr := m.opencodeMgr
 		go func() {
-			if err := mgr.Start(context.Background()); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := mgr.Start(ctx); err != nil {
 				program.Send(TaskDoneMsg{ID: -1, Err: fmt.Errorf("server start: %v", err)})
 				return
 			}
