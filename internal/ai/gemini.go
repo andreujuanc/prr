@@ -25,16 +25,16 @@ const sseBufferMax = 8 * 1024 * 1024
 
 // DefaultResponseHeaderTimeout bounds the time we wait for the first
 // response byte from the upstream after the request body has been
-// written. Currently observed failure: Gemini accepts the TCP
-// connection, receives our request, and never sends a response header
-// — the goroutine then parks for the full RequestTimeout (15 min)
-// before retrying. Setting ResponseHeaderTimeout on the Transport
-// converts that into a fast, retryable failure.
+// written. Without it, a Gemini endpoint that accepts the connection
+// but never sends a header byte parks the goroutine for the full
+// RequestTimeout before retrying.
 //
-// Sized so a slow-but-alive backend (cold-start, large prompt) still
-// has room to respond, while a true silent hang is caught within a
-// minute and a half.
-const DefaultResponseHeaderTimeout = 90 * time.Second
+// Sized from real Gemini Pro traffic: time-to-first-byte was 2.5s
+// on a small prompt and 3.5s on a 37KB stress prompt. 20s gives
+// ~5-7× headroom over the worst observed legitimate latency and
+// fails fast on a truly silent endpoint so RetryTransient can re-
+// dial. Previously 90s — much looser than the data supports.
+const DefaultResponseHeaderTimeout = 20 * time.Second
 
 // defaultGeminiHTTPClient is shared across GeminiProvider instances so
 // HTTP/2 connections pool correctly. ResponseHeaderTimeout is the
