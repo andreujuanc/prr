@@ -302,8 +302,15 @@ func runReviewCallWithRetry(
 	opts ExecuteOptions,
 	callIndex int,
 ) (*state.DeepReviewResult, error) {
+	start := time.Now()
+	log.Printf("review: call %d (%s %s/%s) starting (%d AOI)",
+		callIndex+1, call.Type, call.Category, call.Subcategory, len(call.AOIs))
+
 	result, err := doReviewCall(ctx, client, call, opts, callIndex)
 	if err == nil {
+		log.Printf("review: call %d (%s %s/%s) completed in %v",
+			callIndex+1, call.Type, call.Category, call.Subcategory,
+			time.Since(start).Round(time.Millisecond))
 		return result, nil
 	}
 	if errors.Is(err, errReviewParse) {
@@ -320,7 +327,13 @@ func runReviewCallWithRetry(
 	}
 	log.Printf("review: retrying call %d (%s %s/%s) after transient error: %v",
 		callIndex+1, call.Type, call.Category, call.Subcategory, err)
-	return doReviewCall(ctx, client, call, opts, callIndex)
+	result, err = doReviewCall(ctx, client, call, opts, callIndex)
+	if err == nil {
+		log.Printf("review: call %d (%s %s/%s) completed in %v (retry succeeded)",
+			callIndex+1, call.Type, call.Category, call.Subcategory,
+			time.Since(start).Round(time.Millisecond))
+	}
+	return result, err
 }
 
 // doReviewCall executes one review call end-to-end: builds the prompt
