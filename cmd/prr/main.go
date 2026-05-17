@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -135,19 +136,25 @@ func main() {
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
 
-	// Ensure OpenCode server is killed on signals (SIGINT/SIGTERM).
+	// Stop OpenCode and other background work on signals (SIGINT/SIGTERM)
+	// or normal exit. Both paths share a sync.Once so Shutdown only ever
+	// runs once even if a signal arrives during the normal-exit window
+	// (between p.Run returning and main finishing).
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	var shutdownOnce sync.Once
+	shutdown := func() { shutdownOnce.Do(ui.Shutdown) }
 	go func() {
 		<-sigCh
-		ui.Shutdown()
+		shutdown()
 		os.Exit(1)
 	}()
 
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
 	}
-	ui.Shutdown()
+	signal.Stop(sigCh)
+	shutdown()
 }
 
 // ── Audit mode ─────────────────────────────────────────────────────────

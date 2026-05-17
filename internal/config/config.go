@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -469,9 +470,41 @@ func SaveTo(cfg *Config, path string) error {
 	// keys (mode 0600). A world-readable directory would let other
 	// local users enumerate that the file exists and observe its
 	// mtime even though they cannot read it.
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	return os.WriteFile(path, append(data, '\n'), 0600)
+	// Atomic write: temp file in the same directory, then rename.
+	// A direct os.WriteFile can leave config.json half-written if
+	// the process crashes mid-write, and config.json holds API keys
+	// — losing it forces the user to reconfigure from scratch.
+	tmp, err := os.CreateTemp(dir, "config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp config file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing temp config file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		// Sync failure is recoverable — the rename still moves the
+		// content. Log and continue.
+		log.Printf("warning: fsync temp config: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("closing temp config file: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp config file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("renaming temp config file: %w", err)
+	}
+	return nil
 }

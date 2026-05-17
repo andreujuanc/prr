@@ -272,3 +272,38 @@ func TestMigration_FallbackCopyOnRenameError(t *testing.T) {
 		t.Fatalf("legacy file still present after fallback migration: %v", err)
 	}
 }
+
+// TestSave_ConcurrentSavesAreSerialised pins the saveMu contract:
+// many goroutines hitting Save on a shared state must not race at the
+// kernel level (two renames to the same path) and must not lose data
+// from interleaved marshals. Run with -race to catch data races on
+// the in-memory state; the final reload verifies the persisted JSON
+// is parseable (no half-written content).
+func TestSave_ConcurrentSavesAreSerialised(t *testing.T) {
+	root := t.TempDir()
+	fakeRepoRoot(t, root)
+
+	s := NewState("99")
+	const n = 16
+	errCh := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			// Each goroutine touches a different cache key so the
+			// state mutates between Saves. Without saveMu, two
+			// goroutines could marshal interleaved states and the
+			// older marshal could overwrite the newer.
+			s.SetBatchFindings(fmt.Sprintf("file-%d.go", i), "purpose", "raw")
+			errCh <- Save(s)
+		}(i)
+	}
+	for i := 0; i < n; i++ {
+		if err := <-errCh; err != nil {
+			t.Errorf("Save goroutine %d: %v", i, err)
+		}
+	}
+	// Final reload should produce a valid parsed state, not a
+	// half-written file.
+	if _, err := Load("99"); err != nil {
+		t.Fatalf("Load after concurrent Save: %v", err)
+	}
+}
