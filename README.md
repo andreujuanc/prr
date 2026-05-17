@@ -61,6 +61,65 @@ prr           # Pick from open PRs
 prr --debug   # Enable debug logging
 ```
 
+## Modes
+
+prr has three modes. The interactive TUI is the primary one; the headless modes are for CI integration and scheduled audits.
+
+**Interactive TUI** (`prr <PR#>`) — three-pane terminal UI to read diffs, navigate findings, and post review comments without leaving the CLI. See [Features](#features) and [Keybindings](#keybindings).
+
+**Headless review** (`prr review <PR#>`) — runs the full multi-pass review pipeline against a single PR and emits a JSON report. Designed for CI: no TUI, no interaction. See [Headless review](#headless-review).
+
+**Project audit** (`prr audit`) — scans the entire codebase (or a recent slice) for latent issues across configurable dimensions. Not tied to a PR. See [Project audit](#project-audit).
+
+### Headless review
+
+Runs the same review pipeline as the TUI's `a` key, but headlessly and with JSON export. Typical use: a CI step that uploads the JSON as an artifact or posts findings to a dashboard.
+
+```bash
+prr review 42 --output=review.json --bug-priors --quiet
+```
+
+| Flag | Action |
+|------|--------|
+| `--output=<path>` | Export report to JSON file |
+| `--no-cache` | Ignore cached deep-review results |
+| `--no-synthesis` | Skip the synthesis pass (only emit raw findings) |
+| `--review-mode=<mode>` | `full` (default) reviews every file; `aoi-only` skips files without AOIs |
+| `--bug-priors` | Inject recent fix-shaped commits as known-failure priors |
+| `--quiet`, `-q` | Suppress terminal output (use with `--output`) |
+| `--debug` | Print LLM tool calls, prompts, and responses to stderr |
+
+The JSON output has these top-level keys: `pr_number`, `pr_title`, `files_reviewed`, `review` (the synthesised result — verdict, summary, findings, missing tests, questions for author, and a per-file `coverage` block), and `deep_findings` (raw AOI-derived findings). The full schema lives in [`internal/state/models.go`](internal/state/models.go).
+
+### Project audit
+
+Runs a full-project pass without a PR. Useful for periodic codebase health checks, onboarding audits, or measuring the impact of a refactor.
+
+```bash
+prr audit --focus=security,correctness --audit-recent=30
+```
+
+| Flag | Action |
+|------|--------|
+| `--focus=<dims>` | Comma-separated dimensions to focus on (default: all) |
+| `--exclude=<globs>` | Additional exclude patterns |
+| `--include=<globs>` | Force-include patterns (override exclusions) |
+| `--max-reviews=<n>` | Cap on Phase 3 review calls |
+| `--concurrency=<n>` | Per-phase parallelism cap (default 5) |
+| `--output=<path>` | Export report (`.json` or `.md`) |
+| `--no-cache` | Ignore cached results, re-audit everything |
+| `--no-synthesis` | Skip Phase 4 executive summary |
+| `--file=<path>` | Restrict audit to a single file (relative to repo root) |
+| `--audit-recent=<n>` | Restrict audit to files touched in the last N commits |
+| `--sibling-cluster` | Enable Phase 2.5 sibling-outlier detection (experimental) |
+| `--bug-priors` | Inject recent fix-shaped commits as known-failure priors |
+| `--quiet`, `-q` | Suppress terminal output (use with `--output`) |
+| `--debug` | Print LLM tool calls, prompts, and responses to stderr |
+
+**Available dimensions:** `authentication`, `authorization`, `input-validation`, `data-integrity`, `cryptography`, `error-handling`, `concurrency`, `external-io`, `financial`, `configuration`, `api-design`, `resource-management`, `testing`, `test-coverage`, `correctness`, `design`, `performance`, `readability`, `cross-cutting`, `observability`, `web-security`.
+
+**Cache invalidation.** The deep-review and recheck cache keys hash the prompts, the runtime model, and (when `--bug-priors` is enabled) the bug-priors content. Prompt edits and new fix-shaped commits automatically invalidate stale entries on the next run; no manual cache flush needed.
+
 ## Features
 
 **Three-pane layout** — file tree, diff viewer, and AI panel side by side.
