@@ -227,6 +227,15 @@ func runAudit(debug bool, args []string) {
 		opts.IncludePatterns = strings.Split(includeStr, ",")
 	}
 
+	// Bypass the cache when the user narrows scope. Cache keys don't
+	// cover --focus / --exclude / --include, so a second run with
+	// different narrowing would otherwise replay stale results from a
+	// different scope. The simplest fix is "if you narrow scope, don't
+	// cache."
+	if focusStr != "" || excludeStr != "" || includeStr != "" {
+		opts.NoCache = true
+	}
+
 	// Must be in a git repo
 	if err := runSilent("git", "rev-parse", "--git-dir"); err != nil {
 		printError(fmt.Errorf("not a git repository"))
