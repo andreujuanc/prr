@@ -94,17 +94,13 @@ func BuildCoverage(
 		}
 	}
 
-	for _, f := range findings {
-		// Systemic findings represent cross-file patterns synthesised
-		// from multiple per-file findings — they don't attribute to a
-		// single file (their File field is the "multiple" sentinel).
-		// Counting them per-file would distort the coverage view.
-		if f.Systemic {
-			continue
-		}
-		b := get(f.File)
+	// addToCoverage updates the per-file bucket for one finding hitting
+	// one file. Pulled out because systemic findings attribute to every
+	// AffectedSite, so we apply the same update repeatedly.
+	addToCoverage := func(file, sev string) {
+		b := get(file)
 		if b == nil {
-			continue
+			return
 		}
 		b.findings++
 		// severityRank treats "" the same as "nit" (both rank 4), so
@@ -112,9 +108,25 @@ func BuildCoverage(
 		// shows up. Explicitly handle the empty seed so a single
 		// nit finding still surfaces as the max severity rather
 		// than leaving the string blank in the JSON output.
-		if b.maxFindingSeverity == "" || severityRank(f.Severity) < severityRank(b.maxFindingSeverity) {
-			b.maxFindingSeverity = f.Severity
+		if b.maxFindingSeverity == "" || severityRank(sev) < severityRank(b.maxFindingSeverity) {
+			b.maxFindingSeverity = sev
 		}
+	}
+
+	for _, f := range findings {
+		if f.Systemic {
+			// Systemic findings have File == "multiple" but their
+			// AffectedSites list the real files. The constituent
+			// per-file findings were already consolidated away by
+			// recheck, so without crediting each affected site here,
+			// the file would look like nothing was reviewed when in
+			// fact a real systemic concern fired against it.
+			for _, s := range f.AffectedSites {
+				addToCoverage(s.File, f.Severity)
+			}
+			continue
+		}
+		addToCoverage(f.File, f.Severity)
 	}
 
 	for _, d := range dismissals {

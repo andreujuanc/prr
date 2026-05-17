@@ -95,7 +95,7 @@ func DiscoverBoundaries(
 		return nil, err
 	}
 
-	normalizeBoundaries(boundaries)
+	boundaries = normalizeBoundaries(boundaries)
 
 	onProgress(fmt.Sprintf("Boundary inventory ready (%d boundaries)", len(boundaries)))
 	return &BoundaryDiscoveryResult{
