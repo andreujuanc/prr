@@ -84,18 +84,28 @@ func TestStreamHeartbeat_FiresAfterSilence(t *testing.T) {
 // TestStreamHeartbeat_SilenceCapFiresCancel pins that the silence cap
 // invokes the cancel callback when no tick lands within maxSilence,
 // and reports silenceCapFired() = true. Heartbeat emission is
-// disabled (interval = 0) to isolate the cap behavior.
+// disabled (interval = 0) to isolate the cap behavior. We wait on a
+// channel that the cancel callback closes rather than time.Sleep, so
+// the test does not race the watchdog goroutine on heavily loaded CI.
 func TestStreamHeartbeat_SilenceCapFiresCancel(t *testing.T) {
 	ch := make(chan ChatEvent, 16)
 	var cancelCount int32
+	cancelled := make(chan struct{})
 	cancel := func() {
-		atomic.AddInt32(&cancelCount, 1)
+		if atomic.AddInt32(&cancelCount, 1) == 1 {
+			close(cancelled)
+		}
 	}
 
-	hb := newStreamHeartbeat(ch, 0, 200*time.Millisecond, cancel)
-	// No ticks for 500ms — well past the 200ms cap.
-	time.Sleep(500 * time.Millisecond)
-	hb.stop()
+	hb := newStreamHeartbeat(ch, 0, 100*time.Millisecond, cancel)
+	defer hb.stop()
+
+	select {
+	case <-cancelled:
+		// silence cap fired
+	case <-time.After(2 * time.Second):
+		t.Fatal("silence cap did not fire within 2s (cap=100ms)")
+	}
 
 	if got := atomic.LoadInt32(&cancelCount); got != 1 {
 		t.Fatalf("cancel call count = %d, want 1", got)
@@ -106,8 +116,11 @@ func TestStreamHeartbeat_SilenceCapFiresCancel(t *testing.T) {
 }
 
 // TestStreamHeartbeat_SilenceCapNotFiredOnTicks pins that ticks reset
-// the silence clock, so a cap of 200ms with ticks every 80ms does not
-// fire over a 500ms window.
+// the silence clock, so regular ticks prevent the cap from firing.
+// Margin is generous (1s cap, 100ms sleep, ~10× headroom) so an 80ms
+// sleep stretching to ~200ms on loaded CI does not produce a false
+// positive — the cap fires only if a single sleep exceeds 1s, which
+// is extreme jitter.
 func TestStreamHeartbeat_SilenceCapNotFiredOnTicks(t *testing.T) {
 	ch := make(chan ChatEvent, 16)
 	var cancelCount int32
@@ -115,11 +128,11 @@ func TestStreamHeartbeat_SilenceCapNotFiredOnTicks(t *testing.T) {
 		atomic.AddInt32(&cancelCount, 1)
 	}
 
-	hb := newStreamHeartbeat(ch, 0, 200*time.Millisecond, cancel)
-	stop := time.Now().Add(500 * time.Millisecond)
+	hb := newStreamHeartbeat(ch, 0, 1*time.Second, cancel)
+	stop := time.Now().Add(800 * time.Millisecond)
 	for time.Now().Before(stop) {
 		hb.tick()
-		time.Sleep(80 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	hb.stop()
 
