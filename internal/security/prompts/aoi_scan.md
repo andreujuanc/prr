@@ -141,6 +141,17 @@ In PR review mode the input is a unified diff and lines are not
 re-prefixed; rely on the standard `@@ -X,Y +A,B @@` hunk headers as
 usual.
 
+## Valid dimension names
+
+The `dimensions` array on every AOI must contain ONLY names from this list:
+
+{DIMENSION_SLUGS}
+
+Do not invent new dimension names. Do not rename, abbreviate, or
+compress them. Use the names above exactly as written. If none of
+the names fit, leave the `dimensions` array empty rather than coining
+a new tag — an empty array is fine; a made-up name is not.
+
 ## Output Format
 
 Return ONLY a JSON array — one object per file. Include ALL files, even those

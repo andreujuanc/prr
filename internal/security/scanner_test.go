@@ -492,6 +492,27 @@ func TestBuildAOIScanPromptWithDimensions(t *testing.T) {
 	if !containsSubstring(promptPR, "DIFF") {
 		t.Error("PR mode prompt should contain diff rules")
 	}
+
+	// Slug list — narrowed when dims is given.
+	if !containsSubstring(prompt, "testing") {
+		t.Error("prompt should list the testing slug")
+	}
+	if containsSubstring(prompt, "cryptography,") || containsSubstring(prompt, ", cryptography") {
+		t.Error("prompt should not list cryptography when only testing is specified")
+	}
+
+	// Slug list — full list when dims is nil. Spot-check a few that should
+	// be present.
+	for _, slug := range []string{"correctness", "error-handling", "cryptography", "testing"} {
+		if !containsSubstring(promptAll, slug) {
+			t.Errorf("prompt with nil dims should list slug %q", slug)
+		}
+	}
+
+	// Rule about not inventing names.
+	if !containsSubstring(prompt, "Do not invent new dimension names") {
+		t.Error("prompt should contain the no-invented-names rule")
+	}
 }
 
 func TestFormatDigest_ContainsCategories(t *testing.T) {

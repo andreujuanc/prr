@@ -64,12 +64,19 @@ func buildAOIScanPrompt(auditMode bool) string {
 // dimensions. If dims is nil or empty, all dimensions are included.
 func buildAOIScanPromptWithDimensions(auditMode bool, dims []string) string {
 	var dimensionContent string
+	var slugs []string
 	if len(dims) > 0 {
 		dimensionContent = ai.GetDimensions(dims)
+		slugs = make([]string, len(dims))
+		copy(slugs, dims)
+		sort.Strings(slugs)
 	} else {
 		dimensionContent = ai.AllDimensions()
+		slugs = ai.AllDimensionSlugs()
 	}
+	slugList := strings.Join(slugs, ", ")
 	prompt := strings.Replace(aoiScanPrompt, "{DIMENSIONS}", dimensionContent, 1)
+	prompt = strings.Replace(prompt, "{DIMENSION_SLUGS}", slugList, 1)
 	rules := prModeRules
 	if auditMode {
 		rules = auditModeRules
