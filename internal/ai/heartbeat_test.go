@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -77,6 +78,56 @@ func TestStreamHeartbeat_FiresAfterSilence(t *testing.T) {
 	}
 	if minSilence < interval {
 		t.Errorf("heartbeat Silence = %v, expected >= %v", minSilence, interval)
+	}
+}
+
+// TestStreamHeartbeat_SilenceCapFiresCancel pins that the silence cap
+// invokes the cancel callback when no tick lands within maxSilence,
+// and reports silenceCapFired() = true. Heartbeat emission is
+// disabled (interval = 0) to isolate the cap behavior.
+func TestStreamHeartbeat_SilenceCapFiresCancel(t *testing.T) {
+	ch := make(chan ChatEvent, 16)
+	var cancelCount int32
+	cancel := func() {
+		atomic.AddInt32(&cancelCount, 1)
+	}
+
+	hb := newStreamHeartbeat(ch, 0, 200*time.Millisecond, cancel)
+	// No ticks for 500ms — well past the 200ms cap.
+	time.Sleep(500 * time.Millisecond)
+	hb.stop()
+
+	if got := atomic.LoadInt32(&cancelCount); got != 1 {
+		t.Fatalf("cancel call count = %d, want 1", got)
+	}
+	if !hb.silenceCapFired() {
+		t.Fatal("silenceCapFired() = false, want true")
+	}
+}
+
+// TestStreamHeartbeat_SilenceCapNotFiredOnTicks pins that ticks reset
+// the silence clock, so a cap of 200ms with ticks every 80ms does not
+// fire over a 500ms window.
+func TestStreamHeartbeat_SilenceCapNotFiredOnTicks(t *testing.T) {
+	ch := make(chan ChatEvent, 16)
+	var cancelCount int32
+	cancel := func() {
+		atomic.AddInt32(&cancelCount, 1)
+	}
+
+	hb := newStreamHeartbeat(ch, 0, 200*time.Millisecond, cancel)
+	stop := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(stop) {
+		hb.tick()
+		time.Sleep(80 * time.Millisecond)
+	}
+	hb.stop()
+
+	if got := atomic.LoadInt32(&cancelCount); got != 0 {
+		t.Fatalf("cancel call count = %d, want 0 (regular ticks should prevent silence cap)", got)
+	}
+	if hb.silenceCapFired() {
+		t.Fatal("silenceCapFired() = true with regular ticks; want false")
 	}
 }
 

@@ -22,6 +22,14 @@ const DefaultRequestTimeout = 15 * time.Minute
 // normal token-by-token output.
 const DefaultHeartbeatInterval = 60 * time.Second
 
+// DefaultMaxStreamSilence aborts a streaming request when no SSE data
+// has been seen for this long. Sized from real Gemini Pro traffic:
+// on a 37KB prompt with a 32K thinking budget, the worst observed
+// inter-chunk gap was 4.4s. 30s gives ~7× headroom over healthy
+// traffic and fires within seconds of a true hang — vastly tighter
+// than waiting for RequestTimeout.
+const DefaultMaxStreamSilence = 30 * time.Second
+
 // ProviderConfig holds the parameters needed to create a Provider.
 //
 // Temperature is *float64 so callers can request explicit greedy
@@ -50,6 +58,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			BaseURL:           cfg.BaseURL,
 			RequestTimeout:    DefaultRequestTimeout,
 			HeartbeatInterval: DefaultHeartbeatInterval,
+			MaxStreamSilence:  DefaultMaxStreamSilence,
 		}
 		gp.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 		gp.ModelConfig.Temperature = cfg.Temperature
@@ -63,6 +72,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			BaseURL:           cfg.BaseURL,
 			RequestTimeout:    DefaultRequestTimeout,
 			HeartbeatInterval: DefaultHeartbeatInterval,
+			MaxStreamSilence:  DefaultMaxStreamSilence,
 		}
 		op.ModelConfig.MaxOutputTokens = cfg.MaxOutputTokens
 		op.ModelConfig.Temperature = cfg.Temperature
@@ -80,6 +90,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 			BaseURL:           baseURL,
 			RequestTimeout:    DefaultRequestTimeout,
 			HeartbeatInterval: DefaultHeartbeatInterval,
+			MaxStreamSilence:  DefaultMaxStreamSilence,
 			ProviderLabel:     "github-copilot",
 			ExtraHeaders: map[string]string{
 				"Openai-Intent": "conversation-edits",

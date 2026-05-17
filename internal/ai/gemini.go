@@ -82,6 +82,13 @@ type GeminiProvider struct {
 	// to invent their own timer.
 	HeartbeatInterval time.Duration
 
+	// MaxStreamSilence aborts the request if no SSE data line has
+	// been seen for that long. Zero disables. The production factory
+	// sets DefaultMaxStreamSilence. This catches mid-stream hangs
+	// where headers were received but the body has gone quiet —
+	// RequestTimeout alone is too coarse for that case.
+	MaxStreamSilence time.Duration
+
 	// ModelConfig holds per-model tuning (maxOutputTokens, temperature,
 	// thinkingBudget). Set by the caller from config.GetModelConfig().
 	//
@@ -182,7 +189,7 @@ func (g *GeminiProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 		defer close(ch)
 		defer resp.Body.Close()
 		defer cancel()
-		status := g.parseSSEStream(ctx, resp.Body, ch)
+		status := g.parseSSEStream(ctx, resp.Body, ch, cancel)
 		log.Printf("[gemini] StreamChat end (elapsed=%v, status=%s)", time.Since(start).Round(time.Millisecond), status)
 	}()
 
@@ -545,11 +552,11 @@ func (g *GeminiProvider) doHTTPRequest(ctx context.Context, body []byte) (*http.
 // exited: "done" (clean EventDone sent), "error" (stream read error),
 // "deadline" (per-call timeout), "canceled" (parent ctx cancelled).
 // The status is consumed only by the StreamChat debug log line.
-func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent) string {
+func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent, cancel context.CancelFunc) string {
 	var contentBlocks []ContentBlock
 	var usage TokenUsage
 
-	hb := newStreamHeartbeat(ch, g.HeartbeatInterval)
+	hb := newStreamHeartbeat(ch, g.HeartbeatInterval, g.MaxStreamSilence, cancel)
 	defer hb.stop()
 
 	scanner := bufio.NewScanner(body)
@@ -565,6 +572,9 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		select {
 		case <-ctx.Done():
 			ch <- ChatEvent{Type: EventError, Err: ctx.Err()}
+			if hb.silenceCapFired() {
+				return "silence-cap"
+			}
 			return ctxExitStatus(ctx)
 		default:
 		}
@@ -673,6 +683,9 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		}
 		log.Printf("Gemini stream read error: %v", err)
 		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
+		if hb.silenceCapFired() {
+			return "silence-cap"
+		}
 		if ctx.Err() != nil {
 			return ctxExitStatus(ctx)
 		}
@@ -684,6 +697,9 @@ func (g *GeminiProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	// per-call timeout or parent cancel doesn't produce a fake EventDone.
 	if err := ctx.Err(); err != nil {
 		ch <- ChatEvent{Type: EventError, Err: err}
+		if hb.silenceCapFired() {
+			return "silence-cap"
+		}
 		return ctxExitStatus(ctx)
 	}
 

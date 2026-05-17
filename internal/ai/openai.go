@@ -34,6 +34,11 @@ type OpenAIProvider struct {
 	// has been seen for that long. Zero disables.
 	HeartbeatInterval time.Duration
 
+	// MaxStreamSilence aborts the request if no SSE data line has
+	// been seen for that long. Zero disables. See gemini.go for the
+	// rationale and the data that picked the default.
+	MaxStreamSilence time.Duration
+
 	// ProviderName overrides the name returned by Name() — useful for
 	// distinguishing "github-copilot" from "openai" while sharing impl.
 	ProviderLabel string
@@ -152,7 +157,7 @@ func (o *OpenAIProvider) StreamChat(ctx context.Context, req ChatRequest) (<-cha
 		defer close(ch)
 		defer resp.Body.Close()
 		defer cancel()
-		status := o.parseSSEStream(ctx, resp.Body, ch)
+		status := o.parseSSEStream(ctx, resp.Body, ch, cancel)
 		log.Printf("[%s] StreamChat end (elapsed=%v, status=%s)", label, time.Since(start).Round(time.Millisecond), status)
 	}()
 
@@ -533,13 +538,13 @@ type oaiStreamChunk struct {
 
 // parseSSEStream returns a short status string describing why the loop
 // exited. See gemini.go parseSSEStream comment for the value set.
-func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent) string {
+func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch chan<- ChatEvent, cancel context.CancelFunc) string {
 	var contentBlocks []ContentBlock
 	var textBuf strings.Builder
 	var usage TokenUsage
 	var stopReason StopReason
 
-	hb := newStreamHeartbeat(ch, o.HeartbeatInterval)
+	hb := newStreamHeartbeat(ch, o.HeartbeatInterval, o.MaxStreamSilence, cancel)
 	defer hb.stop()
 
 	// Track tool calls being accumulated across deltas
@@ -559,6 +564,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		select {
 		case <-ctx.Done():
 			ch <- ChatEvent{Type: EventError, Err: ctx.Err()}
+			if hb.silenceCapFired() {
+				return "silence-cap"
+			}
 			return ctxExitStatus(ctx)
 		default:
 		}
@@ -644,6 +652,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		}
 		log.Printf("OpenAI stream read error: %v", err)
 		ch <- ChatEvent{Type: EventError, Err: fmt.Errorf("stream read error: %w", err)}
+		if hb.silenceCapFired() {
+			return "silence-cap"
+		}
 		if ctx.Err() != nil {
 			return ctxExitStatus(ctx)
 		}
@@ -655,6 +666,9 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	// don't silently produce an empty Done event.
 	if err := ctx.Err(); err != nil {
 		ch <- ChatEvent{Type: EventError, Err: err}
+		if hb.silenceCapFired() {
+			return "silence-cap"
+		}
 		return ctxExitStatus(ctx)
 	}
 
