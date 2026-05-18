@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.7.0](https://github.com/andreujuanc/prr/compare/v1.6.1...v1.7.0) (2026-05-18)
+
+
+### Features
+
+* **audit:** list valid dimensions in the AOI prompt ([3ea087d](https://github.com/andreujuanc/prr/commit/3ea087df14a99aa17755edf7f6dee8468b4da786))
+* **audit:** prefix line numbers in AOI scanner input ([d638ec1](https://github.com/andreujuanc/prr/commit/d638ec19c6e6ee8b7f47cca744f8230698175086))
+
+
+### Bug Fixes
+
+* address two findings from prr's self-review of PR [#26](https://github.com/andreujuanc/prr/issues/26) ([321da54](https://github.com/andreujuanc/prr/commit/321da54741447941df062981c44153add3190957))
+* **audit:** skip cache when --focus/--exclude/--include narrows scope ([f5baa63](https://github.com/andreujuanc/prr/commit/f5baa631d85b0a245644c67884944779b3c82624))
+* lifecycle + durability — signal handler, state Save, config write ([e6e711f](https://github.com/andreujuanc/prr/commit/e6e711f78e4e63116a9070a820b3f1d1ed98af41))
+* medium-severity audit cleanups (visibility, validation, timeouts) ([46de5b4](https://github.com/andreujuanc/prr/commit/46de5b48bcc4f0c3efd735428a35ddd05a59badd))
+* three silent data-loss bugs in boundaries, coverage, openai ([6a48b6d](https://github.com/andreujuanc/prr/commit/6a48b6d0d22546ce7309d67755efe58e994451cb))
+* **ui:** don't cancel the opencode subprocess at goroutine exit ([6fff6bc](https://github.com/andreujuanc/prr/commit/6fff6bc5a803339fb0082972d5e4fe65b0aee3db))
+
 ## [1.6.1](https://github.com/andreujuanc/prr/compare/v1.6.0...v1.6.1) (2026-05-16)
 
 
