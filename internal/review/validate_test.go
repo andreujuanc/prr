@@ -1,6 +1,8 @@
 package review
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"strings"
 	"testing"
@@ -154,17 +156,22 @@ func TestParseHunkRanges_NoCount(t *testing.T) {
 // legitimate deletion-only hunks; the log line then misleadingly
 // claimed something was wrong with the diff.
 func TestParseHunkRanges_DeletionOnlyHunkSkippedSilently(t *testing.T) {
+	// Capture log output for the duration of this test so we can
+	// assert the malformed-skipped log line does NOT fire on a
+	// legitimate deletion-only hunk.
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
 	patch := "@@ -10,5 +9,0 @@\n-bye\n@@ -100,2 +99,3 @@\n+kept\n"
 	got := ParseHunkRanges(patch)
 	if len(got) != 1 || got[0] != (HunkRange{Start: 99, End: 102}) {
 		t.Fatalf("got %+v, want exactly the second hunk {99 102}", got)
 	}
-	// Behavioural assertion: the deletion-only hunk contributes nothing
-	// to the set, but the second hunk parses fine. There's no direct
-	// hook into the "malformed" counter from outside the function, so
-	// the regression on the log message is enforced by code review —
-	// the test at least pins that legitimate deletion-only headers
-	// don't disturb the parse of subsequent valid headers.
+	if strings.Contains(buf.String(), "malformed hunk header") {
+		t.Errorf("deletion-only hunk wrongly logged as malformed:\n%s", buf.String())
+	}
 }
 
 func TestValidateAndNormalize_NilInput(t *testing.T) {
