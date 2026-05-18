@@ -1,9 +1,12 @@
 package ai
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -117,5 +120,52 @@ func TestOpenAIStream_ToolCalls_ContinuationBeforeID(t *testing.T) {
 	// The orphaned "orphaned" fragment must not leak into the real call's args.
 	if string(uses[0].Args) != `{"p":"x.go"}` {
 		t.Errorf("args contaminated by orphaned fragment: %q", string(uses[0].Args))
+	}
+}
+
+// TestOpenAIStream_ToolCalls_OrphanFragmentLogsOnce pins the
+// once-per-stream log rate-limit: a model that emits many malformed
+// continuation deltas would otherwise spam the log line once per
+// fragment.
+func TestOpenAIStream_ToolCalls_OrphanFragmentLogsOnce(t *testing.T) {
+	// Capture log output for the duration of this test. Restore on
+	// cleanup so other tests aren't affected.
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Three orphan fragments back to back — the warning should
+		// fire once, not three times.
+		for i := 0; i < 3; i++ {
+			writeSSE(w, `{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"junk"}}]}}]}`)
+		}
+		// Then a normal call to confirm the stream still works.
+		writeSSE(w, `{"choices":[{"delta":{"tool_calls":[{"id":"call_y","function":{"name":"grep","arguments":"{\"q\":\"x\"}"}}]}}]}`)
+		writeSSE(w, `{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	provider := &OpenAIProvider{APIKey: "k", Model: "m", BaseURL: srv.URL}
+	ch, err := provider.StreamChat(context.Background(), ChatRequest{
+		Messages: []ProviderMessage{{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	uses := collectToolUses(t, ch)
+	if len(uses) != 1 || uses[0].ID != "call_y" {
+		t.Fatalf("expected exactly call_y after orphan fragments; got %+v", uses)
+	}
+
+	logs := buf.String()
+	const marker = "continuation before any ID"
+	count := strings.Count(logs, marker)
+	if count != 1 {
+		t.Errorf("orphan-fragment warning fired %d times; want exactly 1\n--- log output ---\n%s", count, logs)
 	}
 }

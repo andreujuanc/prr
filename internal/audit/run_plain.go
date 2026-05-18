@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/andreujuanc/prr/internal/ai"
@@ -43,8 +44,15 @@ func RunPlain(
 	if !noSynthesis && result != nil && len(result.Findings) > 0 {
 		onProgress("synthesis", "Generating executive summary...")
 		synthesis, err = SynthesizeCached(ctx, reviewClient, result.Findings, result.CrossCuttingObservations, result.ProjectContext, len(result.FailedAOIIDs), nil, opts.NoCache)
-		if err != nil && !quiet {
-			fmt.Fprintf(os.Stderr, "Warning: synthesis failed: %v\n", err)
+		if err != nil {
+			// Always record the failure in the debug log so it lands
+			// in --debug captures and any external log redirection,
+			// even in quiet mode. Only the user-facing stderr line
+			// is gated on !quiet.
+			log.Printf("audit: synthesis failed: %v", err)
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "Warning: synthesis failed: %v\n", err)
+			}
 		}
 		result.Usage.Synth = ai.SnapshotUsage(reviewClient)
 	}

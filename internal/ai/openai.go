@@ -559,6 +559,11 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 	// map[int]*toolCallAccum form trapped continuation-first deltas at
 	// index -1 and silently dropped their args.
 	toolCalls := []*toolCallAccum{}
+	// loggedOrphanFragment limits the "continuation before any ID"
+	// warning to once per stream. Without this, a model that emits
+	// repeated malformed fragments would spam the log line once per
+	// delta.
+	loggedOrphanFragment := false
 
 	scanner := bufio.NewScanner(body)
 	// sseBufferMax (8MB) — see gemini.go. Same rationale: long
@@ -624,10 +629,15 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 				// Continuation delta with no prior tool call — OpenAI's
 				// stream normally sends the ID on the first chunk. If
 				// we land here the model produced an invalid sequence.
-				// Log and drop the fragment rather than writing to a
-				// non-existent slot (the previous map-based code wrote
-				// to index -1 and silently lost the args).
-				log.Printf("openai: stream sent tool-call continuation before any ID; dropping fragment")
+				// Log once per stream (further occurrences would just
+				// flood the log) and drop the fragment rather than
+				// writing to a non-existent slot (the previous
+				// map-based code wrote to index -1 and silently lost
+				// the args).
+				if !loggedOrphanFragment {
+					log.Printf("openai: stream sent tool-call continuation before any ID; dropping fragment (further occurrences in this stream suppressed)")
+					loggedOrphanFragment = true
+				}
 				continue
 			}
 			accum := toolCalls[len(toolCalls)-1]
