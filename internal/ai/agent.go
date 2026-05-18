@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -417,8 +418,8 @@ func (a *Agent) executeSingleTool(ctx context.Context, tc ToolUseBlock, onToken 
 	// result so the model sees the failure on the next turn rather than
 	// the tool silently running with empty args.
 	args := make(map[string]any)
-	trimmed := strings.TrimSpace(string(tc.Args))
-	if trimmed != "" && trimmed != "null" {
+	trimmed := bytes.TrimSpace(tc.Args)
+	if len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
 		if err := json.Unmarshal(tc.Args, &args); err != nil {
 			return ToolResultBlock{
 				ToolUseID: tc.ID,

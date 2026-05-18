@@ -552,7 +552,7 @@ func applyConfidencePenalty(f *state.DeepFinding, amount int, tag string) {
 // disables snap-to-hunk for that file (validator leaves Line alone).
 func ParseHunkRanges(patch string) []HunkRange {
 	var out []HunkRange
-	skipped := 0
+	malformed := 0
 	for line := range strings.SplitSeq(patch, "\n") {
 		if !strings.HasPrefix(line, "@@ ") {
 			continue
@@ -561,13 +561,13 @@ func ParseHunkRanges(patch string) []HunkRange {
 		// (when B/D == 1, GNU diff omits the count).
 		_, after, ok := strings.Cut(line, "+")
 		if !ok {
-			skipped++
+			malformed++
 			continue
 		}
 		rest := after
 		before, _, ok := strings.Cut(rest, " ")
 		if !ok {
-			skipped++
+			malformed++
 			continue
 		}
 		spec := before
@@ -576,30 +576,34 @@ func ParseHunkRanges(patch string) []HunkRange {
 			a, errA := strconv.Atoi(before)
 			b, errB := strconv.Atoi(after)
 			if errA != nil || errB != nil {
-				skipped++
+				malformed++
 				continue
 			}
 			start, count = a, b
 		} else {
 			a, err := strconv.Atoi(spec)
 			if err != nil {
-				skipped++
+				malformed++
 				continue
 			}
 			start, count = a, 1
 		}
 		if count <= 0 {
-			skipped++
+			// Deletion-only hunks legitimately have a new-side count of
+			// 0 (e.g. "@@ -10,5 +9,0 @@"). They have no new-side lines
+			// for a finding to land on, so they don't contribute to
+			// the snap-to-hunk set — but they aren't malformed either,
+			// so don't bump the counter.
 			continue
 		}
 		out = append(out, HunkRange{Start: start, End: start + count})
 	}
-	if skipped > 0 {
+	if malformed > 0 {
 		// Without this log, malformed hunk headers silently disabled the
 		// snap-to-hunk check for the file and any downstream confusion
 		// (findings landing outside hunks) had no breadcrumb back to
 		// the diff.
-		log.Printf("review/validate: ParseHunkRanges skipped %d malformed hunk header(s)", skipped)
+		log.Printf("review/validate: ParseHunkRanges skipped %d malformed hunk header(s)", malformed)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
 	return out

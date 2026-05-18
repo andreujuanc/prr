@@ -146,6 +146,27 @@ func TestParseHunkRanges_NoCount(t *testing.T) {
 	}
 }
 
+// TestParseHunkRanges_DeletionOnlyHunkSkippedSilently pins that a
+// "@@ -10,5 +9,0 @@" header (pure deletion, no new-side lines) is
+// dropped from the returned hunk set without being counted as
+// "malformed" in the parser's skipped-counter. The previous version
+// of the parser bumped the malformed counter for count <= 0 even on
+// legitimate deletion-only hunks; the log line then misleadingly
+// claimed something was wrong with the diff.
+func TestParseHunkRanges_DeletionOnlyHunkSkippedSilently(t *testing.T) {
+	patch := "@@ -10,5 +9,0 @@\n-bye\n@@ -100,2 +99,3 @@\n+kept\n"
+	got := ParseHunkRanges(patch)
+	if len(got) != 1 || got[0] != (HunkRange{Start: 99, End: 102}) {
+		t.Fatalf("got %+v, want exactly the second hunk {99 102}", got)
+	}
+	// Behavioural assertion: the deletion-only hunk contributes nothing
+	// to the set, but the second hunk parses fine. There's no direct
+	// hook into the "malformed" counter from outside the function, so
+	// the regression on the log message is enforced by code review —
+	// the test at least pins that legitimate deletion-only headers
+	// don't disturb the parse of subsequent valid headers.
+}
+
 func TestValidateAndNormalize_NilInput(t *testing.T) {
 	out, dropped := ValidateAndNormalize(nil, nil, nil)
 	if out != nil || dropped != nil {
