@@ -3424,7 +3424,14 @@ func (m *Model) spawnFixTask(f state.ReviewFinding) tea.Cmd {
 		return m.setFlash(fmt.Sprintf("Too many running tasks (max %d) — wait for one to finish", maxConcurrentTasks))
 	}
 
-	// Ensure the server is started (lazy init on first task)
+	// Ensure the server is started (lazy init on first task). The
+	// caller ctx must be context.Background() — Manager.Start derives
+	// the manager's lifetime ctx from it and Server.Start parents the
+	// opencode subprocess on the same chain via exec.CommandContext, so
+	// any cancellation here (a deferred cancel, a timeout firing) would
+	// kill the subprocess seconds after it started. Bounding is not
+	// needed at this level: Server.waitHealthy has its own internal 15s
+	// deadline that covers the only realistic hang.
 	if m.opencodeMgr.Status() != opencode.ServerConnected {
 		mgr := m.opencodeMgr
 		go func() {

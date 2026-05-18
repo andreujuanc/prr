@@ -438,6 +438,13 @@ func Run(
 		return nil, fmt.Errorf("phase 1: %d/%d files failed to read (>%.0f%% threshold) — aborting; check working directory and permissions",
 			skipCounts.errored, attempted, aggregateFailRatio*100)
 	}
+	// Below the abort threshold but non-zero: surface a warning so the
+	// user knows files were skipped without having to grep debug logs.
+	// Individual paths are still in the per-file log.Printf above.
+	if skipCounts.errored > 0 {
+		onProgress("warning", fmt.Sprintf("%d of %d file(s) failed to read; see debug log for paths",
+			skipCounts.errored, attempted))
+	}
 
 	totalSkipped := skipCounts.symlink + skipCounts.binary + skipCounts.empty +
 		skipCounts.large + skipCounts.notFound + skipCounts.errored

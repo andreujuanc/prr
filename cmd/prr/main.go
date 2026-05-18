@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -135,19 +136,25 @@ func main() {
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ui.SetProgram(p)
 
-	// Ensure OpenCode server is killed on signals (SIGINT/SIGTERM).
+	// Stop OpenCode and other background work on signals (SIGINT/SIGTERM)
+	// or normal exit. Both paths share a sync.Once so Shutdown only ever
+	// runs once even if a signal arrives during the normal-exit window
+	// (between p.Run returning and main finishing).
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	var shutdownOnce sync.Once
+	shutdown := func() { shutdownOnce.Do(ui.Shutdown) }
 	go func() {
 		<-sigCh
-		ui.Shutdown()
+		shutdown()
 		os.Exit(1)
 	}()
 
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
 	}
-	ui.Shutdown()
+	signal.Stop(sigCh)
+	shutdown()
 }
 
 // ── Audit mode ─────────────────────────────────────────────────────────
@@ -171,6 +178,10 @@ func runAudit(debug bool, args []string) {
 				printError(fmt.Errorf("--max-reviews=%s: %w", after, err))
 				os.Exit(1)
 			}
+			if n <= 0 {
+				printError(fmt.Errorf("--max-reviews must be a positive integer (got %d)", n))
+				os.Exit(1)
+			}
 			opts.MaxReviews = n
 		} else if after, ok := strings.CutPrefix(arg, "--concurrency="); ok {
 			n, err := strconv.Atoi(after)
@@ -178,13 +189,15 @@ func runAudit(debug bool, args []string) {
 				printError(fmt.Errorf("--concurrency=%s: %w", after, err))
 				os.Exit(1)
 			}
-			if n > 0 {
-				opts.Concurrency.Classify = n
-				opts.Concurrency.AOIScan = n
-				opts.Concurrency.DeepReview = n
-				opts.Concurrency.Recheck = n
-				opts.Concurrency.HierarchicalSynth = n
+			if n <= 0 {
+				printError(fmt.Errorf("--concurrency must be a positive integer (got %d)", n))
+				os.Exit(1)
 			}
+			opts.Concurrency.Classify = n
+			opts.Concurrency.AOIScan = n
+			opts.Concurrency.DeepReview = n
+			opts.Concurrency.Recheck = n
+			opts.Concurrency.HierarchicalSynth = n
 		} else if after, ok := strings.CutPrefix(arg, "--output="); ok {
 			outputPath = after
 		} else if arg == "--no-cache" {
@@ -225,6 +238,15 @@ func runAudit(debug bool, args []string) {
 	}
 	if includeStr != "" {
 		opts.IncludePatterns = strings.Split(includeStr, ",")
+	}
+
+	// Bypass the cache when the user narrows scope. Cache keys don't
+	// cover --focus / --exclude / --include, so a second run with
+	// different narrowing would otherwise replay stale results from a
+	// different scope. The simplest fix is "if you narrow scope, don't
+	// cache."
+	if focusStr != "" || excludeStr != "" || includeStr != "" {
+		opts.NoCache = true
 	}
 
 	// Must be in a git repo
@@ -285,14 +307,16 @@ func runAudit(debug bool, args []string) {
 	// Load previous findings for comparison
 	previousFindings, _ := audit.LoadSnapshot(repoRoot)
 
-	// Run audit with progress UI (or plain mode in debug)
+	// Run audit. Both --debug and --quiet route through RunPlain — debug
+	// to keep LLM trace output legible, quiet to avoid the alt-screen
+	// TUI failing when stdout isn't a terminal (or when the user
+	// explicitly asked for no UI).
 	ctx := context.Background()
 	var result *audit.Result
 	var synthesis *audit.SynthesisResult
-	if opts.Debug {
-		// In debug mode, skip Bubble Tea UI — run directly with simple progress to stderr
+	if opts.Debug || quiet {
 		result, synthesis, err = audit.RunPlain(ctx, reviewClient, aoiClient, opts,
-			cfg.StrongModel, cfg.FastModel, noSynth)
+			cfg.StrongModel, cfg.FastModel, noSynth, quiet)
 	} else {
 		result, synthesis, err = audit.RunWithUI(ctx, reviewClient, aoiClient, opts,
 			cfg.StrongModel, cfg.FastModel, noSynth)

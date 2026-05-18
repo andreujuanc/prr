@@ -124,6 +124,36 @@ Skip when the unit-or-domain claim isn't backed by either a typed
 brand or a clear name-shape signal — guessing about units invites
 false positives.
 
+## Input Format
+
+In audit mode every input line is prefixed with its source line number
+followed by `: `, like ` 42: <line content>` (the number is
+left-padded with spaces so the column of `:` lines up). The number is
+the source line number of the original file.
+
+When you emit `line` and `end_line` for AOIs in an audit-mode file,
+copy the exact number you see at the start of the line — do not
+compute, derive, count, or estimate. The prefix is the only source of
+truth for line numbers in audit-mode output. If your AOI spans
+multiple lines, set `end_line` to the prefix number on the last line
+of the span.
+
+In PR review mode the input is a unified diff and lines are not
+re-prefixed; the audit-mode rule above does not apply. Rely on the
+standard `@@ -X,Y +A,B @@` hunk headers as usual to compute new-side
+line numbers.
+
+## Valid dimension names
+
+The `dimensions` array on every AOI must contain ONLY names from this list:
+
+{DIMENSION_SLUGS}
+
+Do not invent new dimension names. Do not rename, abbreviate, or
+compress them. Use the names above exactly as written. If none of
+the names fit, leave the `dimensions` array empty rather than coining
+a new tag — an empty array is fine; a made-up name is not.
+
 ## Output Format
 
 Return ONLY a JSON array — one object per file. Include ALL files, even those

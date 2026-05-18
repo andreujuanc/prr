@@ -1,6 +1,8 @@
 package review
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"strings"
 	"testing"
@@ -143,6 +145,32 @@ func TestParseHunkRanges_NoCount(t *testing.T) {
 	got := ParseHunkRanges(patch)
 	if len(got) != 1 || got[0] != (HunkRange{Start: 42, End: 43}) {
 		t.Fatalf("got %+v, want [{42 43}]", got)
+	}
+}
+
+// TestParseHunkRanges_DeletionOnlyHunkSkippedSilently pins that a
+// "@@ -10,5 +9,0 @@" header (pure deletion, no new-side lines) is
+// dropped from the returned hunk set without being counted as
+// "malformed" in the parser's skipped-counter. The previous version
+// of the parser bumped the malformed counter for count <= 0 even on
+// legitimate deletion-only hunks; the log line then misleadingly
+// claimed something was wrong with the diff.
+func TestParseHunkRanges_DeletionOnlyHunkSkippedSilently(t *testing.T) {
+	// Capture log output for the duration of this test so we can
+	// assert the malformed-skipped log line does NOT fire on a
+	// legitimate deletion-only hunk.
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	patch := "@@ -10,5 +9,0 @@\n-bye\n@@ -100,2 +99,3 @@\n+kept\n"
+	got := ParseHunkRanges(patch)
+	if len(got) != 1 || got[0] != (HunkRange{Start: 99, End: 102}) {
+		t.Fatalf("got %+v, want exactly the second hunk {99 102}", got)
+	}
+	if strings.Contains(buf.String(), "malformed hunk header") {
+		t.Errorf("deletion-only hunk wrongly logged as malformed:\n%s", buf.String())
 	}
 }
 

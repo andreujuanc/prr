@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -410,9 +411,24 @@ func (a *Agent) executeSingleTool(ctx context.Context, tc ToolUseBlock, onToken 
 	a.debugf("tool call: %s(%s)", tc.Name, argsStr)
 	start := time.Now()
 
-	// Parse args and execute
+	// Parse args and execute. The map is always initialised so tools that
+	// take no arguments still get an empty (not nil) map. Treat literal
+	// "null" / empty as "no arguments" (some models send that for
+	// no-arg tool calls); a malformed payload becomes an IsError tool
+	// result so the model sees the failure on the next turn rather than
+	// the tool silently running with empty args.
 	args := make(map[string]any)
-	_ = json.Unmarshal(tc.Args, &args)
+	trimmed := bytes.TrimSpace(tc.Args)
+	if len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		if err := json.Unmarshal(tc.Args, &args); err != nil {
+			return ToolResultBlock{
+				ToolUseID: tc.ID,
+				Name:      tc.Name,
+				Content:   fmt.Sprintf("invalid JSON in tool arguments: %v", err),
+				IsError:   true,
+			}
+		}
+	}
 
 	result, isError := a.toolExecutor.ExecuteTool(tc.Name, args)
 	elapsed := time.Since(start)

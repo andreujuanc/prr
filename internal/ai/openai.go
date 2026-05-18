@@ -553,7 +553,17 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		Name string
 		Args strings.Builder
 	}
-	toolCalls := make(map[int]*toolCallAccum)
+	// toolCalls is order-preserving: each new tool-call delta (with a
+	// non-empty ID) appends; continuation deltas (empty ID) extend the
+	// last entry's args. A slice is the natural shape — the earlier
+	// map[int]*toolCallAccum form trapped continuation-first deltas at
+	// index -1 and silently dropped their args.
+	toolCalls := []*toolCallAccum{}
+	// loggedOrphanFragment limits the "continuation before any ID"
+	// warning to once per stream. Without this, a model that emits
+	// repeated malformed fragments would spam the log line once per
+	// delta.
+	loggedOrphanFragment := false
 
 	scanner := bufio.NewScanner(body)
 	// sseBufferMax (8MB) — see gemini.go. Same rationale: long
@@ -607,26 +617,34 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 			ch <- ChatEvent{Type: EventText, Text: delta.Content}
 		}
 
-		// Tool calls (accumulated across multiple deltas)
+		// Tool calls (accumulated across multiple deltas).
 		for _, tc := range delta.ToolCalls {
-			idx := 0 // OpenAI sends index in the array; use ID-based if available
 			if tc.ID != "" {
-				// New tool call starting
-				toolCalls[len(toolCalls)] = &toolCallAccum{
+				toolCalls = append(toolCalls, &toolCallAccum{
 					ID:   tc.ID,
 					Name: tc.Function.Name,
-				}
-				idx = len(toolCalls) - 1
-			} else {
-				// Continuation of existing tool call (find last one)
-				idx = len(toolCalls) - 1
+				})
 			}
-			if accum, ok := toolCalls[idx]; ok {
-				if tc.Function.Name != "" && accum.Name == "" {
-					accum.Name = tc.Function.Name
+			if len(toolCalls) == 0 {
+				// Continuation delta with no prior tool call — OpenAI's
+				// stream normally sends the ID on the first chunk. If
+				// we land here the model produced an invalid sequence.
+				// Log once per stream (further occurrences would just
+				// flood the log) and drop the fragment rather than
+				// writing to a non-existent slot (the previous
+				// map-based code wrote to index -1 and silently lost
+				// the args).
+				if !loggedOrphanFragment {
+					log.Printf("openai: stream sent tool-call continuation before any ID; dropping fragment (further occurrences in this stream suppressed)")
+					loggedOrphanFragment = true
 				}
-				accum.Args.WriteString(tc.Function.Arguments)
+				continue
 			}
+			accum := toolCalls[len(toolCalls)-1]
+			if tc.Function.Name != "" && accum.Name == "" {
+				accum.Name = tc.Function.Name
+			}
+			accum.Args.WriteString(tc.Function.Arguments)
 		}
 
 		// Finish reason
@@ -677,9 +695,10 @@ func (o *OpenAIProvider) parseSSEStream(ctx context.Context, body io.Reader, ch 
 		contentBlocks = append(contentBlocks, TextBlock{Text: textBuf.String()})
 	}
 
-	// Finalize tool call blocks
-	for i := 0; i < len(toolCalls); i++ {
-		tc := toolCalls[i]
+	// Finalize tool call blocks. Iterating the slice preserves the
+	// arrival order; the earlier map walk relied on sequential integer
+	// keys and would silently skip entries if that invariant slipped.
+	for _, tc := range toolCalls {
 		contentBlocks = append(contentBlocks, ToolUseBlock{
 			ID:   tc.ID,
 			Name: tc.Name,

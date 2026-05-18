@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 
 	"github.com/andreujuanc/prr/internal/git"
 )
@@ -28,6 +29,16 @@ var validStateKey = regexp.MustCompile(`^[\w-]+$`)
 // failures (eg. simulate EXDEV) and ensure the code falls back to
 // copy+remove semantics. Defaults to os.Rename in production.
 var fileRename = os.Rename
+
+// saveMu serialises concurrent Save calls. The audit pipeline and
+// parallel batch reviews both call Save from many goroutines after
+// each CacheSet on a shared State; two concurrent renames into the
+// same path race at the kernel level, and if either marshal saw a
+// stale snapshot it could overwrite cache entries written by the
+// other goroutine. A package-level mutex is coarse (one writer at a
+// time across all state files) but the call pattern is bursty
+// enough that finer-grained locking isn't worth the complexity.
+var saveMu sync.Mutex
 
 // stateDir returns the absolute path to prr's state directory rooted at
 // the git repo. Before this fix the path was cwd-relative, so launching
@@ -181,6 +192,9 @@ func DeleteStateFile(prNumber string) error {
 
 // Save writes the given State to disk.
 func Save(state *State) error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+
 	// Determine file path before taking locks (dir creation is idempotent).
 	filePath, err := getStateFilePath(state.PRNumber)
 	if err != nil {
@@ -239,6 +253,13 @@ func Save(state *State) error {
 		if err != nil {
 			_ = os.Remove(tmpPath)
 			return fmt.Errorf("creating final state file during fallback: %w", err)
+		}
+		// os.Create uses 0666 modulated by umask, so the file ends up
+		// 0644 on a typical umask. The happy path explicitly chmods
+		// the temp file to 0644 before rename; mirror that here so
+		// both paths produce the same permissions.
+		if err := os.Chmod(filePath, 0644); err != nil {
+			log.Printf("Warning: chmod final state file: %v", err)
 		}
 		if _, err := io.Copy(outf, inf); err != nil {
 			outf.Close()

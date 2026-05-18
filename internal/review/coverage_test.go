@@ -111,6 +111,47 @@ func TestBuildCoverage_FailedAOIsAttributedToFile(t *testing.T) {
 	}
 }
 
+func TestBuildCoverage_SystemicFindingCreditsEachAffectedFile(t *testing.T) {
+	// Systemic findings have File == "multiple" but their AffectedSites
+	// list the real files. The recheck pass already consolidated the
+	// constituent per-file findings away, so without per-affected-site
+	// credit, files with a real systemic concern would look untouched.
+	aoiScan := []security.AOIScanResult{
+		{File: "a.go", AreasOfInterest: []security.AreaOfInterest{{ID: "a1"}}},
+		{File: "b.go", AreasOfInterest: []security.AreaOfInterest{{ID: "b1"}}},
+	}
+	findings := []state.DeepFinding{{
+		File:     "multiple",
+		Severity: "high",
+		Systemic: true,
+		AffectedSites: []state.SiteRef{
+			{File: "a.go"},
+			{File: "b.go"},
+		},
+	}}
+
+	cov := BuildCoverage(aoiScan, findings, nil, nil, []string{"a.go", "b.go"}, nil)
+	if cov == nil || len(cov.Files) != 2 {
+		t.Fatalf("expected 2 files in coverage; got %+v", cov)
+	}
+	byFile := map[string]*state.FileCoverage{}
+	for i := range cov.Files {
+		byFile[cov.Files[i].File] = &cov.Files[i]
+	}
+	for _, name := range []string{"a.go", "b.go"} {
+		f := byFile[name]
+		if f == nil {
+			t.Fatalf("missing coverage row for %s", name)
+		}
+		if f.Findings != 1 {
+			t.Errorf("%s: findings = %d, want 1", name, f.Findings)
+		}
+		if f.MaxFindingSeverity != "high" {
+			t.Errorf("%s: max severity = %q, want high", name, f.MaxFindingSeverity)
+		}
+	}
+}
+
 func TestBuildCoverage_EmptyInputsReturnsNil(t *testing.T) {
 	cov := BuildCoverage(nil, nil, nil, nil, nil, nil)
 	if cov != nil {
