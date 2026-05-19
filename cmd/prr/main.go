@@ -587,6 +587,23 @@ func runReview(debug bool, args []string) {
 		os.Exit(1)
 	}
 
+	// Auto-persist a timestamped snapshot of the result regardless of
+	// --output. The LLM call cost the user real money; throwing the
+	// rich result away because they forgot --output was the original
+	// gap this branch fixes. --output, when set, still writes to the
+	// user-specified path on top of this.
+	if result != nil {
+		if data, mErr := marshalReviewResult(result); mErr == nil {
+			if snapPath, sErr := state.SaveReviewSnapshot(prNumber, data); sErr != nil {
+				log.Printf("Warning: review snapshot save failed: %v", sErr)
+			} else if !quiet {
+				fmt.Fprintf(os.Stderr, "  Snapshot saved to %s\n", cliDim.Render(snapPath))
+			}
+		} else {
+			log.Printf("Warning: review snapshot marshal failed: %v", mErr)
+		}
+	}
+
 	if quiet && outputPath == "" {
 		os.Exit(0)
 	}
@@ -699,8 +716,12 @@ func runReview(debug bool, args []string) {
 	}
 }
 
-// exportReviewResult writes the review result to a JSON file.
-func exportReviewResult(result *review.PRReviewResult, path string) error {
+// marshalReviewResult builds the JSON byte payload for a review run.
+// Shared between --output (writes user-specified path) and the
+// auto-persisted snapshot (writes .git/pr-tui/reviews/...). The two
+// paths produce byte-identical content so users diffing or scripting
+// against either get the same shape.
+func marshalReviewResult(result *review.PRReviewResult) ([]byte, error) {
 	data := map[string]any{
 		"pr_number":      result.PR.Number,
 		"pr_title":       result.PR.Title,
@@ -712,16 +733,16 @@ func exportReviewResult(result *review.PRReviewResult, path string) error {
 	if len(result.DeepFindings) > 0 {
 		data["deep_findings"] = result.DeepFindings
 	}
+	return json.MarshalIndent(data, "", "  ")
+}
 
-	f, err := os.Create(path)
+// exportReviewResult writes the review result to a JSON file.
+func exportReviewResult(result *review.PRReviewResult, path string) error {
+	b, err := marshalReviewResult(result)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	return enc.Encode(data)
+	return os.WriteFile(path, b, 0644)
 }
 
 func printReviewUsage() {
