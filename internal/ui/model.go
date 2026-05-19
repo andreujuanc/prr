@@ -81,6 +81,11 @@ type AIChatDoneMsg struct {
 	Review *state.AIReview
 	// StructuredReview — set when the review was parsed as structured JSON
 	StructuredReview *state.ReviewOutput
+	// FilesReviewed is the count of files that reached Phase 3. Stamped
+	// from the goroutine that drove the review (it has rawDiffs in
+	// scope); used to populate the same field in the snapshot JSON
+	// the headless flow writes.
+	FilesReviewed int
 	// FileFindings maps file paths to their batch findings for caching.
 	// Set by multi-pass review so individual file findings can be persisted.
 	FileFindings map[string]string
@@ -1490,6 +1495,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.Review.Structured = msg.StructuredReview
 			}
 			m.saveReview(msg.Review)
+		}
+
+		// Auto-persist a timestamped snapshot — same shape as the
+		// headless `prr review` flow writes. Lets users re-open the
+		// TUI later and see the run, or diff snapshots over time.
+		// Failure is non-fatal; the per-PR state already persists
+		// what the Review tab reads.
+		if wasReview && msg.StructuredReview != nil && m.prNumber != "" {
+			data, mErr := review.MarshalResultJSON(m.pr, msg.FilesReviewed, msg.StructuredReview, msg.DeepFindings)
+			if mErr != nil {
+				log.Printf("Warning: TUI review snapshot marshal failed: %v", mErr)
+			} else if _, sErr := state.SaveReviewSnapshot(m.prNumber, data); sErr != nil {
+				log.Printf("Warning: TUI review snapshot save failed: %v", sErr)
+			}
 		}
 
 		// Persist per-file batch findings for cache reuse.

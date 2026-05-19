@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -734,23 +733,12 @@ func runReview(debug bool, args []string) {
 }
 
 // marshalReviewResult builds the JSON byte payload for a review run.
-// Shared between --output (writes user-specified path) and the
-// auto-persisted snapshot (writes .git/pr-tui/reviews/...). The two
-// paths produce byte-identical content so users diffing or scripting
-// against either get the same shape.
+// Thin wrapper over review.MarshalResultJSON; kept here as the
+// callsite-local seam in case main.go needs to add CLI-only fields
+// later. Same bytes as the snapshot save path uses, so --output and
+// the auto-persisted snapshot are byte-identical.
 func marshalReviewResult(result *review.PRReviewResult) ([]byte, error) {
-	data := map[string]any{
-		"pr_number":      result.PR.Number,
-		"pr_title":       result.PR.Title,
-		"files_reviewed": result.FilesReviewed,
-	}
-	if result.StructuredReview != nil {
-		data["review"] = result.StructuredReview
-	}
-	if len(result.DeepFindings) > 0 {
-		data["deep_findings"] = result.DeepFindings
-	}
-	return json.MarshalIndent(data, "", "  ")
+	return review.MarshalResultJSON(result.PR, result.FilesReviewed, result.StructuredReview, result.DeepFindings)
 }
 
 // exportReviewResult writes the review result to a JSON file.
