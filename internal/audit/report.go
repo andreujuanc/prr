@@ -53,13 +53,29 @@ func toReportJSON(r *Result, synthesis *SynthesisResult) ReportJSON {
 	}
 }
 
-// ExportJSON writes the audit result as structured JSON to the given path.
+// MarshalJSON returns the JSON byte payload for an audit result.
+// Shared between ExportJSON (writes user-specified path) and the
+// auto-persisted snapshot in `prr audit` (writes
+// .git/pr-tui/audits/...). Both paths produce byte-identical
+// content so users diffing or scripting against either get the same
+// shape.
+//
 // synthesis may be nil when synthesis was disabled or failed.
-func ExportJSON(result *Result, synthesis *SynthesisResult, path string) error {
+func MarshalJSON(result *Result, synthesis *SynthesisResult) ([]byte, error) {
 	report := toReportJSON(result, synthesis)
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal report: %w", err)
+		return nil, fmt.Errorf("marshal report: %w", err)
+	}
+	return data, nil
+}
+
+// ExportJSON writes the audit result as structured JSON to the given path.
+// synthesis may be nil when synthesis was disabled or failed.
+func ExportJSON(result *Result, synthesis *SynthesisResult, path string) error {
+	data, err := MarshalJSON(result, synthesis)
+	if err != nil {
+		return err
 	}
 	return os.WriteFile(path, data, 0o644)
 }

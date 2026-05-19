@@ -326,6 +326,23 @@ func runAudit(debug bool, args []string) {
 		os.Exit(1)
 	}
 
+	// Auto-persist a timestamped snapshot of the audit regardless of
+	// --output. The audit cost real money in tokens; without this,
+	// running `prr audit` without --output prints to stderr and
+	// throws the structured result away. --output, when set, still
+	// writes to the user-specified path on top of this.
+	if result != nil {
+		if data, mErr := audit.MarshalJSON(result, synthesis); mErr == nil {
+			if snapPath, sErr := state.SaveAuditSnapshot(data); sErr != nil {
+				log.Printf("Warning: audit snapshot save failed: %v", sErr)
+			} else if !quiet {
+				fmt.Fprintf(os.Stderr, "  Snapshot saved to %s\n", cliDim.Render(snapPath))
+			}
+		} else {
+			log.Printf("Warning: audit snapshot marshal failed: %v", mErr)
+		}
+	}
+
 	if !quiet {
 		if len(result.Findings) == 0 {
 			fmt.Fprintf(os.Stderr, "  %s\n\n", cliInfo.Render("No issues found."))
