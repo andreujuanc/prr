@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.8.0](https://github.com/andreujuanc/prr/compare/v1.7.0...v1.8.0) (2026-05-20)
+
+
+### Features
+
+* **ai:** step cap per ChatStream call (50 -&gt; 20) + per-call rounds log ([0853f24](https://github.com/andreujuanc/prr/commit/0853f24ecfc41fb5a60ba5e8c5bdc6a4607c0b26))
+* **audit:** persist headless audit snapshot to .git/pr-tui/audits ([9b2aa7d](https://github.com/andreujuanc/prr/commit/9b2aa7dce458ee03e42882edf5dfcaca3ab6490f))
+* **claudecode:** default sonnet to --effort low ([f862607](https://github.com/andreujuanc/prr/commit/f8626075d35aed0cc88a8e2643d92d6c369da8e9))
+* **claudecode:** expose --effort via PRR_CLAUDE_EFFORT env var ([145806d](https://github.com/andreujuanc/prr/commit/145806dc6824a0d22041af0322e51be891e74ce9))
+* **config:** centralize model pricing and correct Gemini rates ([a41d069](https://github.com/andreujuanc/prr/commit/a41d0699aa40f13cee08b95680c15ed1baaed774))
+* **prompts:** make tool use discretionary in deep-review prompts ([afbac98](https://github.com/andreujuanc/prr/commit/afbac984793b743802a54ee2d025a1a30ad2da3f))
+* **review:** Gemini context caching for the deep-review pipeline ([9b5d80a](https://github.com/andreujuanc/prr/commit/9b5d80aa5eefd1ebda44bbe708c40db40a8916a5))
+* **review:** persist headless review snapshot to .git/pr-tui/reviews ([50b2904](https://github.com/andreujuanc/prr/commit/50b2904b068c978f1233da441221b0ecb3c7678a))
+* **review:** TUI runs synthesis + validate + snapshot — matches headless ([72072c1](https://github.com/andreujuanc/prr/commit/72072c10fdefc240b63dbdddb9ef05a5d3eaf713))
+* **security:** add U5 context tier to TestAOIContextLineComparison ([ce8e5c9](https://github.com/andreujuanc/prr/commit/ce8e5c9931379503a7225228b585908f373f4291))
+* **security:** tighten AOI urgency criteria — default more aggressively to grouped ([b0515e1](https://github.com/andreujuanc/prr/commit/b0515e1e8418992acd62193094a9c676897b2a3a))
+* **state:** add SaveReviewSnapshot / SaveAuditSnapshot ([824de6f](https://github.com/andreujuanc/prr/commit/824de6f9c60f06174f07d3e127530b59923af230))
+* **ui:** verdict pill — high-contrast badge in the Review tab ([da9a34c](https://github.com/andreujuanc/prr/commit/da9a34c5962816f73c2ad54e7a7973396bfc2f62))
+
+
+### Bug Fixes
+
+* **ci:** unbreak the test + lint pipeline ([51096ad](https://github.com/andreujuanc/prr/commit/51096ad17cbeb3306332267cf9c5526e64e46bf6))
+* **review:** disable context-cache call site (broken in 9b5d80a) ([6f40eac](https://github.com/andreujuanc/prr/commit/6f40eac3649d5354a02dc341e47dffa1f5c2adbd))
+* **review:** take last complete JSON value when model emits multiple drafts ([7b3bfc7](https://github.com/andreujuanc/prr/commit/7b3bfc7adfa91b68b958e1ca7e1ce57b70837d3c))
+
 ## [1.7.0](https://github.com/andreujuanc/prr/compare/v1.6.1...v1.7.0) (2026-05-18)
 
 
