@@ -826,24 +826,19 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 		s = strings.TrimSpace(s)
 	}
 
-	// Find JSON start
-	jsonStart := strings.IndexAny(s, "{[")
-	if jsonStart == -1 {
+	// Extract the last complete JSON value. Models running inside a
+	// CLI tool harness (Sonnet under Claude Code is the canonical case)
+	// may emit a pre-investigation draft, prose ("Let me read the
+	// files…"), and a refined post-tools draft. The refined draft is
+	// the model's intent — we want the LAST complete JSON value, not
+	// the first. extractLastJSONValue handles single-draft responses
+	// identically.
+	extracted, err := extractLastJSONValue([]byte(s))
+	if err != nil {
 		return result, fmt.Errorf("%w: no JSON found in response for %s/%s",
 			errReviewParse, call.Category, call.Subcategory)
 	}
-	s = s[jsonStart:]
-
-	// Trim trailing non-JSON (e.g. markdown code fences like ```)
-	if s[0] == '{' {
-		if end := strings.LastIndex(s, "}"); end != -1 {
-			s = s[:end+1]
-		}
-	} else if s[0] == '[' {
-		if end := strings.LastIndex(s, "]"); end != -1 {
-			s = s[:end+1]
-		}
-	}
+	s = string(extracted)
 
 	if call.Type == "individual" {
 		var parsed struct {
