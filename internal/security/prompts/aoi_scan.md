@@ -21,20 +21,16 @@ Each AOI must be tagged with exactly one category and one subcategory from this 
 
 ## Urgency
 
-Each AOI must be tagged with an urgency level that controls how it will be reviewed:
+Each AOI must be tagged with an urgency level that controls how it will be reviewed.
 
-**individual** — gets its own dedicated deep review with full tool access. Reserve for:
-- Looks like a real, exploitable vulnerability (e.g., `db.Exec(fmt.Sprintf("... %s", r.FormValue("q")))`)
-- Critical business-logic flaw (e.g., refund amount accepted as float without rounding)
-- Complex concern requiring multi-file investigation (e.g., a race condition across handler + cache)
-- Anything where a false negative would be costly
+**Default to `grouped`. Most AOIs should be grouped, including real bugs.** Grouping does NOT suppress findings — a grouped review still emits one finding per AOI; the deep reviewer just gets to see the cluster as related work and reason about the pattern across siblings. Choose `grouped` whenever in doubt.
 
-**grouped** — reviewed alongside other concerns in the same subcategory. For:
-- Routine concerns that follow a shared pattern (e.g., 5 functions returning bare `err` without wrapping)
-- Low-severity issues (inconsistent naming, missing docs)
-- Things where seeing the pattern across files is more valuable than deep-diving each one
+**`individual`** — reserve for the rare AOI that is both:
 
-Default to `grouped`. Mark `individual` only when the AOI looks like a real bug or critical flaw that needs deep tool-assisted investigation.
+1. **Structurally unique** — the kind of bug shape that wouldn't naturally have siblings elsewhere in this audit. A one-off architectural flaw, a unique trust-boundary violation. NOT "this is a SQL injection sink" (those tend to cluster).
+2. **Requires reasoning across multiple files** — investigation that can't be done from the snippet shown to a deep reviewer: cross-handler race conditions, multi-step taint flow, a guard that lives in a sibling module.
+
+If neither condition is clearly true, mark `grouped`. Severity alone is not a reason to mark `individual` — a critical SQL injection still belongs in `grouped` if other injection AOIs exist nearby, because pattern context matters more than isolation. The downstream router will still surface every grouped AOI as its own finding.
 
 ## Rules
 
@@ -81,8 +77,10 @@ For each such AOI:
   comment names one — e.g., a TODO about auth → `authorization`)
 - `concern` = paraphrase of the comment text in one sentence
 - `context` = "comment admits known gap at this location"
-- Urgency: `individual` if the comment names a security/auth/money
-  concern, otherwise `grouped`.
+- Urgency: follow the rule in `## Urgency` above. Most TODO-derived
+  AOIs are `grouped` because they share a pattern (the codebase
+  has many known gaps); only mark `individual` when the gap looks
+  cross-file and structurally unique.
 
 ### Named-unit values and branded types
 
@@ -116,9 +114,11 @@ For each such AOI:
 - `category` = `data-integrity`, `subcategory` = `unit-mismatch`
 - `concern` = "value X (unit/type Y) flows to receiver expecting
   different unit/type" or similar
-- Urgency: `individual` when the value crosses a system boundary
-  (HTTP response, persistence write, message send) or touches
-  money/auth; otherwise `grouped`.
+- Urgency: follow the rule in `## Urgency` above. Most unit-mismatch
+  AOIs are `grouped` because they tend to cluster (one mistake at a
+  type boundary usually implies others); only `individual` when the
+  mismatch crosses a system boundary AND no sibling AOIs share the
+  same shape.
 
 Skip when the unit-or-domain claim isn't backed by either a typed
 brand or a clear name-shape signal — guessing about units invites
