@@ -1025,6 +1025,21 @@ func runPhase3(
 	debugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string),
 	toolHook func(callIndex int, toolName string, args string, status string, duration string),
 ) (findings []state.DeepFinding, dismissals int, crossCutting []string, failed int, failedAOIIDs []string, err error) {
+	// Per-batch init events so the Batches panel knows what each row is
+	// about. Audit only has AOI-driven calls (no general fallback
+	// batches), so kind=aoi-driven for all of them.
+	for i, call := range calls {
+		label := call.Category
+		if call.Subcategory != "" {
+			label += "/" + call.Subcategory
+		}
+		if call.Type == "individual" {
+			label += " [critical]"
+		}
+		onProgress("phase3", fmt.Sprintf("Batch %d: init label=%q files=%d kind=aoi-driven",
+			i+1, label, len(call.Files)))
+	}
+
 	execOpts := review.ExecuteOptions{
 		Mode:            review.ModeAudit,
 		ProjectContext:  projectContext,
@@ -1053,6 +1068,19 @@ func runPhase3(
 				onProgress("phase3", "complete (cached)")
 			} else {
 				onProgress("phase3", "complete")
+			}
+		},
+		OnCallStart: func(idx int) {
+			onProgress("phase3", fmt.Sprintf("Batch %d: active", idx+1))
+		},
+		OnCallEnd: func(idx int, cached bool, callErr error) {
+			switch {
+			case cached:
+				onProgress("phase3", fmt.Sprintf("Batch %d: cached", idx+1))
+			case callErr != nil:
+				onProgress("phase3", fmt.Sprintf("Batch %d: failed", idx+1))
+			default:
+				onProgress("phase3", fmt.Sprintf("Batch %d: done", idx+1))
 			}
 		},
 	}

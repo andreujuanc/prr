@@ -75,6 +75,27 @@ type ExecuteOptions struct {
 	// OnProgress is called with status updates. Can be nil.
 	OnProgress func(completed, total int, cached bool, err error)
 
+	// OnCallStart fires when a non-cached call enters its LLM phase
+	// (i.e., after the semaphore is acquired, just before ChatStream).
+	// Cached calls do not fire this — they return before semaphore
+	// acquisition. The Batches panel uses it to flip a batch's status
+	// from queued to active and start the elapsed-time clock.
+	OnCallStart func(index int)
+
+	// OnCallEnd fires for every call (cached or not) with its final
+	// outcome. completed/total order is preserved by OnProgress, but
+	// OnCallEnd carries the original call index so the Batches panel
+	// can address the specific batch row. cached and err mirror
+	// OnProgress.
+	OnCallEnd func(index int, cached bool, err error)
+
+	// OnCallStream fires (throttled) as bytes of plain content stream
+	// in from the LLM for a given call. tokenBytes is cumulative bytes
+	// received so far for this call. Used by the Batches panel to draw
+	// a per-batch progress bar from a real signal instead of a
+	// timer-only spinner.
+	OnCallStream func(index int, tokenBytes int)
+
 	// OnLLMCall is called before and after each LLM call for debugging.
 	// Called with (callIndex, ReviewCall, systemPrompt, userMessage, response).
 	// If nil, no debug output is produced.
@@ -189,6 +210,10 @@ func RunReviewCalls(
 				return
 			}
 
+			if opts.OnCallStart != nil {
+				opts.OnCallStart(i)
+			}
+
 			result, err := runReviewCallWithRetry(ctx, client, call, opts, i)
 			if err != nil {
 				resultsCh <- callResult{index: i, err: err}
@@ -236,6 +261,9 @@ func RunReviewCalls(
 			if opts.OnProgress != nil {
 				opts.OnProgress(completed, len(calls), cr.fromCache, cr.err)
 			}
+			if opts.OnCallEnd != nil {
+				opts.OnCallEnd(cr.index, cr.fromCache, cr.err)
+			}
 			continue
 		}
 		if cr.result != nil {
@@ -247,6 +275,9 @@ func RunReviewCalls(
 		}
 		if opts.OnProgress != nil {
 			opts.OnProgress(completed, len(calls), cr.fromCache, nil)
+		}
+		if opts.OnCallEnd != nil {
+			opts.OnCallEnd(cr.index, cr.fromCache, nil)
 		}
 	}
 

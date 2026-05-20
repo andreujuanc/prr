@@ -314,17 +314,25 @@ func (p *progressReporter) InitBatches(batches []BatchInfo) {
 	}
 	p.onProgress("phase1", fmt.Sprintf("Initialized %d batches (%d AOI-driven, %d general)",
 		len(batches), aoi, general))
+
+	// Per-batch identity. These feed the Batches panel parser so each
+	// batch row knows what it's about. The aggregate line above keeps
+	// the phase Summary working; the per-batch lines populate
+	// progress.State.Batches without touching the aggregate counters.
+	for i, b := range batches {
+		kind := "aoi-driven"
+		if b.Kind == BatchGeneral {
+			kind = "general"
+		}
+		p.onProgress("phase1", fmt.Sprintf("Batch %d: init label=%q files=%d kind=%s",
+			i+1, b.Label, b.NumFiles, kind))
+	}
 }
 func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
-	// Skip StatusActive: with parallel batches, "active" messages
-	// flip the detail line chaotically (Batch 12: active → Batch 8:
-	// active → Batch 14: active …) without conveying real progress.
-	// The inline counter "X/Y" plus terminal-status messages give
-	// users an honest read of how much is done.
 	label := "done"
 	switch status {
 	case StatusActive:
-		return
+		label = "active"
 	case StatusCached:
 		label = "cached"
 	case StatusFailed:
@@ -963,16 +971,16 @@ func RunReviewCore(
 			MaxConcurrency:     maxConc,
 			RepoRoot:           opts.RepoRoot,
 			BugPriors:          bugPriorsContent,
-			OnProgress: func(completed, total int, cached bool, callErr error) {
-				idx := completed - 1
-				if idx < 0 || idx >= len(reviewCalls) {
-					return
-				}
-				if cached {
+			OnCallStart: func(idx int) {
+				rr.BatchProgress(idx, StatusActive)
+			},
+			OnCallEnd: func(idx int, cached bool, callErr error) {
+				switch {
+				case cached:
 					rr.BatchProgress(idx, StatusCached)
-				} else if callErr != nil {
+				case callErr != nil:
 					rr.BatchProgress(idx, StatusFailed)
-				} else {
+				default:
 					rr.BatchProgress(idx, StatusDone)
 				}
 			},
