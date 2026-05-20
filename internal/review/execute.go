@@ -928,7 +928,6 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			Severity            string               `json:"severity"`
 			Category            string               `json:"category"`
 			Subcategory         string               `json:"subcategory"`
-			Dimension           string               `json:"dimension"`
 			Title               string               `json:"title"`
 			Description         string               `json:"description"`
 			Evidence            string               `json:"evidence"`
@@ -953,7 +952,6 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				Severity:            parsed.Severity,
 				Category:            parsed.Category,
 				Subcategory:         parsed.Subcategory,
-				Dimension:           parsed.Dimension,
 				Title:               parsed.Title,
 				Description:         parsed.Description,
 				Evidence:            parsed.Evidence,
@@ -988,7 +986,6 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				Severity            string               `json:"severity"`
 				Category            string               `json:"category"`
 				Subcategory         string               `json:"subcategory"`
-				Dimension           string               `json:"dimension"`
 				Title               string               `json:"title"`
 				Description         string               `json:"description"`
 				Evidence            string               `json:"evidence"`
@@ -1016,7 +1013,6 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 					Severity:            r.Severity,
 					Category:            r.Category,
 					Subcategory:         r.Subcategory,
-					Dimension:           r.Dimension,
 					Title:               r.Title,
 					Description:         r.Description,
 					Evidence:            r.Evidence,

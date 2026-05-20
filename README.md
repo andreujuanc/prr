@@ -368,6 +368,12 @@ depends on which.
 That set is enough to reconstruct what happened without needing your
 repo content.
 
+## Roadmap
+
+Ideas we want to build but haven't yet.
+
+- **Incremental re-review on push.** When a branch that's already been reviewed gets a new commit, prr re-uses the prior run's findings: marks which ones the new commit resolved, which still stand, and only spends model time on what actually changed plus any newly introduced issues. Needs per-branch finding persistence and stable IDs that survive line shifts.
+
 ## License
 
 MIT

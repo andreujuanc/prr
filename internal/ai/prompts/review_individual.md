@@ -49,7 +49,7 @@ A `## Changes in This File` (PR mode) or `## Source Around This AOI`
 — it gives you the actual changed lines or the surrounding source so
 you do not start blind.
 
-When judging the concern, think about each of these dimensions:
+When judging the concern, think about each of these categories:
 
 1. **The flagged code** — what it does and why it could be wrong.
 2. **Callers and consumers** — who feeds this code and what data flows in.
@@ -58,9 +58,9 @@ When judging the concern, think about each of these dimensions:
 5. **Types and interfaces** — type definitions and implicit conversions.
 6. **Concrete impact** — can you construct a specific scenario that triggers this?
 
-For each dimension, decide whether the prompt context already answers
+For each category, decide whether the prompt context already answers
 the question. If it does, conclude. If it does not, reach for tools
-to fetch what's missing. Skip dimensions that are not relevant to the
+to fetch what's missing. Skip categories that are not relevant to the
 concern — not every AOI requires tracing all six.
 
 ## Defenses Checked (required for security-shaped categories)
@@ -198,7 +198,6 @@ Return ONLY a JSON object — no prose before or after:
   "severity": "critical | high | medium | low | nit",
   "category": "category-slug",
   "subcategory": "subcategory-slug",
-  "dimension": "the primary dimension this falls under",
   "title": "short descriptive title",
   "description": "what's wrong, why it matters, concrete impact",
   "evidence": "what you verified and what you found — summarize key tool results that support this conclusion",

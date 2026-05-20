@@ -82,13 +82,13 @@ var ReviewSynthesisPrompt string
 var ChatPrompt string
 
 // ReviewIndividualPrompt is the base system prompt for individual AOI deep review.
-// Composed with mode preamble, project context, AOI details, and dimensions at runtime.
+// Composed with mode preamble, project context, AOI details, and categories at runtime.
 //
 //go:embed prompts/review_individual.md
 var ReviewIndividualPrompt string
 
 // ReviewGroupedPrompt is the base system prompt for grouped subcategory review.
-// Composed with mode preamble, project context, AOI list, and dimensions at runtime.
+// Composed with mode preamble, project context, AOI list, and categories at runtime.
 //
 //go:embed prompts/review_grouped.md
 var ReviewGroupedPrompt string

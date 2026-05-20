@@ -19,7 +19,7 @@ func pinBatchResponse(file string) string {
         "severity": "high",
         "confidence_score": 80,
         "confidence_reasoning": "clear missing check",
-        "dimension": "security",
+        "category": "security",
         "title": "Missing input validation",
         "line": 42,
         "detail": "the handler does not validate the request body",
@@ -66,8 +66,8 @@ func TestConvertFallbackToDeepFindings(t *testing.T) {
 	if f.ConfidenceScore != 80 {
 		t.Errorf("ConfidenceScore = %d, want 80", f.ConfidenceScore)
 	}
-	if f.Dimension != "security" {
-		t.Errorf("Dimension = %q, want security", f.Dimension)
+	if f.Category != "security" {
+		t.Errorf("Category = %q, want security", f.Category)
 	}
 }
 

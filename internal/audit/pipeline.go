@@ -26,7 +26,7 @@ type Options struct {
 	// RepoRoot is the absolute path to the repository root.
 	RepoRoot string
 
-	// Focus is a list of dimension slugs to focus on. Empty = all.
+	// Focus is a list of category slugs to focus on. Empty = all.
 	Focus []string
 
 	// ExcludePatterns are additional globs to exclude (from --exclude and .prr/audit-exclude).
@@ -473,7 +473,7 @@ func Run(
 
 	classifications, err := runPhase1b(ctx, aoiClient, opts, auditState, files, onProgress)
 	if err != nil {
-		log.Printf("Phase 1b (classification) failed: %v — all files will use all dimensions", err)
+		log.Printf("Phase 1b (classification) failed: %v — all files will use all categorys", err)
 		classifications = make(map[string]classify.FileType, len(files))
 		for _, f := range files {
 			classifications[f.Path] = classify.FileTypeUnknown
@@ -959,10 +959,10 @@ func runPhase2(
 	}
 
 	// Build per-file dimension map from classifications
-	fileDimensions := make(map[string][]string, len(fileContents))
+	fileCategories := make(map[string][]string, len(fileContents))
 	for path := range fileContents {
 		ft := classifications[path]
-		fileDimensions[path] = classify.DimensionsForType(ft)
+		fileCategories[path] = classify.DimensionsForType(ft)
 	}
 
 	// Surface the partial-cache hit count so the TUI's AOI summary
@@ -975,7 +975,7 @@ func runPhase2(
 	}
 
 	// Run AOI scan on uncached files
-	report, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, fileContents, cachedResults, fileDimensions, func(status string) {
+	report, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, fileContents, cachedResults, fileCategories, func(status string) {
 		onProgress("phase2", status)
 	}, debugHook, true)
 	if err != nil {

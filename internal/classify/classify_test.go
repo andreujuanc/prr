@@ -58,7 +58,7 @@ func TestDimensionsForType(t *testing.T) {
 			mustNot:  []string{"testing", "web-security"},
 		},
 		{
-			// SQL files have a deliberately different dimension set
+			// SQL files have a deliberately different category set
 			// from FileTypeRepository — pin the contract so the two
 			// don't drift toward each other accidentally.
 			ft:       FileTypeSQL,
@@ -108,24 +108,24 @@ func TestDimensionsForType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.ft), func(t *testing.T) {
-			dims := DimensionsForType(tt.ft)
-			if len(dims) < tt.wantMin {
-				t.Errorf("got %d dimensions, want at least %d: %v", len(dims), tt.wantMin, dims)
+			cats := DimensionsForType(tt.ft)
+			if len(cats) < tt.wantMin {
+				t.Errorf("got %d dimensions, want at least %d: %v", len(cats), tt.wantMin, cats)
 			}
 
-			dimSet := make(map[string]bool, len(dims))
-			for _, d := range dims {
+			dimSet := make(map[string]bool, len(cats))
+			for _, d := range cats {
 				dimSet[d] = true
 			}
 
 			for _, must := range tt.mustHave {
 				if !dimSet[must] {
-					t.Errorf("missing required dimension %q in %v", must, dims)
+					t.Errorf("missing required dimension %q in %v", must, cats)
 				}
 			}
 			for _, mustNot := range tt.mustNot {
 				if dimSet[mustNot] {
-					t.Errorf("should not contain dimension %q in %v", mustNot, dims)
+					t.Errorf("should not contain dimension %q in %v", mustNot, cats)
 				}
 			}
 		})

@@ -224,11 +224,11 @@ func (r *RouteResult) SkippedSubcategories(maxCalls int) []string {
 // aoiMatchesFocus returns true if any of the AOI's dimensions overlap
 // with the focus set.
 func aoiMatchesFocus(aoi security.AreaOfInterest, focusSet map[string]bool) bool {
-	if len(aoi.Dimensions) == 0 {
+	if len(aoi.Categories) == 0 {
 		// Legacy AOIs without dimensions: always include
 		return true
 	}
-	for _, dim := range aoi.Dimensions {
+	for _, dim := range aoi.Categories {
 		if focusSet[dim] {
 			return true
 		}

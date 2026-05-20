@@ -54,28 +54,28 @@ const auditModeRules = `1. Scan ALL code in the file — this is a full-project 
 2. Flag any code location that could contain a bug, vulnerability, or design flaw.
 3. Use the full file context to understand data flow, variable origins, and sinks.`
 
-// buildAOIScanPrompt composes the AOI scan prompt template with all dimension
-// partials injected at the {DIMENSIONS} placeholder.
+// buildAOIScanPrompt composes the AOI scan prompt template with all category
+// partials injected at the {CATEGORIES} placeholder.
 func buildAOIScanPrompt(auditMode bool) string {
-	return buildAOIScanPromptWithDimensions(auditMode, nil)
+	return buildAOIScanPromptWithCategories(auditMode, nil)
 }
 
-// buildAOIScanPromptWithDimensions composes the AOI scan prompt with specific
-// dimensions. If dims is nil or empty, all dimensions are included.
-func buildAOIScanPromptWithDimensions(auditMode bool, dims []string) string {
-	var dimensionContent string
+// buildAOIScanPromptWithCategories composes the AOI scan prompt with specific
+// categories. If cats is nil or empty, all categories are included.
+func buildAOIScanPromptWithCategories(auditMode bool, cats []string) string {
+	var categoryContent string
 	var slugs []string
-	if len(dims) > 0 {
-		dimensionContent = ai.GetDimensions(dims)
-		slugs = make([]string, len(dims))
-		copy(slugs, dims)
+	if len(cats) > 0 {
+		categoryContent = ai.GetCategories(cats)
+		slugs = make([]string, len(cats))
+		copy(slugs, cats)
 		sort.Strings(slugs)
 	} else {
-		dimensionContent = ai.AllDimensions()
-		slugs = ai.AllDimensionSlugs()
+		categoryContent = ai.AllCategories()
+		slugs = ai.AllCategorySlugs()
 	}
 	slugList := strings.Join(slugs, ", ")
-	prompt := strings.Replace(aoiScanPrompt, "{DIMENSIONS}", dimensionContent, 1)
+	prompt := strings.Replace(aoiScanPrompt, "{CATEGORIES}", categoryContent, 1)
 	prompt = strings.Replace(prompt, "{DIMENSION_SLUGS}", slugList, 1)
 	rules := prModeRules
 	if auditMode {
@@ -110,7 +110,7 @@ func SetAOIConcurrency(n int) {
 }
 
 // ScanAreasOfInterest runs the AOI pre-scan on all changed files using
-// a lightweight LLM. It batches files by dimension set (or all together
+// a lightweight LLM. It batches files by category set (or all together
 // if no classifications are provided) and runs up to aoiMaxConcurrency
 // batches in parallel.
 //
@@ -147,15 +147,15 @@ func ScanAreasOfInterestDebug(
 }
 
 // ScanAreasOfInterestClassified is like ScanAreasOfInterestDebug but with
-// per-file dimension filtering. fileDimensions maps file paths to their
-// dimension slugs. Files not in the map get all dimensions. If fileDimensions
-// is nil, all files get all dimensions.
+// per-file category filtering. fileCategories maps file paths to their
+// category slugs. Files not in the map get all categories. If fileCategories
+// is nil, all files get all categories.
 func ScanAreasOfInterestClassified(
 	ctx context.Context,
 	client ai.Client,
 	rawDiffs map[string]string,
 	cachedResults map[string]*AOIScanResult,
-	fileDimensions map[string][]string,
+	fileCategories map[string][]string,
 	onProgress func(status string),
 	debugHook AOIDebugHook,
 	auditMode bool,
@@ -176,7 +176,7 @@ func ScanAreasOfInterestClassified(
 		onProgress(fmt.Sprintf("using cached AOI results for %d file(s)", len(cachedAOIs)))
 	}
 
-	batches := buildAOIBatchesClassified(uncachedDiffs, fileDimensions, auditMode)
+	batches := buildAOIBatchesClassified(uncachedDiffs, fileCategories, auditMode)
 	log.Printf("[aoi-debug] built %d batches from %d uncached files", len(batches), len(uncachedDiffs))
 	if len(batches) == 0 && len(cachedAOIs) == 0 {
 		return &AOIReport{}, nil
@@ -413,7 +413,7 @@ type aoiBatch struct {
 	label      string
 	files      []string
 	diffs      string
-	dimensions []string // dimension slugs for this batch (nil = all)
+	categories []string // category slugs for this batch (nil = all)
 }
 
 func buildAOIBatches(rawDiffs map[string]string) []aoiBatch {
@@ -450,20 +450,20 @@ func prefixLineNumbers(body string) string {
 	return b.String()
 }
 
-// dimensionKey returns a stable string key for a set of dimension slugs.
-// Used to group files with the same dimensions into the same batch.
-func dimensionKey(dims []string) string {
-	if len(dims) == 0 {
+// categoryKey returns a stable string key for a set of category slugs.
+// Used to group files with the same categories into the same batch.
+func categoryKey(cats []string) string {
+	if len(cats) == 0 {
 		return "_all_"
 	}
-	sorted := make([]string, len(dims))
-	copy(sorted, dims)
+	sorted := make([]string, len(cats))
+	copy(sorted, cats)
 	sort.Strings(sorted)
 	return strings.Join(sorted, ",")
 }
 
-func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[string][]string, auditMode bool) []aoiBatch {
-	// Group by dimension set, skip excluded files
+func buildAOIBatchesClassified(rawDiffs map[string]string, fileCategories map[string][]string, auditMode bool) []aoiBatch {
+	// Group by category set, skip excluded files
 	type fileEntry struct {
 		path string
 		diff string
@@ -475,14 +475,14 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 		if config.ShouldExcludeFromReview(p) {
 			continue
 		}
-		var dims []string
-		if fileDimensions != nil {
-			dims = fileDimensions[p]
+		var cats []string
+		if fileCategories != nil {
+			cats = fileCategories[p]
 		}
-		key := dimensionKey(dims)
+		key := categoryKey(cats)
 		groups[key] = append(groups[key], fileEntry{path: p, diff: diff})
 		if _, ok := groupDims[key]; !ok {
-			groupDims[key] = dims
+			groupDims[key] = cats
 		}
 	}
 
@@ -495,7 +495,7 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 	var batches []aoiBatch
 	for _, key := range keys {
 		entries := groups[key]
-		dims := groupDims[key]
+		cats := groupDims[key]
 
 		// Sort files within group for determinism
 		sort.Slice(entries, func(i, j int) bool {
@@ -517,7 +517,7 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 					label:      key,
 					files:      curFiles,
 					diffs:      curDiff.String(),
-					dimensions: dims,
+					categories: cats,
 				})
 				curFiles = nil
 				curDiff.Reset()
@@ -532,7 +532,7 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 				label:      key,
 				files:      curFiles,
 				diffs:      curDiff.String(),
-				dimensions: dims,
+				categories: cats,
 			})
 		}
 	}
@@ -576,13 +576,13 @@ func validateAOIs(results []AOIScanResult) {
 			if aoi.Category == "" {
 				log.Printf("aoi: %s [id=%s] missing category (model output, not coerced)",
 					r.File, aoi.ID)
-			} else if !ai.DimensionExists(aoi.Category) {
+			} else if !ai.CategoryExists(aoi.Category) {
 				log.Printf("aoi: %s [id=%s] uses out-of-taxonomy category %q (not coerced; Phase 3 routing may be off)",
 					r.File, aoi.ID, aoi.Category)
 			}
 
-			for _, d := range aoi.Dimensions {
-				if !ai.DimensionExists(d) {
+			for _, d := range aoi.Categories {
+				if !ai.CategoryExists(d) {
 					log.Printf("aoi: %s [id=%s] uses unknown dimension %q (will be ignored by --focus filtering)",
 						r.File, aoi.ID, d)
 				}
@@ -658,7 +658,7 @@ func scanBatchWithRetry(ctx context.Context, client ai.Client, batch aoiBatch, d
 
 // scanBatch sends a single batch of diffs to the AOI scanner.
 func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
-	systemPrompt := buildAOIScanPromptWithDimensions(auditMode, batch.dimensions)
+	systemPrompt := buildAOIScanPromptWithCategories(auditMode, batch.categories)
 	userMsg := fmt.Sprintf(
 		"Scan these %d file(s) for areas of interest:\n\n%s",
 		len(batch.files), batch.diffs,
@@ -711,7 +711,7 @@ func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook 
 	log.Printf("[aoi-debug] parsed %d file results", len(parsed))
 
 	// Surface semantic issues in the parsed results (invalid categories,
-	// unknown dimensions, duplicate IDs). Informational only — output
+	// unknown categories, duplicate IDs). Informational only — output
 	// is not modified, so the caller can still see what the model
 	// emitted.
 	validateAOIs(parsed)

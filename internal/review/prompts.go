@@ -80,10 +80,10 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPri
 	}
 
 	// Relevant dimension criteria
-	dims := relevantDimensions(aoi)
-	if len(dims) > 0 {
+	cats := relevantDimensions(aoi)
+	if len(cats) > 0 {
 		sb.WriteString("\n\n## Evaluation Criteria\n\n")
-		sb.WriteString(ai.GetDimensions(dims))
+		sb.WriteString(ai.GetCategories(cats))
 	}
 
 	// Custom instructions
@@ -160,10 +160,10 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 	}
 
 	// Relevant dimension criteria — collect from all AOIs in the group
-	dims := relevantDimensionsFromGroup(call.AOIs)
-	if len(dims) > 0 {
+	cats := relevantDimensionsFromGroup(call.AOIs)
+	if len(cats) > 0 {
 		sb.WriteString("\n\n## Evaluation Criteria\n\n")
-		sb.WriteString(ai.GetDimensions(dims))
+		sb.WriteString(ai.GetCategories(cats))
 	}
 
 	// Custom instructions
@@ -330,15 +330,15 @@ func formatAOI(aoi security.AreaOfInterest) string {
 	return sb.String()
 }
 
-// relevantDimensions returns the dimension slugs to include for a single AOI.
+// relevantDimensions returns the category slugs to include for a single AOI.
 // Uses the AOI's dimensions field, falling back to the category itself.
 func relevantDimensions(aoi security.AreaOfInterest) []string {
-	if len(aoi.Dimensions) > 0 {
+	if len(aoi.Categories) > 0 {
 		// Deduplicate and filter to valid dimensions
 		seen := make(map[string]bool)
 		var result []string
-		for _, d := range aoi.Dimensions {
-			if !seen[d] && ai.DimensionExists(d) {
+		for _, d := range aoi.Categories {
+			if !seen[d] && ai.CategoryExists(d) {
 				seen[d] = true
 				result = append(result, d)
 			}
@@ -347,7 +347,7 @@ func relevantDimensions(aoi security.AreaOfInterest) []string {
 	}
 
 	// Fallback: use the category as dimension if it exists
-	if ai.DimensionExists(aoi.Category) {
+	if ai.CategoryExists(aoi.Category) {
 		return []string{aoi.Category}
 	}
 	return nil

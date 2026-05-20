@@ -17,9 +17,9 @@ This is Phase 1 of a two-phase review. Your job is COVERAGE — report every pot
 
 {{TOOLS}}
 
-## Evaluation Dimensions
+## Evaluation Categories
 
-Evaluate EVERY dimension. Report all findings, including ones you are uncertain about.
+Evaluate EVERY category. Report all findings, including ones you are uncertain about.
 
 1. **Design & Architecture**
    - **Abstraction level**: Is this over-engineered (unnecessary interfaces, premature abstraction) or under-abstracted (copy-pasted logic that should be shared)?
@@ -146,7 +146,7 @@ Return a JSON array. One element per file in this batch — include every file, 
         "severity": "critical | high | medium | low | nit",
         "confidence_score": 78,
         "confidence_reasoning": "one short sentence: what made you confident or uncertain",
-        "dimension": "dimension-slug (e.g. correctness, security, performance)",
+        "category": "category-slug (e.g. correctness, security, performance)",
         "title": "short title",
         "line": 42,
         "detail": "what's wrong and why it matters",
@@ -177,7 +177,7 @@ Example finding (good — concrete, actionable):
   "severity": "high",
   "confidence_score": 92,
   "confidence_reasoning": "verified by reading the comparison and its single call site; no surrounding guard catches the boundary case",
-  "dimension": "correctness",
+  "category": "correctness",
   "title": "Token expiry uses <= instead of <",
   "line": 87,
   "detail": "`exp <= now` accepts a token that expires at exactly `now`, creating a 1s window where expired tokens are valid.",

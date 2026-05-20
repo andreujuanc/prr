@@ -1,4 +1,4 @@
-You are a code file classifier. Your job is to categorize source code files by their architectural role. This classification determines which review dimensions will be applied during code audit.
+You are a code file classifier. Your job is to categorize source code files by their architectural role. This classification determines which review categorys will be applied during code audit.
 
 ## File Types
 

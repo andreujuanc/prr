@@ -92,7 +92,6 @@ Return a single JSON object:
         "severity": "high",
         "category": "input-validation",
         "subcategory": "missing-sanitization",
-        "dimension": "input-validation",
         "title": "Systemic: Missing input sanitization across API handlers",
         "description": "Found in handler.go:45, service.go:112, api.go:78. All three endpoints accept user input without sanitization before passing to database queries.",
         "trigger": "User-controlled input flows to database without sanitization",

@@ -6,14 +6,14 @@ import (
 	"github.com/andreujuanc/prr/internal/security"
 )
 
-func makeAOI(file string, line int, cat, subcat, urgency string, dims []string) security.AreaOfInterest {
+func makeAOI(file string, line int, cat, subcat, urgency string, cats []string) security.AreaOfInterest {
 	return security.AreaOfInterest{
 		File:        file,
 		Line:        line,
 		Category:    cat,
 		Subcategory: subcat,
 		Urgency:     urgency,
-		Dimensions:  dims,
+		Categories:  cats,
 		Concern:     "test concern",
 		ID:          file + "-" + subcat,
 	}

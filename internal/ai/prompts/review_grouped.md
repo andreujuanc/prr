@@ -63,7 +63,7 @@ After reviewing all AOIs:
 - Look for patterns — are these following a shared anti-pattern?
 - Note cross-cutting observations about the codebase.
 
-For each dimension, decide whether the prompt context already answers
+For each category, decide whether the prompt context already answers
 the question. If it does, conclude. If it does not, reach for tools
 to fetch what's missing.
 
@@ -166,7 +166,6 @@ Return ONLY a JSON object — no prose before or after:
       "severity": "critical | high | medium | low | nit",
       "category": "category-slug",
       "subcategory": "subcategory-slug",
-      "dimension": "the primary dimension",
       "title": "short descriptive title",
       "description": "what's wrong and why it matters",
       "evidence": "what you verified and what you found — summarize key tool results",

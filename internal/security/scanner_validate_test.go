@@ -99,7 +99,7 @@ func TestValidateAOIs_LogsUnknownDimension(t *testing.T) {
 					ID:         "y-1",
 					Line:       2,
 					Category:   "correctness", // valid
-					Dimensions: []string{"correctness", "made-up-dim"},
+					Categories: []string{"correctness", "made-up-dim"},
 				},
 			},
 		},

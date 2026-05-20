@@ -45,7 +45,7 @@ type SiblingClusterResult struct {
 }
 
 // clusterCandidate is the per-AOI projection sent to the LLM. It
-// strips out file content and dimensions to keep the prompt compact
+// strips out file content and categories to keep the prompt compact
 // — the LLM only needs the AOI's category, concern, and context to
 // judge similarity.
 type clusterCandidate struct {
@@ -342,7 +342,7 @@ func synthesizeOutlierAOIs(clusters []clusterLLMResult, aoiByID map[string]secur
 				Urgency:     "individual",
 				Concern:     c.DeviationConcern,
 				Context:     fmt.Sprintf("Sibling pattern: %s", strings.TrimSpace(c.Pattern)),
-				Dimensions:  []string{c.Category},
+				Categories:  []string{c.Category},
 				SiblingDeviation: &state.SiblingDeviation{
 					Pattern:    c.Pattern,
 					SiblingIDs: c.SiblingIDs,

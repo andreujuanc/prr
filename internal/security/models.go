@@ -4,14 +4,14 @@ import "github.com/andreujuanc/prr/internal/state"
 
 // AreaOfInterest represents a code location identified by the AOI scanner
 // that warrants deeper review. Each AOI is tagged with a category/subcategory
-// from the review dimension taxonomy and an urgency level that controls
+// from the review category taxonomy and an urgency level that controls
 // how it is reviewed in Phase 3.
 type AreaOfInterest struct {
 	File    string `json:"file"`
 	Line    int    `json:"line"`
 	EndLine int    `json:"end_line,omitempty"` // optional: range end
 
-	// Category + Subcategory from the dimension taxonomy (e.g. "error-handling" / "swallowed-errors").
+	// Category + Subcategory from the category taxonomy (e.g. "error-handling" / "swallowed-errors").
 	Category    string `json:"category"`
 	Subcategory string `json:"subcategory,omitempty"`
 
@@ -21,9 +21,10 @@ type AreaOfInterest struct {
 	// Empty string treated as "grouped" for backward compatibility.
 	Urgency string `json:"urgency,omitempty"`
 
-	// Dimensions lists which review dimensions are relevant (e.g. ["correctness", "error-handling"]).
+	// Categories lists every category this AOI touches beyond the
+	// primary Category above (e.g. ["correctness", "error-handling"]).
 	// Used for --focus filtering at Phase 3.
-	Dimensions []string `json:"dimensions,omitempty"`
+	Categories []string `json:"categories,omitempty"`
 
 	// ID is a stable identifier for this AOI (e.g. "charge-go-float-currency").
 	// Used for caching and cross-referencing between phases.

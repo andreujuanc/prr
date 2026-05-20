@@ -63,7 +63,7 @@ func TestIndividualCacheKey_FocusChangeInvalidates(t *testing.T) {
 	keyB := IndividualCacheKey("body", aoi, []string{"security"}, "")
 
 	if keyA == keyB {
-		t.Fatalf("expected different cache keys when focus dimensions change")
+		t.Fatalf("expected different cache keys when focus categories change")
 	}
 }
 

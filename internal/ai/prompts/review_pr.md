@@ -18,12 +18,12 @@ Process:
 3. For non-trivial changes, read surrounding code: callers (search for the changed symbol), related tests, adjacent functions. Do not review in a vacuum.
 4. Check tests: are new behaviors covered? Are deleted or weakened tests suspicious?
 5. Consult the PR Brief in the PR Context section for prior comments and prior AI reviews — do not re-raise resolved points.
-6. Evaluate against ALL dimensions below.
+6. Evaluate against ALL categories below.
 7. Produce the structured JSON report. No prose outside the JSON.
 
 {{TOOLS}}
 
-## Evaluation Dimensions
+## Evaluation Categories
 
 ### 1. Design & Architecture
 - Abstraction: over-engineered (premature interfaces) or under-abstracted (copy-paste)?

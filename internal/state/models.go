@@ -461,8 +461,8 @@ type State struct {
 	SiblingClusterHash     string          `json:"sibling_cluster_hash,omitempty"`
 
 	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
-	// review inputs (file content + AOI content + focus dimensions for individual;
-	// all AOI content + focus dimensions for grouped).
+	// review inputs (file content + AOI content + focus categories for individual;
+	// all AOI content + focus categories for grouped).
 	DeepReviews map[string]*DeepReviewResult `json:"deep_reviews,omitempty"`
 
 	// RecheckCache caches Phase 3b recheck output by hash of the input
@@ -658,7 +658,6 @@ type DeepFinding struct {
 	Severity    string `json:"severity"` // "critical", "high", "medium", "low", "nit"
 	Category    string `json:"category"`
 	Subcategory string `json:"subcategory,omitempty"`
-	Dimension   string `json:"dimension"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Evidence    string `json:"evidence,omitempty"` // what was verified and found (tool-backed)

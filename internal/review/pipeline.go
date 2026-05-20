@@ -752,7 +752,7 @@ func RunReviewCore(
 	// Cache invalidation: RunPRReview already calls ClearAllCaches
 	// when --no-cache is set, so the FileType lookups below find no
 	// entries on a forced re-run. No need to thread the flag through.
-	fileDimensions := classifyChangedFiles(ctx, aoiClient, reviewState, opts.RepoRoot, opts.RawDiffs, rr.ClassifyProgress)
+	fileCategories := classifyChangedFiles(ctx, aoiClient, reviewState, opts.RepoRoot, opts.RawDiffs, rr.ClassifyProgress)
 
 	// AOI pre-scan
 	aoiContextLines := opts.AOIContextLines
@@ -805,7 +805,7 @@ func RunReviewCore(
 				dbgw.Separator()
 			}
 		}
-		aoiReport, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, aoiDiffs, aoiCache, fileDimensions, func(status string) {
+		aoiReport, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, aoiDiffs, aoiCache, fileCategories, func(status string) {
 			rr.AOIPrescanProgress(status, false, 0)
 		}, aoiDebugHook, false)
 		if err != nil {
@@ -1230,14 +1230,14 @@ func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed in
 // classifyChangedFiles classifies each diffed file by architectural
 // role (handler / test / repository / …) so the AOI pre-scan can be
 // narrowed to relevant dimensions per file. Returns a map of
-// filepath → dimension slugs suitable for
+// filepath → category slugs suitable for
 // security.ScanAreasOfInterestClassified.
 //
 // File contents are read from the working tree relative to repoRoot.
 // This matches what `prr audit` does via CollectFiles — by the time
 // prr is invoked the user has already checked out the head ref we
 // want to review. Files that can't be read (deleted, outside repo,
-// perm error) are skipped — they get all dimensions (unknown
+// perm error) are skipped — they get all categories (unknown
 // classification) when the AOI scan runs.
 //
 // Classifications are cached in state.FileType. Diff-driven
@@ -1249,7 +1249,7 @@ func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed in
 // thread the flag through here.
 //
 // Failures are non-fatal: a classifier error means we fall back to
-// nil (all dimensions for all files), which is the same as the
+// nil (all categorys for all files), which is the same as the
 // pre-classification behavior.
 func classifyChangedFiles(
 	ctx context.Context,
@@ -1291,7 +1291,7 @@ func classifyChangedFiles(
 
 	classifications, err := classify.Classify(ctx, aoiClient, files, cached, onProgress)
 	if err != nil {
-		log.Printf("Classification partial/failed (non-fatal): %v — affected files fall back to all dimensions", err)
+		log.Printf("Classification partial/failed (non-fatal): %v — affected files fall back to all categorys", err)
 	}
 
 	if reviewState != nil {
@@ -1300,9 +1300,9 @@ func classifyChangedFiles(
 		}
 	}
 
-	dims := make(map[string][]string, len(classifications))
+	cats := make(map[string][]string, len(classifications))
 	for path, ft := range classifications {
-		dims[path] = classify.DimensionsForType(ft)
+		cats[path] = classify.DimensionsForType(ft)
 	}
-	return dims
+	return cats
 }

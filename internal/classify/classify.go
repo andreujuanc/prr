@@ -53,8 +53,8 @@ var AllFileTypes = []FileType{
 	FileTypeUnknown,
 }
 
-// DimensionsForType returns the dimension slugs to include in the AOI
-// prompt for the given file type. Unknown types get all dimensions.
+// DimensionsForType returns the category slugs to include in the AOI
+// prompt for the given file type. Unknown types get all categories.
 func DimensionsForType(ft FileType) []string {
 	switch ft {
 	case FileTypeTest:
@@ -83,7 +83,7 @@ func DimensionsForType(ft FileType) []string {
 	case FileTypeInfrastructure:
 		return []string{"configuration", "error-handling", "resource-management", "web-security", "observability", "test-coverage"}
 	default:
-		return ai.AllDimensionSlugs()
+		return ai.AllCategorySlugs()
 	}
 }
 

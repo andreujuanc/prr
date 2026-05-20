@@ -5,7 +5,7 @@ import (
 )
 
 func TestDimensionsLoaded(t *testing.T) {
-	slugs := AllDimensionSlugs()
+	slugs := AllCategorySlugs()
 	const expected = 21
 	if len(slugs) != expected {
 		t.Errorf("expected %d dimensions, got %d: %v", expected, len(slugs), slugs)
@@ -13,18 +13,18 @@ func TestDimensionsLoaded(t *testing.T) {
 
 	// Spot-check a few — including the newer observability and web-security dimensions
 	for _, slug := range []string{"authentication", "correctness", "design", "performance", "testing", "cross-cutting", "observability", "web-security"} {
-		if !DimensionExists(slug) {
+		if !CategoryExists(slug) {
 			t.Errorf("dimension %q not found", slug)
 		}
-		content := GetDimension(slug)
+		content := GetCategory(slug)
 		if len(content) < 100 {
 			t.Errorf("dimension %q too short (%d bytes)", slug, len(content))
 		}
 	}
 }
 
-func TestGetDimensions(t *testing.T) {
-	result := GetDimensions([]string{"authentication", "correctness"})
+func TestGetCategories(t *testing.T) {
+	result := GetCategories([]string{"authentication", "correctness"})
 	if len(result) < 200 {
 		t.Errorf("combined dimensions too short: %d bytes", len(result))
 	}
@@ -37,8 +37,8 @@ func TestGetDimensions(t *testing.T) {
 	}
 }
 
-func TestGetDimensionsSkipsUnknown(t *testing.T) {
-	result := GetDimensions([]string{"authentication", "nonexistent", "correctness"})
+func TestGetCategoriesSkipsUnknown(t *testing.T) {
+	result := GetCategories([]string{"authentication", "nonexistent", "correctness"})
 	if containsStr(result, "nonexistent") {
 		t.Error("should skip unknown slugs")
 	}
@@ -47,10 +47,10 @@ func TestGetDimensionsSkipsUnknown(t *testing.T) {
 	}
 }
 
-func TestAllDimensions(t *testing.T) {
-	all := AllDimensions()
+func TestAllCategories(t *testing.T) {
+	all := AllCategories()
 	if len(all) < 1000 {
-		t.Errorf("all dimensions too short: %d bytes", len(all))
+		t.Errorf("all categorys too short: %d bytes", len(all))
 	}
 }
 

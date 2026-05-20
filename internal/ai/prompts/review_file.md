@@ -19,9 +19,9 @@ Before writing your review:
 - Find callers of modified functions to verify they still work.
 - Consult the PR Brief in the PR Context section above for prior comments, prior AI reviews, and CI status — do not duplicate or contradict points already discussed there.
 
-## Evaluation Dimensions
+## Evaluation Categories
 
-Evaluate the changes against ALL of these dimensions. Only report findings where you see actual issues — skip dimensions that have nothing to say.
+Evaluate the changes against ALL of these categories. Only report findings where you see actual issues — skip categories that have nothing to say.
 
 1. **Design & Architecture**
    - Abstraction level: over-engineered or under-abstracted?
@@ -117,7 +117,7 @@ Evaluate the changes against ALL of these dimensions. Only report findings where
 ## Output Format
 
 For each finding:
-- [severity: critical|high|medium|low|nit] [dimension] Description (line N)
+- [severity: critical|high|medium|low|nit] [category] Description (line N)
 
 For security findings, use extended format:
 - [severity: critical] [Security] SQL injection via string concat (line 42) [CWE-89] [exploitability: trivial] [impact: critical]

@@ -33,7 +33,7 @@ import (
 //	PRR_AOI_MODELS   comma-separated list; overrides PRR_AOI_MODEL and runs each
 //	PRR_AOI_EXPECT   line spec the scanner should land on, e.g. "98,308-322"
 //
-// The scanner is invoked with auditMode=true and fileDimensions=nil (= all
+// The scanner is invoked with auditMode=true and fileCategories=nil (= all
 // dimensions). That gives the model the broadest possible surface — a miss
 // here is strong evidence the scanner can't see the issue regardless of
 // dimension routing.
@@ -208,7 +208,7 @@ func runAOIOnFile(t *testing.T, spec aoiModelSpec, target, body string, expect [
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	// auditMode=true matches `prr audit`'s call site; fileDimensions=nil
+	// auditMode=true matches `prr audit`'s call site; fileCategories=nil
 	// means "look for everything" (no per-file dimension narrowing).
 	inputs := map[string]string{target: body}
 	start := time.Now()

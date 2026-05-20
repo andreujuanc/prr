@@ -112,12 +112,12 @@ func serializeAOI(aoi security.AreaOfInterest) string {
 		aoi.Concern, aoi.Context)
 }
 
-func serializeFocus(dims []string) string {
-	if len(dims) == 0 {
+func serializeFocus(cats []string) string {
+	if len(cats) == 0 {
 		return ""
 	}
-	sorted := make([]string, len(dims))
-	copy(sorted, dims)
+	sorted := make([]string, len(cats))
+	copy(sorted, cats)
 	sort.Strings(sorted)
 	return strings.Join(sorted, ",")
 }

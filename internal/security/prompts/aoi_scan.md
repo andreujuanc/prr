@@ -17,7 +17,7 @@ code context, data flow, and domain semantics.
 Scan for ALL of these categories in the code.
 Each AOI must be tagged with exactly one category and one subcategory from this list:
 
-{DIMENSIONS}
+{CATEGORIES}
 
 ## Urgency
 
@@ -143,15 +143,15 @@ re-prefixed; the audit-mode rule above does not apply. Rely on the
 standard `@@ -X,Y +A,B @@` hunk headers as usual to compute new-side
 line numbers.
 
-## Valid dimension names
+## Valid category names
 
-The `dimensions` array on every AOI must contain ONLY names from this list:
+The `categories` array on every AOI must contain ONLY names from this list:
 
 {DIMENSION_SLUGS}
 
-Do not invent new dimension names. Do not rename, abbreviate, or
+Do not invent new category names. Do not rename, abbreviate, or
 compress them. Use the names above exactly as written. If none of
-the names fit, leave the `dimensions` array empty rather than coining
+the names fit, leave the `categories` array empty rather than coining
 a new tag — an empty array is fine; a made-up name is not.
 
 ## Output Format
@@ -173,7 +173,7 @@ with no AOIs (empty areas array).
         "urgency": "individual | grouped",
         "concern": "brief description of the potential issue",
         "context": "why this location matters, what data flows through it",
-        "dimensions": ["dimension-slug-1", "dimension-slug-2"]
+        "categories": ["category-slug-1", "category-slug-2"]
       }
     ]
   }

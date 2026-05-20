@@ -36,7 +36,7 @@ type BatchFinding struct {
 	ConfidenceScore     int    `json:"confidence_score,omitempty"`
 	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
 
-	Dimension      string `json:"dimension,omitempty"`
+	Category       string `json:"category,omitempty"`
 	Title          string `json:"title,omitempty"`
 	Line           int    `json:"line,omitempty"`
 	Detail         string `json:"detail,omitempty"`
@@ -116,8 +116,8 @@ func (bf BatchFindings) Text() string {
 		} else if f.Confidence != "" {
 			b.WriteString("[confidence: " + f.Confidence + "] ")
 		}
-		if f.Dimension != "" {
-			b.WriteString("[" + f.Dimension + "] ")
+		if f.Category != "" {
+			b.WriteString("[" + f.Category + "] ")
 		}
 		if f.Title != "" {
 			b.WriteString(f.Title)
