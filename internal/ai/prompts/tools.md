@@ -1,6 +1,10 @@
 ## Tools available
 
-Use these proactively — verify findings against the actual code before reporting:
+These are at your discretion. Use them when the prompt context is
+insufficient to answer with confidence — for example, to check
+whether a mitigation exists elsewhere, trace a caller you cannot see,
+or confirm a type definition. When the surrounding source already
+shown in the prompt is enough, answer from it directly.
 
 - `read_file` / `read_base_file`: read a file at the PR head / base.
 - `grep`: regex search across the codebase. Find callers, usages, type definitions.

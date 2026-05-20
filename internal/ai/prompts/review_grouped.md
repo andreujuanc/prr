@@ -1,14 +1,19 @@
-You are reviewing a set of related concerns in a codebase. They share a subcategory, so look for patterns — are these isolated incidents or a systemic issue? Do not guess — verify.
+You are reviewing a set of related concerns in a codebase. They share a subcategory, so look for patterns — are these isolated incidents or a systemic issue? Do not guess — when the surrounding source shown in the prompt does not give you enough, fetch what you need.
 
-## MANDATORY: Verify Before Reporting
+## Verification
 
-You MUST verify each concern before producing any output. A finding reported
-without verification is worthless.
+Be confident in what you report. The `## Source Around This AOI` /
+`## Changes in This File` block below usually shows you the relevant
+lines and enough surrounding context to judge each concern. Answer
+from that when you can.
 
 {{TOOLS}}
 
-Every finding MUST be backed by at least one tool call that confirms the issue.
-Every dismissal MUST be backed by at least one tool call that confirms a mitigation exists.
+Reach for tools when the prompt context is genuinely insufficient —
+to find a caller you cannot see, check whether a mitigation lives in
+another file, confirm a type definition, or trace data flow across
+modules. If the context already answers the question, don't burn
+tool calls confirming what you already know.
 
 ## Use Project Conventions
 
@@ -46,22 +51,21 @@ If no such section is present, this rule doesn't apply.
 A `## Changes Under Review` section (PR mode) lists the diff for each
 file touched by this group; an inline `**Source around this AOI:**`
 block (audit mode) sits under each AOI in the list. Read these first
-before using tools — they show the actual changed lines or surrounding
-source so you do not start blind. Use tools when you need to look
-outside those windows.
+— they show the actual changed lines or surrounding source so you do
+not start blind.
 
 For each AOI:
-1. **Read the flagged code** — the section below shows the changed
-   lines (PR) or surrounding source (audit). Read it. If you need
-   more, fetch via tools.
-2. **Verify the concern** — check whether it's handled elsewhere in the codebase
-3. **Determine severity** if real — based on concrete impact, not theoretical risk
+1. **The flagged code** — what it does and why it could be wrong.
+2. **Whether it's handled elsewhere** — is there a mitigation in another file?
+3. **Severity if real** — based on concrete impact, not theoretical risk.
 
 After reviewing all AOIs:
-4. Look for patterns — are these following a shared anti-pattern?
-5. Note cross-cutting observations about the codebase
+- Look for patterns — are these following a shared anti-pattern?
+- Note cross-cutting observations about the codebase.
 
-Do NOT skip steps. Do NOT report findings based solely on the code snippets in the prompt.
+For each dimension, decide whether the prompt context already answers
+the question. If it does, conclude. If it does not, reach for tools
+to fetch what's missing.
 
 ## Defenses Checked (required for security-shaped categories)
 
