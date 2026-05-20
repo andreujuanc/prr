@@ -141,7 +141,8 @@ type BatchPanelOptions struct {
 	MaxActiveRows int
 
 	// RecentTail caps the number of recently-finished rows rendered
-	// below the active ones. Defaults to 3 when <= 0.
+	// below the active ones. Defaults to 10 when <= 0 — same cap as
+	// MaxActiveRows so the panel feels symmetric.
 	RecentTail int
 
 	// Animation is a monotonic tick counter used to cycle the
@@ -191,7 +192,7 @@ func RenderBatchesPanel(s *State, opts BatchPanelOptions) string {
 		opts.MaxActiveRows = 10
 	}
 	if opts.RecentTail <= 0 {
-		opts.RecentTail = 3
+		opts.RecentTail = 10
 	}
 	now := opts.Now
 	if now.IsZero() {
@@ -225,10 +226,14 @@ func RenderBatchesPanel(s *State, opts BatchPanelOptions) string {
 		return active[i].StartedAt.Before(active[j].StartedAt)
 	})
 	// Recent completions: most-recent first, capped at RecentTail.
+	// finishedOverflow mirrors the +N more active line below so the
+	// reader knows the tail is bounded.
 	sort.SliceStable(doneTail, func(i, j int) bool {
 		return doneTail[i].EndedAt.After(doneTail[j].EndedAt)
 	})
+	finishedOverflow := 0
 	if len(doneTail) > opts.RecentTail {
+		finishedOverflow = len(doneTail) - opts.RecentTail
 		doneTail = doneTail[:opts.RecentTail]
 	}
 
@@ -273,6 +278,11 @@ func RenderBatchesPanel(s *State, opts BatchPanelOptions) string {
 	for _, dt := range doneTail {
 		b.WriteString("    ")
 		b.WriteString(renderFinishedRow(dt))
+		b.WriteString("\n")
+	}
+	if finishedOverflow > 0 {
+		b.WriteString("    ")
+		b.WriteString(bpSubtle.Render(fmt.Sprintf("+%d more finished", finishedOverflow)))
 		b.WriteString("\n")
 	}
 

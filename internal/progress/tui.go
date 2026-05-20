@@ -445,7 +445,7 @@ func (m *model) View() string {
 	if !m.done && m.cfg.BatchPanelActive(m.phases) {
 		panel := RenderBatchesPanel(m.state, BatchPanelOptions{
 			MaxActiveRows: 10,
-			RecentTail:    3,
+			RecentTail:    10,
 			Animation:     int(m.state.Elapsed / (100 * time.Millisecond)),
 		})
 		if panel != "" {

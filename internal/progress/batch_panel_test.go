@@ -196,6 +196,34 @@ func TestRenderBatchesPanel_RecentTailCap(t *testing.T) {
 	}
 }
 
+// TestRenderBatchesPanel_FinishedOverflow pins the symmetric overflow
+// line on the finished tail: when more batches finish than RecentTail
+// allows, a "+N more finished" indicator surfaces so the count
+// reconciles with the header line. Before this, the header could say
+// "done 12" while the tail showed only 3 rows with no hint that more
+// existed.
+func TestRenderBatchesPanel_FinishedOverflow(t *testing.T) {
+	batches := make(map[int]*BatchState, 12)
+	for i := 0; i < 12; i++ {
+		batches[i] = &BatchState{
+			Index: i, Label: "done-" + string(rune('a'+i)), Files: 1, Kind: "general",
+			Status:    BatchDone,
+			StartedAt: fixedNow.Add(-time.Duration(20-i) * time.Second),
+			EndedAt:   fixedNow.Add(-time.Duration(12-i) * time.Second),
+		}
+	}
+	out := stripANSI(RenderBatchesPanel(&State{Batches: batches}, BatchPanelOptions{
+		RecentTail: 10, Now: fixedNow,
+	}))
+
+	if !strings.Contains(out, "done 12") {
+		t.Errorf("header missing 'done 12'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "+2 more finished") {
+		t.Errorf("missing finished overflow line; got:\n%s", out)
+	}
+}
+
 // TestBatchPanelActive_Gating pins the BatchPhases allowlist: panel
 // only renders when one of the listed phases is active.
 func TestBatchPanelActive_Gating(t *testing.T) {
