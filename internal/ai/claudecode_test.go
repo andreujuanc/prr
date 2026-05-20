@@ -569,3 +569,43 @@ func TestClaudeCodeProvider_Capabilities(t *testing.T) {
 		t.Error("ParallelToolCalls should be false (claude-code drives its own loop)")
 	}
 }
+
+func TestClaudeCodeProvider_EffortDefaults(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		envEffort string
+		wantArg   string // "" = --effort should be absent
+	}{
+		{"sonnet default → low", "claude-sonnet-4-6", "", "low"},
+		{"sonnet alias → low", "sonnet", "", "low"},
+		{"sonnet uppercase still triggers default", "Claude-Sonnet-4-6", "", "low"},
+		{"opus → no default effort", "claude-opus-4-7", "", ""},
+		{"haiku → no default effort", "claude-haiku-4-5", "", ""},
+		{"env override beats sonnet default", "claude-sonnet-4-6", "high", "high"},
+		{"env override sets opus", "claude-opus-4-7", "max", "max"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PRR_CLAUDE_EFFORT", tc.envEffort)
+			c := &ClaudeCodeProvider{Model: tc.model}
+			args := c.buildArgs()
+			gotEffort := extractFlagValue(args, "--effort")
+			if gotEffort != tc.wantArg {
+				t.Errorf("for model=%q env=%q: got --effort %q, want %q",
+					tc.model, tc.envEffort, gotEffort, tc.wantArg)
+			}
+		})
+	}
+}
+
+// extractFlagValue returns the argument that follows the named flag, or ""
+// if the flag is absent.
+func extractFlagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
