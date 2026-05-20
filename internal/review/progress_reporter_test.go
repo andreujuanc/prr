@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/andreujuanc/prr/internal/security"
@@ -89,6 +90,53 @@ func TestProgressReporter_EmitsAllBatchStatuses(t *testing.T) {
 		if !found {
 			t.Errorf("expected event containing %q, got %v", want, events)
 		}
+	}
+}
+
+// TestRunReviewCalls_FiresBatchStreamForNonCachedCall pins that the
+// per-batch token streaming path actually fires OnCallStream when a
+// fresh (non-cached) review call produces a response. Without this
+// wiring, the Batches panel's per-row bar would never update for
+// real runs, only for cached ones (which is exactly backwards).
+func TestRunReviewCalls_FiresBatchStreamForNonCachedCall(t *testing.T) {
+	calls := []ReviewCall{
+		{Type: "individual", AOIs: []security.AreaOfInterest{{ID: "aoi-1", File: "x.go", Line: 1}}},
+	}
+
+	// Response must be >=256 chars of content so the producer-side
+	// throttle fires at least once.
+	bigResponse := pinDeepFindingsResponse("aoi-1", "x.go", "42") +
+		strings.Repeat(" ", 512) // padding pushes content over 256-byte threshold
+	client := &fakeAIClient{
+		Responder: func(_, _ string) string { return bigResponse },
+	}
+
+	var mu sync.Mutex
+	var streamCalls []struct{ idx, bytes int }
+	opts := ExecuteOptions{
+		Mode: ModePR,
+		OnCallStream: func(idx, bytes int) {
+			mu.Lock()
+			defer mu.Unlock()
+			streamCalls = append(streamCalls, struct{ idx, bytes int }{idx, bytes})
+		},
+	}
+
+	if _, err := RunReviewCalls(context.Background(), client, calls, opts); err != nil {
+		t.Fatalf("RunReviewCalls: %v", err)
+	}
+
+	mu.Lock()
+	got := streamCalls
+	mu.Unlock()
+	if len(got) == 0 {
+		t.Fatal("expected at least one OnCallStream emit; got none")
+	}
+	if got[0].idx != 0 {
+		t.Errorf("OnCallStream idx = %d, want 0", got[0].idx)
+	}
+	if got[0].bytes < 256 {
+		t.Errorf("OnCallStream bytes = %d, want >=256 (first throttle threshold)", got[0].bytes)
 	}
 }
 
