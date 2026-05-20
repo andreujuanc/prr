@@ -779,16 +779,16 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 	t.Log(report.SecurityDigest)
 }
 
-// contextLineDiffs returns two versions of the same diffs: one with 3 lines
-// of context (simulating git diff -U3) and one with 10 lines (git diff -U10).
-// The vulnerabilities are the same, but with U3 the user-input source is often
-// invisible — the model only sees the sink. With U10, the source is visible in
-// context lines, enabling data-flow analysis.
+// contextLineDiffs returns three versions of the same diffs at -U3, -U5, and
+// -U10. The vulnerabilities are the same, but with U3 the user-input source
+// is often invisible — the model only sees the sink. U5 partially reveals
+// sources that sit just outside the U3 window. U10 covers all sources used
+// by the ground-truth fixtures, enabling full data-flow analysis.
 //
 // Scenario: existing Go API server. The PR modifies handler functions,
 // adding vulnerable code. The source (r.URL.Query, r.FormValue, etc.) was
 // written in an earlier commit and only appears as context.
-func contextLineDiffs() (u3 map[string]string, u10 map[string]string, gt []groundTruthAOI) {
+func contextLineDiffs() (u3 map[string]string, u5 map[string]string, u10 map[string]string, gt []groundTruthAOI) {
 	// ── internal/api/handler.go ─────────────────────────────────────
 	// The file has ~50 lines. The PR changes lines 18-19 (the SQL query)
 	// and lines 27-28 (the response write). The user input source is at
@@ -845,7 +845,7 @@ func contextLineDiffs() (u3 map[string]string, u10 map[string]string, gt []groun
 
 		"internal/config/settings.go": `@@ -7,7 +7,7 @@ import (
  )
- 
+
  // FetchConfig fetches configuration from the config server
 -func FetchConfig() (map[string]interface{}, error) {
 -	resp, err := http.Get("https://config.internal.example.com/api/v1/config")
@@ -854,6 +854,83 @@ func contextLineDiffs() (u3 map[string]string, u10 map[string]string, gt []groun
  	if err != nil {
  		return nil, err
  	}`,
+	}
+
+	// U5: 5 lines of context. For handler.go this is enough to reveal the
+	// SQL/XSS source (`query := r.URL.Query()`) because both sinks sit
+	// within 5 lines of that assignment, so the U3 hunks merge into one.
+	// The exec sink still misses its source — `cmd := r.FormValue("cmd")`
+	// is >5 lines away — so we expect U5 to partially close the gap.
+	u5 = map[string]string{
+		"internal/api/handler.go": `@@ -13,21 +13,21 @@ var db *sql.DB
+ // SearchHandler handles user search requests
+ func SearchHandler(w http.ResponseWriter, r *http.Request) {
+ 	query := r.URL.Query().Get("q")
+
+ 	// Execute the search
+ 	sqlStr := "SELECT * FROM users WHERE name = ?"
+-	rows, err := db.Query(sqlStr, query)
++	rows, err := db.Query("SELECT * FROM users WHERE name = '" + query + "'")
+ 	if err != nil {
+ 		http.Error(w, err.Error(), 500)
+ 		return
+ 	}
+ 	defer rows.Close()
+
+ 	// Render results
+ 	for rows.Next() {
+-		renderUserRow(w, rows)
++		fmt.Fprintf(w, "<h1>Results for: %s</h1>", query)
+ 	}
+ }
+
+@@ -38,11 +38,12 @@ func ExecHandler(w http.ResponseWriter, r *http.Request) {
+
+ 	// Validate against allowlist
+ 	allowed := map[string]string{
+ 		"status": "/usr/bin/status",
+ 		"health": "/usr/bin/health",
+ 	}
+
+ 	// Run the validated command
+-	out, err := exec.Command(allowed[cmd]).Output()
++	// TODO: switch back to allowlist after testing
++	out, err := exec.Command("sh", "-c", cmd).Output()
+ 	if err != nil {
+ 		http.Error(w, "command failed", 500)
+ 		return`,
+
+		"internal/auth/token.go": `@@ -10,11 +10,11 @@ import (
+ 	"log"
+ 	"os"
+ 	"time"
+ )
+
+-const secretKey = os.Getenv("AUTH_SECRET")
++const secretKey = "super-secret-key-12345"
+
+-// HashPassword hashes a password using bcrypt
++// HashPassword hashes a password
+ func HashPassword(password string) string {
+-	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+-	return string(hash)
++	h := md5.Sum([]byte(password))
++	return hex.EncodeToString(h[:])
+ }`,
+
+		"internal/config/settings.go": `@@ -5,9 +5,9 @@ import (
+ 	"net/http"
+ )
+
+ // FetchConfig fetches configuration from the config server
+-func FetchConfig() (map[string]interface{}, error) {
+-	resp, err := http.Get("https://config.internal.example.com/api/v1/config")
++func FetchConfig(configURL string) (map[string]interface{}, error) {
++	resp, err := http.Get(configURL)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 	defer resp.Body.Close()`,
 	}
 
 	u10 = map[string]string{
@@ -965,7 +1042,7 @@ func contextLineDiffs() (u3 map[string]string, u10 map[string]string, gt []groun
 		{file: "internal/config/settings.go", lineRange: [2]int{5, 12}, category: "network", importance: "must-find", desc: "SSRF via http.Get with user-controlled URL"},
 	}
 
-	return u3, u10, gt
+	return u3, u5, u10, gt
 }
 
 // TestAOIContextLineComparison tests whether having more context lines (U10
@@ -977,7 +1054,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 		t.Skip("PRR_LIVE_TESTS=1 not set or no valid config — skipping context line comparison test")
 	}
 
-	u3Diffs, u10Diffs, groundTruth := contextLineDiffs()
+	u3Diffs, u5Diffs, u10Diffs, groundTruth := contextLineDiffs()
 
 	mustFindCount := 0
 	niceFindCount := 0
@@ -1011,7 +1088,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 
 	type contextResult struct {
 		modelName string
-		context   string // "U3" or "U10"
+		context   string // "U3", "U5", or "U10"
 		result    modelResult
 	}
 	var allResults []contextResult
@@ -1022,6 +1099,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 			diffs map[string]string
 		}{
 			{"U3", u3Diffs},
+			{"U5", u5Diffs},
 			{"U10", u10Diffs},
 		} {
 			testName := fmt.Sprintf("%s/%s", spec.name, tc.label)
@@ -1117,7 +1195,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 	// ── Comparison table ─────────────────────────────────────────────
 	t.Log("")
 	t.Log("══════════════════════════════════════════════════════════════════════════════════════════════")
-	t.Log("  CONTEXT LINE COMPARISON: U3 (default git) vs U10 (extra context)")
+	t.Log("  CONTEXT LINE COMPARISON: U3 (default git) vs U5 vs U10 (extra context)")
 	t.Log("══════════════════════════════════════════════════════════════════════════════════════════════")
 	t.Log("")
 	t.Logf("  %-30s %4s %7s %7s %5s %5s %9s %7s",
