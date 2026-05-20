@@ -331,13 +331,14 @@ func (m *model) runTask() tea.Cmd {
 // applyEvent records a (phase, message) into the model on the main
 // goroutine. Sequencing: first non-waiting transition activates the
 // phase and marks earlier active phases done; the message becomes the
-// phase detail.
+// phase detail unless it's a silent parser-only ping.
 func (m *model) applyEvent(phase, message string) {
 	if phase == "warning" {
 		m.warning = message
 		return
 	}
 
+	silent := isSilentMessage(message)
 	for i := range m.phases {
 		if m.phases[i].Def.Name != phase {
 			continue
@@ -350,7 +351,9 @@ func (m *model) applyEvent(phase, message string) {
 				}
 			}
 		}
-		m.phases[i].Detail = message
+		if !silent {
+			m.phases[i].Detail = message
+		}
 		break
 	}
 
@@ -543,6 +546,32 @@ func phaseLabel(p PhaseInfo) string {
 	default:
 		return sPhaseWait.Render(p.Def.Label)
 	}
+}
+
+// isSilentMessage reports whether a (phase, message) emit is a
+// parser-only counter ping that should NOT appear on the phase's
+// detail line. These messages exist purely to feed ParseEvent
+// counters; rendering them as detail produces noise like
+// "synthesis estimate 6000" and a churning byte counter the user
+// didn't ask to see.
+//
+// Per-batch lifecycle events that the Batches panel already
+// renders (init / active / stream) are also silenced here so the
+// Deep Review row doesn't flicker between "Batch 5: active" and
+// "Batch 12: stream bytes=1024" while the panel below shows the
+// real state. Terminal events (done / cached / failed) stay
+// visible — they're useful as transient detail.
+func isSilentMessage(message string) bool {
+	if strings.HasPrefix(message, "synthesis estimate ") ||
+		strings.HasPrefix(message, "synthesis received ") {
+		return true
+	}
+	if !strings.HasPrefix(message, "Batch ") {
+		return false
+	}
+	return strings.Contains(message, ": init ") ||
+		strings.HasSuffix(message, ": active") ||
+		strings.Contains(message, ": stream bytes=")
 }
 
 // truncate trims s to at most n runes, appending ellipsis when cut.

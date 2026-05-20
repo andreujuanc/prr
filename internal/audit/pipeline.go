@@ -668,6 +668,12 @@ func Run(
 
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbgw.Phase("PHASE 3b: Recheck")
+	if len(findings) == 0 {
+		// Ping the progress channel so the Recheck phase row activates
+		// even when there's nothing to do — otherwise it stays gray
+		// (PhaseWaiting) and looks skipped.
+		onProgress("recheck", "no findings to recheck")
+	}
 	if len(findings) > 0 {
 		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit", bugpriors.Hash(bugPriorsContent))
 		if !opts.NoCache {

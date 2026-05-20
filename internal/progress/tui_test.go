@@ -99,6 +99,74 @@ func TestApplyEvent_WarningSetsBanner(t *testing.T) {
 	}
 }
 
+// TestApplyEvent_SilentMessagesStillParseButHideFromDetail pins the
+// rule that parser-only counter pings ("synthesis estimate 6000",
+// "synthesis received N", "Batch K: stream bytes=N", and similar)
+// must reach ParseEvent for counter updates but must NOT become the
+// phase row's visible detail line. Without this, the detail churns
+// with internal protocol strings the user shouldn't see.
+func TestApplyEvent_SilentMessagesStillParseButHideFromDetail(t *testing.T) {
+	cases := []struct {
+		name    string
+		message string
+	}{
+		{"synthesis estimate", "synthesis estimate 6000"},
+		{"synthesis received", "synthesis received 1234"},
+		{"batch stream", "Batch 5: stream bytes=2048"},
+		{"batch init", `Batch 1: init label="x" files=2 kind=general`},
+		{"batch active", "Batch 3: active"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed := false
+			cfg := Config{
+				Phases: []PhaseDef{{Name: "p1", Label: "p1"}},
+				ParseEvent: func(s *State, phase, message string) {
+					parsed = true
+				},
+			}
+			m := newUI(cfg)
+			m.applyEvent("p1", tc.message)
+
+			if !parsed {
+				t.Error("ParseEvent should still fire for silent messages")
+			}
+			if m.phases[0].Detail != "" {
+				t.Errorf("silent message leaked into Detail: %q", m.phases[0].Detail)
+			}
+			// Activation still happens — the row should move out of
+			// PhaseWaiting so the phase doesn't read as skipped.
+			if m.phases[0].Status != PhaseActive {
+				t.Errorf("silent message should still activate the row; status = %q", m.phases[0].Status)
+			}
+		})
+	}
+}
+
+// TestApplyEvent_VisibleMessagesStillSetDetail confirms the inverse —
+// terminal batch events and normal status strings still flow to the
+// detail line. Without this the silent filter could over-match.
+func TestApplyEvent_VisibleMessagesStillSetDetail(t *testing.T) {
+	cases := []string{
+		"Batch 5: done",
+		"Batch 7: cached",
+		"Batch 9: failed",
+		"Initialized 5 batches (2 AOI-driven, 3 general)",
+		"rechecked 3/5",
+		"No areas of interest found — audit complete.",
+	}
+	for _, msg := range cases {
+		t.Run(msg, func(t *testing.T) {
+			cfg := Config{Phases: []PhaseDef{{Name: "p1", Label: "p1"}}}
+			m := newUI(cfg)
+			m.applyEvent("p1", msg)
+			if m.phases[0].Detail != msg {
+				t.Errorf("expected Detail = %q, got %q", msg, m.phases[0].Detail)
+			}
+		})
+	}
+}
+
 func TestApplyEvent_DispatchesToParseEvent(t *testing.T) {
 	called := false
 	cfg := Config{

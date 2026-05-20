@@ -534,12 +534,17 @@ func RunRecheck(
 	debugHook func(systemPrompt, userMsg, response string),
 	settings ...RecheckSettings,
 ) (kept []state.DeepFinding, dismissals []state.DismissedRecord, changed bool) {
-	if len(findings) == 0 {
-		return findings, nil, false
-	}
-
 	if onProgress == nil {
 		onProgress = func(string) {}
+	}
+
+	if len(findings) == 0 {
+		// Still ping the progress channel so the Recheck phase row
+		// activates and gets promoted to done — without this, a clean
+		// PR with no deep findings leaves the row in gray
+		// (PhaseWaiting), which the user reads as "skipped".
+		onProgress("no findings to recheck")
+		return findings, nil, false
 	}
 
 	var s RecheckSettings
