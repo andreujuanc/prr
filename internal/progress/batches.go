@@ -288,7 +288,7 @@ func renderActiveRow(b *BatchState, opts BatchPanelOptions, now time.Time) strin
 	bar, status := batchBar(b.Bytes, BatchByteEstimate, opts.Animation)
 	return fmt.Sprintf("%s  %s  %s  %s  %s  %s",
 		bpActive.Render("▶"),
-		truncateLabel(b.Label, 28),
+		truncateLabel(b.Label, 38),
 		bpSubtle.Render(fmt.Sprintf("%df", b.Files)),
 		bpSubtle.Render(fmtElapsed(elapsed)),
 		bar,
@@ -313,7 +313,7 @@ func renderFinishedRow(b *BatchState) string {
 	}
 	row := fmt.Sprintf("%s  %s  %s  %s",
 		icon,
-		bpSubtle.Render(truncateLabel(b.Label, 28)),
+		bpSubtle.Render(truncateLabel(b.Label, 38)),
 		bpSubtle.Render(fmt.Sprintf("%df", b.Files)),
 		bpSubtle.Render(fmtElapsed(dur)),
 	)
