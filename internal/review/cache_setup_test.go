@@ -17,9 +17,11 @@ type fakeCacheProvider struct {
 	lastHandle  string
 }
 
-func (p *fakeCacheProvider) Name() string                       { return "fake" }
-func (p *fakeCacheProvider) ModelID() string                    { return "fake-model" }
-func (p *fakeCacheProvider) Capabilities() ai.Capabilities      { return ai.Capabilities{PromptCaching: true} }
+func (p *fakeCacheProvider) Name() string    { return "fake" }
+func (p *fakeCacheProvider) ModelID() string { return "fake-model" }
+func (p *fakeCacheProvider) Capabilities() ai.Capabilities {
+	return ai.Capabilities{PromptCaching: true}
+}
 func (p *fakeCacheProvider) Chat(context.Context, ai.ChatRequest) (*ai.ChatResponse, error) {
 	return nil, nil
 }
@@ -52,9 +54,9 @@ func (e *fakeErr) Error() string { return e.msg }
 // to verify the helper takes the no-op path when the provider opts out.
 type noCacheProvider struct{}
 
-func (p *noCacheProvider) Name() string                   { return "no-cache" }
-func (p *noCacheProvider) ModelID() string                { return "no-cache-model" }
-func (p *noCacheProvider) Capabilities() ai.Capabilities  { return ai.Capabilities{} }
+func (p *noCacheProvider) Name() string                  { return "no-cache" }
+func (p *noCacheProvider) ModelID() string               { return "no-cache-model" }
+func (p *noCacheProvider) Capabilities() ai.Capabilities { return ai.Capabilities{} }
 func (p *noCacheProvider) Chat(context.Context, ai.ChatRequest) (*ai.ChatResponse, error) {
 	return nil, nil
 }
@@ -130,4 +132,3 @@ func TestSetupContextCache_NonAgentClient(t *testing.T) {
 	cleanup := setupContextCache(context.Background(), nil)
 	cleanup() // must not panic
 }
-

@@ -13,7 +13,7 @@
     "max_output_tokens": 65536,
     "temperature": 0.1,
     "thinking_budget": {
-      "review": 24576,
+      "review": 8192,
       "chat": 2048,
       "fast": 2048
     },
