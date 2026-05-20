@@ -312,8 +312,8 @@ func TestParseRecheckResult_Consolidate(t *testing.T) {
 	if len(result.Findings) != 2 {
 		t.Fatalf("expected 2 findings (1 kept + 1 consolidated), got %d", len(result.Findings))
 	}
-	if result.ConsolidatedCount != 1 {
-		t.Errorf("expected 1 consolidated (net reduction), got %d", result.ConsolidatedCount)
+	if result.ConsolidatedCount != 2 {
+		t.Errorf("expected 2 (sum of absorbed constituents), got %d", result.ConsolidatedCount)
 	}
 }
 
