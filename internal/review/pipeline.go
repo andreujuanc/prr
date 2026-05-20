@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -918,30 +917,47 @@ func RunReviewCore(
 		log.Printf("review-mode=aoi-only: %d file(s) skipped (no AOIs)", len(skippedNonAOI))
 	}
 
+	// Wrap fallback directory batches as ReviewCall entries with
+	// Type="fallback-batch". After this point every item in
+	// reviewCalls flows through the same executor (RunReviewCalls)
+	// and produces DeepFinding-shape output — one queue, one
+	// semaphore, one recheck pass over the union.
+	for _, b := range fallbackBatches {
+		fileDiffs := make(map[string]string, len(b.Files))
+		for _, f := range b.Files {
+			if d, ok := opts.RawDiffs[f]; ok {
+				fileDiffs[f] = d
+			}
+		}
+		reviewCalls = append(reviewCalls, ReviewCall{
+			Type:      "fallback-batch",
+			Category:  b.Label,
+			Files:     b.Files,
+			FileDiffs: fileDiffs,
+		})
+	}
+
 	// Initialize batch list in reporter. Kind lets the progress UI
 	// render the AOI-driven / general breakdown — without it the
 	// "Initialized N batches" row gives no hint that some calls are
 	// targeted on AOI findings while others are blanket diff reviews.
-	batchInfos := make([]BatchInfo, 0, totalCalls)
+	batchInfos := make([]BatchInfo, 0, len(reviewCalls))
 	for _, call := range reviewCalls {
+		kind := BatchAOIDriven
 		label := call.Category
 		if call.Subcategory != "" {
 			label += "/" + call.Subcategory
 		}
-		if call.Type == "individual" {
+		switch call.Type {
+		case "individual":
 			label += " [critical]"
+		case "fallback-batch":
+			kind = BatchGeneral
 		}
 		batchInfos = append(batchInfos, BatchInfo{
 			Label:    label,
 			NumFiles: len(call.Files),
-			Kind:     BatchAOIDriven,
-		})
-	}
-	for _, b := range fallbackBatches {
-		batchInfos = append(batchInfos, BatchInfo{
-			Label:    b.Label,
-			NumFiles: len(b.Files),
-			Kind:     BatchGeneral,
+			Kind:     kind,
 		})
 	}
 	rr.InitBatches(batchInfos)
@@ -977,6 +993,7 @@ func RunReviewCore(
 		execOpts := ExecuteOptions{
 			Mode:               ModePR,
 			ProjectContext:     projectContext,
+			PRMeta:             opts.PRMeta,
 			RuntimeModel:       runtimeModel,
 			CustomInstructions: enhancedInstructions,
 			MaxConcurrency:     maxConc,
@@ -1054,22 +1071,6 @@ func RunReviewCore(
 		// status (done / cached / failed). A second pass would
 		// double-count completions and overwrite cached/failed with
 		// done — both wrong.
-	}
-
-	aoiCallOffset := len(reviewCalls)
-
-	// ── Phase 1b: Fallback directory batches ─────────────────────
-	if len(fallbackBatches) > 0 {
-		fbReporter := &OffsetReporter{RR: rr, Offset: aoiCallOffset}
-
-		fbFindings, fbFF, fbErr := RunBatchesOnly(ctx, reviewClient, opts.PRMeta, opts.RawDiffs,
-			enhancedInstructions, reviewState, fallbackBatches, opts.ParallelReviews, fbReporter)
-		if fbErr != nil {
-			return nil, fmt.Errorf("fallback batches: %w", fbErr)
-		}
-
-		allFindings.WriteString(fbFindings)
-		maps.Copy(allFileFindings, fbFF)
 	}
 
 	// ── Phase 1c: Recheck ────────────────────────────────────────

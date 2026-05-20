@@ -694,29 +694,34 @@ func runReview(debug bool, args []string) {
 			fmt.Fprintf(os.Stderr, "  %s\n\n", cliInfo.Render(result.Review.Summary))
 		}
 
-		// Deep findings (from AOI)
-		if len(result.DeepFindings) > 0 {
-			fmt.Fprintf(os.Stderr, "  %s (%d)\n\n", cliHeader.Render("Security Findings"), len(result.DeepFindings))
-			renderDeepFindings(result.DeepFindings)
-		}
+		// Debug-only stats. The default output stays focused on the
+		// synthesis verdict + findings + questions + missing tests.
+		// AOI/coverage internals are useful for prr development and bug
+		// reporting; behind --debug so normal users don't see them.
+		if reviewDebug {
+			fmt.Fprintf(os.Stderr, "  %s\n", cliHeader.Render("Debug"))
+			fmt.Fprintf(os.Stderr, "    files reviewed: %s\n",
+				cliInfo.Render(fmt.Sprintf("%d", result.FilesReviewed)))
 
-		fmt.Fprintf(os.Stderr, "  %s %s files reviewed\n\n",
-			cliDim.Render("[stats]"),
-			cliInfo.Render(fmt.Sprintf("%d", result.FilesReviewed)))
-
-		// Coverage hint — one line summary of what got reviewed vs
-		// skipped, when available. Full per-file breakdown lives in
-		// the JSON export.
-		if result.StructuredReview != nil && result.StructuredReview.Coverage != nil {
-			cov := result.StructuredReview.Coverage
-			hint := fmt.Sprintf("Coverage: %d/%d files reviewed",
-				cov.FilesReviewed, cov.FilesInScope)
-			if n := len(cov.OrphanFiles); n > 0 {
-				hint += fmt.Sprintf(", %d orphans (see --output for detail)", n)
+			if result.StructuredReview != nil && result.StructuredReview.Coverage != nil {
+				cov := result.StructuredReview.Coverage
+				fmt.Fprintf(os.Stderr, "    coverage: %s\n",
+					cliInfo.Render(fmt.Sprintf("%d/%d files reviewed", cov.FilesReviewed, cov.FilesInScope)))
+				if n := len(cov.OrphanFiles); n > 0 {
+					fmt.Fprintf(os.Stderr, "    orphan files (no AOI generated): %s\n",
+						cliInfo.Render(fmt.Sprintf("%d", n)))
+					for _, p := range cov.OrphanFiles {
+						fmt.Fprintf(os.Stderr, "      %s\n", cliDim.Render(p))
+					}
+				}
 			}
-			fmt.Fprintf(os.Stderr, "  %s %s\n\n",
-				cliDim.Render("[coverage]"),
-				cliInfo.Render(hint))
+
+			if len(result.DeepFindings) > 0 {
+				fmt.Fprintf(os.Stderr, "    deep findings (pre-synthesis): %s\n",
+					cliInfo.Render(fmt.Sprintf("%d", len(result.DeepFindings))))
+				renderDeepFindings(result.DeepFindings)
+			}
+			fmt.Fprintln(os.Stderr)
 		}
 	}
 

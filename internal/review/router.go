@@ -11,10 +11,17 @@ import (
 	"github.com/andreujuanc/prr/internal/security"
 )
 
-// ReviewCall represents a single LLM call to be made during Phase 3.
-// Either an individual deep review or a grouped subcategory review.
+// ReviewCall represents a single LLM call made during the deep-review
+// phase. Three flavors:
+//
+//   - "individual": one AOI per call, AOI-targeted prompt.
+//   - "grouped":    multiple AOIs sharing a subcategory, AOI-targeted prompt.
+//   - "fallback-batch": directory-level review of files the AOI scan
+//     didn't flag. Uses the general directory-batch prompt, parses
+//     into DeepFinding shape so the rest of the pipeline (recheck,
+//     synthesis) handles it the same way as AOI-driven findings.
 type ReviewCall struct {
-	// Type is "individual" or "grouped".
+	// Type is "individual", "grouped", or "fallback-batch".
 	Type string
 
 	// Category and Subcategory identify the concern area.

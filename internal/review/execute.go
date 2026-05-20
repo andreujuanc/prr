@@ -25,6 +25,13 @@ type ExecuteOptions struct {
 	// ProjectContext is the discovered project summary.
 	ProjectContext string
 
+	// PRMeta is the PR-level metadata string (title, body, files list,
+	// CI status etc.) built by BuildPRMeta. Only the fallback-batch
+	// review path reads it — AOI-driven prompts get their PR context
+	// via different sections of the AOI prompt builder. Empty in audit
+	// mode (no PR).
+	PRMeta string
+
 	// RuntimeModel is the discovered structured codebase shape from
 	// Phase 0.5. When non-nil, the runtime model is rendered into a
 	// `## Runtime Model` section of every Phase 3 prompt so the
@@ -403,6 +410,17 @@ func doReviewCall(
 	opts ExecuteOptions,
 	callIndex int,
 ) (*state.DeepReviewResult, error) {
+	// Build the onToken callback up front so fallback-batch calls can
+	// also feed the Batches panel's per-row byte counter.
+	onToken := buildCallOnToken(opts, callIndex)
+
+	// Fallback-batch calls use the directory-batch prompt; result is
+	// adapted to DeepFinding shape so the rest of the pipeline doesn't
+	// branch on origin. See internal/review/fallback.go.
+	if call.Type == "fallback-batch" {
+		return doFallbackBatchCall(ctx, client, call, opts, callIndex, onToken)
+	}
+
 	// Build prompt
 	var systemPrompt string
 	if call.Type == "individual" {
@@ -417,55 +435,6 @@ func doReviewCall(
 
 	messages := []ai.Message{
 		{Role: "user", Content: userMessage(opts.Mode)},
-	}
-
-	// Build onToken callback. ChatStream gets one slot, so this
-	// multiplexes two concerns: tool-event debug logging (via
-	// OnToolCall) and per-batch byte counting for the Batches panel's
-	// progress bar (via OnCallStream). Content bytes — anything not
-	// prefixed with the \x00 control byte (tool / thought markers) —
-	// count against the panel's per-batch progress.
-	var onToken func(string)
-	if opts.OnToolCall != nil || opts.OnCallStream != nil {
-		var streamBytes int
-		var lastEmit int
-		onToken = func(tok string) {
-			if len(tok) == 0 {
-				return
-			}
-			if tok[0] == 0x00 {
-				if opts.OnToolCall == nil {
-					return
-				}
-				if after, ok := strings.CutPrefix(tok, "\x00TOOL_START:"); ok {
-					// Format: \x00TOOL_START:name(args)
-					payload := after
-					if before, after, ok := strings.Cut(payload, "("); ok {
-						name := before
-						args := strings.TrimSuffix(after, ")")
-						opts.OnToolCall(callIndex, name, args, "start", "")
-					}
-				} else if after, ok := strings.CutPrefix(tok, "\x00TOOL_DONE:"); ok {
-					// Format: \x00TOOL_DONE:name|status|duration
-					payload := after
-					parts := strings.SplitN(payload, "|", 3)
-					if len(parts) == 3 {
-						opts.OnToolCall(callIndex, parts[0], "", parts[1], parts[2])
-					}
-				}
-				return
-			}
-			if opts.OnCallStream != nil {
-				streamBytes += len(tok)
-				// Throttle: one emit per >=256 bytes received. Same
-				// pattern as synthesis streaming — keeps the TUI from
-				// re-rendering on every token while still feeling live.
-				if streamBytes-lastEmit >= 256 {
-					opts.OnCallStream(callIndex, streamBytes)
-					lastEmit = streamBytes
-				}
-			}
-		}
 	}
 
 	// Resolve {{TOOLS}} before ChatStream so the debug hook sees the
@@ -508,6 +477,59 @@ func doReviewCall(
 	}
 
 	return result, nil
+}
+
+// buildCallOnToken constructs the ChatStream onToken callback for one
+// call. ChatStream offers one slot, so this multiplexes two concerns:
+// tool-event debug logging (OnToolCall) and per-batch byte counting
+// for the Batches panel's progress bar (OnCallStream). Content bytes
+// — anything not prefixed with the \x00 control byte (tool / thought
+// markers) — feed the per-batch counter; control tokens feed the
+// tool-call hook. Returns nil when neither hook is configured.
+//
+// Extracted out so both the AOI-driven path and the fallback-batch
+// path build the same callback shape with no copy/paste drift.
+func buildCallOnToken(opts ExecuteOptions, callIndex int) func(string) {
+	if opts.OnToolCall == nil && opts.OnCallStream == nil {
+		return nil
+	}
+	var streamBytes int
+	var lastEmit int
+	return func(tok string) {
+		if len(tok) == 0 {
+			return
+		}
+		if tok[0] == 0x00 {
+			if opts.OnToolCall == nil {
+				return
+			}
+			if after, ok := strings.CutPrefix(tok, "\x00TOOL_START:"); ok {
+				payload := after
+				if before, after, ok := strings.Cut(payload, "("); ok {
+					name := before
+					args := strings.TrimSuffix(after, ")")
+					opts.OnToolCall(callIndex, name, args, "start", "")
+				}
+			} else if after, ok := strings.CutPrefix(tok, "\x00TOOL_DONE:"); ok {
+				payload := after
+				parts := strings.SplitN(payload, "|", 3)
+				if len(parts) == 3 {
+					opts.OnToolCall(callIndex, parts[0], "", parts[1], parts[2])
+				}
+			}
+			return
+		}
+		if opts.OnCallStream != nil {
+			streamBytes += len(tok)
+			// Throttle: one emit per >=256 bytes received. Same
+			// pattern as synthesis streaming — keeps the TUI from
+			// re-rendering on every token while still feeling live.
+			if streamBytes-lastEmit >= 256 {
+				opts.OnCallStream(callIndex, streamBytes)
+				lastEmit = streamBytes
+			}
+		}
+	}
 }
 
 // verifyAndCorrectEvidence runs the per-finding snippet check, asks
