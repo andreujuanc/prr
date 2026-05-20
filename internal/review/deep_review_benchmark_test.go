@@ -325,6 +325,7 @@ type deepModelResult struct {
 	// Token usage
 	inputTokens  int
 	outputTokens int
+	cachedTokens int // input tokens served from provider-side cache (Gemini cachedContentTokenCount)
 
 	// Tool usage
 	toolCalls int
@@ -645,6 +646,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 					usage := ai.SnapshotUsage(agent)
 					r.inputTokens = usage.InputTokens
 					r.outputTokens = usage.OutputTokens
+					r.cachedTokens = usage.CacheHits
 
 					recall := float64(0)
 					totalGT := r.mustFindTotal + r.niceFindTotal
@@ -656,7 +658,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 						sevAcc = float64(r.severityCorrect) / float64(r.severityTotal) * 100
 					}
 
-					cost := config.EstimateCost(specCopy.model, r.inputTokens, r.outputTokens)
+					cost := config.EstimateCost(specCopy.model, r.inputTokens, r.outputTokens, r.cachedTokens)
 					t.Logf("  Must: %d/%d | Nice: %d/%d | FP: %d | Findings: %d | Recall: %.1f%% | SevAcc: %.0f%% | Tools: %d | InTok: %d | OutTok: %d | Cost: $%.4f | Time: %.1fs",
 						r.mustFindHits, r.mustFindTotal,
 						r.niceFindHits, r.niceFindTotal,
@@ -718,7 +720,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 			sevAcc = float64(r.severityCorrect) / float64(r.severityTotal) * 100
 		}
 
-		cost := config.EstimateCost(r.spec.model, r.inputTokens, r.outputTokens)
+		cost := config.EstimateCost(r.spec.model, r.inputTokens, r.outputTokens, r.cachedTokens)
 		t.Logf("  %-45s %3d/%-3d %3d/%-3d %5d %5d  %5.1f%% %5.0f%% %6d %8d %8d  $%6.4f %6.1fs",
 			r.spec.name,
 			r.mustFindHits, r.mustFindTotal,

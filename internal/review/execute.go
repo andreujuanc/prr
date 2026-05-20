@@ -130,6 +130,17 @@ func RunReviewCalls(
 		maxConc = 10
 	}
 
+	// Set up provider-side context cache once for the whole pipeline.
+	// On success this installs a cache handle on the agent and returns a
+	// cleanup func that deletes the cache. On any failure (provider
+	// doesn't support it, payload too small, network error,
+	// PRR_DISABLE_CACHE=1) the pipeline runs uncached — that's the
+	// graceful-degradation property: caching is always an optimization
+	// and never a precondition. The cleanup func is non-nil even on
+	// failure so callers can defer unconditionally.
+	cacheCleanup := setupContextCache(ctx, client)
+	defer cacheCleanup()
+
 	type callResult struct {
 		index     int
 		result    *state.DeepReviewResult

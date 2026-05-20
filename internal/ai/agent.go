@@ -48,6 +48,34 @@ func WithUsageTracker(tracker *UsageTracker) AgentOption {
 	}
 }
 
+// WithCachedContent sets a provider-side cache handle that the agent
+// will reference on every request. Use this when a caller (typically
+// the deep-review pipeline) has uploaded a static prefix via the
+// provider's CacheSupport interface and wants every ChatStream call
+// to consume it.
+//
+// The handle is read-only after Agent construction — do not mutate it
+// while goroutines are calling ChatStream concurrently.
+func WithCachedContent(handle string) AgentOption {
+	return func(a *Agent) {
+		a.cachedContent = handle
+	}
+}
+
+// SetCachedContent sets the cache handle after the Agent is built.
+// Callers must call this BEFORE fanning out concurrent ChatStream
+// calls — the field is not synchronised.
+func (a *Agent) SetCachedContent(handle string) {
+	a.cachedContent = handle
+}
+
+// Provider returns the underlying Provider. Useful when a caller needs
+// to invoke provider-specific operations (e.g. CacheSupport.CreateContextCache)
+// from above the Client abstraction.
+func (a *Agent) Provider() Provider {
+	return a.provider
+}
+
 // WithToolFilter restricts the agent to only the named tools.
 // Tools not in the list are omitted from the API request and cannot be called.
 func WithToolFilter(names []string) AgentOption {
@@ -105,12 +133,13 @@ func (t *UsageTracker) Reset() {
 // It implements Client and ToolConfigurer for backward compatibility
 // with the existing UI and review code.
 type Agent struct {
-	provider     Provider
-	toolExecutor *ToolExecutor
-	maxRounds    int
-	debugLog     *log.Logger     // nil = no debug logging
-	usageTracker *UsageTracker   // nil = don't track usage
-	toolFilter   map[string]bool // nil = all tools; non-nil = only named tools
+	provider      Provider
+	toolExecutor  *ToolExecutor
+	maxRounds     int
+	debugLog      *log.Logger     // nil = no debug logging
+	usageTracker  *UsageTracker   // nil = don't track usage
+	toolFilter    map[string]bool // nil = all tools; non-nil = only named tools
+	cachedContent string          // opaque cache handle; set once before parallel use, read-only thereafter
 }
 
 // NewAgent creates an Agent that uses the given Provider for API calls
@@ -207,10 +236,11 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 		}
 
 		req := ChatRequest{
-			System:      systemPrompt,
-			Messages:    provMsgs,
-			Tools:       tools,
-			CachePrefix: cachePrefix,
+			System:        systemPrompt,
+			Messages:      provMsgs,
+			Tools:         tools,
+			CachePrefix:   cachePrefix,
+			CachedContent: a.cachedContent,
 		}
 
 		a.debugf("round %d: sending request (messages=%d, tools=%d)", round+1, len(provMsgs), len(tools))
