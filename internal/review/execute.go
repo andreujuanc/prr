@@ -130,16 +130,28 @@ func RunReviewCalls(
 		maxConc = 10
 	}
 
-	// Set up provider-side context cache once for the whole pipeline.
-	// On success this installs a cache handle on the agent and returns a
-	// cleanup func that deletes the cache. On any failure (provider
-	// doesn't support it, payload too small, network error,
-	// PRR_DISABLE_CACHE=1) the pipeline runs uncached — that's the
-	// graceful-degradation property: caching is always an optimization
-	// and never a precondition. The cleanup func is non-nil even on
-	// failure so callers can defer unconditionally.
-	cacheCleanup := setupContextCache(ctx, client)
-	defer cacheCleanup()
+	// Context caching is currently disabled at the call site.
+	//
+	// The provider plumbing (CreateContextCache / DeleteContextCache on
+	// GeminiProvider, ChatRequest.CachedContent, the CacheSupport
+	// interface) and the setupContextCache helper are all kept — they
+	// pass their unit tests and the live verification test in
+	// internal/ai/gemini_cache_test.go. The reason for keeping the call
+	// turned off is that Gemini rejects requests that combine
+	// cachedContent with system_instruction in the same generateContent
+	// body ("CachedContent can not be used with GenerateContent request
+	// setting system_instruction, tools or tool_config"). The MVP path
+	// that cached only tools therefore stripped the review system prompt
+	// from each call, which made the model produce prose instead of JSON
+	// and crashed every parser (see plans/benchmark-results-2026-05-20.md
+	// §3f for the failing run).
+	//
+	// To re-enable, the review prompt builders need to split into
+	// (cacheable static prefix, per-AOI variable suffix) so the prefix
+	// can live inside the cache as the systemInstruction and the suffix
+	// can go in the user message. Tracked in
+	// plans/review-cost-and-routing-tuning.md.
+	_ = setupContextCache
 
 	type callResult struct {
 		index     int
