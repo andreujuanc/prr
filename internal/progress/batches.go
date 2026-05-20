@@ -375,14 +375,19 @@ func truncateLabel(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// fmtFiles renders the file count for a batch row. "1 file" / "5 files"
-// reads cleanly; earlier "1f / 5f" was terse enough that users asked
-// what it meant.
+// fmtFiles renders the file count for a batch row, right-padded to a
+// fixed width so subsequent columns line up regardless of singular vs
+// plural. "1 file" is 6 chars, "5 files" is 7 — without padding the
+// downstream timer/bar drift by a column.
 func fmtFiles(n int) string {
+	unit := "files"
 	if n == 1 {
-		return "1 file"
+		unit = "file "
 	}
-	return fmt.Sprintf("%d files", n)
+	// %2d gives "1" / "12" both right-aligned to 2 chars. Plus space
+	// plus 5-char unit = 8 total. Handles up to 99 files cleanly; 3+
+	// digits widen by one but only a rare run hits that.
+	return fmt.Sprintf("%2d %s", n, unit)
 }
 
 func fmtElapsed(d time.Duration) string {
