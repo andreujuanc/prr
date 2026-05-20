@@ -249,6 +249,12 @@ func newSynthesisStreamCounter(received, lastEmitAt *int, emitEveryChars int, em
 // If audit pipeline message formats change, update the format strings
 // here. Tests in this package pin the contracts.
 func parseAuditEvent(s *progress.State, phase, message string) {
+	// Per-batch lifecycle for the Batches panel. phase3 (Deep Review)
+	// is the only phase that emits these; aggregate counters fall
+	// through to the existing switch below.
+	if phase == "phase3" && strings.HasPrefix(message, "Batch ") {
+		progress.ParseBatchEvent(s, message)
+	}
 	switch {
 	case phase == "phase1" && strings.Contains(message, "files to audit"):
 		var n int

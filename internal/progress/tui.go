@@ -82,6 +82,52 @@ type PhaseDef struct {
 type State struct {
 	Counters map[string]int
 	Elapsed  time.Duration
+
+	// Batches is populated by ParseEvent for modes whose pipelines
+	// emit per-batch lifecycle events (Batch K: init/active/stream/
+	// done/cached/failed). The Batches panel renders these as one
+	// row per active batch plus a recent-completions tail. Nil for
+	// modes that don't emit those events.
+	Batches map[int]*BatchState
+}
+
+// BatchStatus lifecycle for one batch row in the Batches panel.
+type BatchStatus string
+
+const (
+	BatchQueued BatchStatus = "queued"
+	BatchActive BatchStatus = "active"
+	BatchDone   BatchStatus = "done"
+	BatchCached BatchStatus = "cached"
+	BatchFailed BatchStatus = "failed"
+)
+
+// BatchState is one row in the Batches panel.
+type BatchState struct {
+	// Index is the call's original 0-based index (1-based on the
+	// wire as "Batch K"). Stable across the run.
+	Index int
+	// Label is the human-readable description: directory ("internal/ui")
+	// for general batches, "category/subcategory" (with " [critical]"
+	// suffix for individual calls) for AOI-driven ones.
+	Label string
+	// Files is the number of files this batch covers.
+	Files int
+	// Kind is "aoi-driven" or "general". Drives the row's accent color.
+	Kind string
+	// Status is the lifecycle stage.
+	Status BatchStatus
+	// StartedAt is set when the batch transitions to active. Zero
+	// while queued. Used to compute the elapsed timer on the row.
+	StartedAt time.Time
+	// EndedAt is set when the batch transitions to done/cached/failed.
+	// Zero while queued or active.
+	EndedAt time.Time
+	// Bytes is the cumulative content-byte count received from the
+	// LLM stream for this batch. Drives the per-row progress bar
+	// when non-zero; the row falls back to an indeterminate spinner
+	// when zero.
+	Bytes int
 }
 
 // Header is the title block shown at the top of the TUI.
@@ -229,7 +275,10 @@ func newUI(cfg Config) *model {
 	return &model{
 		cfg:      cfg,
 		phases:   phases,
-		state:    &State{Counters: make(map[string]int)},
+		state: &State{
+			Counters: make(map[string]int),
+			Batches:  make(map[int]*BatchState),
+		},
 		spinner:  sp,
 		progress: pb,
 	}

@@ -94,6 +94,52 @@ func TestParseReviewEvent_BatchActiveDoesNotIncrement(t *testing.T) {
 	}
 }
 
+// TestParseReviewEvent_BatchesPanelStateRouting pins that batch
+// lifecycle events under phase1 populate the State.Batches map (read
+// by the Batches panel) in addition to the aggregate counters above.
+// Without this, the panel would render empty rows even though the
+// aggregate counters tick correctly.
+func TestParseReviewEvent_BatchesPanelStateRouting(t *testing.T) {
+	s := newState()
+	parseReviewEvent(s, "phase1", "Initialized 2 batches (1 AOI-driven, 1 general)")
+	parseReviewEvent(s, "phase1", `Batch 1: init label="auth/injection [critical]" files=2 kind=aoi-driven`)
+	parseReviewEvent(s, "phase1", `Batch 2: init label="internal/ui" files=3 kind=general`)
+	parseReviewEvent(s, "phase1", "Batch 1: active")
+	parseReviewEvent(s, "phase1", "Batch 1: stream bytes=800")
+	parseReviewEvent(s, "phase1", "Batch 1: done")
+	parseReviewEvent(s, "phase1", "Batch 2: cached")
+
+	b1 := s.Batches[0]
+	if b1 == nil {
+		t.Fatal("batch 0 not populated")
+	}
+	if b1.Label != "auth/injection [critical]" || b1.Files != 2 || b1.Kind != "aoi-driven" {
+		t.Errorf("batch 0: got %+v", b1)
+	}
+	if b1.Status != progress.BatchDone {
+		t.Errorf("batch 0 status = %q, want done", b1.Status)
+	}
+	if b1.Bytes != 800 {
+		t.Errorf("batch 0 bytes = %d, want 800", b1.Bytes)
+	}
+
+	b2 := s.Batches[1]
+	if b2 == nil {
+		t.Fatal("batch 1 not populated")
+	}
+	if b2.Kind != "general" || b2.Status != progress.BatchCached {
+		t.Errorf("batch 1: got status=%q kind=%q, want cached/general", b2.Status, b2.Kind)
+	}
+
+	// Aggregate counters still tick — Batches panel parser is additive.
+	if got := s.Counters["batches_done"]; got != 1 {
+		t.Errorf("batches_done = %d, want 1", got)
+	}
+	if got := s.Counters["batches_cached"]; got != 1 {
+		t.Errorf("batches_cached = %d, want 1", got)
+	}
+}
+
 // ── ProgressFn ─────────────────────────────────────────────────────────
 
 func TestAOIProgress_RatioOfCounters(t *testing.T) {

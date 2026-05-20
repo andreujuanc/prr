@@ -229,6 +229,13 @@ func synthesisProgress(s *progress.State) float64 {
 // If pipeline message strings change, update the format strings here
 // and add a test case.
 func parseReviewEvent(s *progress.State, phase, message string) {
+	// Per-batch lifecycle (init/active/stream/done/cached/failed)
+	// populates the Batches panel state. Both phase1 (Deep Review)
+	// and the existing aggregate counters below see the same event
+	// — this hook is additive.
+	if phase == "phase1" && strings.HasPrefix(message, "Batch ") {
+		progress.ParseBatchEvent(s, message)
+	}
 	switch {
 	// aoi: AOI pre-scan progress
 	case phase == "aoi" && strings.Contains(message, "scanning") && strings.Contains(message, "for areas of interest"):
