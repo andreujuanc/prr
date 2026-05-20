@@ -1063,7 +1063,7 @@ func RunReviewCore(
 		fbReporter := &OffsetReporter{RR: rr, Offset: aoiCallOffset}
 
 		fbFindings, fbFF, fbErr := RunBatchesOnly(ctx, reviewClient, opts.PRMeta, opts.RawDiffs,
-			enhancedInstructions, reviewState, fallbackBatches, fbReporter)
+			enhancedInstructions, reviewState, fallbackBatches, opts.ParallelReviews, fbReporter)
 		if fbErr != nil {
 			return nil, fmt.Errorf("fallback batches: %w", fbErr)
 		}

@@ -353,7 +353,7 @@ func runBatchesOnly(
 	adapter := &reviewReporterAdapter{rr: rr}
 
 	findings, fileFindings, err := review.RunBatchesOnly(ctx, client, prMeta, rawDiffs,
-		customInstructions, reviewState, batches, adapter)
+		customInstructions, reviewState, batches, 0, adapter)
 	if err != nil {
 		return AIChatDoneMsg{Err: err}
 	}

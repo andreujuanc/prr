@@ -741,6 +741,12 @@ func RunSynthesis(
 
 // RunBatchesOnly reviews batches sequentially or in parallel (no synthesis).
 // Returns findings text, per-file findings map, and any error.
+//
+// maxConcurrency caps how many fallback batches run at once. Pass the
+// pipeline's ParallelReviews so a single knob controls AOI-driven
+// review concurrency and fallback-batch concurrency together — they
+// used to drift (AOI followed config, fallback hard-coded 5). Values
+// <= 0 fall back to 5 to preserve the prior default for older callers.
 func RunBatchesOnly(
 	ctx context.Context,
 	client ai.Client,
@@ -749,12 +755,17 @@ func RunBatchesOnly(
 	customInstructions string,
 	reviewState *state.State,
 	batches []Batch,
+	maxConcurrency int,
 	rr Reporter,
 ) (string, map[string]string, error) {
 	var allFindings strings.Builder
 	allFileFindings := make(map[string]string)
 
 	systemPrompt := BuildBatchSystemPrompt(prMeta, customInstructions)
+
+	if maxConcurrency <= 0 {
+		maxConcurrency = 5
+	}
 
 	if len(batches) > 1 {
 		// Parallel
@@ -767,7 +778,7 @@ func RunBatchesOnly(
 		results := make([]result, len(batches))
 		var mu sync.Mutex
 		var wg sync.WaitGroup
-		sem := make(chan struct{}, 5)
+		sem := make(chan struct{}, maxConcurrency)
 
 		for i, batch := range batches {
 			wg.Add(1)
