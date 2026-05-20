@@ -457,9 +457,10 @@ func RunWithUI(
 	}
 
 	cfg := progress.Config{
-		Header:     header,
-		Phases:     auditPhases(),
-		ParseEvent: parseAuditEvent,
+		Header:      header,
+		Phases:      auditPhases(),
+		BatchPhases: []string{"phase3"},
+		ParseEvent:  parseAuditEvent,
 		Summary: func(_ error, elapsed time.Duration) string {
 			return renderAuditSummary(result, elapsed)
 		},

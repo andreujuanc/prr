@@ -162,6 +162,13 @@ type Config struct {
 	// caller to cancel the context it passed to RunTask so the
 	// in-flight LLM call returns quickly instead of orphaning. Optional.
 	OnCancel func()
+
+	// BatchPhases lists the phase Names whose active state should
+	// trigger the Batches panel. The panel renders below the phase
+	// list while one of these is the active phase. Empty disables
+	// the panel — modes whose pipelines don't emit per-batch
+	// lifecycle events leave this nil.
+	BatchPhases []string
 }
 
 // ErrCancelled is returned from Run when the user exits the TUI before
@@ -419,6 +426,22 @@ func (m *model) View() string {
 		if pct := m.activeProgress(); pct > 0 {
 			b.WriteString("\n")
 			b.WriteString("  " + m.progress.ViewAs(pct) + "\n")
+		}
+	}
+
+	// Batches panel — rendered while one of the configured
+	// BatchPhases is active. Animation tick comes from tickMsg so
+	// the spinner-fallback bar advances even when no stream events
+	// land between frames.
+	if !m.done && m.cfg.BatchPanelActive(m.phases) {
+		panel := RenderBatchesPanel(m.state, BatchPanelOptions{
+			MaxActiveRows: 10,
+			RecentTail:    3,
+			Animation:     int(m.state.Elapsed / (100 * time.Millisecond)),
+		})
+		if panel != "" {
+			b.WriteString("\n")
+			b.WriteString(panel)
 		}
 	}
 

@@ -422,9 +422,10 @@ func RunWithUI(
 	}
 
 	cfg := progress.Config{
-		Header:     header,
-		Phases:     PRReviewPhases(),
-		ParseEvent: parseReviewEvent,
+		Header:      header,
+		Phases:      PRReviewPhases(),
+		BatchPhases: []string{"phase1"},
+		ParseEvent:  parseReviewEvent,
 		Summary: func(_ error, elapsed time.Duration) string {
 			return renderReviewSummary(result, elapsed)
 		},
