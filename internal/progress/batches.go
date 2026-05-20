@@ -289,7 +289,7 @@ func renderActiveRow(b *BatchState, opts BatchPanelOptions, now time.Time) strin
 	return fmt.Sprintf("%s  %s  %s  %s  %s  %s",
 		bpActive.Render("▶"),
 		truncateLabel(b.Label, 38),
-		bpSubtle.Render(fmt.Sprintf("%df", b.Files)),
+		bpSubtle.Render(fmtFiles(b.Files)),
 		bpSubtle.Render(fmtElapsed(elapsed)),
 		bar,
 		bpSubtle.Render(status),
@@ -314,7 +314,7 @@ func renderFinishedRow(b *BatchState) string {
 	row := fmt.Sprintf("%s  %s  %s  %s",
 		icon,
 		bpSubtle.Render(truncateLabel(b.Label, 38)),
-		bpSubtle.Render(fmt.Sprintf("%df", b.Files)),
+		bpSubtle.Render(fmtFiles(b.Files)),
 		bpSubtle.Render(fmtElapsed(dur)),
 	)
 	if suffix != "" {
@@ -363,6 +363,16 @@ func truncateLabel(s string, n int) string {
 		return s + strings.Repeat(" ", n-len(r))
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// fmtFiles renders the file count for a batch row. "1 file" / "5 files"
+// reads cleanly; earlier "1f / 5f" was terse enough that users asked
+// what it meant.
+func fmtFiles(n int) string {
+	if n == 1 {
+		return "1 file"
+	}
+	return fmt.Sprintf("%d files", n)
 }
 
 func fmtElapsed(d time.Duration) string {

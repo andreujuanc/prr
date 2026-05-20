@@ -63,7 +63,7 @@ func TestRenderBatchesPanel_SmallShape(t *testing.T) {
 	for _, want := range []string{
 		"▶",
 		"auth/injection [critical]",
-		"2f",
+		"2 files",
 		"0:07",
 	} {
 		if !strings.Contains(out, want) {

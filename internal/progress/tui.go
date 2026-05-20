@@ -269,8 +269,14 @@ func newUI(cfg Config) *model {
 	// accent, same as the spinner) → green (done). Reads as
 	// "progressing toward complete" instead of the bubbles default
 	// magenta→purple which fights with everything else on screen.
+	//
+	// WithGradient (not WithScaledGradient) anchors the colors to the
+	// bar's full width so the transition is visible as the fill
+	// grows: at 25% you see blue, at 75% the fill has crossed into
+	// teal and green. The scaled variant squeezed the whole gradient
+	// into the filled portion, so 5% and 95% looked the same colorwise.
 	pb := progress.New(
-		progress.WithScaledGradient("#89B4FA", "#A6E3A1"),
+		progress.WithGradient("#89B4FA", "#A6E3A1"),
 		progress.WithWidth(40),
 	)
 
