@@ -394,28 +394,6 @@ func parseModelsFromEnv(cfg *config.Config, models map[string]config.ModelConfig
 	return specs
 }
 
-// ── Gemini pricing (Standard tier, per 1M tokens, text input) ─────────
-// Source: ai.google.dev/gemini-api/docs/pricing (2026-04-30)
-// Output prices include thinking tokens.
-type modelPricing struct {
-	inputPerMTok  float64 // USD per 1M input tokens
-	outputPerMTok float64 // USD per 1M output tokens
-}
-
-var geminiPricing = map[string]modelPricing{
-	"gemini-3.1-flash-lite":  {0.02, 0.10},
-	"gemini-3.1-pro-preview": {2.50, 15.00},
-}
-
-func estimateCost(model string, inputTokens, outputTokens int) float64 {
-	p, ok := geminiPricing[model]
-	if !ok {
-		return 0
-	}
-	return (float64(inputTokens)/1_000_000)*p.inputPerMTok +
-		(float64(outputTokens)/1_000_000)*p.outputPerMTok
-}
-
 // modelResult holds the result of testing one model.
 type modelResult struct {
 	spec     modelSpec
@@ -521,7 +499,7 @@ func TestAOIModelComparison(t *testing.T) {
 				niceFindTotal: niceFindCount,
 				inputTokens:   usage.InputTokens,
 				outputTokens:  usage.OutputTokens,
-				cost:          estimateCost(spec.model, usage.InputTokens, usage.OutputTokens),
+				cost:          config.EstimateCost(spec.model, usage.InputTokens, usage.OutputTokens),
 			}
 
 			if err != nil {
@@ -754,7 +732,7 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 	}
 
 	usage := tracker.Snapshot()
-	cost := estimateCost(model, usage.InputTokens, usage.OutputTokens)
+	cost := config.EstimateCost(model, usage.InputTokens, usage.OutputTokens)
 	t.Logf("\nModel: %s | Time: %.1fs | Total AOIs: %d | Tokens: %d in + %d out | Cost: $%.4f\n",
 		model, elapsed.Seconds(), report.TotalAOIs,
 		usage.InputTokens, usage.OutputTokens, cost)
@@ -1075,7 +1053,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 					niceFindTotal: niceFindCount,
 					inputTokens:   usage.InputTokens,
 					outputTokens:  usage.OutputTokens,
-					cost:          estimateCost(spec.model, usage.InputTokens, usage.OutputTokens),
+					cost:          config.EstimateCost(spec.model, usage.InputTokens, usage.OutputTokens),
 				}
 
 				if err != nil {
