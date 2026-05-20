@@ -228,7 +228,31 @@ type ChatRequest struct {
 	Temperature     *float64
 	JSONSchema      *JSONSchema   // structured output, optional
 	CachePrefix     bool          // hint: cache system + leading messages if supported
+	CachedContent   string        // explicit cache handle (e.g. Gemini "cachedContents/abc"); when set, provider omits the cached fields from the request body
 	RequestTimeout  time.Duration // per-call override; 0 = use provider's RequestTimeout
+}
+
+// ── Cache support (optional capability) ─────────────────────────────────
+
+// CacheSupport is implemented by providers that allow callers to upload a
+// static prefix (system instruction, tool definitions, etc.) once and reuse
+// it across many requests. The opaque handle returned by CreateContextCache
+// is passed back via ChatRequest.CachedContent on subsequent calls.
+//
+// Providers without explicit cache management (OpenAI's automatic prefix
+// caching, Claude Code's internal caching) do not implement this interface;
+// callers should treat the absence of it as "no work to do here."
+type CacheSupport interface {
+	// CreateContextCache uploads (systemInstruction, tools) as a server-side
+	// cache scoped to the given model. ttl bounds the cache lifetime; the
+	// provider may enforce a minimum. Returns an opaque handle suitable for
+	// ChatRequest.CachedContent.
+	CreateContextCache(ctx context.Context, systemInstruction string, tools []ToolDef, ttl time.Duration) (string, error)
+
+	// DeleteContextCache best-effort deletes a previously created cache.
+	// Callers should usually rely on ttl expiry and only call this on a
+	// successful audit teardown.
+	DeleteContextCache(ctx context.Context, handle string) error
 }
 
 // TempPtr converts a config float64 to *float64, treating values

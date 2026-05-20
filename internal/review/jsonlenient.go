@@ -3,8 +3,56 @@ package review
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
+
+// extractLastJSONValue scans the input for top-level JSON values
+// (objects or arrays) and returns the LAST one that parses cleanly.
+//
+// Multi-draft model output is the canonical case this handles. A model
+// running inside a CLI tool harness (e.g. Sonnet under Claude Code)
+// may emit:
+//
+//	{...initial draft...}
+//	```
+//	Let me read the relevant files to investigate this concern.
+//	I have everything I need to make a definitive assessment.
+//	```json
+//	{...refined draft after internal tool use...}
+//	```
+//
+// The refined draft is the model's intent. Older single-pass models
+// emit one JSON; this still returns that one. Garbage input returns
+// an error.
+//
+// Implementation: iterate from each '{' or '[' position in turn,
+// attempt to decode a complete JSON value via json.Decoder (which
+// reads one value and surfaces trailing data harmlessly), keep the
+// last successful parse.
+func extractLastJSONValue(data []byte) ([]byte, error) {
+	var last []byte
+	i := 0
+	for i < len(data) {
+		j := bytes.IndexAny(data[i:], "{[")
+		if j < 0 {
+			break
+		}
+		i += j
+		dec := json.NewDecoder(bytes.NewReader(data[i:]))
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == nil {
+			last = []byte(raw)
+			i += int(dec.InputOffset())
+		} else {
+			i++
+		}
+	}
+	if last == nil {
+		return nil, errors.New("no JSON value found")
+	}
+	return last, nil
+}
 
 // unmarshalLLMResponse is the unmarshaler used for LLM-emitted JSON
 // where strict RFC-8259 conformance can't be assumed. Gemini Flash in

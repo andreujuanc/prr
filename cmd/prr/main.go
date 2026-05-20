@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -326,6 +325,23 @@ func runAudit(debug bool, args []string) {
 		os.Exit(1)
 	}
 
+	// Auto-persist a timestamped snapshot of the audit regardless of
+	// --output. The audit cost real money in tokens; without this,
+	// running `prr audit` without --output prints to stderr and
+	// throws the structured result away. --output, when set, still
+	// writes to the user-specified path on top of this.
+	if result != nil {
+		if data, mErr := audit.MarshalJSON(result, synthesis); mErr == nil {
+			if snapPath, sErr := state.SaveAuditSnapshot(data); sErr != nil {
+				log.Printf("Warning: audit snapshot save failed: %v", sErr)
+			} else if !quiet {
+				fmt.Fprintf(os.Stderr, "  Snapshot saved to %s\n", cliDim.Render(snapPath))
+			}
+		} else {
+			log.Printf("Warning: audit snapshot marshal failed: %v", mErr)
+		}
+	}
+
 	if !quiet {
 		if len(result.Findings) == 0 {
 			fmt.Fprintf(os.Stderr, "  %s\n\n", cliInfo.Render("No issues found."))
@@ -587,6 +603,23 @@ func runReview(debug bool, args []string) {
 		os.Exit(1)
 	}
 
+	// Auto-persist a timestamped snapshot of the result regardless of
+	// --output. The LLM call cost the user real money; throwing the
+	// rich result away because they forgot --output was the original
+	// gap this branch fixes. --output, when set, still writes to the
+	// user-specified path on top of this.
+	if result != nil {
+		if data, mErr := marshalReviewResult(result); mErr == nil {
+			if snapPath, sErr := state.SaveReviewSnapshot(prNumber, data); sErr != nil {
+				log.Printf("Warning: review snapshot save failed: %v", sErr)
+			} else if !quiet {
+				fmt.Fprintf(os.Stderr, "  Snapshot saved to %s\n", cliDim.Render(snapPath))
+			}
+		} else {
+			log.Printf("Warning: review snapshot marshal failed: %v", mErr)
+		}
+	}
+
 	if quiet && outputPath == "" {
 		os.Exit(0)
 	}
@@ -699,29 +732,22 @@ func runReview(debug bool, args []string) {
 	}
 }
 
+// marshalReviewResult builds the JSON byte payload for a review run.
+// Thin wrapper over review.MarshalResultJSON; kept here as the
+// callsite-local seam in case main.go needs to add CLI-only fields
+// later. Same bytes as the snapshot save path uses, so --output and
+// the auto-persisted snapshot are byte-identical.
+func marshalReviewResult(result *review.PRReviewResult) ([]byte, error) {
+	return review.MarshalResultJSON(result.PR, result.FilesReviewed, result.StructuredReview, result.DeepFindings)
+}
+
 // exportReviewResult writes the review result to a JSON file.
 func exportReviewResult(result *review.PRReviewResult, path string) error {
-	data := map[string]any{
-		"pr_number":      result.PR.Number,
-		"pr_title":       result.PR.Title,
-		"files_reviewed": result.FilesReviewed,
-	}
-	if result.StructuredReview != nil {
-		data["review"] = result.StructuredReview
-	}
-	if len(result.DeepFindings) > 0 {
-		data["deep_findings"] = result.DeepFindings
-	}
-
-	f, err := os.Create(path)
+	b, err := marshalReviewResult(result)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	return enc.Encode(data)
+	return os.WriteFile(path, b, 0644)
 }
 
 func printReviewUsage() {

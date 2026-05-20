@@ -195,9 +195,14 @@ func rebuildStyles() {
 	styleSeverityMedium = lipgloss.NewStyle().Foreground(accentYellow)
 	styleSeverityLow = lipgloss.NewStyle().Foreground(textSecondary)
 	styleSeverityNit = lipgloss.NewStyle().Foreground(textMuted).Italic(true)
-	styleVerdictApprove = lipgloss.NewStyle().Foreground(accentGreen).Bold(true)
-	styleVerdictChanges = lipgloss.NewStyle().Foreground(accentRed).Bold(true)
-	styleVerdictComment = lipgloss.NewStyle().Foreground(accentYellow).Bold(true)
+	// Verdict pills — high-contrast badges so the headline review
+	// outcome (APPROVED / CHANGES REQUESTED / COMMENT) reads at a
+	// glance. Background fill + dark foreground + padding gives the
+	// pill shape; the original text-only colours blended too far into
+	// the surrounding prose for a "this is the verdict" feel.
+	styleVerdictApprove = lipgloss.NewStyle().Foreground(baseBg).Background(accentGreen).Bold(true).Padding(0, 1)
+	styleVerdictChanges = lipgloss.NewStyle().Foreground(baseBg).Background(accentRed).Bold(true).Padding(0, 1)
+	styleVerdictComment = lipgloss.NewStyle().Foreground(baseBg).Background(accentYellow).Bold(true).Padding(0, 1)
 	styleAccentPeach = lipgloss.NewStyle().Foreground(accentPeach)
 	styleFileLine = lipgloss.NewStyle().Foreground(accentBlue).Underline(true)
 	styleStaleReview = lipgloss.NewStyle().Foreground(accentYellow).Bold(true)

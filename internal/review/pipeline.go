@@ -833,7 +833,7 @@ func RunReviewCore(
 
 	// ── Phase 1: AOI-driven review + fallback batches ────────────
 
-	routeResult := RouteAOIs(aoiScanResults, nil, 10)
+	routeResult := RouteAOIs(aoiScanResults, nil, 5)
 
 	aoiCoveredFiles := make(map[string]bool)
 	var reviewCalls []ReviewCall

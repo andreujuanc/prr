@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -198,6 +199,21 @@ func (c *ClaudeCodeProvider) buildArgs() []string {
 	}
 	if c.WorkDir != "" {
 		args = append(args, "--add-dir", c.WorkDir)
+	}
+	// Claude Code's --effort flag (low | medium | high | xhigh | max)
+	// controls reasoning depth. PRR_CLAUDE_EFFORT overrides everything;
+	// when unset, sonnet defaults to `low`. The benchmark showed sonnet
+	// `low` matching its higher-effort runs on recall and producing
+	// strictly better severity-accuracy + cost + wall-clock — counter-
+	// intuitively, more thinking made severity worse. Opus and other
+	// Claude Code models keep the CLI's own default until we have data
+	// to choose differently.
+	effort := os.Getenv("PRR_CLAUDE_EFFORT")
+	if effort == "" && strings.Contains(strings.ToLower(c.Model), "sonnet") {
+		effort = "low"
+	}
+	if effort != "" {
+		args = append(args, "--effort", effort)
 	}
 	args = append(args, c.ExtraArgs...)
 	return args

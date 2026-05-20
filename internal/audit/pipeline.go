@@ -601,7 +601,7 @@ func Run(
 
 	dbgw.Phase("PHASE 3: Deep Review")
 	phase3Start := time.Now()
-	routing := review.RouteAOIs(aoiResults, opts.Focus, 10)
+	routing := review.RouteAOIs(aoiResults, opts.Focus, 5)
 	onProgress("phase3", routing.FormatSummary())
 	dbgw.Text("Routing: %s", routing.FormatSummary())
 

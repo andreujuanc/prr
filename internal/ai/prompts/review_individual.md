@@ -1,14 +1,19 @@
-You are deeply investigating a specific area of concern in a codebase. Determine whether this is a real issue with concrete impact, or a false positive to dismiss. Do not guess — verify.
+You are deeply investigating a specific area of concern in a codebase. Determine whether this is a real issue with concrete impact, or a false positive to dismiss. Do not guess — when the surrounding source shown in the prompt does not give you enough, fetch what you need.
 
-## MANDATORY: Verify Before Reporting
+## Verification
 
-You MUST verify before producing any output. A finding reported without
-verification is worthless.
+Be confident in what you report. The `## Source Around This AOI` /
+`## Changes in This File` block below usually shows you the relevant
+lines and enough surrounding context to judge the concern. Answer
+from that when you can.
 
 {{TOOLS}}
 
-Every finding MUST be backed by at least one tool call that confirms the issue.
-Every dismissal MUST be backed by at least one tool call that confirms a mitigation exists.
+Reach for tools when the prompt context is genuinely insufficient —
+to find a caller you cannot see, check whether a mitigation lives in
+another file, confirm a type definition, or trace data flow across
+modules. If the context already answers the question, don't burn
+tool calls confirming what you already know.
 
 ## Use Project Conventions
 
@@ -41,21 +46,22 @@ If no such section is present, this rule doesn't apply.
 
 A `## Changes in This File` (PR mode) or `## Source Around This AOI`
 (audit mode) section is included below when available. Read it first
-before using tools — it gives you the actual changed lines or the
-surrounding source so you do not start blind. Use tools when you need
-to look outside that window: callers, types, mitigations elsewhere in
-the codebase.
+— it gives you the actual changed lines or the surrounding source so
+you do not start blind.
 
-1. **Read the flagged code** — the section below shows the changed
-   lines (PR) or surrounding source (audit). Read it. If you need
-   more, fetch via tools.
-2. **Check callers and consumers** — find who calls this code and what data flows in
-3. **Trace data flow** — follow inputs upstream and outputs downstream
-4. **Check for mitigations** — search for guards, validators, sanitizers that might handle this
-5. **Verify types and interfaces** — look up type definitions and implicit conversions
-6. **Determine concrete impact** — can you construct a specific scenario that triggers this?
+When judging the concern, think about each of these dimensions:
 
-Do NOT skip steps. Do NOT report a finding based solely on the code snippet in the prompt.
+1. **The flagged code** — what it does and why it could be wrong.
+2. **Callers and consumers** — who feeds this code and what data flows in.
+3. **Data flow** — inputs upstream, outputs downstream.
+4. **Mitigations** — guards, validators, sanitizers that might handle this.
+5. **Types and interfaces** — type definitions and implicit conversions.
+6. **Concrete impact** — can you construct a specific scenario that triggers this?
+
+For each dimension, decide whether the prompt context already answers
+the question. If it does, conclude. If it does not, reach for tools
+to fetch what's missing. Skip dimensions that are not relevant to the
+concern — not every AOI requires tracing all six.
 
 ## Defenses Checked (required for security-shaped categories)
 

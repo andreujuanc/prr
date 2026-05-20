@@ -130,6 +130,29 @@ func RunReviewCalls(
 		maxConc = 10
 	}
 
+	// Context caching is currently disabled at the call site.
+	//
+	// The provider plumbing (CreateContextCache / DeleteContextCache on
+	// GeminiProvider, ChatRequest.CachedContent, the CacheSupport
+	// interface) and the setupContextCache helper are all kept — they
+	// pass their unit tests and the live verification test in
+	// internal/ai/gemini_cache_test.go. The reason for keeping the call
+	// turned off is that Gemini rejects requests that combine
+	// cachedContent with system_instruction in the same generateContent
+	// body ("CachedContent can not be used with GenerateContent request
+	// setting system_instruction, tools or tool_config"). The MVP path
+	// that cached only tools therefore stripped the review system prompt
+	// from each call, which made the model produce prose instead of JSON
+	// and crashed every parser (see plans/benchmark-results-2026-05-20.md
+	// §3f for the failing run).
+	//
+	// To re-enable, the review prompt builders need to split into
+	// (cacheable static prefix, per-AOI variable suffix) so the prefix
+	// can live inside the cache as the systemInstruction and the suffix
+	// can go in the user message. Tracked in
+	// plans/review-cost-and-routing-tuning.md.
+	_ = setupContextCache
+
 	type callResult struct {
 		index     int
 		result    *state.DeepReviewResult
@@ -803,24 +826,19 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 		s = strings.TrimSpace(s)
 	}
 
-	// Find JSON start
-	jsonStart := strings.IndexAny(s, "{[")
-	if jsonStart == -1 {
+	// Extract the last complete JSON value. Models running inside a
+	// CLI tool harness (Sonnet under Claude Code is the canonical case)
+	// may emit a pre-investigation draft, prose ("Let me read the
+	// files…"), and a refined post-tools draft. The refined draft is
+	// the model's intent — we want the LAST complete JSON value, not
+	// the first. extractLastJSONValue handles single-draft responses
+	// identically.
+	extracted, err := extractLastJSONValue([]byte(s))
+	if err != nil {
 		return result, fmt.Errorf("%w: no JSON found in response for %s/%s",
 			errReviewParse, call.Category, call.Subcategory)
 	}
-	s = s[jsonStart:]
-
-	// Trim trailing non-JSON (e.g. markdown code fences like ```)
-	if s[0] == '{' {
-		if end := strings.LastIndex(s, "}"); end != -1 {
-			s = s[:end+1]
-		}
-	} else if s[0] == '[' {
-		if end := strings.LastIndex(s, "]"); end != -1 {
-			s = s[:end+1]
-		}
-	}
+	s = string(extracted)
 
 	if call.Type == "individual" {
 		var parsed struct {

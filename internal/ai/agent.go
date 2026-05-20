@@ -13,8 +13,16 @@ import (
 )
 
 const (
-	// defaultMaxRounds is the default maximum number of tool-calling iterations.
-	defaultMaxRounds = 50
+	// defaultMaxRounds is the default maximum number of tool-calling iterations
+	// per ChatStream call. Measured tool-call counts on the deep-review
+	// benchmark fixture average 7–12 rounds per AOI with a tail at ~17;
+	// 20 leaves comfortable headroom while preventing the pathological
+	// 2m35s rabbit-hole observed on at least one cryptography/hashing AOI
+	// where the model spun on tool calls without converging. Callers that
+	// need more headroom (e.g. interactive chat) can override with
+	// WithMaxRounds. Was 50 before; 50 was too loose to act as a circuit
+	// breaker on the long tail.
+	defaultMaxRounds = 20
 
 	// maxParallelTools caps concurrent tool execution.
 	maxParallelTools = 5
@@ -46,6 +54,34 @@ func WithUsageTracker(tracker *UsageTracker) AgentOption {
 	return func(a *Agent) {
 		a.usageTracker = tracker
 	}
+}
+
+// WithCachedContent sets a provider-side cache handle that the agent
+// will reference on every request. Use this when a caller (typically
+// the deep-review pipeline) has uploaded a static prefix via the
+// provider's CacheSupport interface and wants every ChatStream call
+// to consume it.
+//
+// The handle is read-only after Agent construction — do not mutate it
+// while goroutines are calling ChatStream concurrently.
+func WithCachedContent(handle string) AgentOption {
+	return func(a *Agent) {
+		a.cachedContent = handle
+	}
+}
+
+// SetCachedContent sets the cache handle after the Agent is built.
+// Callers must call this BEFORE fanning out concurrent ChatStream
+// calls — the field is not synchronised.
+func (a *Agent) SetCachedContent(handle string) {
+	a.cachedContent = handle
+}
+
+// Provider returns the underlying Provider. Useful when a caller needs
+// to invoke provider-specific operations (e.g. CacheSupport.CreateContextCache)
+// from above the Client abstraction.
+func (a *Agent) Provider() Provider {
+	return a.provider
 }
 
 // WithToolFilter restricts the agent to only the named tools.
@@ -105,12 +141,13 @@ func (t *UsageTracker) Reset() {
 // It implements Client and ToolConfigurer for backward compatibility
 // with the existing UI and review code.
 type Agent struct {
-	provider     Provider
-	toolExecutor *ToolExecutor
-	maxRounds    int
-	debugLog     *log.Logger     // nil = no debug logging
-	usageTracker *UsageTracker   // nil = don't track usage
-	toolFilter   map[string]bool // nil = all tools; non-nil = only named tools
+	provider      Provider
+	toolExecutor  *ToolExecutor
+	maxRounds     int
+	debugLog      *log.Logger     // nil = no debug logging
+	usageTracker  *UsageTracker   // nil = don't track usage
+	toolFilter    map[string]bool // nil = all tools; non-nil = only named tools
+	cachedContent string          // opaque cache handle; set once before parallel use, read-only thereafter
 }
 
 // NewAgent creates an Agent that uses the given Provider for API calls
@@ -207,10 +244,11 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 		}
 
 		req := ChatRequest{
-			System:      systemPrompt,
-			Messages:    provMsgs,
-			Tools:       tools,
-			CachePrefix: cachePrefix,
+			System:        systemPrompt,
+			Messages:      provMsgs,
+			Tools:         tools,
+			CachePrefix:   cachePrefix,
+			CachedContent: a.cachedContent,
 		}
 
 		a.debugf("round %d: sending request (messages=%d, tools=%d)", round+1, len(provMsgs), len(tools))
@@ -297,17 +335,29 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 		// Continue loop — next iteration sends tool results to the provider
 	}
 
-	// Check if we exhausted maxRounds
-	if countToolRounds(provMsgs) >= a.maxRounds {
+	// Per-call telemetry: rounds used, whether the cap fired. Logged at
+	// info level (not debug-gated) so benchmark output captures it
+	// without needing WithDebugLogger attached. One line per ChatStream
+	// call. Use this distribution to pick a tighter cap empirically.
+	rounds := countToolRounds(provMsgs)
+	capped := rounds >= a.maxRounds
+	if capped {
 		maxMsg := fmt.Sprintf("\n\n[max iterations (%d) reached — partial result returned]", a.maxRounds)
 		full.WriteString(maxMsg)
 		if onToken != nil {
 			onToken(maxMsg)
 		}
-		a.debugf("max rounds (%d) reached", a.maxRounds)
 	}
+	log.Printf("[agent] call complete: rounds=%d/%d%s", rounds, a.maxRounds, cappedSuffix(capped))
 
 	return full.String(), nil
+}
+
+func cappedSuffix(capped bool) string {
+	if capped {
+		return " (CAPPED)"
+	}
+	return ""
 }
 
 // countToolRounds counts the number of user messages that contain ToolResultBlocks.

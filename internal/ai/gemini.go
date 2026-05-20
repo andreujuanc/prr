@@ -205,6 +205,7 @@ type geminiRequest struct {
 	GenerationConfig  *geminiGenConfig  `json:"generationConfig,omitempty"`
 	ToolConfig        *geminiToolConfig `json:"toolConfig,omitempty"`
 	SafetySettings    []geminiSafety    `json:"safetySettings,omitempty"`
+	CachedContent     string            `json:"cachedContent,omitempty"`
 }
 
 type geminiContent struct {
@@ -310,7 +311,16 @@ type geminiStreamResponse struct {
 func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
 	var native geminiRequest
 
-	if req.System != "" {
+	// When a cache handle is set, the system instruction and tool
+	// declarations live inside the cache server-side. Including them in
+	// the request body in addition to cachedContent is wasteful (we pay
+	// for them as uncached input) and forbidden by Gemini for tools.
+	cached := req.CachedContent != ""
+	if cached {
+		native.CachedContent = req.CachedContent
+	}
+
+	if req.System != "" && !cached {
 		native.SystemInstruction = &geminiContent{
 			Parts: []geminiPart{{Text: req.System}},
 		}
@@ -370,7 +380,7 @@ func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
 		})
 	}
 
-	if len(req.Tools) > 0 {
+	if len(req.Tools) > 0 && !cached {
 		native.Tools = convertToolDefs(req.Tools)
 	}
 
@@ -389,8 +399,14 @@ func (g *GeminiProvider) toNativeRequest(req ChatRequest) geminiRequest {
 		native.GenerationConfig.ResponseSchema = req.JSONSchema.Schema
 	}
 
-	// Tool config: use VALIDATED mode for constrained decoding when tools are present
-	if len(req.Tools) > 0 {
+	// Tool config: use VALIDATED mode for constrained decoding when tools are present.
+	// Gemini rejects requests that combine cachedContent with toolConfig
+	// ("CachedContent can not be used with GenerateContent request setting
+	// system_instruction, tools or tool_config") — the cache itself carries
+	// any tool_config that was provided at cache-creation time. We currently
+	// do not set toolConfig on the cache, so the model defaults to AUTO
+	// function calling, which works fine for review prompts.
+	if len(req.Tools) > 0 && !cached {
 		native.ToolConfig = &geminiToolConfig{
 			FunctionCallingConfig: &geminiFuncCallingConfig{Mode: "VALIDATED"},
 		}
@@ -740,3 +756,145 @@ func ctxExitStatus(ctx context.Context) string {
 
 //go:fix inline
 func boolPtr(v bool) *bool { return new(v) }
+
+// ── Context caching ─────────────────────────────────────────────────────
+//
+// Implements Gemini's "Context Caching" REST API:
+//   - Create: POST /v1beta/cachedContents
+//   - Delete: DELETE /v1beta/{cachedContents/...}
+//   - Use:    set "cachedContent": "cachedContents/..." in generateContent body
+// Reference: https://ai.google.dev/api/caching
+//
+// Per-model minimum input tokens for a cache: 1024 (Flash variants) or 4096
+// (Pro variants). Server rejects below-minimum with INVALID_ARGUMENT; this
+// code does not pre-check and instead surfaces the error to the caller,
+// which should fall back to uncached operation.
+
+type geminiCacheCreateRequest struct {
+	Model             string          `json:"model"`
+	Contents          []geminiContent `json:"contents,omitempty"`
+	SystemInstruction *geminiContent  `json:"systemInstruction,omitempty"`
+	Tools             []geminiTool    `json:"tools,omitempty"`
+	TTL               string          `json:"ttl,omitempty"` // duration string, e.g. "600s"
+}
+
+type geminiCacheCreateResponse struct {
+	Name string `json:"name"` // e.g. "cachedContents/abc123"
+}
+
+// CreateContextCache uploads (systemInstruction, tools) to Gemini's
+// cachedContents endpoint and returns the resource name to pass back via
+// ChatRequest.CachedContent. ttl is the cache lifetime; 0 omits the field,
+// which makes Gemini apply its default (1 hour at time of writing).
+//
+// The cache is bound to a specific model — the provider's g.Model is used.
+// Switching the model on subsequent calls invalidates the cache.
+//
+// On any error (payload too small, network failure, permission denied),
+// callers should log a warning and proceed without caching. Caching is
+// always an optimization; degrading gracefully is mandatory.
+func (g *GeminiProvider) CreateContextCache(ctx context.Context, systemInstruction string, tools []ToolDef, ttl time.Duration) (string, error) {
+	reqBody := geminiCacheCreateRequest{
+		Model: "models/" + g.Model,
+	}
+	if systemInstruction != "" {
+		reqBody.SystemInstruction = &geminiContent{
+			Parts: []geminiPart{{Text: systemInstruction}},
+		}
+	}
+	if len(tools) > 0 {
+		reqBody.Tools = convertToolDefs(tools)
+	}
+	if ttl > 0 {
+		reqBody.TTL = strconv.FormatInt(int64(ttl.Seconds()), 10) + "s"
+	}
+
+	// Gemini's docs always show `contents` populated when creating a cache.
+	// Whether systemInstruction+tools alone is accepted is undocumented, so
+	// include a tiny placeholder turn to stay on the documented path. The
+	// placeholder is one user message acknowledging the cache prefix; it
+	// adds a handful of tokens and does not affect downstream output.
+	reqBody.Contents = []geminiContent{
+		{
+			Role:  "user",
+			Parts: []geminiPart{{Text: "Cache prefix ready."}},
+		},
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("gemini cache create: marshal: %w", err)
+	}
+
+	url := g.resolveCacheBaseURL() + "/cachedContents"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("gemini cache create: new request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-goog-api-key", g.APIKey)
+
+	resp, err := g.httpClient().Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("gemini cache create: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("gemini cache create: HTTP %d: %s", resp.StatusCode, string(errBody))
+	}
+
+	var out geminiCacheCreateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("gemini cache create: decode: %w", err)
+	}
+	if out.Name == "" {
+		return "", fmt.Errorf("gemini cache create: empty name in response")
+	}
+	return out.Name, nil
+}
+
+// DeleteContextCache best-effort deletes a previously created cache. The
+// Gemini API expects DELETE on /v1beta/cachedContents/{id}; the handle
+// returned by CreateContextCache is already in cachedContents/{id} form
+// so it's appended directly. Failures are returned but non-fatal — Gemini
+// will expire the cache via TTL.
+func (g *GeminiProvider) DeleteContextCache(ctx context.Context, handle string) error {
+	if handle == "" {
+		return nil
+	}
+	url := g.resolveCacheBaseURL() + "/" + handle
+	httpReq, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("gemini cache delete: new request: %w", err)
+	}
+	httpReq.Header.Set("x-goog-api-key", g.APIKey)
+
+	resp, err := g.httpClient().Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("gemini cache delete: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gemini cache delete: HTTP %d: %s", resp.StatusCode, string(errBody))
+	}
+	return nil
+}
+
+// resolveCacheBaseURL returns the base URL for cachedContents operations.
+// Mirrors resolveURL but without the per-model path segment, since the
+// cachedContents endpoint is model-agnostic.
+func (g *GeminiProvider) resolveCacheBaseURL() string {
+	base := g.BaseURL
+	if base == "" {
+		v := g.APIVersion
+		if v == "" {
+			v = "v1beta"
+		}
+		base = "https://generativelanguage.googleapis.com/" + v
+	}
+	return base
+}

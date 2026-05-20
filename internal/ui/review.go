@@ -263,24 +263,41 @@ func streamMultiPassReview(
 			AOIContextLines:    aoiContextLines,
 			RepoRoot:           repoRoot,
 			PR:                 pr,
-			// TUI default: skip synthesis. DeepFindings is the source
-			// of truth for the Review tab. Saves ~$3-5 per review and
-			// removes one failure mode (synthesis stalls). Headless
-			// `prr review` keeps synthesis for CI consumers that want
-			// the JSON ReviewOutput.
-			SkipSynthesis: true,
+			// SkipSynthesis omitted (defaults to false). The TUI now
+			// runs synthesis so the Review tab can render the same
+			// verdict + executive summary + missing-tests +
+			// questions-for-author that `prr review` produces. The
+			// previous SkipSynthesis=true default saved ~$3-5 per
+			// review at the cost of users complaining the TUI output
+			// didn't match headless. The cost is worth the parity.
 		}, reporter)
 		if err != nil {
 			return AIChatDoneMsg{Err: err}
 		}
 
-		// With SkipSynthesis=true, coreResult.Review is nil and
-		// DeepFindings is the payload. Build a minimal response that
-		// the model goroutine can persist + display.
+		// Validate / normalise the structured review the same way
+		// RunPRReview does — snap lines to hunks, drop findings on
+		// hallucinated paths, etc. Without this, the TUI rendered
+		// findings the headless flow would have dropped.
+		if coreResult.StructuredReview != nil && pr != nil {
+			hunks := make(map[string][]review.HunkRange, len(rawDiffs))
+			for path, patch := range rawDiffs {
+				hunks[path] = review.ParseHunkRanges(patch)
+			}
+			_, dropped := review.ValidateAndNormalize(coreResult.StructuredReview, pr.Files, hunks)
+			if len(dropped) > 0 {
+				log.Printf("TUI review validation: dropped %d malformed finding(s)", len(dropped))
+				for _, d := range dropped {
+					log.Printf("  - %q (%s): %s", d.Title, d.File, d.Reason)
+				}
+			}
+		}
+
 		msg := AIChatDoneMsg{
-			Review:       coreResult.Review,
-			FileFindings: coreResult.FileFindings,
-			DeepFindings: coreResult.DeepFindings,
+			Review:        coreResult.Review,
+			FileFindings:  coreResult.FileFindings,
+			DeepFindings:  coreResult.DeepFindings,
+			FilesReviewed: len(rawDiffs),
 		}
 		if coreResult.Review != nil {
 			msg.FullResponse = coreResult.Review.Summary

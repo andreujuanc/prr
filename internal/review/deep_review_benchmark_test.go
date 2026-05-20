@@ -325,6 +325,7 @@ type deepModelResult struct {
 	// Token usage
 	inputTokens  int
 	outputTokens int
+	cachedTokens int // input tokens served from provider-side cache (Gemini cachedContentTokenCount)
 
 	// Tool usage
 	toolCalls int
@@ -645,6 +646,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 					usage := ai.SnapshotUsage(agent)
 					r.inputTokens = usage.InputTokens
 					r.outputTokens = usage.OutputTokens
+					r.cachedTokens = usage.CacheHits
 
 					recall := float64(0)
 					totalGT := r.mustFindTotal + r.niceFindTotal
@@ -656,13 +658,16 @@ func TestDeepReviewModelComparison(t *testing.T) {
 						sevAcc = float64(r.severityCorrect) / float64(r.severityTotal) * 100
 					}
 
-					t.Logf("  Must: %d/%d | Nice: %d/%d | FP: %d | Findings: %d | Recall: %.1f%% | SevAcc: %.0f%% | Tools: %d | Time: %.1fs",
+					cost := config.EstimateCost(specCopy.model, r.inputTokens, r.outputTokens, r.cachedTokens)
+					t.Logf("  Must: %d/%d | Nice: %d/%d | FP: %d | Findings: %d | Recall: %.1f%% | SevAcc: %.0f%% | Tools: %d | InTok: %d | OutTok: %d | Cost: $%.4f | Time: %.1fs",
 						r.mustFindHits, r.mustFindTotal,
 						r.niceFindHits, r.niceFindTotal,
 						r.falseAlarms,
 						r.totalFindings,
 						recall, sevAcc,
 						toolCalls,
+						r.inputTokens, r.outputTokens,
+						cost,
 						duration.Seconds())
 
 					// Print missed findings
@@ -694,10 +699,10 @@ func TestDeepReviewModelComparison(t *testing.T) {
 	t.Log("  DEEP REVIEW MODEL COMPARISON RESULTS")
 	t.Log("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════")
 	t.Log("")
-	t.Logf("  %-45s %7s %7s %5s %5s %7s %6s %6s %7s",
-		"Model", "Must", "Nice", "FP", "Find", "Recall", "SvAcc", "Tools", "Time")
-	t.Logf("  %-45s %7s %7s %5s %5s %7s %6s %6s %7s",
-		strings.Repeat("─", 45), "───────", "───────", "─────", "─────", "───────", "──────", "──────", "───────")
+	t.Logf("  %-45s %7s %7s %5s %5s %7s %6s %6s %8s %8s %8s %7s",
+		"Model", "Must", "Nice", "FP", "Find", "Recall", "SvAcc", "Tools", "InTok", "OutTok", "Cost", "Time")
+	t.Logf("  %-45s %7s %7s %5s %5s %7s %6s %6s %8s %8s %8s %7s",
+		strings.Repeat("─", 45), "───────", "───────", "─────", "─────", "───────", "──────", "──────", "────────", "────────", "────────", "───────")
 
 	for _, r := range results {
 		if r.err != nil {
@@ -715,7 +720,8 @@ func TestDeepReviewModelComparison(t *testing.T) {
 			sevAcc = float64(r.severityCorrect) / float64(r.severityTotal) * 100
 		}
 
-		t.Logf("  %-45s %3d/%-3d %3d/%-3d %5d %5d  %5.1f%% %5.0f%% %6d %6.1fs",
+		cost := config.EstimateCost(r.spec.model, r.inputTokens, r.outputTokens, r.cachedTokens)
+		t.Logf("  %-45s %3d/%-3d %3d/%-3d %5d %5d  %5.1f%% %5.0f%% %6d %8d %8d  $%6.4f %6.1fs",
 			r.spec.name,
 			r.mustFindHits, r.mustFindTotal,
 			r.niceFindHits, r.niceFindTotal,
@@ -723,6 +729,8 @@ func TestDeepReviewModelComparison(t *testing.T) {
 			r.totalFindings,
 			recall, sevAcc,
 			r.toolCalls,
+			r.inputTokens, r.outputTokens,
+			cost,
 			r.duration.Seconds())
 	}
 

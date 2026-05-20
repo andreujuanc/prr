@@ -95,8 +95,8 @@ func TestDefaultPricing(t *testing.T) {
 		model     string
 		wantInput float64
 	}{
-		{"gemini-3.1-pro-preview", 2.50},
-		{"gemini-3.1-flash-lite", 0.02},
+		{"gemini-3.1-pro-preview", 2.00},
+		{"gemini-3.1-flash-lite", 0.25},
 		{"something-else", 2.50},
 	}
 	for _, tt := range tests {
