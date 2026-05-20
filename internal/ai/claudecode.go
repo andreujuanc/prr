@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -198,6 +199,12 @@ func (c *ClaudeCodeProvider) buildArgs() []string {
 	}
 	if c.WorkDir != "" {
 		args = append(args, "--add-dir", c.WorkDir)
+	}
+	// PRR_CLAUDE_EFFORT lets experiments set Claude Code's --effort flag
+	// (low | medium | high | xhigh | max) without recompiling. Empty
+	// means "let the CLI use its default."
+	if effort := os.Getenv("PRR_CLAUDE_EFFORT"); effort != "" {
+		args = append(args, "--effort", effort)
 	}
 	args = append(args, c.ExtraArgs...)
 	return args
