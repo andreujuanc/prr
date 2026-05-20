@@ -43,17 +43,20 @@ func PRReviewPhases() []progress.PhaseDef {
 		{Name: "classify", Label: "Classification",
 			Summary: classifySummary},
 		{Name: "aoi", Label: "AOI Pre-scan",
-			ProgressFn: aoiProgress,
-			Counter:    aoiCounter,
-			Summary:    aoiSummary},
+			ProgressFn:  aoiProgress,
+			Counter:     aoiCounter,
+			CounterUnit: "batches",
+			Summary:     aoiSummary},
 		{Name: "phase1", Label: "Deep Review",
-			ProgressFn: batchProgress,
-			Counter:    batchCounter,
-			Summary:    deepReviewSummary},
+			ProgressFn:  batchProgress,
+			Counter:     batchCounter,
+			CounterUnit: "batches",
+			Summary:     deepReviewSummary},
 		{Name: "recheck", Label: "Recheck",
-			ProgressFn: recheckProgress,
-			Counter:    recheckCounter,
-			Summary:    recheckSummary},
+			ProgressFn:  recheckProgress,
+			Counter:     recheckCounter,
+			CounterUnit: "findings",
+			Summary:     recheckSummary},
 		{Name: "phase2", Label: "Synthesis", ProgressFn: synthesisProgress},
 	}
 }
@@ -231,9 +234,9 @@ func synthesisProgress(s *progress.State) float64 {
 func parseReviewEvent(s *progress.State, phase, message string) {
 	// Per-batch lifecycle (init/active/stream/done/cached/failed)
 	// populates the Batches panel state. Both phase1 (Deep Review)
-	// and the existing aggregate counters below see the same event
-	// — this hook is additive.
-	if phase == "phase1" && strings.HasPrefix(message, "Batch ") {
+	// and recheck emit these — phase transitions reset the map so
+	// the rows don't bleed across.
+	if (phase == "phase1" || phase == "recheck") && strings.HasPrefix(message, "Batch ") {
 		progress.ParseBatchEvent(s, message)
 	}
 	switch {
@@ -424,7 +427,7 @@ func RunWithUI(
 	cfg := progress.Config{
 		Header:      header,
 		Phases:      PRReviewPhases(),
-		BatchPhases: []string{"phase1"},
+		BatchPhases: []string{"phase1", "recheck"},
 		ParseEvent:  parseReviewEvent,
 		Summary: func(_ error, elapsed time.Duration) string {
 			return renderReviewSummary(result, elapsed)

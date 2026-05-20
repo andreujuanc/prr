@@ -64,6 +64,13 @@ type PhaseDef struct {
 	// Skipped when total <= 0. Optional.
 	Counter func(s *State) (done, total int)
 
+	// CounterUnit is the unit shown after the X/Y, e.g. "batches",
+	// "findings", "files". Empty omits the unit (legacy behavior).
+	// Surfacing this is what tells the user whether 0/3 means three
+	// files, three batches, or three findings — the absence of a
+	// unit reads as ambiguous noise.
+	CounterUnit string
+
 	// Summary returns a stable description of what this phase
 	// accomplished. Rendered as the row's detail line when the phase
 	// reaches `done` state, replacing the last-write-wins live detail.
@@ -350,6 +357,15 @@ func (m *model) applyEvent(phase, message string) {
 					m.phases[j].Status = PhaseDone
 				}
 			}
+			// When a new BatchPhase activates, clear the Batches map
+			// so the panel switches contexts. Without this, the
+			// previous phase's batches stay around as a stale
+			// recent-completions tail or active rows that no longer
+			// reflect reality. Phases not in BatchPhases keep the map
+			// untouched (their events would never populate it anyway).
+			if m.cfg.isBatchPhase(phase) {
+				m.state.Batches = make(map[int]*BatchState)
+			}
 		}
 		if !silent {
 			m.phases[i].Detail = message
@@ -505,7 +521,11 @@ func RenderPhaseList(phases []PhaseInfo, state *State, activeSpinner string, max
 
 		if p.Def.Counter != nil && (p.Status == PhaseActive || p.Status == PhaseDone) {
 			if done, tot := p.Def.Counter(state); tot > 0 {
-				b.WriteString(sSubtle.Render(fmt.Sprintf("  %d/%d", done, tot)))
+				suffix := ""
+				if p.Def.CounterUnit != "" {
+					suffix = " " + p.Def.CounterUnit
+				}
+				b.WriteString(sSubtle.Render(fmt.Sprintf("  %d/%d%s", done, tot, suffix)))
 			}
 		}
 

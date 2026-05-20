@@ -565,6 +565,23 @@ func RunRecheck(
 			// "findings" is implicit from the phase label "Recheck".
 			onProgress(fmt.Sprintf("rechecked %d/%d", done, total))
 		},
+		// Per-batch lifecycle so the Batches panel can render
+		// recheck the same way it renders Deep Review. Labels come
+		// from the dominant file in each batch so panel rows read
+		// like "internal/ui/foo.go" rather than "batch 3".
+		OnBatchInit: func(idx int, label string, n int) {
+			onProgress(fmt.Sprintf("Batch %d: init label=%q files=%d kind=general", idx+1, label, n))
+		},
+		OnBatchActive: func(idx int) {
+			onProgress(fmt.Sprintf("Batch %d: active", idx+1))
+		},
+		OnBatchDone: func(idx int, err error) {
+			if err != nil {
+				onProgress(fmt.Sprintf("Batch %d: failed", idx+1))
+			} else {
+				onProgress(fmt.Sprintf("Batch %d: done", idx+1))
+			}
+		},
 	})
 	if recheckErr != nil {
 		log.Printf("Recheck failed (non-fatal): %v — keeping all findings", recheckErr)

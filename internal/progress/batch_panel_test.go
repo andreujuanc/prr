@@ -224,6 +224,74 @@ func TestRenderBatchesPanel_FinishedOverflow(t *testing.T) {
 	}
 }
 
+// TestApplyEvent_ClearsBatchesOnBatchPhaseTransition pins that the
+// State.Batches map is reset to empty when a *new* BatchPhase first
+// activates. Without this, the previous phase's batch rows leak into
+// the new phase's panel (e.g. Deep Review's done rows would still
+// show in the Recheck panel below). Activation of a non-BatchPhase
+// leaves the map untouched.
+func TestApplyEvent_ClearsBatchesOnBatchPhaseTransition(t *testing.T) {
+	cfg := Config{
+		Phases: []PhaseDef{
+			{Name: "phase1", Label: "Deep Review"},
+			{Name: "recheck", Label: "Recheck"},
+		},
+		BatchPhases: []string{"phase1", "recheck"},
+		ParseEvent: func(s *State, phase, message string) {
+			ParseBatchEvent(s, message)
+		},
+	}
+	m := newUI(cfg)
+
+	// Populate phase1 batches.
+	m.applyEvent("phase1", `Batch 1: init label="a" files=1 kind=general`)
+	m.applyEvent("phase1", `Batch 2: init label="b" files=1 kind=general`)
+	m.applyEvent("phase1", "Batch 1: done")
+	if len(m.state.Batches) != 2 {
+		t.Fatalf("phase1 setup: expected 2 batches, got %d", len(m.state.Batches))
+	}
+
+	// Recheck activates — its first event should hit the clear path.
+	m.applyEvent("recheck", `Batch 1: init label="r" files=3 kind=general`)
+	if len(m.state.Batches) != 1 {
+		t.Fatalf("after recheck activation: expected 1 batch (only the recheck one), got %d", len(m.state.Batches))
+	}
+	if got := m.state.Batches[0].Label; got != "r" {
+		t.Errorf("expected recheck batch label, got %q", got)
+	}
+}
+
+// TestApplyEvent_NonBatchPhaseDoesNotClear pins the inverse: a phase
+// NOT listed in BatchPhases (e.g. "synthesis") activating must not
+// wipe the panel — the previous BatchPhase's tail of finished rows
+// should still be visible during the transition until the next
+// BatchPhase activates.
+func TestApplyEvent_NonBatchPhaseDoesNotClear(t *testing.T) {
+	cfg := Config{
+		Phases: []PhaseDef{
+			{Name: "phase1", Label: "Deep Review"},
+			{Name: "phase2", Label: "Synthesis"},
+		},
+		BatchPhases: []string{"phase1"},
+		ParseEvent: func(s *State, phase, message string) {
+			ParseBatchEvent(s, message)
+		},
+	}
+	m := newUI(cfg)
+
+	m.applyEvent("phase1", `Batch 1: init label="a" files=1 kind=general`)
+	m.applyEvent("phase1", "Batch 1: done")
+	if len(m.state.Batches) != 1 {
+		t.Fatalf("phase1 setup: expected 1 batch, got %d", len(m.state.Batches))
+	}
+
+	// phase2 is NOT a BatchPhase — should not clear.
+	m.applyEvent("phase2", "Synthesizing...")
+	if len(m.state.Batches) != 1 {
+		t.Errorf("non-BatchPhase activation wiped the map: got %d batches, want 1", len(m.state.Batches))
+	}
+}
+
 // TestBatchPanelActive_Gating pins the BatchPhases allowlist: panel
 // only renders when one of the listed phases is active.
 func TestBatchPanelActive_Gating(t *testing.T) {

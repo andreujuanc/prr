@@ -34,17 +34,20 @@ func auditPhases() []progress.PhaseDef {
 		{Name: "phase1b", Label: "Classification",
 			Summary: classifySummary},
 		{Name: "phase2", Label: "AOI Pre-scan",
-			ProgressFn: aoiProgress,
-			Counter:    aoiCounter,
-			Summary:    aoiSummary},
+			ProgressFn:  aoiProgress,
+			Counter:     aoiCounter,
+			CounterUnit: "batches",
+			Summary:     aoiSummary},
 		{Name: "phase3", Label: "Deep Review",
-			ProgressFn: reviewProgress,
-			Counter:    reviewCounter,
-			Summary:    reviewSummary},
+			ProgressFn:  reviewProgress,
+			Counter:     reviewCounter,
+			CounterUnit: "batches",
+			Summary:     reviewSummary},
 		{Name: "recheck", Label: "Recheck",
-			ProgressFn: recheckProgress,
-			Counter:    recheckCounter,
-			Summary:    recheckSummary},
+			ProgressFn:  recheckProgress,
+			Counter:     recheckCounter,
+			CounterUnit: "findings",
+			Summary:     recheckSummary},
 		{Name: "phase4", Label: "Synthesis", ProgressFn: synthesisProgress},
 	}
 }
@@ -250,9 +253,9 @@ func newSynthesisStreamCounter(received, lastEmitAt *int, emitEveryChars int, em
 // here. Tests in this package pin the contracts.
 func parseAuditEvent(s *progress.State, phase, message string) {
 	// Per-batch lifecycle for the Batches panel. phase3 (Deep Review)
-	// is the only phase that emits these; aggregate counters fall
-	// through to the existing switch below.
-	if phase == "phase3" && strings.HasPrefix(message, "Batch ") {
+	// and recheck both emit these; aggregate counters fall through to
+	// the existing switch below.
+	if (phase == "phase3" || phase == "recheck") && strings.HasPrefix(message, "Batch ") {
 		progress.ParseBatchEvent(s, message)
 	}
 	switch {
@@ -459,7 +462,7 @@ func RunWithUI(
 	cfg := progress.Config{
 		Header:      header,
 		Phases:      auditPhases(),
-		BatchPhases: []string{"phase3"},
+		BatchPhases: []string{"phase3", "recheck"},
 		ParseEvent:  parseAuditEvent,
 		Summary: func(_ error, elapsed time.Duration) string {
 			return renderAuditSummary(result, elapsed)

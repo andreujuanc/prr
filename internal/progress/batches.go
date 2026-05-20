@@ -111,6 +111,18 @@ func ParseBatchEvent(s *State, message string) bool {
 	return false
 }
 
+// isBatchPhase reports whether the given phase name is in
+// cfg.BatchPhases. Used by applyEvent to decide whether to clear
+// the Batches map on a phase transition.
+func (cfg Config) isBatchPhase(name string) bool {
+	for _, p := range cfg.BatchPhases {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 // BatchPanelActive reports whether the panel should render now: at
 // least one of cfg.BatchPhases is in PhaseActive status. Used by the
 // TUI's View() to gate the section.

@@ -53,6 +53,20 @@ type RecheckOptions struct {
 	// at total during that final pass. It's typically fast (<2s)
 	// and treating it as overhead simplifies the contract.
 	OnProgress func(done, total int)
+
+	// OnBatchInit fires once per dismiss-pass batch before any goroutine
+	// launches. Used by the Batches panel to populate row identity so
+	// recheck shows the same "rows you can watch" the deep-review
+	// phase does. Optional.
+	OnBatchInit func(index int, label string, numFindings int)
+
+	// OnBatchActive fires when a dismiss-pass batch's goroutine
+	// acquires its semaphore slot, just before the LLM call. Optional.
+	OnBatchActive func(index int)
+
+	// OnBatchDone fires when a dismiss-pass batch finishes (success or
+	// error). err is non-nil on failure. Optional.
+	OnBatchDone func(index int, err error)
 }
 
 // RecheckResult holds the output of the recheck phase.
@@ -270,8 +284,20 @@ func runDismissPass(
 		return &RecheckResult{}, nil
 	}
 	if len(findings) <= maxPerBatch {
-		// Single batch — covers the small-audit case.
+		// Single batch — covers the small-audit case. Still emit the
+		// batch lifecycle hooks so the Batches panel shows a row for
+		// this run; without it, a typical PR (few findings → single
+		// batch) ends up rendering nothing in the recheck panel.
+		if opts.OnBatchInit != nil {
+			opts.OnBatchInit(0, recheckBatchLabel(findings), len(findings))
+		}
+		if opts.OnBatchActive != nil {
+			opts.OnBatchActive(0)
+		}
 		result, err := recheckDismissBatch(ctx, client, findings, opts)
+		if opts.OnBatchDone != nil {
+			opts.OnBatchDone(0, err)
+		}
 		return result, err
 	}
 
@@ -279,6 +305,16 @@ func runDismissPass(
 	maxConc := opts.MaxConcurrency
 	if maxConc <= 0 {
 		maxConc = 5
+	}
+
+	// Surface batch identity to the Batches panel before the goroutines
+	// launch so all rows appear as queued together, then transition to
+	// active as slots open. Matches the deep-review init/active/done
+	// shape.
+	if opts.OnBatchInit != nil {
+		for i, batch := range batches {
+			opts.OnBatchInit(i, recheckBatchLabel(batch), len(batch))
+		}
 	}
 
 	type batchOutcome struct {
@@ -306,13 +342,22 @@ func runDismissPass(
 				defer func() { <-sem }()
 			case <-ctx.Done():
 				outcomes[i] = batchOutcome{index: i, findings: batch}
+				if opts.OnBatchDone != nil {
+					opts.OnBatchDone(i, ctx.Err())
+				}
 				return
+			}
+			if opts.OnBatchActive != nil {
+				opts.OnBatchActive(i)
 			}
 			log.Printf("Recheck dismiss batch %d/%d: %d findings", i+1, len(batches), len(batch))
 			result, err := recheckDismissBatch(ctx, client, batch, opts)
 			if err != nil {
 				log.Printf("Recheck dismiss batch %d failed: %v (keeping all findings)", i+1, err)
 				outcomes[i] = batchOutcome{index: i, findings: batch}
+				if opts.OnBatchDone != nil {
+					opts.OnBatchDone(i, err)
+				}
 				return
 			}
 			outcomes[i] = batchOutcome{
@@ -320,6 +365,9 @@ func runDismissPass(
 				findings:        result.Findings,
 				dismissedRecord: result.Dismissed,
 				modified:        result.ModifiedCount,
+			}
+			if opts.OnBatchDone != nil {
+				opts.OnBatchDone(i, nil)
 			}
 		}(i, batch)
 	}
@@ -344,6 +392,32 @@ func runDismissPass(
 // splitFindingsByCategory groups findings by Category for the
 // consolidator's batches. Patterns almost always live within a
 // category (input-validation, error-handling, …), so within-
+// recheckBatchLabel picks a readable label for a recheck dismiss
+// batch. Uses the dominant file (most findings) so the panel row
+// reads like a deep-review row ("internal/ui/foo.go") instead of
+// "batch 3". Falls back to "<no file>" when findings have no File set.
+func recheckBatchLabel(batch []state.DeepFinding) string {
+	if len(batch) == 0 {
+		return "empty"
+	}
+	counts := make(map[string]int)
+	for _, f := range batch {
+		counts[f.File]++
+	}
+	var dominant string
+	var max int
+	for f, n := range counts {
+		if n > max {
+			max = n
+			dominant = f
+		}
+	}
+	if dominant == "" {
+		return "<no file>"
+	}
+	return dominant
+}
+
 // category batches give the LLM the right neighborhood to spot
 // them while keeping each call's token budget bounded.
 func splitFindingsByCategory(findings []state.DeepFinding, maxPerBatch int) [][]state.DeepFinding {
