@@ -419,24 +419,50 @@ func doReviewCall(
 		{Role: "user", Content: userMessage(opts.Mode)},
 	}
 
-	// Build onToken callback to capture tool events for debug logging.
+	// Build onToken callback. ChatStream gets one slot, so this
+	// multiplexes two concerns: tool-event debug logging (via
+	// OnToolCall) and per-batch byte counting for the Batches panel's
+	// progress bar (via OnCallStream). Content bytes — anything not
+	// prefixed with the \x00 control byte (tool / thought markers) —
+	// count against the panel's per-batch progress.
 	var onToken func(string)
-	if opts.OnToolCall != nil {
+	if opts.OnToolCall != nil || opts.OnCallStream != nil {
+		var streamBytes int
+		var lastEmit int
 		onToken = func(tok string) {
-			if after, ok := strings.CutPrefix(tok, "\x00TOOL_START:"); ok {
-				// Format: \x00TOOL_START:name(args)
-				payload := after
-				if before, after, ok := strings.Cut(payload, "("); ok {
-					name := before
-					args := strings.TrimSuffix(after, ")")
-					opts.OnToolCall(callIndex, name, args, "start", "")
+			if len(tok) == 0 {
+				return
+			}
+			if tok[0] == 0x00 {
+				if opts.OnToolCall == nil {
+					return
 				}
-			} else if after, ok := strings.CutPrefix(tok, "\x00TOOL_DONE:"); ok {
-				// Format: \x00TOOL_DONE:name|status|duration
-				payload := after
-				parts := strings.SplitN(payload, "|", 3)
-				if len(parts) == 3 {
-					opts.OnToolCall(callIndex, parts[0], "", parts[1], parts[2])
+				if after, ok := strings.CutPrefix(tok, "\x00TOOL_START:"); ok {
+					// Format: \x00TOOL_START:name(args)
+					payload := after
+					if before, after, ok := strings.Cut(payload, "("); ok {
+						name := before
+						args := strings.TrimSuffix(after, ")")
+						opts.OnToolCall(callIndex, name, args, "start", "")
+					}
+				} else if after, ok := strings.CutPrefix(tok, "\x00TOOL_DONE:"); ok {
+					// Format: \x00TOOL_DONE:name|status|duration
+					payload := after
+					parts := strings.SplitN(payload, "|", 3)
+					if len(parts) == 3 {
+						opts.OnToolCall(callIndex, parts[0], "", parts[1], parts[2])
+					}
+				}
+				return
+			}
+			if opts.OnCallStream != nil {
+				streamBytes += len(tok)
+				// Throttle: one emit per >=256 bytes received. Same
+				// pattern as synthesis streaming — keeps the TUI from
+				// re-rendering on every token while still feeling live.
+				if streamBytes-lastEmit >= 256 {
+					opts.OnCallStream(callIndex, streamBytes)
+					lastEmit = streamBytes
 				}
 			}
 		}

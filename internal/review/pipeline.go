@@ -340,6 +340,12 @@ func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
 	}
 	p.onProgress("phase1", fmt.Sprintf("Batch %d: %s", batch+1, label))
 }
+func (p *progressReporter) BatchStream(batch int, bytes int) {
+	// The producer (RunReviewCalls / RunBatchesOnly) already throttles
+	// at ≥256-byte deltas, so we just forward verbatim. The Batches
+	// panel parser updates the per-batch Bytes counter on every emit.
+	p.onProgress("phase1", fmt.Sprintf("Batch %d: stream bytes=%d", batch+1, bytes))
+}
 func (p *progressReporter) RecheckProgress(status string) {
 	p.onProgress("recheck", status)
 }
@@ -983,6 +989,9 @@ func RunReviewCore(
 				default:
 					rr.BatchProgress(idx, StatusDone)
 				}
+			},
+			OnCallStream: func(idx, bytes int) {
+				rr.BatchStream(idx, bytes)
 			},
 		}
 		if dbgw.Enabled() {

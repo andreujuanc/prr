@@ -214,6 +214,11 @@ type Reporter interface {
 	AOIPrescanProgress(status string, done bool, aoiCount int)
 	InitBatches(batches []BatchInfo)
 	BatchProgress(batch int, status BatchStatus)
+	// BatchStream reports cumulative content bytes received from the
+	// LLM for one batch. The Batches panel uses it to draw a per-row
+	// progress bar from a real signal instead of a timer-only spinner.
+	// Implementations are expected to throttle further.
+	BatchStream(batch int, bytes int)
 	RecheckProgress(status string)
 	SynthesisStarted()
 	Token(token string)
@@ -227,6 +232,7 @@ func (NopReporter) ClassifyProgress(string)              {}
 func (NopReporter) AOIPrescanProgress(string, bool, int) {}
 func (NopReporter) InitBatches([]BatchInfo)              {}
 func (NopReporter) BatchProgress(int, BatchStatus)       {}
+func (NopReporter) BatchStream(int, int)                 {}
 func (NopReporter) RecheckProgress(string)               {}
 func (NopReporter) SynthesisStarted()                    {}
 func (NopReporter) Token(string)                         {}
@@ -249,6 +255,9 @@ func (o *OffsetReporter) AOIPrescanProgress(status string, done bool, aoiCount i
 func (o *OffsetReporter) InitBatches(batches []BatchInfo) {}
 func (o *OffsetReporter) BatchProgress(batch int, status BatchStatus) {
 	o.RR.BatchProgress(batch+o.Offset, status)
+}
+func (o *OffsetReporter) BatchStream(batch int, bytes int) {
+	o.RR.BatchStream(batch+o.Offset, bytes)
 }
 func (o *OffsetReporter) RecheckProgress(status string) {
 	o.RR.RecheckProgress(status)
@@ -316,6 +325,30 @@ func BuildBatches(rawDiffs map[string]string) []Batch {
 	}
 
 	return batches
+}
+
+// batchStreamToken builds an onToken closure that forwards plain
+// content-byte deltas to rr.BatchStream for one batch. Control tokens
+// (\x00TOOL_*, \x00THOUGHT_*) are skipped — they aren't part of the
+// model's textual reply and would skew the per-batch progress bar.
+// Throttled to one emit per ≥256 bytes received so the TUI doesn't
+// re-render on every token.
+func batchStreamToken(rr Reporter, idx int) func(string) {
+	if rr == nil {
+		return nil
+	}
+	var streamBytes int
+	var lastEmit int
+	return func(tok string) {
+		if len(tok) == 0 || tok[0] == 0x00 {
+			return
+		}
+		streamBytes += len(tok)
+		if streamBytes-lastEmit >= 256 {
+			rr.BatchStream(idx, streamBytes)
+			lastEmit = streamBytes
+		}
+	}
 }
 
 // ── Diff capping ────────────────────────────────────────────────────────
@@ -760,7 +793,7 @@ func RunBatchesOnly(
 				}
 
 				rr.BatchProgress(idx, StatusActive)
-				res, err := ReviewBatchWithRetry(ctx, client, systemPrompt, b, nil)
+				res, err := ReviewBatchWithRetry(ctx, client, systemPrompt, b, batchStreamToken(rr, idx))
 				results[idx] = result{index: idx, text: res, err: err}
 
 				if err != nil {
@@ -817,7 +850,7 @@ func RunBatchesOnly(
 			}
 
 			rr.BatchProgress(i, StatusActive)
-			result, err := ReviewBatchWithRetry(ctx, client, systemPrompt, batch, nil)
+			result, err := ReviewBatchWithRetry(ctx, client, systemPrompt, batch, batchStreamToken(rr, i))
 			if err != nil {
 				rr.BatchProgress(i, StatusFailed)
 				return "", nil, fmt.Errorf("batch %d/%d (%s): %w", i+1, len(batches), batch.Label, err)

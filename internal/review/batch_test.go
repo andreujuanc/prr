@@ -285,3 +285,66 @@ func TestAppendDeepFindings_EmitsFindingIDs(t *testing.T) {
 		t.Errorf("expected explicit **ID:** F-001 marker in synthesis input; got:\n%s", out)
 	}
 }
+
+// captureReporter records BatchStream calls for assertions.
+type captureReporter struct {
+	NopReporter
+	streams []struct {
+		idx, bytes int
+	}
+}
+
+func (c *captureReporter) BatchStream(idx, bytes int) {
+	c.streams = append(c.streams, struct{ idx, bytes int }{idx, bytes})
+}
+
+// TestBatchStreamToken_ThrottlesAndSkipsControl pins the producer-side
+// contract: content tokens accumulate, the BatchStream reporter is
+// called once per ≥256-byte delta with the cumulative count, and
+// control tokens (\x00TOOL_*, \x00THOUGHT_*) don't contribute bytes
+// or trigger emits. The 256-byte throttle matches synthesis streaming
+// and keeps the TUI from re-rendering on every token.
+func TestBatchStreamToken_ThrottlesAndSkipsControl(t *testing.T) {
+	rr := &captureReporter{}
+	onToken := batchStreamToken(rr, 3)
+	if onToken == nil {
+		t.Fatal("expected non-nil onToken from batchStreamToken")
+	}
+
+	// Tiny tokens below the throttle threshold should not emit yet.
+	onToken("hello ")
+	onToken("world ")
+	if len(rr.streams) != 0 {
+		t.Fatalf("expected no emit below 256-byte threshold; got %v", rr.streams)
+	}
+
+	// Control tokens are ignored — neither counted nor emitted.
+	onToken("\x00TOOL_START:read_file(foo.go)")
+	onToken("\x00THOUGHT:thinking about it")
+	if len(rr.streams) != 0 {
+		t.Fatalf("control tokens should not trigger emits; got %v", rr.streams)
+	}
+
+	// Cross the 256-byte threshold — should emit once with the
+	// cumulative total of *content* bytes only.
+	onToken(strings.Repeat("a", 300))
+	if len(rr.streams) != 1 {
+		t.Fatalf("expected exactly one emit after threshold; got %v", rr.streams)
+	}
+	got := rr.streams[0]
+	if got.idx != 3 {
+		t.Errorf("emit idx = %d, want 3", got.idx)
+	}
+	if got.bytes != len("hello ")+len("world ")+300 {
+		t.Errorf("emit bytes = %d, want %d (content only, no control tokens)",
+			got.bytes, len("hello ")+len("world ")+300)
+	}
+}
+
+// TestBatchStreamToken_NilReporter returns nil so callers can pass
+// the result to ReviewBatchWithRetry without a guard.
+func TestBatchStreamToken_NilReporter(t *testing.T) {
+	if got := batchStreamToken(nil, 0); got != nil {
+		t.Errorf("batchStreamToken(nil, 0) returned non-nil; want nil for nil reporter")
+	}
+}

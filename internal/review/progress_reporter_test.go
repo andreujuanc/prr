@@ -92,6 +92,33 @@ func TestProgressReporter_EmitsAllBatchStatuses(t *testing.T) {
 	}
 }
 
+// Pins the format of the per-batch stream emit: `Batch K: stream
+// bytes=N` with K being the 1-based batch number and N a cumulative
+// byte count. The producer (RunReviewCalls / RunBatchesOnly)
+// throttles to ≥256-byte deltas; progressReporter forwards verbatim.
+func TestProgressReporter_BatchStreamEmitsBytesLine(t *testing.T) {
+	var events []string
+	p := &progressReporter{onProgress: func(phase, msg string) {
+		events = append(events, phase+": "+msg)
+	}}
+
+	p.BatchStream(0, 512)
+	p.BatchStream(7, 2048)
+
+	want := []string{
+		"phase1: Batch 1: stream bytes=512",
+		"phase1: Batch 8: stream bytes=2048",
+	}
+	if len(events) != len(want) {
+		t.Fatalf("expected %d events, got %d: %v", len(want), len(events), events)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Errorf("event[%d]: got %q, want %q", i, events[i], want[i])
+		}
+	}
+}
+
 // Pins the format of the per-batch init events emitted by InitBatches.
 // The Batches panel parser reads `Batch K: init label=... files=...
 // kind=...` to populate row identity. Format drift breaks the panel

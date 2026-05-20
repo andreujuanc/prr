@@ -1083,6 +1083,9 @@ func runPhase3(
 				onProgress("phase3", fmt.Sprintf("Batch %d: done", idx+1))
 			}
 		},
+		OnCallStream: func(idx, bytes int) {
+			onProgress("phase3", fmt.Sprintf("Batch %d: stream bytes=%d", idx+1, bytes))
+		},
 	}
 
 	// Wire up caching to audit state
