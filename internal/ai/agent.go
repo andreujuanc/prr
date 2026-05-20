@@ -13,8 +13,16 @@ import (
 )
 
 const (
-	// defaultMaxRounds is the default maximum number of tool-calling iterations.
-	defaultMaxRounds = 50
+	// defaultMaxRounds is the default maximum number of tool-calling iterations
+	// per ChatStream call. Measured tool-call counts on the deep-review
+	// benchmark fixture average 7–12 rounds per AOI with a tail at ~17;
+	// 20 leaves comfortable headroom while preventing the pathological
+	// 2m35s rabbit-hole observed on at least one cryptography/hashing AOI
+	// where the model spun on tool calls without converging. Callers that
+	// need more headroom (e.g. interactive chat) can override with
+	// WithMaxRounds. Was 50 before; 50 was too loose to act as a circuit
+	// breaker on the long tail.
+	defaultMaxRounds = 20
 
 	// maxParallelTools caps concurrent tool execution.
 	maxParallelTools = 5
@@ -327,17 +335,29 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 		// Continue loop — next iteration sends tool results to the provider
 	}
 
-	// Check if we exhausted maxRounds
-	if countToolRounds(provMsgs) >= a.maxRounds {
+	// Per-call telemetry: rounds used, whether the cap fired. Logged at
+	// info level (not debug-gated) so benchmark output captures it
+	// without needing WithDebugLogger attached. One line per ChatStream
+	// call. Use this distribution to pick a tighter cap empirically.
+	rounds := countToolRounds(provMsgs)
+	capped := rounds >= a.maxRounds
+	if capped {
 		maxMsg := fmt.Sprintf("\n\n[max iterations (%d) reached — partial result returned]", a.maxRounds)
 		full.WriteString(maxMsg)
 		if onToken != nil {
 			onToken(maxMsg)
 		}
-		a.debugf("max rounds (%d) reached", a.maxRounds)
 	}
+	log.Printf("[agent] call complete: rounds=%d/%d%s", rounds, a.maxRounds, cappedSuffix(capped))
 
 	return full.String(), nil
+}
+
+func cappedSuffix(capped bool) string {
+	if capped {
+		return " (CAPPED)"
+	}
+	return ""
 }
 
 // countToolRounds counts the number of user messages that contain ToolResultBlocks.
