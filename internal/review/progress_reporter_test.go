@@ -154,8 +154,8 @@ func TestProgressReporter_BatchStreamEmitsBytesLine(t *testing.T) {
 	p.BatchStream(7, 2048)
 
 	want := []string{
-		"phase1: Batch 1: stream bytes=512",
-		"phase1: Batch 8: stream bytes=2048",
+		batchPhase + ": Batch 1: stream bytes=512",
+		batchPhase + ": Batch 8: stream bytes=2048",
 	}
 	if len(events) != len(want) {
 		t.Fatalf("expected %d events, got %d: %v", len(want), len(events), events)
@@ -187,9 +187,9 @@ func TestProgressReporter_InitBatchesEmitsPerBatchIdentity(t *testing.T) {
 		t.Fatalf("expected 1 aggregate + 2 init events, got %d: %v", len(events), events)
 	}
 	wantPrefixes := []string{
-		`phase1: Initialized 2 batches`,
-		`phase1: Batch 1: init label="auth/injection [critical]" files=2 kind=aoi-driven`,
-		`phase1: Batch 2: init label="internal/ui" files=4 kind=general`,
+		batchPhase + `: Initialized 2 batches`,
+		batchPhase + `: Batch 1: init label="auth/injection [critical]" files=2 kind=aoi-driven`,
+		batchPhase + `: Batch 2: init label="internal/ui" files=4 kind=general`,
 	}
 	for i, want := range wantPrefixes {
 		if !strings.HasPrefix(events[i], want) {

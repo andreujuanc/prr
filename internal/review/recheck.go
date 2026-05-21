@@ -168,7 +168,11 @@ func RecheckFindings(
 	// group + new merged findings. Everything then flows into Pass 2
 	// (dismiss) — including the merged ones — so a bad consolidation
 	// can still be dropped downstream.
-	postConsolidate, consolidatedCount, consolErr := runConsolidatePass(ctx, client, findings, opts, maxPerBatch)
+	// Wrap the panel hooks with a "consolidate · " label prefix so
+	// the Batches panel can tell consolidate rows from dismiss rows
+	// at a glance.
+	consolOpts := withLabelPrefix(opts, "consolidate · ")
+	postConsolidate, consolidatedCount, consolBatches, consolErr := runConsolidatePass(ctx, client, findings, consolOpts, maxPerBatch)
 	if consolErr != nil {
 		log.Printf("Recheck pass 1 (consolidate) failed: %v — proceeding with original findings", consolErr)
 		postConsolidate = findings
@@ -181,7 +185,12 @@ func RecheckFindings(
 	postConsolidate = ApplySystemicGate(postConsolidate)
 
 	// ── Pass 2: Dismissal over the merged set ──────────────────
-	dismissResult, dismissErr := runDismissPass(ctx, client, postConsolidate, opts, maxPerBatch, emit)
+	// Offset the dismiss batch indices by the consolidate batch
+	// count so the two passes don't collide in the panel's
+	// State.Batches map. Prefix the labels so they're distinguishable.
+	dismissOpts := withLabelPrefix(opts, "dismiss · ")
+	dismissOpts = withIndexOffset(dismissOpts, consolBatches)
+	dismissResult, dismissErr := runDismissPass(ctx, client, postConsolidate, dismissOpts, maxPerBatch, emit)
 	if dismissErr != nil {
 		log.Printf("Recheck pass 2 (dismiss) failed: %v — keeping post-consolidate set", dismissErr)
 		emit(total)
@@ -211,18 +220,34 @@ func RecheckFindings(
 // absorbedCount sums the constituents of every accepted merge group
 // (e.g. one merge of 3 findings = 3 absorbed). Tracks "how many of
 // the input findings ended up inside a systemic" for the report.
+//
+// batchCount is the number of LLM calls made — used by the caller
+// to offset the dismiss pass's batch indices so they don't collide
+// with the consolidate pass's indices in the Batches panel.
 func runConsolidatePass(
 	ctx context.Context,
 	client ai.Client,
 	findings []state.DeepFinding,
 	opts RecheckOptions,
 	maxPerBatch int,
-) (out []state.DeepFinding, absorbedCount int, err error) {
+) (out []state.DeepFinding, absorbedCount int, batchCount int, err error) {
 	if len(findings) == 0 {
-		return findings, 0, nil
+		return findings, 0, 0, nil
 	}
 	if len(findings) <= maxPerBatch {
-		return recheckConsolidateBatch(ctx, client, findings, opts)
+		// Single-batch path. Fire the panel hooks so the consolidate
+		// step shows a row even when there's only one call.
+		if opts.OnBatchInit != nil {
+			opts.OnBatchInit(0, recheckBatchLabel(findings), distinctFileCount(findings))
+		}
+		if opts.OnBatchActive != nil {
+			opts.OnBatchActive(0)
+		}
+		r, absorbed, err := recheckConsolidateBatch(ctx, client, findings, opts)
+		if opts.OnBatchDone != nil {
+			opts.OnBatchDone(0, err)
+		}
+		return r, absorbed, 1, err
 	}
 
 	// Batch by category. Each batch is consolidated independently —
@@ -233,6 +258,14 @@ func runConsolidatePass(
 	maxConc := opts.MaxConcurrency
 	if maxConc <= 0 {
 		maxConc = 5
+	}
+
+	// Announce every batch up front so the panel shows them all as
+	// queued before any LLM call lands.
+	if opts.OnBatchInit != nil {
+		for i, batch := range batches {
+			opts.OnBatchInit(i, recheckBatchLabel(batch), distinctFileCount(batch))
+		}
 	}
 
 	type batchOut struct {
@@ -251,15 +284,27 @@ func runConsolidatePass(
 				defer func() { <-sem }()
 			case <-ctx.Done():
 				outs[i] = batchOut{findings: batch}
+				if opts.OnBatchDone != nil {
+					opts.OnBatchDone(i, ctx.Err())
+				}
 				return
+			}
+			if opts.OnBatchActive != nil {
+				opts.OnBatchActive(i)
 			}
 			r, absorbed, err := recheckConsolidateBatch(ctx, client, batch, opts)
 			if err != nil {
 				log.Printf("Recheck consolidate batch %d failed: %v (keeping all)", i+1, err)
 				outs[i] = batchOut{findings: batch}
+				if opts.OnBatchDone != nil {
+					opts.OnBatchDone(i, err)
+				}
 				return
 			}
 			outs[i] = batchOut{findings: r, absorbed: absorbed}
+			if opts.OnBatchDone != nil {
+				opts.OnBatchDone(i, nil)
+			}
 		}(i, batch)
 	}
 	wg.Wait()
@@ -270,7 +315,7 @@ func runConsolidatePass(
 		combined = append(combined, o.findings...)
 		totalAbsorbed += o.absorbed
 	}
-	return combined, totalAbsorbed, nil
+	return combined, totalAbsorbed, len(batches), nil
 }
 
 // runDismissPass runs dismissal on the post-consolidate set.
@@ -404,6 +449,49 @@ func recheckBatchLabel(batch []state.DeepFinding) string {
 		return "_uncategorized"
 	}
 	return cat
+}
+
+// withLabelPrefix returns a copy of opts whose OnBatchInit prepends
+// the given prefix to each label. Lets the recheck wrapper tag
+// consolidate vs dismiss rows in the panel without changing the
+// underlying batch functions.
+func withLabelPrefix(opts RecheckOptions, prefix string) RecheckOptions {
+	if opts.OnBatchInit == nil {
+		return opts
+	}
+	inner := opts.OnBatchInit
+	opts.OnBatchInit = func(idx int, label string, n int) {
+		inner(idx, prefix+label, n)
+	}
+	return opts
+}
+
+// withIndexOffset returns a copy of opts whose OnBatch* hooks shift
+// every batch index by offset. Used so the dismiss pass's batches
+// don't collide with the consolidate pass's in the panel state.
+func withIndexOffset(opts RecheckOptions, offset int) RecheckOptions {
+	if offset == 0 {
+		return opts
+	}
+	if opts.OnBatchInit != nil {
+		inner := opts.OnBatchInit
+		opts.OnBatchInit = func(idx int, label string, n int) {
+			inner(idx+offset, label, n)
+		}
+	}
+	if opts.OnBatchActive != nil {
+		inner := opts.OnBatchActive
+		opts.OnBatchActive = func(idx int) {
+			inner(idx + offset)
+		}
+	}
+	if opts.OnBatchDone != nil {
+		inner := opts.OnBatchDone
+		opts.OnBatchDone = func(idx int, err error) {
+			inner(idx+offset, err)
+		}
+	}
+	return opts
 }
 
 // distinctFileCount counts the unique files touched by a batch of

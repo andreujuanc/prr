@@ -296,6 +296,12 @@ func (p *progressReporter) ClassifyProgress(status string) {
 func (p *progressReporter) AOIPrescanProgress(status string, done bool, aoiCount int) {
 	p.onProgress("aoi", status)
 }
+// batchPhase is the progress-phase name the Batches panel listens on
+// for per-batch lifecycle messages. Single constant so a rename is one
+// edit, not many — and so the pinning tests in this package can
+// reference the same value.
+const batchPhase = "phase1"
+
 func (p *progressReporter) InitBatches(batches []BatchInfo) {
 	// Emit total + breakdown in one message so the TUI's deep-review
 	// row can show "5 AOI-driven + 7 general" instead of just a flat
@@ -311,7 +317,7 @@ func (p *progressReporter) InitBatches(batches []BatchInfo) {
 			general++
 		}
 	}
-	p.onProgress("phase1", fmt.Sprintf("Initialized %d batches (%d AOI-driven, %d general)",
+	p.onProgress(batchPhase, fmt.Sprintf("Initialized %d batches (%d AOI-driven, %d general)",
 		len(batches), aoi, general))
 
 	// Per-batch identity. These feed the Batches panel parser so each
@@ -323,7 +329,7 @@ func (p *progressReporter) InitBatches(batches []BatchInfo) {
 		if b.Kind == BatchGeneral {
 			kind = "general"
 		}
-		p.onProgress("phase1", fmt.Sprintf("Batch %d: init label=%q files=%d kind=%s",
+		p.onProgress(batchPhase, fmt.Sprintf("Batch %d: init label=%q files=%d kind=%s",
 			i+1, b.Label, b.NumFiles, kind))
 	}
 }
@@ -337,13 +343,13 @@ func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
 	case StatusFailed:
 		label = "failed"
 	}
-	p.onProgress("phase1", fmt.Sprintf("Batch %d: %s", batch+1, label))
+	p.onProgress(batchPhase, fmt.Sprintf("Batch %d: %s", batch+1, label))
 }
 func (p *progressReporter) BatchStream(batch int, bytes int) {
 	// The producer (RunReviewCalls / RunBatchesOnly) already throttles
 	// at ≥256-byte deltas, so we just forward verbatim. The Batches
 	// panel parser updates the per-batch Bytes counter on every emit.
-	p.onProgress("phase1", fmt.Sprintf("Batch %d: stream bytes=%d", batch+1, bytes))
+	p.onProgress(batchPhase, fmt.Sprintf("Batch %d: stream bytes=%d", batch+1, bytes))
 }
 func (p *progressReporter) RecheckProgress(status string) {
 	p.onProgress("recheck", status)

@@ -111,6 +111,11 @@ func TestRunReviewCalls_FallbackBatchProducesDeepFindings(t *testing.T) {
 	if res.Findings[0].Severity != "high" {
 		t.Errorf("finding Severity = %q", res.Findings[0].Severity)
 	}
+	// Category is what recheck and synthesis route on; without this
+	// the round-trip test passes even if the adapter drops it.
+	if res.Findings[0].Category != "security" {
+		t.Errorf("finding Category = %q, want security", res.Findings[0].Category)
+	}
 }
 
 // TestAssembleFallbackDiffs pins the input shape passed to the batch

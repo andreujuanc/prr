@@ -48,6 +48,10 @@ func doFallbackBatchCall(
 
 	parsed := ParseBatchResult(raw)
 	if parsed == nil {
+		// Wrapping errReviewParse is intentional: runReviewCallWithRetry
+		// uses errors.Is(err, errReviewParse) to short-circuit retries
+		// for shape failures, and a fallback batch that returned
+		// unparseable prose isn't going to fix itself on retry either.
 		return nil, fmt.Errorf("%w: fallback batch %q produced no parseable findings",
 			errReviewParse, batch.Label)
 	}

@@ -458,6 +458,16 @@ func doReviewCall(
 	}
 	validateReviewResult(call, result)
 
+	// Category guard: drop any finding whose category isn't in the
+	// canonical taxonomy. The deep-review prompt enumerates the
+	// valid categories — if the model still emits something
+	// out-of-list, downstream code (recheck batches by category,
+	// audit reports group by category) silently mishandles it.
+	// Cheaper to drop here than to chase the resulting weirdness.
+	if result != nil {
+		result.Findings = filterValidCategories(call, result.Findings)
+	}
+
 	// In-loop evidence verification: every emitted finding carries
 	// a verbatim snippet (per the prompts); we match it against the
 	// cited file. Mismatches get one corrector round trip in the
@@ -479,13 +489,42 @@ func doReviewCall(
 	return result, nil
 }
 
+// filterValidCategories drops findings whose Category isn't in the
+// canonical taxonomy (ai.CategoryExists). Each drop is logged with
+// the call's identity so prompt drift is visible without polluting
+// the result. An empty Category passes through — that's a separate
+// validation concern handled by ValidateAndNormalize.
+//
+// "Drop, don't retry" is the lightest fix: the deep-review prompt
+// already enumerates the valid categories. If the model still emits
+// something off-taxonomy, retrying the same prompt would likely
+// produce the same drift. Better to log and move on.
+func filterValidCategories(call ReviewCall, in []state.DeepFinding) []state.DeepFinding {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]state.DeepFinding, 0, len(in))
+	for _, f := range in {
+		if f.Category != "" && !ai.CategoryExists(f.Category) {
+			log.Printf("review: %s call (%s/%s) dropping finding %q — category %q is not in the canonical taxonomy",
+				call.Type, call.Category, call.Subcategory, f.Title, f.Category)
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // buildCallOnToken constructs the ChatStream onToken callback for one
 // call. ChatStream offers one slot, so this multiplexes two concerns:
 // tool-event debug logging (OnToolCall) and per-batch byte counting
 // for the Batches panel's progress bar (OnCallStream). Content bytes
-// — anything not prefixed with the \x00 control byte (tool / thought
-// markers) — feed the per-batch counter; control tokens feed the
-// tool-call hook. Returns nil when neither hook is configured.
+// — anything not prefixed with the \x00 control byte — feed the
+// per-batch counter. Of the \x00-prefixed control tokens, only
+// TOOL_START and TOOL_DONE dispatch to OnToolCall; THOUGHT_ markers
+// are intentionally dropped (no consumer wants them and surfacing
+// thoughts would dilute the tool-call debug log). Returns nil when
+// neither hook is configured.
 //
 // Extracted out so both the AOI-driven path and the fallback-batch
 // path build the same callback shape with no copy/paste drift.

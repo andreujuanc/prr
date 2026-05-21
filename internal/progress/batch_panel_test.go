@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -70,9 +71,14 @@ func TestRenderBatchesPanel_SmallShape(t *testing.T) {
 			t.Errorf("active row missing %q in:\n%s", want, out)
 		}
 	}
-	// Bytes 1100 of estimate 4000 = 27.5%, rendered as "27%".
-	if !strings.Contains(out, "27%") {
-		t.Errorf("active row missing 27%% (1100/4000); got:\n%s", out)
+	// Bytes 1100 of BatchByteEstimate = 27.5%, rendered as "27%".
+	// Pinned via the constant so a tuning change in the production
+	// estimate updates both sides in lockstep.
+	bytes := 1100.0
+	est := float64(BatchByteEstimate)
+	wantPct := fmt.Sprintf("%d%%", int(bytes/est*100))
+	if !strings.Contains(out, wantPct) {
+		t.Errorf("active row missing %s (1100/%d); got:\n%s", wantPct, BatchByteEstimate, out)
 	}
 
 	// Tail rows.

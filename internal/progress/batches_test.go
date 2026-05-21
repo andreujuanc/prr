@@ -26,6 +26,9 @@ func TestParseBatchEvent_LifecycleTransitions(t *testing.T) {
 	if b.Status != BatchQueued {
 		t.Errorf("init: status = %q, want %q", b.Status, BatchQueued)
 	}
+	if !b.StartedAt.IsZero() {
+		t.Errorf("init: StartedAt should be zero, got %v", b.StartedAt)
+	}
 
 	if !ParseBatchEvent(s, "Batch 3: active") {
 		t.Fatal("active: expected match")

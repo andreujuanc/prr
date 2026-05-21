@@ -121,8 +121,13 @@ func TestApplyEvent_SilentMessagesStillParseButHideFromDetail(t *testing.T) {
 			parsed := false
 			cfg := Config{
 				Phases: []PhaseDef{{Name: "p1", Label: "p1"}},
+				// Use the real batch parser so the test verifies state
+				// actually mutates on the silent path, not just that the
+				// callback fired. A stub that flipped a flag couldn't
+				// catch a short-circuit before the counter update.
 				ParseEvent: func(s *State, phase, message string) {
 					parsed = true
+					ParseBatchEvent(s, message)
 				},
 			}
 			m := newUI(cfg)
@@ -140,6 +145,33 @@ func TestApplyEvent_SilentMessagesStillParseButHideFromDetail(t *testing.T) {
 				t.Errorf("silent message should still activate the row; status = %q", m.phases[0].Status)
 			}
 		})
+	}
+}
+
+// TestApplyEvent_SilentBatchEventsMutateState verifies the silent path
+// actually drives state through ParseBatchEvent end to end — a
+// regression where applyEvent short-circuits before invoking ParseEvent
+// would leave Detail empty (passing the silent-filter test) but the
+// Batches map empty too, breaking the panel.
+func TestApplyEvent_SilentBatchEventsMutateState(t *testing.T) {
+	cfg := Config{
+		Phases:     []PhaseDef{{Name: "p1", Label: "p1"}},
+		ParseEvent: func(s *State, phase, message string) { ParseBatchEvent(s, message) },
+	}
+	m := newUI(cfg)
+	m.applyEvent("p1", `Batch 1: init label="x" files=2 kind=general`)
+	m.applyEvent("p1", "Batch 1: active")
+	m.applyEvent("p1", "Batch 1: stream bytes=2048")
+
+	b := m.state.Batches[0]
+	if b == nil {
+		t.Fatal("batch 0 not populated; ParseEvent did not reach ParseBatchEvent")
+	}
+	if b.Status != BatchActive {
+		t.Errorf("status = %q, want %q", b.Status, BatchActive)
+	}
+	if b.Bytes != 2048 {
+		t.Errorf("bytes = %d, want 2048", b.Bytes)
 	}
 }
 
