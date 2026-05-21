@@ -23,6 +23,8 @@ Produce a JSON object matching this schema:
   "entry_points": [
     {
       "kind": "http | queue | scheduled | cli | rpc | webhook | other",
+      "file": "optional path to a representative example, e.g. 'internal/api/handlers/routes.go'. Omit when the surface is spread across many files with no single anchor.",
+      "symbol": "optional function/route/handler name within `file`, e.g. 'registerAdminRoutes'. Omit when `file` is empty or no specific symbol stands out.",
       "retry_model": "Who retries on failure and what triggers retry. E.g. 'caller retries; framework does not' or 'queue redrives with exponential backoff'.",
       "batch_model": "Single-record or batched? If batched, does one bad record fail the whole batch or is per-record isolation enforced?",
       "validation_at": "boundary | handler | both | none"

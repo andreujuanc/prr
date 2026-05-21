@@ -1017,6 +1017,44 @@ func TestRuntimeModel_Render_Full(t *testing.T) {
 	}
 }
 
+func TestRuntimeModel_Render_EntryPointAnchors(t *testing.T) {
+	cases := []struct {
+		name string
+		ep   RuntimeEntryPoint
+		want string
+	}{
+		{
+			name: "file+symbol renders as backtick file:symbol",
+			ep:   RuntimeEntryPoint{Kind: "http", File: "internal/api/routes.go", Symbol: "registerAdminRoutes", ValidationAt: "boundary"},
+			want: "`internal/api/routes.go:registerAdminRoutes`",
+		},
+		{
+			name: "file only renders without colon",
+			ep:   RuntimeEntryPoint{Kind: "queue", File: "internal/workers/consumer.go", ValidationAt: "handler"},
+			want: "`internal/workers/consumer.go`",
+		},
+		{
+			name: "symbol without file is dropped (file is the load-bearing anchor)",
+			ep:   RuntimeEntryPoint{Kind: "cli", Symbol: "main", ValidationAt: "boundary"},
+			want: "`cli` — validation at boundary",
+		},
+		{
+			name: "neither renders unchanged",
+			ep:   RuntimeEntryPoint{Kind: "scheduled", ValidationAt: "none"},
+			want: "`scheduled` — validation at none",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := &RuntimeModel{EntryPoints: []RuntimeEntryPoint{c.ep}}
+			out := m.Render()
+			if !strings.Contains(out, c.want) {
+				t.Errorf("missing %q in:\n%s", c.want, out)
+			}
+		})
+	}
+}
+
 func TestRuntimeModel_Render_PartialOmitsEmptyFields(t *testing.T) {
 	m := &RuntimeModel{AuthModel: "single auth check at the gateway"}
 	out := m.Render()
