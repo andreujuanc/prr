@@ -9,6 +9,67 @@ import (
 	"github.com/andreujuanc/prr/internal/state"
 )
 
+// TestBuildPrompts_ContainCommonPartial pins the contract that the
+// shared review_common.md content (defenses_checked vocabulary, trace
+// requirements, severity calibration) gets substituted into both
+// individual and grouped prompts. Without this, a missing or
+// renamed placeholder would silently produce prompts with no
+// defense/trace/severity guidance — findings would degrade quietly.
+func TestBuildPrompts_ContainCommonPartial(t *testing.T) {
+	aoi := security.AreaOfInterest{
+		File:        "a.go",
+		Line:        1,
+		Category:    "authorization",
+		Subcategory: "missing-check",
+		ID:          "a-go-1",
+		Concern:     "test",
+	}
+	call := ReviewCall{
+		Type: "individual", Category: aoi.Category, Subcategory: aoi.Subcategory,
+		AOIs: []security.AreaOfInterest{aoi}, Files: []string{aoi.File},
+	}
+
+	cases := []struct {
+		name   string
+		prompt string
+	}{
+		{"individual", BuildIndividualPrompt(ModeAudit, "", "", "", nil, call)},
+		{"grouped", BuildGroupedPrompt(ModeAudit, "", "", "", nil, ReviewCall{
+			Type: "grouped", Category: aoi.Category, Subcategory: aoi.Subcategory,
+			AOIs: []security.AreaOfInterest{aoi}, Files: []string{aoi.File},
+		})},
+	}
+
+	// Each phrase is unique to the common partial and load-bearing —
+	// dropping any would silently weaken finding quality.
+	wantPhrases := []string{
+		"## Defenses Checked",
+		"## End-to-End Trace",
+		"## Severity Calibration",
+		// Extended defense-required categories.
+		"`authentication`",
+		"`cryptography`",
+		"`web-security`",
+		// Canonical defense tags survive the move.
+		"boundary-authz",
+		"schema-validation",
+		// Trace hop roles.
+		"`suspect`",
+		"`boundary`",
+	}
+	for _, c := range cases {
+		// Substitution must have happened — no raw placeholder left.
+		if strings.Contains(c.prompt, "{{REVIEW_COMMON}}") {
+			t.Errorf("%s: {{REVIEW_COMMON}} not substituted", c.name)
+		}
+		for _, p := range wantPhrases {
+			if !strings.Contains(c.prompt, p) {
+				t.Errorf("%s: missing common-partial phrase %q", c.name, p)
+			}
+		}
+	}
+}
+
 // individualCall wraps a single AOI into a ReviewCall suitable for
 // BuildIndividualPrompt, keeping the tests concise.
 func individualCall(aoi security.AreaOfInterest) ReviewCall {

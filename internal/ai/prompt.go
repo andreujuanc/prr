@@ -77,15 +77,29 @@ var ChatPrompt string
 
 // ReviewIndividualPrompt is the base system prompt for individual AOI deep review.
 // Composed with mode preamble, project context, AOI details, and categories at runtime.
+// Contains a {{REVIEW_COMMON}} placeholder for the shared defenses /
+// trace / severity sections — substituted at build time by
+// review.BuildIndividualPrompt.
 //
 //go:embed prompts/review_individual.md
 var ReviewIndividualPrompt string
 
 // ReviewGroupedPrompt is the base system prompt for grouped subcategory review.
 // Composed with mode preamble, project context, AOI list, and categories at runtime.
+// Contains a {{REVIEW_COMMON}} placeholder for the shared defenses /
+// trace / severity sections — substituted at build time by
+// review.BuildGroupedPrompt.
 //
 //go:embed prompts/review_grouped.md
 var ReviewGroupedPrompt string
+
+// ReviewCommonPrompt is the shared sections used by both individual
+// and grouped deep-review prompts: defenses_checked vocabulary,
+// end-to-end trace requirements, and severity calibration anchors.
+// Substituted into {{REVIEW_COMMON}} placeholders at prompt-build time.
+//
+//go:embed prompts/review_common.md
+var ReviewCommonPrompt string
 
 // AuditSynthesisPrompt is the system prompt for Phase 4 audit synthesis.
 // It instructs the LLM to produce a structured executive summary from findings.

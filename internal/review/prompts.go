@@ -43,8 +43,10 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPri
 		sb.WriteString("Focus on whether the concern is a real, current problem.\n\n")
 	}
 
-	// Base prompt
-	sb.WriteString(ai.ReviewIndividualPrompt)
+	// Base prompt — {{REVIEW_COMMON}} is substituted with the shared
+	// defenses/trace/severity sections so individual and grouped prompts
+	// stay in lockstep.
+	sb.WriteString(strings.Replace(ai.ReviewIndividualPrompt, "{{REVIEW_COMMON}}", ai.ReviewCommonPrompt, 1))
 
 	// Project context
 	if projectContext != "" {
@@ -112,8 +114,10 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 		sb.WriteString("Focus on whether these concerns are real, current problems.\n\n")
 	}
 
-	// Base prompt
-	sb.WriteString(ai.ReviewGroupedPrompt)
+	// Base prompt — {{REVIEW_COMMON}} is substituted with the shared
+	// defenses/trace/severity sections so individual and grouped prompts
+	// stay in lockstep.
+	sb.WriteString(strings.Replace(ai.ReviewGroupedPrompt, "{{REVIEW_COMMON}}", ai.ReviewCommonPrompt, 1))
 
 	// Project context
 	if projectContext != "" {
