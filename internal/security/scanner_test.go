@@ -160,7 +160,7 @@ func TestParseAOIResult_NewFormat(t *testing.T) {
 		t.Errorf("got Concern %q", aoi.Concern)
 	}
 	if len(aoi.Categories) != 2 {
-		t.Errorf("got %d dimensions, want 2", len(aoi.Categories))
+		t.Errorf("got %d categories, want 2", len(aoi.Categories))
 	}
 }
 
@@ -340,7 +340,7 @@ func TestBuildAOIBatches(t *testing.T) {
 	}
 }
 
-func TestDimensionKey(t *testing.T) {
+func TestCategoryKey(t *testing.T) {
 	tests := []struct {
 		name string
 		cats []string
@@ -348,7 +348,7 @@ func TestDimensionKey(t *testing.T) {
 	}{
 		{"nil cats", nil, "_all_"},
 		{"empty cats", []string{}, "_all_"},
-		{"single dim", []string{"testing"}, "testing"},
+		{"single cat", []string{"testing"}, "testing"},
 		{"multiple cats sorted", []string{"a", "b", "c"}, "a,b,c"},
 		{"multiple cats unsorted", []string{"c", "a", "b"}, "a,b,c"},
 	}
@@ -363,7 +363,7 @@ func TestDimensionKey(t *testing.T) {
 	}
 }
 
-func TestBuildAOIBatchesClassified_GroupsByDimensions(t *testing.T) {
+func TestBuildAOIBatchesClassified_GroupsByCategories(t *testing.T) {
 	rawDiffs := map[string]string{
 		"handler.go":      "handler code",
 		"handler_test.go": "test code",
@@ -378,8 +378,8 @@ func TestBuildAOIBatchesClassified_GroupsByDimensions(t *testing.T) {
 
 	batches := buildAOIBatchesClassified(rawDiffs, fileCategories, false)
 
-	// handler.go and repo.go share dimensions, so they should be in the same batch
-	// handler_test.go has different dimensions, so it should be in a separate batch
+	// handler.go and repo.go share categories, so they should be in the same batch.
+	// handler_test.go has different categories, so it should be in a separate batch.
 	if len(batches) != 2 {
 		t.Fatalf("got %d batches, want 2", len(batches))
 	}
@@ -411,16 +411,16 @@ func TestBuildAOIBatchesClassified_GroupsByDimensions(t *testing.T) {
 		t.Errorf("handler batch has %d files, want 2 (handler.go + repo.go)", len(handlerBatch.files))
 	}
 
-	// Verify dimensions are attached to batches
+	// Verify categories are attached to batches
 	if len(testBatch.categories) != 2 {
-		t.Errorf("test batch has %d dimensions, want 2", len(testBatch.categories))
+		t.Errorf("test batch has %d categories, want 2", len(testBatch.categories))
 	}
 	if len(handlerBatch.categories) != 2 {
-		t.Errorf("handler batch has %d dimensions, want 2", len(handlerBatch.categories))
+		t.Errorf("handler batch has %d categories, want 2", len(handlerBatch.categories))
 	}
 }
 
-func TestBuildAOIBatchesClassified_NilDimensions(t *testing.T) {
+func TestBuildAOIBatchesClassified_NilCategories(t *testing.T) {
 	rawDiffs := map[string]string{
 		"a.go": "code a",
 		"b.go": "code b",
@@ -436,7 +436,7 @@ func TestBuildAOIBatchesClassified_NilDimensions(t *testing.T) {
 		t.Errorf("batch has %d files, want 2", len(batches[0].files))
 	}
 	if batches[0].categories != nil {
-		t.Errorf("batch dimensions should be nil, got %v", batches[0].categories)
+		t.Errorf("batch categories should be nil, got %v", batches[0].categories)
 	}
 }
 
@@ -462,18 +462,18 @@ func TestBuildAOIBatchesClassified_ExcludesFiles(t *testing.T) {
 	}
 }
 
-func TestBuildAOIScanPromptWithDimensions(t *testing.T) {
-	// With specific dimensions — prompt should contain those dimensions only
+func TestBuildAOIScanPromptWithCategories(t *testing.T) {
+	// With specific categories — prompt should contain those categories only
 	prompt := buildAOIScanPromptWithCategories(true, []string{"testing"})
 	if !containsSubstring(prompt, "TESTING") {
-		t.Error("prompt should contain TESTING dimension")
+		t.Error("prompt should contain TESTING category")
 	}
-	// Should NOT contain unrelated dimensions
+	// Should NOT contain unrelated categories
 	if containsSubstring(prompt, "CRYPTOGRAPHY") {
 		t.Error("prompt should not contain CRYPTOGRAPHY when only testing is specified")
 	}
 
-	// With nil dimensions — prompt should contain all categorys
+	// With nil categories — prompt should contain all categories
 	promptAll := buildAOIScanPromptWithCategories(true, nil)
 	if !containsSubstring(promptAll, "TESTING") {
 		t.Error("prompt with nil cats should contain TESTING")

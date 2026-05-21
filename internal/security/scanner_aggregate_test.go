@@ -88,7 +88,7 @@ func TestScanAreasOfInterestClassified_AbortsAboveThreshold(t *testing.T) {
 		},
 	}
 
-	// Build three distinct dimension groups so we get three batches.
+	// Build three distinct category groups so we get three batches.
 	rawDiffs := map[string]string{
 		"a.go": "=== a.go ===\npackage a\n",
 		"b.go": "=== b.go ===\npackage b\n",
@@ -121,7 +121,7 @@ func TestScanAreasOfInterestClassified_PartialUnderThreshold_ProceedsWithWarning
 	// must surface so the user knows recall is degraded for the
 	// affected file(s).
 	//
-	// 5 distinct dimension groups → 5 batches. One fails (with retry),
+	// 5 distinct category groups → 5 batches. One fails (with retry),
 	// four succeed.
 	transient := errors.New("502 bad gateway")
 	client := &stubClient{

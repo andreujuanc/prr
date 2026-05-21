@@ -20,8 +20,8 @@ import (
 //   - Lines (string, e.g. "45-62") → Line (int): parsed first integer.
 //   - Description → Detail.
 //   - Other DeepFinding fields (Evidence, Trigger, Subcategory,
-//     Dimension, AOIID, FindingID) are dropped — the UI doesn't render
-//     them yet and the navigable Review tab only needs the basics.
+//     AOIID, FindingID) are dropped — the UI doesn't render them
+//     yet and the navigable Review tab only needs the basics.
 func buildSyntheticReviewFromDeepFindings(deep []state.DeepFinding) *state.ReviewOutput {
 	out := &state.ReviewOutput{
 		Verdict:  "comment",

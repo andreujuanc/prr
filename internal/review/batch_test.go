@@ -218,7 +218,7 @@ func TestParseBatchResult_StructuredFindings(t *testing.T) {
 			{
 				"severity": "high",
 				"confidence": "high",
-				"dimension": "correctness",
+				"category": "correctness",
 				"title": "Off-by-one in expiry",
 				"line": 87,
 				"detail": "exp <= now accepts an expired token.",

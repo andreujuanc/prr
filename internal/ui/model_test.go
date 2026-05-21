@@ -1116,7 +1116,7 @@ func TestWindowSize_SmallTerminal(t *testing.T) {
 	if m.width != 40 || m.height != 10 {
 		t.Errorf("expected 40x10, got %dx%d", m.width, m.height)
 	}
-	// Should not panic with small categorys
+	// Should not panic with small dimensions
 }
 
 // ── AI batch status tracking tests ──────────────────────────────────────

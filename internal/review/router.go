@@ -75,20 +75,20 @@ type RouteResult struct {
 // RouteAOIs takes all AOI scan results and organizes them into review calls.
 // Individual AOIs get their own call; grouped AOIs are batched by subcategory.
 //
-// focusDimensions filters which AOIs make it to Phase 3. If nil or empty,
-// all AOIs are included. If set, only AOIs whose dimensions overlap with
+// focusCategories filters which AOIs make it to Phase 3. If nil or empty,
+// all AOIs are included. If set, only AOIs whose categories overlap with
 // the focus set are included.
 //
 // maxGroupSize caps the number of AOIs per grouped call. If a subcategory
 // has more AOIs than this, it is split into multiple grouped calls.
 // Use 0 for no limit.
-func RouteAOIs(results []security.AOIScanResult, focusDimensions []string, maxGroupSize int) *RouteResult {
+func RouteAOIs(results []security.AOIScanResult, focusCategories []string, maxGroupSize int) *RouteResult {
 	if maxGroupSize <= 0 {
 		maxGroupSize = 10 // default cap per the plan
 	}
 
-	focusSet := make(map[string]bool, len(focusDimensions))
-	for _, d := range focusDimensions {
+	focusSet := make(map[string]bool, len(focusCategories))
+	for _, d := range focusCategories {
 		focusSet[d] = true
 	}
 	hasFocus := len(focusSet) > 0
@@ -221,15 +221,15 @@ func (r *RouteResult) SkippedSubcategories(maxCalls int) []string {
 	return result
 }
 
-// aoiMatchesFocus returns true if any of the AOI's dimensions overlap
+// aoiMatchesFocus returns true if any of the AOI's categories overlap
 // with the focus set.
 func aoiMatchesFocus(aoi security.AreaOfInterest, focusSet map[string]bool) bool {
 	if len(aoi.Categories) == 0 {
-		// Legacy AOIs without dimensions: always include
+		// Legacy AOIs without categories: always include
 		return true
 	}
-	for _, dim := range aoi.Categories {
-		if focusSet[dim] {
+	for _, cat := range aoi.Categories {
+		if focusSet[cat] {
 			return true
 		}
 	}

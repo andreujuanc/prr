@@ -238,7 +238,7 @@ func runConsolidatePass(
 		// Single-batch path. Fire the panel hooks so the consolidate
 		// step shows a row even when there's only one call.
 		if opts.OnBatchInit != nil {
-			opts.OnBatchInit(0, recheckBatchLabel(findings), distinctFileCount(findings))
+			opts.OnBatchInit(0, recheckBatchLabel(findings), len(findings))
 		}
 		if opts.OnBatchActive != nil {
 			opts.OnBatchActive(0)
@@ -264,7 +264,7 @@ func runConsolidatePass(
 	// queued before any LLM call lands.
 	if opts.OnBatchInit != nil {
 		for i, batch := range batches {
-			opts.OnBatchInit(i, recheckBatchLabel(batch), distinctFileCount(batch))
+			opts.OnBatchInit(i, recheckBatchLabel(batch), len(batch))
 		}
 	}
 
@@ -357,7 +357,7 @@ func runDismissPass(
 	// shape.
 	if opts.OnBatchInit != nil {
 		for i, batch := range batches {
-			opts.OnBatchInit(i, recheckBatchLabel(batch), distinctFileCount(batch))
+			opts.OnBatchInit(i, recheckBatchLabel(batch), len(batch))
 		}
 	}
 
@@ -439,10 +439,24 @@ func runDismissPass(
 // recheckBatchLabel picks a readable label for a dismiss-pass
 // batch. Dismiss now batches by category, so every finding in the
 // batch shares one — use it as the label. Falls back to
-// "_uncategorized" when missing.
+// "_uncategorized" when missing. Returns "mixed" when the batch
+// spans 2+ distinct categories — single-batch consolidate hits this
+// path, and labeling such a row with the first finding's category
+// reads as if only that one category is being processed.
 func recheckBatchLabel(batch []state.DeepFinding) string {
 	if len(batch) == 0 {
 		return "empty"
+	}
+	cats := make(map[string]struct{}, 2)
+	for _, f := range batch {
+		c := f.Category
+		if c == "" {
+			c = "_uncategorized"
+		}
+		cats[c] = struct{}{}
+		if len(cats) > 1 {
+			return "mixed"
+		}
 	}
 	cat := batch[0].Category
 	if cat == "" {
@@ -492,21 +506,6 @@ func withIndexOffset(opts RecheckOptions, offset int) RecheckOptions {
 		}
 	}
 	return opts
-}
-
-// distinctFileCount counts the unique files touched by a batch of
-// findings. Used for the panel's "N files" column so the row count
-// reflects what the row actually covers — earlier code passed the
-// finding count, which made the column read "21 files" for a batch
-// of 21 findings that actually touched 5 files.
-func distinctFileCount(batch []state.DeepFinding) int {
-	seen := make(map[string]struct{})
-	for _, f := range batch {
-		if f.File != "" {
-			seen[f.File] = struct{}{}
-		}
-	}
-	return len(seen)
 }
 
 // category batches give the LLM the right neighborhood to spot

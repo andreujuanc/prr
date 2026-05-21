@@ -71,7 +71,7 @@ func TestValidateAOIs_LogsOutOfTaxonomyCategory(t *testing.T) {
 func TestValidateAOIs_AcceptsValidCategory(t *testing.T) {
 	buf := captureLog(t)
 
-	// "error-handling" is a real dimension in /workspace/internal/ai/prompts/dimensions
+	// "error-handling" is a real category in /workspace/internal/ai/prompts/categories
 	results := []AOIScanResult{
 		{
 			File: "a.go",
@@ -88,7 +88,7 @@ func TestValidateAOIs_AcceptsValidCategory(t *testing.T) {
 	}
 }
 
-func TestValidateAOIs_LogsUnknownDimension(t *testing.T) {
+func TestValidateAOIs_LogsUnknownCategory(t *testing.T) {
 	buf := captureLog(t)
 
 	results := []AOIScanResult{
@@ -99,7 +99,7 @@ func TestValidateAOIs_LogsUnknownDimension(t *testing.T) {
 					ID:         "y-1",
 					Line:       2,
 					Category:   "correctness", // valid
-					Categories: []string{"correctness", "made-up-dim"},
+					Categories: []string{"correctness", "made-up-cat"},
 				},
 			},
 		},
@@ -107,16 +107,16 @@ func TestValidateAOIs_LogsUnknownDimension(t *testing.T) {
 	validateAOIs(results)
 
 	out := buf.String()
-	if !strings.Contains(out, "unknown dimension") {
-		t.Errorf("expected 'unknown dimension' log; got: %q", out)
+	if !strings.Contains(out, "unknown category") {
+		t.Errorf("expected 'unknown category' log; got: %q", out)
 	}
-	if !strings.Contains(out, `"made-up-dim"`) {
-		t.Errorf("log should include the invalid dimension verbatim; got: %q", out)
+	if !strings.Contains(out, `"made-up-cat"`) {
+		t.Errorf("log should include the invalid category verbatim; got: %q", out)
 	}
-	// The valid dimension shouldn't appear in the warning text — verifies
-	// we don't log every dimension.
+	// The valid category shouldn't appear in the warning text — verifies
+	// we don't log every category.
 	if strings.Contains(out, `"correctness"`) {
-		t.Errorf("valid dimension should not appear in warning logs; got: %q", out)
+		t.Errorf("valid category should not appear in warning logs; got: %q", out)
 	}
 }
 
@@ -231,7 +231,7 @@ func TestScanAreasOfInterestClassified_NoEmptyWarningWhenAOIsFound(t *testing.T)
 	// Sanity: when AOIs are returned, no empty-audit warning.
 	client := &stubClient{
 		responses: []string{
-			`[{"file": "a.go", "areas": [{"id": "a-1", "line": 1, "category": "correctness", "subcategory": "off-by-one", "urgency": "grouped", "concern": "x", "context": "y", "dimensions": ["correctness"]}]}]`,
+			`[{"file": "a.go", "areas": [{"id": "a-1", "line": 1, "category": "correctness", "subcategory": "off-by-one", "urgency": "grouped", "concern": "x", "context": "y", "categories": ["correctness"]}]}]`,
 		},
 	}
 	rawDiffs := map[string]string{"a.go": "=== a.go ===\npackage a\n"}

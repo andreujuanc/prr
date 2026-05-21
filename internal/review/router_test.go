@@ -157,12 +157,12 @@ func TestRouteAOIs_EmptyUrgencyDefaultsToGrouped(t *testing.T) {
 }
 
 func TestRouteAOIs_LegacyAOIsPassFocusFilter(t *testing.T) {
-	// Legacy AOIs without dimensions should always pass focus filter
+	// Legacy AOIs without categories should always pass focus filter
 	results := []security.AOIScanResult{
 		{
 			File: "a.go",
 			AreasOfInterest: []security.AreaOfInterest{
-				{File: "a.go", Line: 10, Category: "sql", Confidence: "high"}, // legacy, no dimensions
+				{File: "a.go", Line: 10, Category: "sql", Confidence: "high"}, // legacy, no categories
 			},
 		},
 	}

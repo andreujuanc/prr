@@ -345,6 +345,19 @@ func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
 	}
 	p.onProgress(batchPhase, fmt.Sprintf("Batch %d: %s", batch+1, label))
 }
+func (p *progressReporter) BatchProgressWithFindings(batch int, status BatchStatus, findings int) {
+	// Active/failed don't carry a finding count — fall back to the
+	// status-only emit so the wire format stays consistent.
+	if status == StatusActive || status == StatusFailed {
+		p.BatchProgress(batch, status)
+		return
+	}
+	label := "done"
+	if status == StatusCached {
+		label = "cached"
+	}
+	p.onProgress(batchPhase, fmt.Sprintf("Batch %d: %s findings=%d", batch+1, label, findings))
+}
 func (p *progressReporter) BatchStream(batch int, bytes int) {
 	// The producer (RunReviewCalls / RunBatchesOnly) already throttles
 	// at ≥256-byte deltas, so we just forward verbatim. The Batches
@@ -576,7 +589,13 @@ func RunRecheck(
 		// from the dominant file in each batch so panel rows read
 		// like "internal/ui/foo.go" rather than "batch 3".
 		OnBatchInit: func(idx int, label string, n int) {
-			onProgress(fmt.Sprintf("Batch %d: init label=%q files=%d kind=general", idx+1, label, n))
+			// unit=findings tells the Batches panel to label the
+			// count column "findings" rather than the default "files".
+			// Recheck batches reason over findings, not files; the
+			// previous "N files" reading was numerically right
+			// (distinct file count) but semantically off — the row
+			// reports the work the LLM call is doing.
+			onProgress(fmt.Sprintf("Batch %d: init label=%q files=%d kind=general unit=findings", idx+1, label, n))
 		},
 		OnBatchActive: func(idx int) {
 			onProgress(fmt.Sprintf("Batch %d: active", idx+1))
@@ -749,7 +768,7 @@ func RunReviewCore(
 		}
 	}
 
-	// ── Classification: narrow per-file dimensions ───────────────
+	// ── Classification: narrow per-file categories ───────────────
 	// Each diffed file gets classified by the fast model (handler /
 	// test / repository / model / …). The result drives the AOI
 	// pre-scan: a test file doesn't get a cryptography pass, a
@@ -1025,14 +1044,14 @@ func RunReviewCore(
 			OnCallStart: func(idx int) {
 				rr.BatchProgress(idx, StatusActive)
 			},
-			OnCallEnd: func(idx int, cached bool, callErr error) {
+			OnCallEnd: func(idx int, cached bool, callErr error, findings int) {
 				switch {
 				case cached:
-					rr.BatchProgress(idx, StatusCached)
+					rr.BatchProgressWithFindings(idx, StatusCached, findings)
 				case callErr != nil:
 					rr.BatchProgress(idx, StatusFailed)
 				default:
-					rr.BatchProgress(idx, StatusDone)
+					rr.BatchProgressWithFindings(idx, StatusDone, findings)
 				}
 			},
 			OnCallStream: func(idx, bytes int) {
@@ -1235,7 +1254,7 @@ func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed in
 
 // classifyChangedFiles classifies each diffed file by architectural
 // role (handler / test / repository / …) so the AOI pre-scan can be
-// narrowed to relevant dimensions per file. Returns a map of
+// narrowed to relevant categories per file. Returns a map of
 // filepath → category slugs suitable for
 // security.ScanAreasOfInterestClassified.
 //
@@ -1255,7 +1274,7 @@ func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed in
 // thread the flag through here.
 //
 // Failures are non-fatal: a classifier error means we fall back to
-// nil (all categorys for all files), which is the same as the
+// nil (all categories for all files), which is the same as the
 // pre-classification behavior.
 func classifyChangedFiles(
 	ctx context.Context,
@@ -1297,7 +1316,7 @@ func classifyChangedFiles(
 
 	classifications, err := classify.Classify(ctx, aoiClient, files, cached, onProgress)
 	if err != nil {
-		log.Printf("Classification partial/failed (non-fatal): %v — affected files fall back to all categorys", err)
+		log.Printf("Classification partial/failed (non-fatal): %v — affected files fall back to all categories", err)
 	}
 
 	if reviewState != nil {
@@ -1308,7 +1327,7 @@ func classifyChangedFiles(
 
 	cats := make(map[string][]string, len(classifications))
 	for path, ft := range classifications {
-		cats[path] = classify.DimensionsForType(ft)
+		cats[path] = classify.CategoriesForType(ft)
 	}
 	return cats
 }

@@ -32,7 +32,7 @@ func TestClassifyPrompt_NoToolNamesLeakIntoClaudeCode(t *testing.T) {
 	}
 }
 
-func TestDimensionsForType(t *testing.T) {
+func TestCategoriesForType(t *testing.T) {
 	tests := []struct {
 		ft       FileType
 		wantMin  int
@@ -108,24 +108,24 @@ func TestDimensionsForType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.ft), func(t *testing.T) {
-			cats := DimensionsForType(tt.ft)
+			cats := CategoriesForType(tt.ft)
 			if len(cats) < tt.wantMin {
-				t.Errorf("got %d dimensions, want at least %d: %v", len(cats), tt.wantMin, cats)
+				t.Errorf("got %d categories, want at least %d: %v", len(cats), tt.wantMin, cats)
 			}
 
-			dimSet := make(map[string]bool, len(cats))
-			for _, d := range cats {
-				dimSet[d] = true
+			catSet := make(map[string]bool, len(cats))
+			for _, c := range cats {
+				catSet[c] = true
 			}
 
 			for _, must := range tt.mustHave {
-				if !dimSet[must] {
-					t.Errorf("missing required dimension %q in %v", must, cats)
+				if !catSet[must] {
+					t.Errorf("missing required category %q in %v", must, cats)
 				}
 			}
 			for _, mustNot := range tt.mustNot {
-				if dimSet[mustNot] {
-					t.Errorf("should not contain dimension %q in %v", mustNot, cats)
+				if catSet[mustNot] {
+					t.Errorf("should not contain category %q in %v", mustNot, cats)
 				}
 			}
 		})

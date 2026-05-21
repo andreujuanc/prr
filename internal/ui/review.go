@@ -106,6 +106,13 @@ func (a *reviewReporterAdapter) InitBatches(batches []review.BatchInfo) {
 func (a *reviewReporterAdapter) BatchProgress(batch int, status review.BatchStatus) {
 	a.rr.BatchProgress(batch, batchStatusFromReview(status))
 }
+func (a *reviewReporterAdapter) BatchProgressWithFindings(batch int, status review.BatchStatus, _ int) {
+	// The in-app TUI's batch row doesn't surface the per-call finding
+	// count today (the renderer in renderBatchList shows label + status
+	// only). Forward to the status-only call so the row still flips
+	// to done/cached — drop the count.
+	a.rr.BatchProgress(batch, batchStatusFromReview(status))
+}
 func (a *reviewReporterAdapter) BatchStream(int, int) {
 	// The in-app TUI doesn't render the Batches panel today — it
 	// renders renderBatchList instead. Per-batch byte deltas have no

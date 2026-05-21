@@ -42,7 +42,7 @@ func TestClassifyBatchWithRetry_RetriesTransient(t *testing.T) {
 	// Transient error on first attempt → retry should succeed on the
 	// second. Without retry, this batch would silently classify all
 	// its files as unknown downstream, causing the AOI scan to use
-	// all categorys (expensive over-scan).
+	// all categories (expensive over-scan).
 	client := &stubClient{
 		errors: []error{
 			errors.New("connection reset by peer"),

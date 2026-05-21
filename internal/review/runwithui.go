@@ -121,7 +121,11 @@ func deepReviewSummary(s *progress.State) string {
 	}
 	aoi := s.Counters["batches_aoi_driven"]
 	general := s.Counters["batches_general"]
+	findings := s.Counters["batches_findings_total"]
 	base := fmt.Sprintf("%d done · %d cached · %d failed", done, cached, failed)
+	if findings > 0 {
+		base += fmt.Sprintf(" · %d findings", findings)
+	}
 	if aoi == 0 && general == 0 {
 		return base
 	}
@@ -275,8 +279,10 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 			s.Counters["batches_general"] = general
 		}
 	case phase == "phase1" && strings.HasPrefix(message, "Batch "):
-		// "Batch K: done|cached|failed|active" — increment per-status
-		// sub-counters on terminal statuses; ignore "active".
+		// "Batch K: done|cached|failed|active [findings=N]" — increment
+		// per-status sub-counters on terminal statuses and sum the
+		// finding counts so deepReviewSummary can render
+		// "N findings produced". "active" is ignored as a counter event.
 		// batches_done is fresh-successful only; the inline counter
 		// callback sums all three so the "X/Y" shows total progress.
 		var k int
@@ -285,8 +291,10 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 			switch status {
 			case "done":
 				s.Counters["batches_done"]++
+				s.Counters["batches_findings_total"] += findingsFromMessage(message)
 			case "cached":
 				s.Counters["batches_cached"]++
+				s.Counters["batches_findings_total"] += findingsFromMessage(message)
 			case "failed":
 				s.Counters["batches_failed"]++
 			}
@@ -358,6 +366,24 @@ func parseReviewEvent(s *progress.State, phase, message string) {
 			s.Counters["fetch_files"] = n
 		}
 	}
+}
+
+// findingsFromMessage extracts the integer after `findings=` in a
+// "Batch K: done findings=N" / "Batch K: cached findings=N" message.
+// Returns 0 when the token is absent — older wire formats and the
+// fallback diff-review path don't carry a count, and we want those
+// to roll up cleanly as zero contribution rather than triggering a
+// parse-mismatch warning.
+func findingsFromMessage(message string) int {
+	i := strings.Index(message, "findings=")
+	if i < 0 {
+		return 0
+	}
+	var n int
+	if _, err := fmt.Sscanf(message[i+len("findings="):], "%d", &n); err != nil {
+		return 0
+	}
+	return n
 }
 
 // scanCounter wraps fmt.Sscanf with a logged warning on format mismatch.

@@ -76,7 +76,7 @@ func buildAOIScanPromptWithCategories(auditMode bool, cats []string) string {
 	}
 	slugList := strings.Join(slugs, ", ")
 	prompt := strings.Replace(aoiScanPrompt, "{CATEGORIES}", categoryContent, 1)
-	prompt = strings.Replace(prompt, "{DIMENSION_SLUGS}", slugList, 1)
+	prompt = strings.Replace(prompt, "{CATEGORY_SLUGS}", slugList, 1)
 	rules := prModeRules
 	if auditMode {
 		rules = auditModeRules
@@ -561,8 +561,8 @@ var errAOIParse = errors.New("aoi: parse failure")
 //   - Empty or out-of-taxonomy `category` values. Phase 3 buckets AOIs
 //     by subcategory; a category like "shitposting" or "" would still
 //     be bucketed somewhere and pollute that bucket's review.
-//   - Dimension slugs not in the partial taxonomy. Used by --focus
-//     filtering; an unknown dim is silently dropped from filtering.
+//   - Category slugs not in the partial taxonomy. Used by --focus
+//     filtering; an unknown slug is silently dropped from filtering.
 //   - Duplicate IDs within a single file. IDs feed caching and
 //     cross-referencing; duplicates corrupt those.
 //
@@ -583,7 +583,7 @@ func validateAOIs(results []AOIScanResult) {
 
 			for _, d := range aoi.Categories {
 				if !ai.CategoryExists(d) {
-					log.Printf("aoi: %s [id=%s] uses unknown dimension %q (will be ignored by --focus filtering)",
+					log.Printf("aoi: %s [id=%s] uses unknown category %q (will be ignored by --focus filtering)",
 						r.File, aoi.ID, d)
 				}
 			}

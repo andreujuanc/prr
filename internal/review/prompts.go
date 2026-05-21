@@ -79,8 +79,8 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPri
 		sb.WriteString(section)
 	}
 
-	// Relevant dimension criteria
-	cats := relevantDimensions(aoi)
+	// Relevant category criteria
+	cats := relevantCategories(aoi)
 	if len(cats) > 0 {
 		sb.WriteString("\n\n## Evaluation Criteria\n\n")
 		sb.WriteString(ai.GetCategories(cats))
@@ -159,8 +159,8 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 		sb.WriteString(renderPRDiffsSection(call))
 	}
 
-	// Relevant dimension criteria — collect from all AOIs in the group
-	cats := relevantDimensionsFromGroup(call.AOIs)
+	// Relevant category criteria — collect from all AOIs in the group
+	cats := relevantCategoriesFromGroup(call.AOIs)
 	if len(cats) > 0 {
 		sb.WriteString("\n\n## Evaluation Criteria\n\n")
 		sb.WriteString(ai.GetCategories(cats))
@@ -330,38 +330,38 @@ func formatAOI(aoi security.AreaOfInterest) string {
 	return sb.String()
 }
 
-// relevantDimensions returns the category slugs to include for a single AOI.
-// Uses the AOI's dimensions field, falling back to the category itself.
-func relevantDimensions(aoi security.AreaOfInterest) []string {
+// relevantCategories returns the category slugs to include for a single AOI.
+// Uses the AOI's categories field, falling back to the primary category.
+func relevantCategories(aoi security.AreaOfInterest) []string {
 	if len(aoi.Categories) > 0 {
-		// Deduplicate and filter to valid dimensions
+		// Deduplicate and filter to valid categories
 		seen := make(map[string]bool)
 		var result []string
-		for _, d := range aoi.Categories {
-			if !seen[d] && ai.CategoryExists(d) {
-				seen[d] = true
-				result = append(result, d)
+		for _, c := range aoi.Categories {
+			if !seen[c] && ai.CategoryExists(c) {
+				seen[c] = true
+				result = append(result, c)
 			}
 		}
 		return result
 	}
 
-	// Fallback: use the category as dimension if it exists
+	// Fallback: use the primary category if it exists
 	if ai.CategoryExists(aoi.Category) {
 		return []string{aoi.Category}
 	}
 	return nil
 }
 
-// relevantDimensionsFromGroup collects all relevant dimensions across a group of AOIs.
-func relevantDimensionsFromGroup(aois []security.AreaOfInterest) []string {
+// relevantCategoriesFromGroup collects all relevant categories across a group of AOIs.
+func relevantCategoriesFromGroup(aois []security.AreaOfInterest) []string {
 	seen := make(map[string]bool)
 	var result []string
 	for _, aoi := range aois {
-		for _, d := range relevantDimensions(aoi) {
-			if !seen[d] {
-				seen[d] = true
-				result = append(result, d)
+		for _, c := range relevantCategories(aoi) {
+			if !seen[c] {
+				seen[c] = true
+				result = append(result, c)
 			}
 		}
 	}

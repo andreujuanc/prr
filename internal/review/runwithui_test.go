@@ -270,6 +270,47 @@ func TestDeepReviewSummary_BreakdownFromCounters(t *testing.T) {
 	}
 }
 
+func TestDeepReviewSummary_IncludesFindingsTotalWhenPresent(t *testing.T) {
+	// When the per-batch findings count rolled up via the new
+	// `findings=N` wire token, the summary appends "· N findings"
+	// before the AOI/general breakdown.
+	s := &progress.State{Counters: map[string]int{
+		"batches_total":           4,
+		"batches_done":            3,
+		"batches_cached":          1,
+		"batches_failed":          0,
+		"batches_aoi_driven":      2,
+		"batches_general":         2,
+		"batches_findings_total":  19,
+	}}
+	want := "3 done · 1 cached · 0 failed · 19 findings (2 AOI-driven + 2 general)"
+	if got := deepReviewSummary(s); got != want {
+		t.Errorf("deepReviewSummary = %q, want %q", got, want)
+	}
+}
+
+func TestParseReviewEvent_SumsFindingsFromTerminalEvents(t *testing.T) {
+	// done findings=N and cached findings=N both contribute. failed
+	// has no count token (would always be zero) and is skipped.
+	s := newState()
+	parseReviewEvent(s, "phase1", "Batch 1: done findings=4")
+	parseReviewEvent(s, "phase1", "Batch 2: cached findings=2")
+	parseReviewEvent(s, "phase1", "Batch 3: done findings=0")
+	parseReviewEvent(s, "phase1", "Batch 4: failed")
+	if got := s.Counters["batches_findings_total"]; got != 6 {
+		t.Errorf("batches_findings_total = %d, want 6", got)
+	}
+	if got := s.Counters["batches_done"]; got != 2 {
+		t.Errorf("batches_done = %d, want 2", got)
+	}
+	if got := s.Counters["batches_cached"]; got != 1 {
+		t.Errorf("batches_cached = %d, want 1", got)
+	}
+	if got := s.Counters["batches_failed"]; got != 1 {
+		t.Errorf("batches_failed = %d, want 1", got)
+	}
+}
+
 func TestDeepReviewSummary_NoBreakdownFallsBackToTallyOnly(t *testing.T) {
 	// Backwards-compat: if the AOI/general counters weren't populated
 	// (older emit, or a test path that bypasses the init message),

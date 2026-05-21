@@ -50,7 +50,7 @@ func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
 		{"concern", "Currency conversion with floating point arithmetic"},
 		{"context", "exchange rates"},
 		{"aoi id", "charge-go-float-currency"},
-		{"dimension content", "money-arithmetic"}, // from financial.md
+		{"category content", "money-arithmetic"}, // from financial.md
 		{"custom instructions", "Always check money math"},
 	}
 
@@ -105,7 +105,7 @@ func TestBuildGroupedPrompt_ContainsAllAOIs(t *testing.T) {
 		t.Error("should contain first AOI concern")
 	}
 	if !strings.Contains(prompt, "swallowed-errors") {
-		t.Error("should contain dimension content")
+		t.Error("should contain category content")
 	}
 }
 

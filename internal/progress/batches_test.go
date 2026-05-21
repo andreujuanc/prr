@@ -111,6 +111,51 @@ func TestParseBatchEvent_Failed(t *testing.T) {
 	}
 }
 
+// TestParseBatchEvent_UnitToken pins the optional `unit=findings`
+// token that recheck batches send. Deep-review batches omit it and
+// must still parse cleanly with an empty Unit (rendered as "files").
+func TestParseBatchEvent_UnitToken(t *testing.T) {
+	s := &State{}
+
+	// Recheck-shape: unit=findings present.
+	ParseBatchEvent(s, `Batch 1: init label="correctness" files=3 kind=general unit=findings`)
+	if got := s.Batches[0].Unit; got != "findings" {
+		t.Errorf("recheck batch: Unit = %q, want %q", got, "findings")
+	}
+	if got := s.Batches[0].Files; got != 3 {
+		t.Errorf("recheck batch: Files = %d, want 3", got)
+	}
+
+	// Deep-review-shape: no unit token. Unit stays empty so fmtCount
+	// falls back to "files".
+	ParseBatchEvent(s, `Batch 2: init label="internal/ui" files=4 kind=general`)
+	if got := s.Batches[1].Unit; got != "" {
+		t.Errorf("deep-review batch: Unit = %q, want empty", got)
+	}
+}
+
+// TestFmtCount_DefaultUnit pins that an empty Unit renders as "files"
+// (legacy shape) and that "findings" renders the findings noun. Tests
+// both plural (n>=2) and singular (n==1) branches so column width
+// stays constant.
+func TestFmtCount_DefaultUnit(t *testing.T) {
+	cases := []struct {
+		n    int
+		unit string
+		want string
+	}{
+		{2, "", " 2 files"},
+		{1, "", " 1 file "},
+		{3, "findings", " 3 findings"},
+		{1, "findings", " 1 finding "},
+	}
+	for _, c := range cases {
+		if got := fmtCount(c.n, c.unit); got != c.want {
+			t.Errorf("fmtCount(%d, %q) = %q, want %q", c.n, c.unit, got, c.want)
+		}
+	}
+}
+
 // TestParseBatchEvent_NonBatchMessage returns false for any message
 // not starting with "Batch ".
 func TestParseBatchEvent_NonBatchMessage(t *testing.T) {

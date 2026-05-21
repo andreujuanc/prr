@@ -147,7 +147,7 @@ line numbers.
 
 The `categories` array on every AOI must contain ONLY names from this list:
 
-{DIMENSION_SLUGS}
+{CATEGORY_SLUGS}
 
 Do not invent new category names. Do not rename, abbreviate, or
 compress them. Use the names above exactly as written. If none of

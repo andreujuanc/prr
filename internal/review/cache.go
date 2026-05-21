@@ -12,7 +12,7 @@ import (
 )
 
 // IndividualCacheKey computes the cache key for an individual review call.
-// Key = hash(code_context + aoi_serialized + sorted_focus_dimensions + sha256(prompt) + priorsHash)
+// Key = hash(code_context + aoi_serialized + sorted_focus_categories + sha256(prompt) + priorsHash)
 //
 // codeContext is the diff (PR mode) or source slice (audit mode) that
 // the prompt builder will inline. Folding it into the key means any
@@ -33,13 +33,13 @@ import (
 // changes the key shape from the legacy version, so the first run
 // after this lands is a one-time re-review; subsequent flag-off runs
 // all match each other.
-func IndividualCacheKey(codeContext string, aoi security.AreaOfInterest, focusDimensions []string, priorsHash string) string {
+func IndividualCacheKey(codeContext string, aoi security.AreaOfInterest, focusCategories []string, priorsHash string) string {
 	h := sha256.New()
 	h.Write([]byte(codeContext))
 	h.Write([]byte{0}) // separator
 	h.Write([]byte(serializeAOI(aoi)))
 	h.Write([]byte{0})
-	h.Write([]byte(serializeFocus(focusDimensions)))
+	h.Write([]byte(serializeFocus(focusCategories)))
 	h.Write([]byte{0})
 	promptHash := sha256.Sum256([]byte(ai.ReviewIndividualPrompt))
 	h.Write(promptHash[:])
@@ -49,7 +49,7 @@ func IndividualCacheKey(codeContext string, aoi security.AreaOfInterest, focusDi
 }
 
 // GroupedCacheKey computes the cache key for a grouped review call.
-// Key = hash(all_aoi_serialized + code_context + sorted_focus_dimensions + sha256(prompt) + priorsHash)
+// Key = hash(all_aoi_serialized + code_context + sorted_focus_categories + sha256(prompt) + priorsHash)
 //
 // codeContext is the per-file diff blob (PR mode) or per-AOI source
 // slice blob (audit mode) — see codeContextDigest for the format.
@@ -59,7 +59,7 @@ func IndividualCacheKey(codeContext string, aoi security.AreaOfInterest, focusDi
 // The prompt hash is part of the key so tuning review_grouped.md
 // invalidates stale cache entries automatically. priorsHash mirrors
 // the IndividualCacheKey contract.
-func GroupedCacheKey(aois []security.AreaOfInterest, codeContext string, focusDimensions []string, priorsHash string) string {
+func GroupedCacheKey(aois []security.AreaOfInterest, codeContext string, focusCategories []string, priorsHash string) string {
 	h := sha256.New()
 	for _, aoi := range aois {
 		h.Write([]byte(serializeAOI(aoi)))
@@ -68,7 +68,7 @@ func GroupedCacheKey(aois []security.AreaOfInterest, codeContext string, focusDi
 	h.Write([]byte{0})
 	h.Write([]byte(codeContext))
 	h.Write([]byte{0})
-	h.Write([]byte(serializeFocus(focusDimensions)))
+	h.Write([]byte(serializeFocus(focusCategories)))
 	h.Write([]byte{0})
 	promptHash := sha256.Sum256([]byte(ai.ReviewGroupedPrompt))
 	h.Write(promptHash[:])

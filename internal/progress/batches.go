@@ -56,17 +56,25 @@ func ParseBatchEvent(s *State, message string) bool {
 
 	switch {
 	case strings.HasPrefix(payload, "init "):
-		// init label="<...>" files=N kind=<...>
+		// init label="<...>" files=N kind=<...> [unit=<...>]
 		// Label is quoted so labels can contain spaces or brackets.
+		// unit token is optional — recheck emits it ("findings"),
+		// deep review doesn't (defaults to "files").
 		init := strings.TrimPrefix(payload, "init ")
 		label, rest := scanQuotedLabel(init)
 		b.Label = label
-		// rest is " files=N kind=..."
 		var files int
 		var kind string
 		if n, _ := fmt.Sscanf(rest, " files=%d kind=%s", &files, &kind); n == 2 {
 			b.Files = files
 			b.Kind = kind
+		}
+		if i := strings.Index(rest, "unit="); i >= 0 {
+			u := strings.TrimSpace(rest[i+len("unit="):])
+			if sp := strings.IndexAny(u, " \t"); sp >= 0 {
+				u = u[:sp]
+			}
+			b.Unit = u
 		}
 		if b.Status == "" {
 			b.Status = BatchQueued
@@ -87,18 +95,24 @@ func ParseBatchEvent(s *State, message string) bool {
 		}
 		return true
 
-	case payload == "done":
+	case payload == "done" || strings.HasPrefix(payload, "done findings="):
 		b.Status = BatchDone
 		b.EndedAt = time.Now()
+		if n, ok := scanTrailingFindings(payload); ok {
+			b.Findings = n
+		}
 		return true
 
-	case payload == "cached":
+	case payload == "cached" || strings.HasPrefix(payload, "cached findings="):
 		b.Status = BatchCached
 		// Cached batches skip the active phase and end immediately.
 		// Set EndedAt so the recent-completions tail can sort them
 		// correctly relative to fresh-done rows.
 		if b.EndedAt.IsZero() {
 			b.EndedAt = time.Now()
+		}
+		if n, ok := scanTrailingFindings(payload); ok {
+			b.Findings = n
 		}
 		return true
 
@@ -311,7 +325,7 @@ func renderActiveRow(b *BatchState, opts BatchPanelOptions, now time.Time) strin
 	return fmt.Sprintf("%s  %s  %s  %s  %s  %s",
 		bpActive.Render("▶"),
 		truncateLabel(b.Label, 38),
-		bpSubtle.Render(fmtFiles(b.Files)),
+		bpSubtle.Render(fmtCount(b.Files, b.Unit)),
 		bpSubtle.Render(fmtElapsed(elapsed)),
 		bar,
 		bpSubtle.Render(status),
@@ -336,9 +350,17 @@ func renderFinishedRow(b *BatchState) string {
 	row := fmt.Sprintf("%s  %s  %s  %s",
 		icon,
 		bpSubtle.Render(truncateLabel(b.Label, 38)),
-		bpSubtle.Render(fmtFiles(b.Files)),
+		bpSubtle.Render(fmtCount(b.Files, b.Unit)),
 		bpSubtle.Render(fmtElapsed(dur)),
 	)
+	// Findings annotation. Recheck rows use the "findings" column
+	// for their input size already (Unit=="findings"), so skipping it
+	// there avoids "3 findings  3f" double-printing the same number.
+	// Deep-review rows show the output count of findings the call
+	// produced — that's the answer to "what did this call deliver?".
+	if b.Findings > 0 && b.Unit != "findings" {
+		row += "  " + bpSubtle.Render(fmt.Sprintf("→ %d findings", b.Findings))
+	}
 	if suffix != "" {
 		row += "  " + bpSubtle.Render(suffix)
 	}
@@ -387,19 +409,28 @@ func truncateLabel(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// fmtFiles renders the file count for a batch row, right-padded to a
-// fixed width so subsequent columns line up regardless of singular vs
-// plural. "1 file" is 6 chars, "5 files" is 7 — without padding the
-// downstream timer/bar drift by a column.
-func fmtFiles(n int) string {
-	unit := "files"
-	if n == 1 {
-		unit = "file "
+// fmtCount renders the per-row count column with a noun unit,
+// right-padded so subsequent columns line up regardless of singular
+// vs plural. Empty unit defaults to "files" — that's the deep-review
+// shape, which doesn't bother sending an explicit unit token. For
+// recheck rows the unit is "findings".
+//
+// Pluralization: when n == 1 the noun is shown without trailing "s"
+// (and left-padded with a space so column width stays constant). Note
+// that "findings" only ever appears in batches of >=2 in practice,
+// but the singular branch is wired for correctness.
+func fmtCount(n int, unit string) string {
+	if unit == "" {
+		unit = "files"
 	}
-	// %2d gives "1" / "12" both right-aligned to 2 chars. Plus space
-	// plus 5-char unit = 8 total. Handles up to 99 files cleanly; 3+
-	// digits widen by one but only a rare run hits that.
-	return fmt.Sprintf("%2d %s", n, unit)
+	singular := strings.TrimSuffix(unit, "s")
+	width := len(unit)
+	noun := unit
+	if n == 1 {
+		// Pad singular form to plural width so adjacent rows line up.
+		noun = singular + strings.Repeat(" ", width-len(singular))
+	}
+	return fmt.Sprintf("%2d %s", n, noun)
 }
 
 func fmtElapsed(d time.Duration) string {
@@ -408,6 +439,22 @@ func fmtElapsed(d time.Duration) string {
 	}
 	s := int(d.Seconds())
 	return fmt.Sprintf("%d:%02d", s/60, s%60)
+}
+
+// scanTrailingFindings extracts the integer after `findings=` from a
+// terminal-event payload like "done findings=3" or "cached findings=0".
+// Returns (0, false) when the token is absent or malformed.
+func scanTrailingFindings(payload string) (int, bool) {
+	i := strings.Index(payload, "findings=")
+	if i < 0 {
+		return 0, false
+	}
+	tail := payload[i+len("findings="):]
+	var n int
+	if _, err := fmt.Sscanf(tail, "%d", &n); err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // scanQuotedLabel reads a "...."-quoted label from the start of s and

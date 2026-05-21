@@ -204,7 +204,7 @@ func TestScanAreasOfInterestClassified_WarnsOnLLMDroppedFiles(t *testing.T) {
 	// know Phase 3's recall is reduced for that file.
 	client := &stubClient{
 		responses: []string{
-			`[{"file": "a.go", "areas": [{"id": "a-go-1", "line": 1, "category": "correctness", "subcategory": "off-by-one", "urgency": "grouped", "concern": "x", "context": "y", "dimensions": ["correctness"]}]}]`,
+			`[{"file": "a.go", "areas": [{"id": "a-go-1", "line": 1, "category": "correctness", "subcategory": "off-by-one", "urgency": "grouped", "concern": "x", "context": "y", "categories": ["correctness"]}]}]`,
 		},
 	}
 

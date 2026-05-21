@@ -43,7 +43,6 @@ func buildFindingResponseJSON(file, lines, snippet string) string {
 		"severity":         "high",
 		"category":         "correctness",
 		"subcategory":      "off-by-one",
-		"dimension":        "correctness",
 		"title":            "Boundary error",
 		"description":      "loop runs one extra iteration",
 		"evidence":         "verified by re-reading the file",

@@ -439,7 +439,7 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "  %s  prr audit [flags]\n\n",
 		dim.Render("Usage:"))
 	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Flags:"))
-	fmt.Fprintf(os.Stderr, "    --focus=<cats>       Comma-separated dimensions to focus on (default: all)\n")
+	fmt.Fprintf(os.Stderr, "    --focus=<cats>       Comma-separated categories to focus on (default: all)\n")
 	fmt.Fprintf(os.Stderr, "    --exclude=<globs>    Additional exclude patterns (comma-separated)\n")
 	fmt.Fprintf(os.Stderr, "    --include=<globs>    Force-include patterns (override exclusions)\n")
 	fmt.Fprintf(os.Stderr, "    --max-reviews=<n>    Cap Phase 3 review calls\n")
@@ -456,7 +456,7 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "    --sibling-cluster    Enable Phase 2.5 sibling-outlier detection (experimental)\n")
 	fmt.Fprintf(os.Stderr, "    --bug-priors         Inject recent fix-shaped commits as known-failure priors\n")
 	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available dimensions:"))
+	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available categories:"))
 	fmt.Fprintf(os.Stderr, "    authentication, authorization, input-validation, data-integrity,\n")
 	fmt.Fprintf(os.Stderr, "    cryptography, error-handling, concurrency, external-io, financial,\n")
 	fmt.Fprintf(os.Stderr, "    configuration, api-design, resource-management, testing, test-coverage,\n")

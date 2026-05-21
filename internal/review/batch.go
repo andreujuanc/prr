@@ -214,6 +214,12 @@ type Reporter interface {
 	AOIPrescanProgress(status string, done bool, aoiCount int)
 	InitBatches(batches []BatchInfo)
 	BatchProgress(batch int, status BatchStatus)
+	// BatchProgressWithFindings is like BatchProgress but carries the
+	// finding count produced by a terminal call (done/cached). The
+	// Batches panel uses it to show "→ N findings" on the row and
+	// callers' aggregate counters sum across calls so the Deep Review
+	// summary can report total findings produced.
+	BatchProgressWithFindings(batch int, status BatchStatus, findings int)
 	// BatchStream reports cumulative content bytes received from the
 	// LLM for one batch. The Batches panel uses it to draw a per-row
 	// progress bar from a real signal instead of a timer-only spinner.
@@ -231,8 +237,9 @@ func (NopReporter) DiscoveryProgress(string)             {}
 func (NopReporter) ClassifyProgress(string)              {}
 func (NopReporter) AOIPrescanProgress(string, bool, int) {}
 func (NopReporter) InitBatches([]BatchInfo)              {}
-func (NopReporter) BatchProgress(int, BatchStatus)       {}
-func (NopReporter) BatchStream(int, int)                 {}
+func (NopReporter) BatchProgress(int, BatchStatus)                    {}
+func (NopReporter) BatchProgressWithFindings(int, BatchStatus, int)   {}
+func (NopReporter) BatchStream(int, int)                              {}
 func (NopReporter) RecheckProgress(string)               {}
 func (NopReporter) SynthesisStarted()                    {}
 func (NopReporter) Token(string)                         {}
@@ -255,6 +262,9 @@ func (o *OffsetReporter) AOIPrescanProgress(status string, done bool, aoiCount i
 func (o *OffsetReporter) InitBatches(batches []BatchInfo) {}
 func (o *OffsetReporter) BatchProgress(batch int, status BatchStatus) {
 	o.RR.BatchProgress(batch+o.Offset, status)
+}
+func (o *OffsetReporter) BatchProgressWithFindings(batch int, status BatchStatus, findings int) {
+	o.RR.BatchProgressWithFindings(batch+o.Offset, status, findings)
 }
 func (o *OffsetReporter) BatchStream(batch int, bytes int) {
 	o.RR.BatchStream(batch+o.Offset, bytes)

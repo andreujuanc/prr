@@ -34,9 +34,9 @@ import (
 //	PRR_AOI_EXPECT   line spec the scanner should land on, e.g. "98,308-322"
 //
 // The scanner is invoked with auditMode=true and fileCategories=nil (= all
-// dimensions). That gives the model the broadest possible surface — a miss
+// categories). That gives the model the broadest possible surface — a miss
 // here is strong evidence the scanner can't see the issue regardless of
-// dimension routing.
+// category routing.
 func TestLive_AOIScanSingleFile(t *testing.T) {
 	cfg := liveConfigOrSkip(t)
 
@@ -209,7 +209,7 @@ func runAOIOnFile(t *testing.T, spec aoiModelSpec, target, body string, expect [
 	defer cancel()
 
 	// auditMode=true matches `prr audit`'s call site; fileCategories=nil
-	// means "look for everything" (no per-file dimension narrowing).
+	// means "look for everything" (no per-file category narrowing).
 	inputs := map[string]string{target: body}
 	start := time.Now()
 	report, err := security.ScanAreasOfInterestClassified(

@@ -43,8 +43,8 @@ type ExecuteOptions struct {
 	// CustomInstructions from user config.
 	CustomInstructions string
 
-	// FocusDimensions filters which AOIs are reviewed (nil = all).
-	FocusDimensions []string
+	// FocusCategories filters which AOIs are reviewed (nil = all).
+	FocusCategories []string
 
 	// BugPriors is the rendered bug-priors prompt section produced by
 	// internal/bugpriors.Extract. When non-empty, it's spliced into
@@ -93,8 +93,10 @@ type ExecuteOptions struct {
 	// outcome. completed/total order is preserved by OnProgress, but
 	// OnCallEnd carries the original call index so the Batches panel
 	// can address the specific batch row. cached and err mirror
-	// OnProgress.
-	OnCallEnd func(index int, cached bool, err error)
+	// OnProgress. findings is the count produced by this call (0 on
+	// err); the panel surfaces it per-row and the phase summary sums
+	// it across calls.
+	OnCallEnd func(index int, cached bool, err error, findings int)
 
 	// OnCallStream fires (throttled) as bytes of plain content stream
 	// in from the LLM for a given call. tokenBytes is cumulative bytes
@@ -200,7 +202,7 @@ func RunReviewCalls(
 			// Check cache (individual calls only — grouped calls have unstable
 			// cache keys because the group composition changes when any member
 			// file is modified, orphaning the old cache entry).
-			cacheKey := ComputeCacheKey(call, opts.FocusDimensions, bugpriors.Hash(opts.BugPriors))
+			cacheKey := ComputeCacheKey(call, opts.FocusCategories, bugpriors.Hash(opts.BugPriors))
 			if !opts.NoCache && opts.CacheGet != nil && call.Type == "individual" {
 				if cached := opts.CacheGet(cacheKey); cached != nil {
 					resultsCh <- callResult{index: i, result: cached, fromCache: true}
@@ -269,11 +271,13 @@ func RunReviewCalls(
 				opts.OnProgress(completed, len(calls), cr.fromCache, cr.err)
 			}
 			if opts.OnCallEnd != nil {
-				opts.OnCallEnd(cr.index, cr.fromCache, cr.err)
+				opts.OnCallEnd(cr.index, cr.fromCache, cr.err, 0)
 			}
 			continue
 		}
+		findings := 0
 		if cr.result != nil {
+			findings = len(cr.result.Findings)
 			execResult.Findings = append(execResult.Findings, cr.result.Findings...)
 			execResult.Dismissals = append(execResult.Dismissals, cr.result.Dismissals...)
 			if cr.result.CrossCutting != "" {
@@ -284,7 +288,7 @@ func RunReviewCalls(
 			opts.OnProgress(completed, len(calls), cr.fromCache, nil)
 		}
 		if opts.OnCallEnd != nil {
-			opts.OnCallEnd(cr.index, cr.fromCache, nil)
+			opts.OnCallEnd(cr.index, cr.fromCache, nil, findings)
 		}
 	}
 
@@ -886,12 +890,12 @@ func isValidSeverity(s string) bool {
 // invalidate cached results — without it, an AOI whose line/concern
 // is stable could serve stale review verdicts after nearby code
 // changed.
-func ComputeCacheKey(call ReviewCall, focusDimensions []string, priorsHash string) string {
+func ComputeCacheKey(call ReviewCall, focusCategories []string, priorsHash string) string {
 	codeContext := codeContextDigest(call)
 	if call.Type == "individual" {
-		return IndividualCacheKey(codeContext, call.AOIs[0], focusDimensions, priorsHash)
+		return IndividualCacheKey(codeContext, call.AOIs[0], focusCategories, priorsHash)
 	}
-	return GroupedCacheKey(call.AOIs, codeContext, focusDimensions, priorsHash)
+	return GroupedCacheKey(call.AOIs, codeContext, focusCategories, priorsHash)
 }
 
 func userMessage(mode Mode) string {

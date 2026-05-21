@@ -473,7 +473,7 @@ func Run(
 
 	classifications, err := runPhase1b(ctx, aoiClient, opts, auditState, files, onProgress)
 	if err != nil {
-		log.Printf("Phase 1b (classification) failed: %v — all files will use all categorys", err)
+		log.Printf("Phase 1b (classification) failed: %v — all files will use all categories", err)
 		classifications = make(map[string]classify.FileType, len(files))
 		for _, f := range files {
 			classifications[f.Path] = classify.FileTypeUnknown
@@ -770,7 +770,7 @@ func runPhase1b(
 	if err != nil {
 		// Partial results: surface the failure as a warning but proceed —
 		// files from failed batches are already filled in as unknown, which
-		// triggers the conservative full-dimension AOI scan downstream.
+		// triggers the conservative full-category AOI scan downstream.
 		onProgress("warning", fmt.Sprintf("classification partial: %v", err))
 	}
 
@@ -958,11 +958,11 @@ func runPhase2(
 		return results, nil
 	}
 
-	// Build per-file dimension map from classifications
+	// Build per-file category map from classifications
 	fileCategories := make(map[string][]string, len(fileContents))
 	for path := range fileContents {
 		ft := classifications[path]
-		fileCategories[path] = classify.DimensionsForType(ft)
+		fileCategories[path] = classify.CategoriesForType(ft)
 	}
 
 	// Surface the partial-cache hit count so the TUI's AOI summary
@@ -1051,7 +1051,7 @@ func runPhase3(
 		ProjectContext:  projectContext,
 		RuntimeModel:    runtimeModel,
 		BugPriors:       bugPriors,
-		FocusDimensions: opts.Focus,
+		FocusCategories: opts.Focus,
 		MaxConcurrency:  concurrencyOr(opts.Concurrency.DeepReview, phase3MaxConcurrency),
 		NoCache:         opts.NoCache,
 		RepoRoot:        opts.RepoRoot,
@@ -1079,14 +1079,18 @@ func runPhase3(
 		OnCallStart: func(idx int) {
 			onProgress("phase3", fmt.Sprintf("Batch %d: active", idx+1))
 		},
-		OnCallEnd: func(idx int, cached bool, callErr error) {
+		OnCallEnd: func(idx int, cached bool, callErr error, findings int) {
+			// findings=N is appended to terminal events so the panel
+			// row can show "✓ 3 findings" alongside the elapsed time.
+			// Suppressed for failed events to avoid a noisy "0 findings"
+			// reading next to a red ✗.
 			switch {
 			case cached:
-				onProgress("phase3", fmt.Sprintf("Batch %d: cached", idx+1))
+				onProgress("phase3", fmt.Sprintf("Batch %d: cached findings=%d", idx+1, findings))
 			case callErr != nil:
 				onProgress("phase3", fmt.Sprintf("Batch %d: failed", idx+1))
 			default:
-				onProgress("phase3", fmt.Sprintf("Batch %d: done", idx+1))
+				onProgress("phase3", fmt.Sprintf("Batch %d: done findings=%d", idx+1, findings))
 			}
 		},
 		OnCallStream: func(idx, bytes int) {

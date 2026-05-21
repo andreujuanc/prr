@@ -118,8 +118,15 @@ type BatchState struct {
 	// for general batches, "category/subcategory" (with " [critical]"
 	// suffix for individual calls) for AOI-driven ones.
 	Label string
-	// Files is the number of files this batch covers.
+	// Files is the count rendered in the panel's middle column. The
+	// semantic depends on Unit: "files" for deep-review batches,
+	// "findings" for recheck batches. Naming is legacy — kept as
+	// "Files" so existing snapshot tests don't churn.
 	Files int
+	// Unit is the noun shown after Files in the panel ("files",
+	// "findings"). Empty defaults to "files" so deep-review wire
+	// shape (kind=aoi-driven|general, no unit token) keeps working.
+	Unit string
 	// Kind is "aoi-driven" or "general". Drives the row's accent color.
 	Kind string
 	// Status is the lifecycle stage.
@@ -135,6 +142,11 @@ type BatchState struct {
 	// when non-zero; the row falls back to an indeterminate spinner
 	// when zero.
 	Bytes int
+	// Findings is the number of findings this batch produced. Set
+	// from the optional `findings=N` token on terminal events
+	// (done/cached). Rendered next to the elapsed time on finished
+	// rows so the user can see what work each call delivered.
+	Findings int
 }
 
 // Header is the title block shown at the top of the TUI.

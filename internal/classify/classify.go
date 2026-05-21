@@ -1,6 +1,6 @@
 // Package classify groups changed files by their architectural role
 // (handler, repository, model, test, …) so each file's AOI pre-scan
-// can be narrowed to the dimensions that actually apply. A test file
+// can be narrowed to the categories that actually apply. A test file
 // doesn't need a cryptography review; a handler does need an
 // input-validation pass.
 //
@@ -53,9 +53,9 @@ var AllFileTypes = []FileType{
 	FileTypeUnknown,
 }
 
-// DimensionsForType returns the category slugs to include in the AOI
+// CategoriesForType returns the category slugs to include in the AOI
 // prompt for the given file type. Unknown types get all categories.
-func DimensionsForType(ft FileType) []string {
+func CategoriesForType(ft FileType) []string {
 	switch ft {
 	case FileTypeTest:
 		return []string{"testing", "correctness"}
