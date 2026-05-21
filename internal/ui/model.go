@@ -4317,8 +4317,11 @@ func (m *Model) rerenderReviewWithCursor() tea.Cmd {
 }
 
 // scrollReviewToFinding scrolls the review viewport so the selected
-// finding is visible. Scans the rendered content for the "▸" cursor
-// marker.
+// finding is visible. Scans the rendered content for the leading "█"
+// bar that SelectableRow draws on selected rows. (The earlier "▸"
+// marker was removed when the cursor affordance moved to a left bar
+// + background fill; this scanner went silent at the same time,
+// which is why j/k stopped following the cursor off-screen.)
 func (m *Model) scrollReviewToFinding(idx int) {
 	if idx < 0 {
 		return
@@ -4332,7 +4335,7 @@ func (m *Model) scrollReviewToFinding(idx int) {
 	lines := strings.Split(content, "\n")
 	targetLine := -1
 	for i, line := range lines {
-		if strings.Contains(stripANSI(line), "▸") {
+		if strings.HasPrefix(stripANSI(line), "█") {
 			targetLine = i
 			break
 		}
