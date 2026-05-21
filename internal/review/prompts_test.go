@@ -9,6 +9,67 @@ import (
 	"github.com/andreujuanc/prr/internal/state"
 )
 
+// TestBuildPrompts_ContainCommonPartial pins the contract that the
+// shared review_common.md content (defenses_checked vocabulary, trace
+// requirements, severity calibration) gets substituted into both
+// individual and grouped prompts. Without this, a missing or
+// renamed placeholder would silently produce prompts with no
+// defense/trace/severity guidance — findings would degrade quietly.
+func TestBuildPrompts_ContainCommonPartial(t *testing.T) {
+	aoi := security.AreaOfInterest{
+		File:        "a.go",
+		Line:        1,
+		Category:    "authorization",
+		Subcategory: "missing-check",
+		ID:          "a-go-1",
+		Concern:     "test",
+	}
+	call := ReviewCall{
+		Type: "individual", Category: aoi.Category, Subcategory: aoi.Subcategory,
+		AOIs: []security.AreaOfInterest{aoi}, Files: []string{aoi.File},
+	}
+
+	cases := []struct {
+		name   string
+		prompt string
+	}{
+		{"individual", BuildIndividualPrompt(ModeAudit, "", "", "", nil, call)},
+		{"grouped", BuildGroupedPrompt(ModeAudit, "", "", "", nil, ReviewCall{
+			Type: "grouped", Category: aoi.Category, Subcategory: aoi.Subcategory,
+			AOIs: []security.AreaOfInterest{aoi}, Files: []string{aoi.File},
+		})},
+	}
+
+	// Each phrase is unique to the common partial and load-bearing —
+	// dropping any would silently weaken finding quality.
+	wantPhrases := []string{
+		"## Defenses Checked",
+		"## End-to-End Trace",
+		"## Severity Calibration",
+		// Extended defense-required categories.
+		"`authentication`",
+		"`cryptography`",
+		"`web-security`",
+		// Canonical defense tags survive the move.
+		"boundary-authz",
+		"schema-validation",
+		// Trace hop roles.
+		"`suspect`",
+		"`boundary`",
+	}
+	for _, c := range cases {
+		// Substitution must have happened — no raw placeholder left.
+		if strings.Contains(c.prompt, "{{REVIEW_COMMON}}") {
+			t.Errorf("%s: {{REVIEW_COMMON}} not substituted", c.name)
+		}
+		for _, p := range wantPhrases {
+			if !strings.Contains(c.prompt, p) {
+				t.Errorf("%s: missing common-partial phrase %q", c.name, p)
+			}
+		}
+	}
+}
+
 // individualCall wraps a single AOI into a ReviewCall suitable for
 // BuildIndividualPrompt, keeping the tests concise.
 func individualCall(aoi security.AreaOfInterest) ReviewCall {
@@ -32,7 +93,6 @@ func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
 		ID:          "charge-go-float-currency",
 		Concern:     "Currency conversion with floating point arithmetic",
 		Context:     "Multiplies amounts by exchange rates using float64",
-		Dimensions:  []string{"correctness", "financial"},
 	}
 
 	prompt := BuildIndividualPrompt(ModeAudit, "This is a billing system.", "Always check money math.", "", nil, individualCall(aoi))
@@ -50,7 +110,7 @@ func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
 		{"concern", "Currency conversion with floating point arithmetic"},
 		{"context", "exchange rates"},
 		{"aoi id", "charge-go-float-currency"},
-		{"dimension content", "money-arithmetic"}, // from financial.md
+		{"category content", "money-arithmetic"}, // from financial.md
 		{"custom instructions", "Always check money math"},
 	}
 
@@ -84,8 +144,8 @@ func TestBuildGroupedPrompt_ContainsAllAOIs(t *testing.T) {
 		Category:    "error-handling",
 		Subcategory: "swallowed-errors",
 		AOIs: []security.AreaOfInterest{
-			{File: "a.go", Line: 10, Category: "error-handling", Subcategory: "swallowed-errors", ID: "a-go-err", Concern: "Error ignored in handler", Dimensions: []string{"error-handling"}},
-			{File: "b.go", Line: 20, Category: "error-handling", Subcategory: "swallowed-errors", ID: "b-go-err", Concern: "Error assigned to _", Dimensions: []string{"error-handling"}},
+			{File: "a.go", Line: 10, Category: "error-handling", Subcategory: "swallowed-errors", ID: "a-go-err", Concern: "Error ignored in handler"},
+			{File: "b.go", Line: 20, Category: "error-handling", Subcategory: "swallowed-errors", ID: "b-go-err", Concern: "Error assigned to _"},
 		},
 		Files: []string{"a.go", "b.go"},
 	}
@@ -105,7 +165,7 @@ func TestBuildGroupedPrompt_ContainsAllAOIs(t *testing.T) {
 		t.Error("should contain first AOI concern")
 	}
 	if !strings.Contains(prompt, "swallowed-errors") {
-		t.Error("should contain dimension content")
+		t.Error("should contain category content")
 	}
 }
 

@@ -63,7 +63,7 @@ func TestIndividualCacheKey_FocusChangeInvalidates(t *testing.T) {
 	keyB := IndividualCacheKey("body", aoi, []string{"security"}, "")
 
 	if keyA == keyB {
-		t.Fatalf("expected different cache keys when focus dimensions change")
+		t.Fatalf("expected different cache keys when focus categories change")
 	}
 }
 
@@ -74,7 +74,7 @@ func TestIndividualCacheKey_FocusOrderStable(t *testing.T) {
 	keyB := IndividualCacheKey("body", aoi, []string{"security", "correctness"}, "")
 
 	if keyA != keyB {
-		t.Fatalf("expected identical keys regardless of focus dimension order, got %s vs %s", keyA, keyB)
+		t.Fatalf("expected identical keys regardless of focus category order, got %s vs %s", keyA, keyB)
 	}
 }
 

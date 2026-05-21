@@ -36,14 +36,18 @@ type BatchFinding struct {
 	ConfidenceScore     int    `json:"confidence_score,omitempty"`
 	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
 
-	Dimension      string `json:"dimension,omitempty"`
-	Title          string `json:"title,omitempty"`
-	Line           int    `json:"line,omitempty"`
-	Detail         string `json:"detail,omitempty"`
-	Suggestion     string `json:"suggestion,omitempty"`
-	CWE            string `json:"cwe,omitempty"`
-	Exploitability string `json:"exploitability,omitempty"`
-	Impact         string `json:"impact,omitempty"`
+	Category string `json:"category,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	// EvidenceSnippet is a verbatim 1-3 line copy from the cited file:line.
+	// Carried into state.DeepFinding.EvidenceSnippet by the fallback
+	// converter so recheck can locate the suspect code.
+	EvidenceSnippet string `json:"evidence_snippet,omitempty"`
+	Suggestion      string `json:"suggestion,omitempty"`
+	CWE             string `json:"cwe,omitempty"`
+	Exploitability  string `json:"exploitability,omitempty"`
+	Impact          string `json:"impact,omitempty"`
 }
 
 // BatchFindings holds the findings for one file. It deserializes from either
@@ -116,8 +120,8 @@ func (bf BatchFindings) Text() string {
 		} else if f.Confidence != "" {
 			b.WriteString("[confidence: " + f.Confidence + "] ")
 		}
-		if f.Dimension != "" {
-			b.WriteString("[" + f.Dimension + "] ")
+		if f.Category != "" {
+			b.WriteString("[" + f.Category + "] ")
 		}
 		if f.Title != "" {
 			b.WriteString(f.Title)
@@ -214,6 +218,17 @@ type Reporter interface {
 	AOIPrescanProgress(status string, done bool, aoiCount int)
 	InitBatches(batches []BatchInfo)
 	BatchProgress(batch int, status BatchStatus)
+	// BatchProgressWithFindings is like BatchProgress but carries the
+	// finding count produced by a terminal call (done/cached). The
+	// Batches panel uses it to show "→ N findings" on the row and
+	// callers' aggregate counters sum across calls so the Deep Review
+	// summary can report total findings produced.
+	BatchProgressWithFindings(batch int, status BatchStatus, findings int)
+	// BatchStream reports cumulative content bytes received from the
+	// LLM for one batch. The Batches panel uses it to draw a per-row
+	// progress bar from a real signal instead of a timer-only spinner.
+	// Implementations are expected to throttle further.
+	BatchStream(batch int, bytes int)
 	RecheckProgress(status string)
 	SynthesisStarted()
 	Token(token string)
@@ -222,14 +237,16 @@ type Reporter interface {
 // NopReporter is a Reporter that does nothing.
 type NopReporter struct{}
 
-func (NopReporter) DiscoveryProgress(string)             {}
-func (NopReporter) ClassifyProgress(string)              {}
-func (NopReporter) AOIPrescanProgress(string, bool, int) {}
-func (NopReporter) InitBatches([]BatchInfo)              {}
-func (NopReporter) BatchProgress(int, BatchStatus)       {}
-func (NopReporter) RecheckProgress(string)               {}
-func (NopReporter) SynthesisStarted()                    {}
-func (NopReporter) Token(string)                         {}
+func (NopReporter) DiscoveryProgress(string)                        {}
+func (NopReporter) ClassifyProgress(string)                         {}
+func (NopReporter) AOIPrescanProgress(string, bool, int)            {}
+func (NopReporter) InitBatches([]BatchInfo)                         {}
+func (NopReporter) BatchProgress(int, BatchStatus)                  {}
+func (NopReporter) BatchProgressWithFindings(int, BatchStatus, int) {}
+func (NopReporter) BatchStream(int, int)                            {}
+func (NopReporter) RecheckProgress(string)                          {}
+func (NopReporter) SynthesisStarted()                               {}
+func (NopReporter) Token(string)                                    {}
 
 // OffsetReporter wraps a Reporter and adds an offset to batch indices.
 type OffsetReporter struct {
@@ -249,6 +266,12 @@ func (o *OffsetReporter) AOIPrescanProgress(status string, done bool, aoiCount i
 func (o *OffsetReporter) InitBatches(batches []BatchInfo) {}
 func (o *OffsetReporter) BatchProgress(batch int, status BatchStatus) {
 	o.RR.BatchProgress(batch+o.Offset, status)
+}
+func (o *OffsetReporter) BatchProgressWithFindings(batch int, status BatchStatus, findings int) {
+	o.RR.BatchProgressWithFindings(batch+o.Offset, status, findings)
+}
+func (o *OffsetReporter) BatchStream(batch int, bytes int) {
+	o.RR.BatchStream(batch+o.Offset, bytes)
 }
 func (o *OffsetReporter) RecheckProgress(status string) {
 	o.RR.RecheckProgress(status)
@@ -318,6 +341,30 @@ func BuildBatches(rawDiffs map[string]string) []Batch {
 	return batches
 }
 
+// batchStreamToken builds an onToken closure that forwards plain
+// content-byte deltas to rr.BatchStream for one batch. Control tokens
+// (\x00TOOL_*, \x00THOUGHT_*) are skipped — they aren't part of the
+// model's textual reply and would skew the per-batch progress bar.
+// Throttled to one emit per ≥256 bytes received so the TUI doesn't
+// re-render on every token.
+func batchStreamToken(rr Reporter, idx int) func(string) {
+	if rr == nil {
+		return nil
+	}
+	var streamBytes int
+	var lastEmit int
+	return func(tok string) {
+		if len(tok) == 0 || tok[0] == 0x00 {
+			return
+		}
+		streamBytes += len(tok)
+		if streamBytes-lastEmit >= 256 {
+			rr.BatchStream(idx, streamBytes)
+			lastEmit = streamBytes
+		}
+	}
+}
+
 // ── Diff capping ────────────────────────────────────────────────────────
 
 // CapDiff truncates a diff to MaxDiffLines and appends a tool-use hint.
@@ -367,6 +414,29 @@ func ParseBatchResult(raw string) []BatchFileReview {
 		return nil
 	}
 	return results
+}
+
+// countBatchFindings parses a raw batch response and returns the total
+// finding count across all files. Items-form entries contribute their
+// length; legacy-string entries contribute 1 each. Unparseable input
+// returns 0.
+func countBatchFindings(raw string) int {
+	parsed := ParseBatchResult(raw)
+	if parsed == nil {
+		return 0
+	}
+	n := 0
+	for _, entry := range parsed {
+		if entry.Findings.IsEmpty() {
+			continue
+		}
+		if len(entry.Findings.Items) > 0 {
+			n += len(entry.Findings.Items)
+		} else {
+			n++
+		}
+	}
+	return n
 }
 
 // ── Retry logic ─────────────────────────────────────────────────────────
@@ -708,6 +778,12 @@ func RunSynthesis(
 
 // RunBatchesOnly reviews batches sequentially or in parallel (no synthesis).
 // Returns findings text, per-file findings map, and any error.
+//
+// maxConcurrency caps how many fallback batches run at once. Pass the
+// pipeline's ParallelReviews so a single knob controls AOI-driven
+// review concurrency and fallback-batch concurrency together — they
+// used to drift (AOI followed config, fallback hard-coded 5). Values
+// <= 0 fall back to 5 to preserve the prior default for older callers.
 func RunBatchesOnly(
 	ctx context.Context,
 	client ai.Client,
@@ -716,12 +792,17 @@ func RunBatchesOnly(
 	customInstructions string,
 	reviewState *state.State,
 	batches []Batch,
+	maxConcurrency int,
 	rr Reporter,
 ) (string, map[string]string, error) {
 	var allFindings strings.Builder
 	allFileFindings := make(map[string]string)
 
 	systemPrompt := BuildBatchSystemPrompt(prMeta, customInstructions)
+
+	if maxConcurrency <= 0 {
+		maxConcurrency = 5
+	}
 
 	if len(batches) > 1 {
 		// Parallel
@@ -734,7 +815,7 @@ func RunBatchesOnly(
 		results := make([]result, len(batches))
 		var mu sync.Mutex
 		var wg sync.WaitGroup
-		sem := make(chan struct{}, 5)
+		sem := make(chan struct{}, maxConcurrency)
 
 		for i, batch := range batches {
 			wg.Add(1)
@@ -755,18 +836,18 @@ func RunBatchesOnly(
 					mu.Lock()
 					maps.Copy(allFileFindings, cachedFF)
 					mu.Unlock()
-					rr.BatchProgress(idx, StatusCached)
+					rr.BatchProgressWithFindings(idx, StatusCached, reviewState.CountCachedBatchFindings(b.Files))
 					return
 				}
 
 				rr.BatchProgress(idx, StatusActive)
-				res, err := ReviewBatchWithRetry(ctx, client, systemPrompt, b, nil)
+				res, err := ReviewBatchWithRetry(ctx, client, systemPrompt, b, batchStreamToken(rr, idx))
 				results[idx] = result{index: idx, text: res, err: err}
 
 				if err != nil {
 					rr.BatchProgress(idx, StatusFailed)
 				} else {
-					rr.BatchProgress(idx, StatusDone)
+					rr.BatchProgressWithFindings(idx, StatusDone, countBatchFindings(res))
 				}
 			}(i, batch)
 		}
@@ -806,7 +887,7 @@ func RunBatchesOnly(
 			}
 
 			if IsBatchCached(batch, reviewState) {
-				rr.BatchProgress(i, StatusCached)
+				rr.BatchProgressWithFindings(i, StatusCached, reviewState.CountCachedBatchFindings(batch.Files))
 				cached, cachedFF := CollectCachedFindings(batch, reviewState)
 				allFindings.WriteString(fmt.Sprintf("### Batch %d: %s\n", i+1, batch.Label))
 				allFindings.WriteString(fmt.Sprintf("Files: %s\n\n", strings.Join(batch.Files, ", ")))
@@ -817,13 +898,13 @@ func RunBatchesOnly(
 			}
 
 			rr.BatchProgress(i, StatusActive)
-			result, err := ReviewBatchWithRetry(ctx, client, systemPrompt, batch, nil)
+			result, err := ReviewBatchWithRetry(ctx, client, systemPrompt, batch, batchStreamToken(rr, i))
 			if err != nil {
 				rr.BatchProgress(i, StatusFailed)
 				return "", nil, fmt.Errorf("batch %d/%d (%s): %w", i+1, len(batches), batch.Label, err)
 			}
 
-			rr.BatchProgress(i, StatusDone)
+			rr.BatchProgressWithFindings(i, StatusDone, countBatchFindings(result))
 			parsed, batchFF := PersistBatchFindings(reviewState, batch, result)
 			maps.Copy(allFileFindings, batchFF)
 

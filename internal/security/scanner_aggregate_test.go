@@ -61,10 +61,10 @@ func TestScanAreasOfInterestClassified_AbortsAboveThreshold(t *testing.T) {
 	// and ≥ 2-batch floor → abort. The error must mention the
 	// failure count and the threshold so the user knows WHY.
 	//
-	// Setup: 3 separate dimension sets so we get 3 separate batches.
-	// Batch A: a.go (handler dims)
-	// Batch B: b.go (repository dims)
-	// Batch C: c.go (test dims)
+	// Setup: 3 separate category sets so we get 3 separate batches.
+	// Batch A: a.go (handler cats)
+	// Batch B: b.go (repository cats)
+	// Batch C: c.go (test cats)
 	transient := errors.New("503 service unavailable")
 	client := &stubClient{
 		// Use enough queue entries to cover up to (3 batches × 2 attempts).
@@ -88,20 +88,20 @@ func TestScanAreasOfInterestClassified_AbortsAboveThreshold(t *testing.T) {
 		},
 	}
 
-	// Build three distinct dimension groups so we get three batches.
+	// Build three distinct category groups so we get three batches.
 	rawDiffs := map[string]string{
 		"a.go": "=== a.go ===\npackage a\n",
 		"b.go": "=== b.go ===\npackage b\n",
 		"c.go": "=== c.go ===\npackage c\n",
 	}
-	fileDimensions := map[string][]string{
+	fileCategories := map[string][]string{
 		"a.go": {"input-validation", "authentication"},
 		"b.go": {"data-integrity", "resource-management"},
 		"c.go": {"testing", "correctness"},
 	}
 
 	_, err := ScanAreasOfInterestClassified(
-		context.Background(), client, rawDiffs, nil, fileDimensions,
+		context.Background(), client, rawDiffs, nil, fileCategories,
 		nil, nil, true,
 	)
 	if err == nil {
@@ -121,7 +121,7 @@ func TestScanAreasOfInterestClassified_PartialUnderThreshold_ProceedsWithWarning
 	// must surface so the user knows recall is degraded for the
 	// affected file(s).
 	//
-	// 5 distinct dimension groups → 5 batches. One fails (with retry),
+	// 5 distinct category groups → 5 batches. One fails (with retry),
 	// four succeed.
 	transient := errors.New("502 bad gateway")
 	client := &stubClient{
@@ -147,7 +147,7 @@ func TestScanAreasOfInterestClassified_PartialUnderThreshold_ProceedsWithWarning
 		"d.go": "=== d.go ===\npackage d\n",
 		"e.go": "=== e.go ===\npackage e\n",
 	}
-	fileDimensions := map[string][]string{
+	fileCategories := map[string][]string{
 		"a.go": {"input-validation"},
 		"b.go": {"data-integrity"},
 		"c.go": {"testing"},
@@ -157,7 +157,7 @@ func TestScanAreasOfInterestClassified_PartialUnderThreshold_ProceedsWithWarning
 
 	var progress []string
 	report, err := ScanAreasOfInterestClassified(
-		context.Background(), client, rawDiffs, nil, fileDimensions,
+		context.Background(), client, rawDiffs, nil, fileCategories,
 		func(s string) { progress = append(progress, s) },
 		nil, true,
 	)

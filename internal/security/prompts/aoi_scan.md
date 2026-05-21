@@ -17,7 +17,7 @@ code context, data flow, and domain semantics.
 Scan for ALL of these categories in the code.
 Each AOI must be tagged with exactly one category and one subcategory from this list:
 
-{DIMENSIONS}
+{CATEGORIES}
 
 ## Urgency
 
@@ -45,6 +45,7 @@ In addition, for every scan:
 - Keep `concern` and `context` SHORT — one sentence each. This is a fast pass.
 - Do NOT self-censor on security-sensitive or offensive-looking patterns. The entire purpose of this pass is to surface issues; skipping analysis defeats it.
 - Each AOI `id` must be unique within the file and match `[a-z0-9-]+` (lowercase letters, digits, and hyphens only), max ~80 chars. Use the pattern `filename-slug-concern-slug` (e.g., `charge-go-float-currency`, `handler-go-missing-auth`). Do not include path separators, dots, underscores, or uppercase.
+- **One AOI per `(file, line, category)`** — if two or more AOIs are found at the same `file:line` with the same category, pick the most urgent concern and emit one. Multiple AOIs at the same `file:line` are acceptable as long as they belong to different categories. Do not change the category just to fit in the extra AOI.
 
 ## Surface-area Rules (always apply on top of categories)
 
@@ -124,35 +125,93 @@ Skip when the unit-or-domain claim isn't backed by either a typed
 brand or a clear name-shape signal — guessing about units invites
 false positives.
 
+### Trojan-source, homoglyphs, and dependency-file edits
+
+These three shapes are how malicious contributions hide from casual
+review. Each is cheap to spot mechanically but catastrophic if
+missed — emit an AOI whenever you see one, even when the
+surrounding code looks innocent. The deep reviewer needs a chance
+to look at every dependency change and every Unicode oddity.
+
+**Bidirectional-override and zero-width characters** — Unicode
+points that change how text *renders* without changing what it
+*means* to the compiler. Used in *trojan source* attacks to make
+the reviewer see one thing and the compiler see another:
+- Bidi overrides: U+202A (LRE), U+202B (RLE), U+202C (PDF),
+  U+202D (LRO), U+202E (RLO), U+2066 (LRI), U+2067 (RLI),
+  U+2068 (FSI), U+2069 (PDI)
+- Zero-width characters in identifiers, string literals, or
+  comments: U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ),
+  U+FEFF (BOM other than at file start)
+- Emit one AOI per occurrence, citing the line and the codepoint.
+
+**Mixed-script identifiers** — function, variable, or type names
+that combine characters from two different Unicode scripts where a
+single-script identifier was expected (e.g., Latin `a` mixed with
+Cyrillic `а` U+0430, Latin `o` mixed with Cyrillic `о` U+043E).
+These are *homoglyph attacks*: two functions look identical on
+screen but resolve to different symbols at compile time. Flag any
+identifier whose characters aren't all from the same script as the
+surrounding code.
+
+**Dependency-file edits** — touching any of these files is, on its
+own, an AOI worth flagging:
+- Go: `go.mod`, `go.sum`
+- Node: `package.json`, `package-lock.json`, `yarn.lock`,
+  `pnpm-lock.yaml`, `.npmrc`
+- Python: `requirements*.txt`, `Pipfile`, `Pipfile.lock`,
+  `pyproject.toml`, `poetry.lock`, `setup.py`, `setup.cfg`
+- Rust: `Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`
+- Ruby: `Gemfile`, `Gemfile.lock`
+- Java/Kotlin: `pom.xml`, `build.gradle`, `build.gradle.kts`,
+  `settings.gradle*`, `gradle/wrapper/gradle-wrapper.properties`
+- PHP: `composer.json`, `composer.lock`
+- CI / build: `.github/workflows/*.yml`, `.gitlab-ci.yml`,
+  `Dockerfile*`, `docker-compose*.yml`, `Makefile` install/build
+  targets newly piping `curl`/`wget` into a shell
+- Lockfile changes that don't match the source-side changes in the
+  same PR are extra-suspicious — flag the mismatch explicitly in
+  `concern`.
+
+Emit *one AOI per touched dependency file*, even if the change
+looks routine. The deep reviewer decides whether the change is
+legitimate; a recall-biased pre-filter shouldn't make that call.
+
+For each such AOI:
+- `category` = `malicious-code`
+- `subcategory` =
+  - `obfuscation-and-hidden-control-flow` for bidi / zero-width / homoglyph hits
+  - `suspicious-dependencies` for dep-file edits (use
+    `build-and-ci-tampering` instead when the file is a CI workflow,
+    Dockerfile, or build script)
+- `concern` = one sentence naming what was found
+  (e.g., "bidi override U+202E in string literal",
+  "dependency file modified",
+  "lockfile entry changed without matching source change")
+- `context` = "trojan-source pattern", "homoglyph identifier", or
+  "dependency change — confirm provenance"
+- Urgency: `grouped` is fine for most cases; promote to `individual`
+  when the AOI sits in a security-sensitive path (auth, crypto,
+  release pipeline) AND no sibling AOIs share the same shape.
+
 ## Input Format
 
-In audit mode every input line is prefixed with its source line number
-followed by `: `, like ` 42: <line content>` (the number is
-left-padded with spaces so the column of `:` lines up). The number is
-the source line number of the original file.
+{INPUT_FORMAT}
 
-When you emit `line` and `end_line` for AOIs in an audit-mode file,
-copy the exact number you see at the start of the line — do not
-compute, derive, count, or estimate. The prefix is the only source of
-truth for line numbers in audit-mode output. If your AOI spans
-multiple lines, set `end_line` to the prefix number on the last line
-of the span.
+## Valid category names
 
-In PR review mode the input is a unified diff and lines are not
-re-prefixed; the audit-mode rule above does not apply. Rely on the
-standard `@@ -X,Y +A,B @@` hunk headers as usual to compute new-side
-line numbers.
+The `category` field MUST be one of these slugs, exactly as written:
 
-## Valid dimension names
+{CATEGORY_SLUGS}
 
-The `dimensions` array on every AOI must contain ONLY names from this list:
+Do not invent, rename, abbreviate, or compress them. If none fit the
+AOI, omit the AOI entirely — every AOI has exactly one category, and
+that category must come from this list.
 
-{DIMENSION_SLUGS}
-
-Do not invent new dimension names. Do not rename, abbreviate, or
-compress them. Use the names above exactly as written. If none of
-the names fit, leave the `dimensions` array empty rather than coining
-a new tag — an empty array is fine; a made-up name is not.
+One AOI = one category. If a code location touches multiple concerns
+(e.g. an authorization gap with a correctness side-effect), emit
+multiple AOIs — one per concern — instead of one AOI tagged with
+multiple categories.
 
 ## Output Format
 
@@ -172,8 +231,7 @@ with no AOIs (empty areas array).
         "subcategory": "subcategory-slug",
         "urgency": "individual | grouped",
         "concern": "brief description of the potential issue",
-        "context": "why this location matters, what data flows through it",
-        "dimensions": ["dimension-slug-1", "dimension-slug-2"]
+        "context": "why this location matters, what data flows through it"
       }
     ]
   }

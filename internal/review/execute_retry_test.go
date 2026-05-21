@@ -85,7 +85,6 @@ const validFindingResponse = `{
   "severity": "high",
   "category": "correctness",
   "subcategory": "off-by-one",
-  "dimension": "correctness",
   "title": "Boundary error",
   "description": "loop runs one extra iteration",
   "evidence": "for i <= len(arr)",

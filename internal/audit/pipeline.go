@@ -26,7 +26,7 @@ type Options struct {
 	// RepoRoot is the absolute path to the repository root.
 	RepoRoot string
 
-	// Focus is a list of dimension slugs to focus on. Empty = all.
+	// Focus is a list of category slugs to focus on. Empty = all.
 	Focus []string
 
 	// ExcludePatterns are additional globs to exclude (from --exclude and .prr/audit-exclude).
@@ -473,7 +473,7 @@ func Run(
 
 	classifications, err := runPhase1b(ctx, aoiClient, opts, auditState, files, onProgress)
 	if err != nil {
-		log.Printf("Phase 1b (classification) failed: %v — all files will use all dimensions", err)
+		log.Printf("Phase 1b (classification) failed: %v — all files will use all categories", err)
 		classifications = make(map[string]classify.FileType, len(files))
 		for _, f := range files {
 			classifications[f.Path] = classify.FileTypeUnknown
@@ -668,6 +668,12 @@ func Run(
 
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbgw.Phase("PHASE 3b: Recheck")
+	if len(findings) == 0 {
+		// Ping the progress channel so the Recheck phase row activates
+		// even when there's nothing to do — otherwise it stays gray
+		// (PhaseWaiting) and looks skipped.
+		onProgress("recheck", "no findings to recheck")
+	}
 	if len(findings) > 0 {
 		recheckKey := computeRecheckCacheKey(findings, projectContext, "audit", bugpriors.Hash(bugPriorsContent))
 		if !opts.NoCache {
@@ -764,7 +770,7 @@ func runPhase1b(
 	if err != nil {
 		// Partial results: surface the failure as a warning but proceed —
 		// files from failed batches are already filled in as unknown, which
-		// triggers the conservative full-dimension AOI scan downstream.
+		// triggers the conservative full-category AOI scan downstream.
 		onProgress("warning", fmt.Sprintf("classification partial: %v", err))
 	}
 
@@ -952,11 +958,11 @@ func runPhase2(
 		return results, nil
 	}
 
-	// Build per-file dimension map from classifications
-	fileDimensions := make(map[string][]string, len(fileContents))
+	// Build per-file category map from classifications
+	fileCategories := make(map[string][]string, len(fileContents))
 	for path := range fileContents {
 		ft := classifications[path]
-		fileDimensions[path] = classify.DimensionsForType(ft)
+		fileCategories[path] = classify.CategoriesForType(ft)
 	}
 
 	// Surface the partial-cache hit count so the TUI's AOI summary
@@ -969,7 +975,7 @@ func runPhase2(
 	}
 
 	// Run AOI scan on uncached files
-	report, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, fileContents, cachedResults, fileDimensions, func(status string) {
+	report, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, fileContents, cachedResults, fileCategories, func(status string) {
 		onProgress("phase2", status)
 	}, debugHook, true)
 	if err != nil {
@@ -1025,12 +1031,27 @@ func runPhase3(
 	debugHook func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string),
 	toolHook func(callIndex int, toolName string, args string, status string, duration string),
 ) (findings []state.DeepFinding, dismissals int, crossCutting []string, failed int, failedAOIIDs []string, err error) {
+	// Per-batch init events so the Batches panel knows what each row is
+	// about. Audit only has AOI-driven calls (no general fallback
+	// batches), so kind=aoi-driven for all of them.
+	for i, call := range calls {
+		label := call.Category
+		if call.Subcategory != "" {
+			label += "/" + call.Subcategory
+		}
+		if call.Type == "individual" {
+			label += " [critical]"
+		}
+		onProgress("phase3", fmt.Sprintf("Batch %d: init label=%q files=%d kind=aoi-driven",
+			i+1, label, len(call.Files)))
+	}
+
 	execOpts := review.ExecuteOptions{
 		Mode:            review.ModeAudit,
 		ProjectContext:  projectContext,
 		RuntimeModel:    runtimeModel,
 		BugPriors:       bugPriors,
-		FocusDimensions: opts.Focus,
+		FocusCategories: opts.Focus,
 		MaxConcurrency:  concurrencyOr(opts.Concurrency.DeepReview, phase3MaxConcurrency),
 		NoCache:         opts.NoCache,
 		RepoRoot:        opts.RepoRoot,
@@ -1054,6 +1075,26 @@ func runPhase3(
 			} else {
 				onProgress("phase3", "complete")
 			}
+		},
+		OnCallStart: func(idx int) {
+			onProgress("phase3", fmt.Sprintf("Batch %d: active", idx+1))
+		},
+		OnCallEnd: func(idx int, cached bool, callErr error, findings int) {
+			// findings=N is appended to terminal events so the panel
+			// row can show "✓ 3 findings" alongside the elapsed time.
+			// Suppressed for failed events to avoid a noisy "0 findings"
+			// reading next to a red ✗.
+			switch {
+			case cached:
+				onProgress("phase3", fmt.Sprintf("Batch %d: cached findings=%d", idx+1, findings))
+			case callErr != nil:
+				onProgress("phase3", fmt.Sprintf("Batch %d: failed", idx+1))
+			default:
+				onProgress("phase3", fmt.Sprintf("Batch %d: done findings=%d", idx+1, findings))
+			}
+		},
+		OnCallStream: func(idx, bytes int) {
+			onProgress("phase3", fmt.Sprintf("Batch %d: stream bytes=%d", idx+1, bytes))
 		},
 	}
 

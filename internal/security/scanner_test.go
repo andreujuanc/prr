@@ -109,7 +109,7 @@ func TestParseAOIResult_NewFormat(t *testing.T) {
 					"urgency": "individual",
 					"concern": "Currency conversion with floating point arithmetic",
 					"context": "Multiplies amounts by exchange rates using float64",
-					"dimensions": ["correctness", "financial"]
+					"categories": ["correctness", "financial"]
 				},
 				{
 					"id": "charge-go-error-swallow",
@@ -120,7 +120,7 @@ func TestParseAOIResult_NewFormat(t *testing.T) {
 					"urgency": "grouped",
 					"concern": "Error from validateAmount() assigned to _",
 					"context": "Validation error silently ignored before creating charge",
-					"dimensions": ["error-handling"]
+					"categories": ["error-handling"]
 				}
 			]
 		}
@@ -159,9 +159,6 @@ func TestParseAOIResult_NewFormat(t *testing.T) {
 	if aoi.Concern != "Currency conversion with floating point arithmetic" {
 		t.Errorf("got Concern %q", aoi.Concern)
 	}
-	if len(aoi.Dimensions) != 2 {
-		t.Errorf("got %d dimensions, want 2", len(aoi.Dimensions))
-	}
 }
 
 func TestParseAOIResult_LegacyFormatStillWorks(t *testing.T) {
@@ -197,64 +194,6 @@ func TestParseAOIResult_LegacyFormatStillWorks(t *testing.T) {
 	}
 	if aoi.Reasoning != "raw SQL" {
 		t.Errorf("got Reasoning %q, want %q", aoi.Reasoning, "raw SQL")
-	}
-}
-
-func TestParseRevalidationResult(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantLen int
-		wantErr bool
-	}{
-		{
-			name: "valid revalidation",
-			input: `[
-				{
-					"finding_index": 0,
-					"verdict": "true-positive",
-					"reasoning": "The SQL query uses string concatenation",
-					"confidence": "high",
-					"cwe": "CWE-89"
-				},
-				{
-					"finding_index": 1,
-					"verdict": "false-positive",
-					"reasoning": "Input is validated by middleware",
-					"confidence": "high",
-					"cwe": ""
-				}
-			]`,
-			wantLen: 2,
-		},
-		{
-			name:    "no JSON",
-			input:   "Nothing to report",
-			wantErr: true,
-		},
-		{
-			name:    "wrapped in fences",
-			input:   "```json\n" + `[{"finding_index":0,"verdict":"fixed","reasoning":"patched","confidence":"medium"}]` + "\n```",
-			wantLen: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			results, err := parseRevalidationResult(tt.input)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(results) != tt.wantLen {
-				t.Errorf("got %d results, want %d", len(results), tt.wantLen)
-			}
-		})
 	}
 }
 
@@ -340,46 +279,46 @@ func TestBuildAOIBatches(t *testing.T) {
 	}
 }
 
-func TestDimensionKey(t *testing.T) {
+func TestCategoryKey(t *testing.T) {
 	tests := []struct {
 		name string
-		dims []string
+		cats []string
 		want string
 	}{
-		{"nil dims", nil, "_all_"},
-		{"empty dims", []string{}, "_all_"},
-		{"single dim", []string{"testing"}, "testing"},
-		{"multiple dims sorted", []string{"a", "b", "c"}, "a,b,c"},
-		{"multiple dims unsorted", []string{"c", "a", "b"}, "a,b,c"},
+		{"nil cats", nil, "_all_"},
+		{"empty cats", []string{}, "_all_"},
+		{"single cat", []string{"testing"}, "testing"},
+		{"multiple cats sorted", []string{"a", "b", "c"}, "a,b,c"},
+		{"multiple cats unsorted", []string{"c", "a", "b"}, "a,b,c"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dimensionKey(tt.dims)
+			got := categoryKey(tt.cats)
 			if got != tt.want {
-				t.Errorf("dimensionKey(%v) = %q, want %q", tt.dims, got, tt.want)
+				t.Errorf("categoryKey(%v) = %q, want %q", tt.cats, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestBuildAOIBatchesClassified_GroupsByDimensions(t *testing.T) {
+func TestBuildAOIBatchesClassified_GroupsByCategories(t *testing.T) {
 	rawDiffs := map[string]string{
 		"handler.go":      "handler code",
 		"handler_test.go": "test code",
 		"repo.go":         "repo code",
 	}
 
-	fileDimensions := map[string][]string{
+	fileCategories := map[string][]string{
 		"handler.go":      {"input-validation", "error-handling"},
 		"handler_test.go": {"testing", "correctness"},
 		"repo.go":         {"input-validation", "error-handling"}, // same as handler.go
 	}
 
-	batches := buildAOIBatchesClassified(rawDiffs, fileDimensions, false)
+	batches := buildAOIBatchesClassified(rawDiffs, fileCategories, false)
 
-	// handler.go and repo.go share dimensions, so they should be in the same batch
-	// handler_test.go has different dimensions, so it should be in a separate batch
+	// handler.go and repo.go share categories, so they should be in the same batch.
+	// handler_test.go has different categories, so it should be in a separate batch.
 	if len(batches) != 2 {
 		t.Fatalf("got %d batches, want 2", len(batches))
 	}
@@ -411,22 +350,22 @@ func TestBuildAOIBatchesClassified_GroupsByDimensions(t *testing.T) {
 		t.Errorf("handler batch has %d files, want 2 (handler.go + repo.go)", len(handlerBatch.files))
 	}
 
-	// Verify dimensions are attached to batches
-	if len(testBatch.dimensions) != 2 {
-		t.Errorf("test batch has %d dimensions, want 2", len(testBatch.dimensions))
+	// Verify categories are attached to batches
+	if len(testBatch.categories) != 2 {
+		t.Errorf("test batch has %d categories, want 2", len(testBatch.categories))
 	}
-	if len(handlerBatch.dimensions) != 2 {
-		t.Errorf("handler batch has %d dimensions, want 2", len(handlerBatch.dimensions))
+	if len(handlerBatch.categories) != 2 {
+		t.Errorf("handler batch has %d categories, want 2", len(handlerBatch.categories))
 	}
 }
 
-func TestBuildAOIBatchesClassified_NilDimensions(t *testing.T) {
+func TestBuildAOIBatchesClassified_NilCategories(t *testing.T) {
 	rawDiffs := map[string]string{
 		"a.go": "code a",
 		"b.go": "code b",
 	}
 
-	// nil fileDimensions — all files should end up in same batch (all dims)
+	// nil fileCategories — all files should end up in same batch (all cats)
 	batches := buildAOIBatchesClassified(rawDiffs, nil, false)
 
 	if len(batches) != 1 {
@@ -435,8 +374,8 @@ func TestBuildAOIBatchesClassified_NilDimensions(t *testing.T) {
 	if len(batches[0].files) != 2 {
 		t.Errorf("batch has %d files, want 2", len(batches[0].files))
 	}
-	if batches[0].dimensions != nil {
-		t.Errorf("batch dimensions should be nil, got %v", batches[0].dimensions)
+	if batches[0].categories != nil {
+		t.Errorf("batch categories should be nil, got %v", batches[0].categories)
 	}
 }
 
@@ -462,24 +401,24 @@ func TestBuildAOIBatchesClassified_ExcludesFiles(t *testing.T) {
 	}
 }
 
-func TestBuildAOIScanPromptWithDimensions(t *testing.T) {
-	// With specific dimensions — prompt should contain those dimensions only
-	prompt := buildAOIScanPromptWithDimensions(true, []string{"testing"})
+func TestBuildAOIScanPromptWithCategories(t *testing.T) {
+	// With specific categories — prompt should contain those categories only
+	prompt := buildAOIScanPromptWithCategories(true, []string{"testing"})
 	if !containsSubstring(prompt, "TESTING") {
-		t.Error("prompt should contain TESTING dimension")
+		t.Error("prompt should contain TESTING category")
 	}
-	// Should NOT contain unrelated dimensions
+	// Should NOT contain unrelated categories
 	if containsSubstring(prompt, "CRYPTOGRAPHY") {
 		t.Error("prompt should not contain CRYPTOGRAPHY when only testing is specified")
 	}
 
-	// With nil dimensions — prompt should contain all dimensions
-	promptAll := buildAOIScanPromptWithDimensions(true, nil)
+	// With nil categories — prompt should contain all categories
+	promptAll := buildAOIScanPromptWithCategories(true, nil)
 	if !containsSubstring(promptAll, "TESTING") {
-		t.Error("prompt with nil dims should contain TESTING")
+		t.Error("prompt with nil cats should contain TESTING")
 	}
 	if !containsSubstring(promptAll, "CRYPTOGRAPHY") {
-		t.Error("prompt with nil dims should contain CRYPTOGRAPHY")
+		t.Error("prompt with nil cats should contain CRYPTOGRAPHY")
 	}
 
 	// Audit mode rules
@@ -488,12 +427,12 @@ func TestBuildAOIScanPromptWithDimensions(t *testing.T) {
 	}
 
 	// PR mode rules
-	promptPR := buildAOIScanPromptWithDimensions(false, []string{"testing"})
+	promptPR := buildAOIScanPromptWithCategories(false, []string{"testing"})
 	if !containsSubstring(promptPR, "DIFF") {
 		t.Error("PR mode prompt should contain diff rules")
 	}
 
-	// Slug list — narrowed when dims is given.
+	// Slug list — narrowed when cats is given.
 	if !containsSubstring(prompt, "testing") {
 		t.Error("prompt should list the testing slug")
 	}
@@ -501,16 +440,16 @@ func TestBuildAOIScanPromptWithDimensions(t *testing.T) {
 		t.Error("prompt should not list cryptography when only testing is specified")
 	}
 
-	// Slug list — full list when dims is nil. Spot-check a few that should
+	// Slug list — full list when cats is nil. Spot-check a few that should
 	// be present.
 	for _, slug := range []string{"correctness", "error-handling", "cryptography", "testing"} {
 		if !containsSubstring(promptAll, slug) {
-			t.Errorf("prompt with nil dims should list slug %q", slug)
+			t.Errorf("prompt with nil cats should list slug %q", slug)
 		}
 	}
 
 	// Rule about not inventing names.
-	if !containsSubstring(prompt, "Do not invent new dimension names") {
+	if !containsSubstring(prompt, "Do not invent, rename, abbreviate, or compress them") {
 		t.Error("prompt should contain the no-invented-names rule")
 	}
 }

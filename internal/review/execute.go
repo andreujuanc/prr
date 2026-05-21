@@ -25,6 +25,13 @@ type ExecuteOptions struct {
 	// ProjectContext is the discovered project summary.
 	ProjectContext string
 
+	// PRMeta is the PR-level metadata string (title, body, files list,
+	// CI status etc.) built by BuildPRMeta. Only the fallback-batch
+	// review path reads it — AOI-driven prompts get their PR context
+	// via different sections of the AOI prompt builder. Empty in audit
+	// mode (no PR).
+	PRMeta string
+
 	// RuntimeModel is the discovered structured codebase shape from
 	// Phase 0.5. When non-nil, the runtime model is rendered into a
 	// `## Runtime Model` section of every Phase 3 prompt so the
@@ -36,8 +43,8 @@ type ExecuteOptions struct {
 	// CustomInstructions from user config.
 	CustomInstructions string
 
-	// FocusDimensions filters which AOIs are reviewed (nil = all).
-	FocusDimensions []string
+	// FocusCategories filters which AOIs are reviewed (nil = all).
+	FocusCategories []string
 
 	// BugPriors is the rendered bug-priors prompt section produced by
 	// internal/bugpriors.Extract. When non-empty, it's spliced into
@@ -74,6 +81,29 @@ type ExecuteOptions struct {
 
 	// OnProgress is called with status updates. Can be nil.
 	OnProgress func(completed, total int, cached bool, err error)
+
+	// OnCallStart fires when a non-cached call enters its LLM phase
+	// (i.e., after the semaphore is acquired, just before ChatStream).
+	// Cached calls do not fire this — they return before semaphore
+	// acquisition. The Batches panel uses it to flip a batch's status
+	// from queued to active and start the elapsed-time clock.
+	OnCallStart func(index int)
+
+	// OnCallEnd fires for every call (cached or not) with its final
+	// outcome. completed/total order is preserved by OnProgress, but
+	// OnCallEnd carries the original call index so the Batches panel
+	// can address the specific batch row. cached and err mirror
+	// OnProgress. findings is the count produced by this call (0 on
+	// err); the panel surfaces it per-row and the phase summary sums
+	// it across calls.
+	OnCallEnd func(index int, cached bool, err error, findings int)
+
+	// OnCallStream fires (throttled) as bytes of plain content stream
+	// in from the LLM for a given call. tokenBytes is cumulative bytes
+	// received so far for this call. Used by the Batches panel to draw
+	// a per-batch progress bar from a real signal instead of a
+	// timer-only spinner.
+	OnCallStream func(index int, tokenBytes int)
 
 	// OnLLMCall is called before and after each LLM call for debugging.
 	// Called with (callIndex, ReviewCall, systemPrompt, userMessage, response).
@@ -172,7 +202,7 @@ func RunReviewCalls(
 			// Check cache (individual calls only — grouped calls have unstable
 			// cache keys because the group composition changes when any member
 			// file is modified, orphaning the old cache entry).
-			cacheKey := ComputeCacheKey(call, opts.FocusDimensions, bugpriors.Hash(opts.BugPriors))
+			cacheKey := ComputeCacheKey(call, opts.FocusCategories, bugpriors.Hash(opts.BugPriors))
 			if !opts.NoCache && opts.CacheGet != nil && call.Type == "individual" {
 				if cached := opts.CacheGet(cacheKey); cached != nil {
 					resultsCh <- callResult{index: i, result: cached, fromCache: true}
@@ -187,6 +217,10 @@ func RunReviewCalls(
 			case <-ctx.Done():
 				resultsCh <- callResult{index: i, err: ctx.Err()}
 				return
+			}
+
+			if opts.OnCallStart != nil {
+				opts.OnCallStart(i)
 			}
 
 			result, err := runReviewCallWithRetry(ctx, client, call, opts, i)
@@ -236,9 +270,14 @@ func RunReviewCalls(
 			if opts.OnProgress != nil {
 				opts.OnProgress(completed, len(calls), cr.fromCache, cr.err)
 			}
+			if opts.OnCallEnd != nil {
+				opts.OnCallEnd(cr.index, cr.fromCache, cr.err, 0)
+			}
 			continue
 		}
+		findings := 0
 		if cr.result != nil {
+			findings = len(cr.result.Findings)
 			execResult.Findings = append(execResult.Findings, cr.result.Findings...)
 			execResult.Dismissals = append(execResult.Dismissals, cr.result.Dismissals...)
 			if cr.result.CrossCutting != "" {
@@ -247,6 +286,9 @@ func RunReviewCalls(
 		}
 		if opts.OnProgress != nil {
 			opts.OnProgress(completed, len(calls), cr.fromCache, nil)
+		}
+		if opts.OnCallEnd != nil {
+			opts.OnCallEnd(cr.index, cr.fromCache, nil, findings)
 		}
 	}
 
@@ -372,6 +414,17 @@ func doReviewCall(
 	opts ExecuteOptions,
 	callIndex int,
 ) (*state.DeepReviewResult, error) {
+	// Build the onToken callback up front so fallback-batch calls can
+	// also feed the Batches panel's per-row byte counter.
+	onToken := buildCallOnToken(opts, callIndex)
+
+	// Fallback-batch calls use the directory-batch prompt; result is
+	// adapted to DeepFinding shape so the rest of the pipeline doesn't
+	// branch on origin. See internal/review/fallback.go.
+	if call.Type == "fallback-batch" {
+		return doFallbackBatchCall(ctx, client, call, opts, callIndex, onToken)
+	}
+
 	// Build prompt
 	var systemPrompt string
 	if call.Type == "individual" {
@@ -386,29 +439,6 @@ func doReviewCall(
 
 	messages := []ai.Message{
 		{Role: "user", Content: userMessage(opts.Mode)},
-	}
-
-	// Build onToken callback to capture tool events for debug logging.
-	var onToken func(string)
-	if opts.OnToolCall != nil {
-		onToken = func(tok string) {
-			if after, ok := strings.CutPrefix(tok, "\x00TOOL_START:"); ok {
-				// Format: \x00TOOL_START:name(args)
-				payload := after
-				if before, after, ok := strings.Cut(payload, "("); ok {
-					name := before
-					args := strings.TrimSuffix(after, ")")
-					opts.OnToolCall(callIndex, name, args, "start", "")
-				}
-			} else if after, ok := strings.CutPrefix(tok, "\x00TOOL_DONE:"); ok {
-				// Format: \x00TOOL_DONE:name|status|duration
-				payload := after
-				parts := strings.SplitN(payload, "|", 3)
-				if len(parts) == 3 {
-					opts.OnToolCall(callIndex, parts[0], "", parts[1], parts[2])
-				}
-			}
-		}
 	}
 
 	// Resolve {{TOOLS}} before ChatStream so the debug hook sees the
@@ -432,6 +462,16 @@ func doReviewCall(
 	}
 	validateReviewResult(call, result)
 
+	// Category guard: drop any finding whose category isn't in the
+	// canonical taxonomy. The deep-review prompt enumerates the
+	// valid categories — if the model still emits something
+	// out-of-list, downstream code (recheck batches by category,
+	// audit reports group by category) silently mishandles it.
+	// Cheaper to drop here than to chase the resulting weirdness.
+	if result != nil {
+		result.Findings = filterValidCategories(call, result.Findings)
+	}
+
 	// In-loop evidence verification: every emitted finding carries
 	// a verbatim snippet (per the prompts); we match it against the
 	// cited file. Mismatches get one corrector round trip in the
@@ -451,6 +491,88 @@ func doReviewCall(
 	}
 
 	return result, nil
+}
+
+// filterValidCategories drops findings whose Category isn't in the
+// canonical taxonomy (ai.CategoryExists). Each drop is logged with
+// the call's identity so prompt drift is visible without polluting
+// the result. An empty Category passes through — that's a separate
+// validation concern handled by ValidateAndNormalize.
+//
+// "Drop, don't retry" is the lightest fix: the deep-review prompt
+// already enumerates the valid categories. If the model still emits
+// something off-taxonomy, retrying the same prompt would likely
+// produce the same drift. Better to log and move on.
+func filterValidCategories(call ReviewCall, in []state.DeepFinding) []state.DeepFinding {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]state.DeepFinding, 0, len(in))
+	for _, f := range in {
+		if f.Category != "" && !ai.CategoryExists(f.Category) {
+			log.Printf("review: %s call (%s/%s) dropping finding %q — category %q is not in the canonical taxonomy",
+				call.Type, call.Category, call.Subcategory, f.Title, f.Category)
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// buildCallOnToken constructs the ChatStream onToken callback for one
+// call. ChatStream offers one slot, so this multiplexes two concerns:
+// tool-event debug logging (OnToolCall) and per-batch byte counting
+// for the Batches panel's progress bar (OnCallStream). Content bytes
+// — anything not prefixed with the \x00 control byte — feed the
+// per-batch counter. Of the \x00-prefixed control tokens, only
+// TOOL_START and TOOL_DONE dispatch to OnToolCall; THOUGHT_ markers
+// are intentionally dropped (no consumer wants them and surfacing
+// thoughts would dilute the tool-call debug log). Returns nil when
+// neither hook is configured.
+//
+// Extracted out so both the AOI-driven path and the fallback-batch
+// path build the same callback shape with no copy/paste drift.
+func buildCallOnToken(opts ExecuteOptions, callIndex int) func(string) {
+	if opts.OnToolCall == nil && opts.OnCallStream == nil {
+		return nil
+	}
+	var streamBytes int
+	var lastEmit int
+	return func(tok string) {
+		if len(tok) == 0 {
+			return
+		}
+		if tok[0] == 0x00 {
+			if opts.OnToolCall == nil {
+				return
+			}
+			if after, ok := strings.CutPrefix(tok, "\x00TOOL_START:"); ok {
+				payload := after
+				if before, after, ok := strings.Cut(payload, "("); ok {
+					name := before
+					args := strings.TrimSuffix(after, ")")
+					opts.OnToolCall(callIndex, name, args, "start", "")
+				}
+			} else if after, ok := strings.CutPrefix(tok, "\x00TOOL_DONE:"); ok {
+				payload := after
+				parts := strings.SplitN(payload, "|", 3)
+				if len(parts) == 3 {
+					opts.OnToolCall(callIndex, parts[0], "", parts[1], parts[2])
+				}
+			}
+			return
+		}
+		if opts.OnCallStream != nil {
+			streamBytes += len(tok)
+			// Throttle: one emit per >=256 bytes received. Same
+			// pattern as synthesis streaming — keeps the TUI from
+			// re-rendering on every token while still feeling live.
+			if streamBytes-lastEmit >= 256 {
+				opts.OnCallStream(callIndex, streamBytes)
+				lastEmit = streamBytes
+			}
+		}
+	}
 }
 
 // verifyAndCorrectEvidence runs the per-finding snippet check, asks
@@ -768,12 +890,12 @@ func isValidSeverity(s string) bool {
 // invalidate cached results — without it, an AOI whose line/concern
 // is stable could serve stale review verdicts after nearby code
 // changed.
-func ComputeCacheKey(call ReviewCall, focusDimensions []string, priorsHash string) string {
+func ComputeCacheKey(call ReviewCall, focusCategories []string, priorsHash string) string {
 	codeContext := codeContextDigest(call)
 	if call.Type == "individual" {
-		return IndividualCacheKey(codeContext, call.AOIs[0], focusDimensions, priorsHash)
+		return IndividualCacheKey(codeContext, call.AOIs[0], focusCategories, priorsHash)
 	}
-	return GroupedCacheKey(call.AOIs, codeContext, focusDimensions, priorsHash)
+	return GroupedCacheKey(call.AOIs, codeContext, focusCategories, priorsHash)
 }
 
 func userMessage(mode Mode) string {
@@ -849,7 +971,6 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 			Severity            string               `json:"severity"`
 			Category            string               `json:"category"`
 			Subcategory         string               `json:"subcategory"`
-			Dimension           string               `json:"dimension"`
 			Title               string               `json:"title"`
 			Description         string               `json:"description"`
 			Evidence            string               `json:"evidence"`
@@ -874,7 +995,6 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				Severity:            parsed.Severity,
 				Category:            parsed.Category,
 				Subcategory:         parsed.Subcategory,
-				Dimension:           parsed.Dimension,
 				Title:               parsed.Title,
 				Description:         parsed.Description,
 				Evidence:            parsed.Evidence,
@@ -909,7 +1029,6 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 				Severity            string               `json:"severity"`
 				Category            string               `json:"category"`
 				Subcategory         string               `json:"subcategory"`
-				Dimension           string               `json:"dimension"`
 				Title               string               `json:"title"`
 				Description         string               `json:"description"`
 				Evidence            string               `json:"evidence"`
@@ -937,7 +1056,6 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 					Severity:            r.Severity,
 					Category:            r.Category,
 					Subcategory:         r.Subcategory,
-					Dimension:           r.Dimension,
 					Title:               r.Title,
 					Description:         r.Description,
 					Evidence:            r.Evidence,

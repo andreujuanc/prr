@@ -51,7 +51,7 @@ func TestScanBatchWithRetry_RetriesTransient(t *testing.T) {
 		},
 	}
 	batch := aoiBatch{
-		label: "all-dims",
+		label: "all-cats",
 		files: []string{"a.go"},
 		diffs: "=== a.go ===\npackage a\n",
 	}
@@ -76,7 +76,7 @@ func TestScanBatchWithRetry_DoesNotRetryParseErrors(t *testing.T) {
 		responses: []string{"I cannot help with this request."},
 	}
 	batch := aoiBatch{
-		label: "all-dims",
+		label: "all-cats",
 		files: []string{"a.go"},
 		diffs: "=== a.go ===\npackage a\n",
 	}
@@ -101,7 +101,7 @@ func TestScanBatchWithRetry_DoesNotRetryEmptyResponse(t *testing.T) {
 		responses: []string{""},
 	}
 	batch := aoiBatch{
-		label: "all-dims",
+		label: "all-cats",
 		files: []string{"a.go"},
 		diffs: "=== a.go ===\npackage a\n",
 	}
@@ -128,7 +128,7 @@ func TestScanBatchWithRetry_DoesNotRetryCanceled(t *testing.T) {
 		errors: []error{context.Canceled},
 	}
 	batch := aoiBatch{
-		label: "all-dims",
+		label: "all-cats",
 		files: []string{"a.go"},
 		diffs: "=== a.go ===\npackage a\n",
 	}
@@ -153,7 +153,7 @@ func TestScanBatchWithRetry_BothAttemptsFailTransiently(t *testing.T) {
 		},
 	}
 	batch := aoiBatch{
-		label: "all-dims",
+		label: "all-cats",
 		files: []string{"a.go"},
 		diffs: "=== a.go ===\npackage a\n",
 	}
@@ -204,7 +204,7 @@ func TestScanAreasOfInterestClassified_WarnsOnLLMDroppedFiles(t *testing.T) {
 	// know Phase 3's recall is reduced for that file.
 	client := &stubClient{
 		responses: []string{
-			`[{"file": "a.go", "areas": [{"id": "a-go-1", "line": 1, "category": "correctness", "subcategory": "off-by-one", "urgency": "grouped", "concern": "x", "context": "y", "dimensions": ["correctness"]}]}]`,
+			`[{"file": "a.go", "areas": [{"id": "a-go-1", "line": 1, "category": "correctness", "subcategory": "off-by-one", "urgency": "grouped", "concern": "x", "context": "y", "categories": ["correctness"]}]}]`,
 		},
 	}
 

@@ -2,6 +2,7 @@ package review
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
@@ -43,8 +44,10 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPri
 		sb.WriteString("Focus on whether the concern is a real, current problem.\n\n")
 	}
 
-	// Base prompt
-	sb.WriteString(ai.ReviewIndividualPrompt)
+	// Base prompt — {{REVIEW_COMMON}} is substituted with the shared
+	// defenses/trace/severity sections so individual and grouped prompts
+	// stay in lockstep.
+	sb.WriteString(strings.Replace(ai.ReviewIndividualPrompt, "{{REVIEW_COMMON}}", ai.ReviewCommonPrompt, 1))
 
 	// Project context
 	if projectContext != "" {
@@ -79,11 +82,11 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPri
 		sb.WriteString(section)
 	}
 
-	// Relevant dimension criteria
-	dims := relevantDimensions(aoi)
-	if len(dims) > 0 {
+	// Relevant category criteria
+	cats := relevantCategories(aoi)
+	if len(cats) > 0 {
 		sb.WriteString("\n\n## Evaluation Criteria\n\n")
-		sb.WriteString(ai.GetDimensions(dims))
+		sb.WriteString(ai.GetCategories(cats))
 	}
 
 	// Custom instructions
@@ -112,8 +115,10 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 		sb.WriteString("Focus on whether these concerns are real, current problems.\n\n")
 	}
 
-	// Base prompt
-	sb.WriteString(ai.ReviewGroupedPrompt)
+	// Base prompt — {{REVIEW_COMMON}} is substituted with the shared
+	// defenses/trace/severity sections so individual and grouped prompts
+	// stay in lockstep.
+	sb.WriteString(strings.Replace(ai.ReviewGroupedPrompt, "{{REVIEW_COMMON}}", ai.ReviewCommonPrompt, 1))
 
 	// Project context
 	if projectContext != "" {
@@ -159,11 +164,11 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 		sb.WriteString(renderPRDiffsSection(call))
 	}
 
-	// Relevant dimension criteria — collect from all AOIs in the group
-	dims := relevantDimensionsFromGroup(call.AOIs)
-	if len(dims) > 0 {
+	// Relevant category criteria — collect from all AOIs in the group
+	cats := relevantCategoriesFromGroup(call.AOIs)
+	if len(cats) > 0 {
 		sb.WriteString("\n\n## Evaluation Criteria\n\n")
-		sb.WriteString(ai.GetDimensions(dims))
+		sb.WriteString(ai.GetCategories(cats))
 	}
 
 	// Custom instructions
@@ -330,38 +335,34 @@ func formatAOI(aoi security.AreaOfInterest) string {
 	return sb.String()
 }
 
-// relevantDimensions returns the dimension slugs to include for a single AOI.
-// Uses the AOI's dimensions field, falling back to the category itself.
-func relevantDimensions(aoi security.AreaOfInterest) []string {
-	if len(aoi.Dimensions) > 0 {
-		// Deduplicate and filter to valid dimensions
-		seen := make(map[string]bool)
-		var result []string
-		for _, d := range aoi.Dimensions {
-			if !seen[d] && ai.DimensionExists(d) {
-				seen[d] = true
-				result = append(result, d)
-			}
-		}
-		return result
-	}
-
-	// Fallback: use the category as dimension if it exists
-	if ai.DimensionExists(aoi.Category) {
+// relevantCategories returns the category slugs to include for a single AOI.
+// One AOI = one category — see the AOI scan prompt's "One AOI = one
+// category" rule. Returns the AOI's category as a single-element slice
+// when it's in the canonical taxonomy, or nil otherwise.
+//
+// validateAOIs logs at scan time, but cached AOIs whose category was
+// renamed or removed in the taxonomy land here at prompt-build time
+// without re-validation — the log below surfaces that case.
+func relevantCategories(aoi security.AreaOfInterest) []string {
+	if ai.CategoryExists(aoi.Category) {
 		return []string{aoi.Category}
+	}
+	if aoi.Category != "" {
+		log.Printf("relevantCategories: AOI %s [id=%s] category %q not in taxonomy — prompt omits criteria section",
+			aoi.File, aoi.ID, aoi.Category)
 	}
 	return nil
 }
 
-// relevantDimensionsFromGroup collects all relevant dimensions across a group of AOIs.
-func relevantDimensionsFromGroup(aois []security.AreaOfInterest) []string {
+// relevantCategoriesFromGroup collects all relevant categories across a group of AOIs.
+func relevantCategoriesFromGroup(aois []security.AreaOfInterest) []string {
 	seen := make(map[string]bool)
 	var result []string
 	for _, aoi := range aois {
-		for _, d := range relevantDimensions(aoi) {
-			if !seen[d] {
-				seen[d] = true
-				result = append(result, d)
+		for _, c := range relevantCategories(aoi) {
+			if !seen[c] {
+				seen[c] = true
+				result = append(result, c)
 			}
 		}
 	}

@@ -63,90 +63,12 @@ After reviewing all AOIs:
 - Look for patterns — are these following a shared anti-pattern?
 - Note cross-cutting observations about the codebase.
 
-For each dimension, decide whether the prompt context already answers
+For each category, decide whether the prompt context already answers
 the question. If it does, conclude. If it does not, reach for tools
 to fetch what's missing.
 
-## Defenses Checked (required for security-shaped categories)
+{{REVIEW_COMMON}}
 
-For findings whose `category` is `authorization`, `concurrency`,
-`input-validation`, or `external-io`, list every defense layer you
-inspected when judging the bug. Each entry is one tag from the
-canonical vocabulary:
-
-- `boundary-authz` (gateway/middleware authn or authz)
-- `handler-guard` (in-function permission/role check)
-- `conditional-write` (CAS, versioned column, if-not-exists)
-- `idempotency-key` (dedup table, nonce, request ID)
-- `schema-validation` (declared schema parses input at boundary)
-- `framework-escape` (template auto-escape, ORM parameterization)
-- `result-discipline` (caller awaits and propagates error/Result)
-- `native-limit` (platform's documented payload/batch ceiling)
-
-Or `other:<tag>` for cases outside the list. Tags are
-language-agnostic — describe the shape of the defense, not the
-framework name.
-
-For findings in other categories (correctness, error-handling,
-performance, etc.), `defenses_checked` is optional. Leave it empty
-when no defense layer applies.
-
-Required-category findings shipping with an empty `defenses_checked`
-list will have their confidence score reduced by 25 points by the
-validator and the reasoning tagged with `defenses-not-checked`.
-Severity is unchanged.
-
-## End-to-End Trace (required at critical/high)
-
-For any finding you intend to emit at `critical` or `high` severity,
-produce a `trace` array of at least THREE hops showing how the suspect
-value reaches the next system boundary. Findings at `medium` / `low` /
-`nit` don't need a trace.
-
-Hop roles:
-
-- `suspect` — the cited line.
-- `caller` — the function/handler that invokes it.
-- `boundary` — the next *system* boundary the value reaches
-  (transport: HTTP response, RPC reply, message-queue send;
-  persistence: any write that may CAS, versioned column, or
-  conditional update; trust: input from network, file, env,
-  message body). The Runtime Model section above enumerates the
-  entry-point classes for this codebase.
-
-You may include more than three hops. Each hop carries `role`,
-`file`, `lines`, and a one-line `evidence` field.
-
-If you cannot write the trace, your understanding of the bug is
-incomplete — re-investigate or downgrade severity to medium. (The
-validator will penalize confidence on severe findings without a 3-hop
-trace.)
-
-## Severity Calibration
-
-Pick `severity` per finding from CONCRETE IMPACT, not feel. Anchor to these:
-
-- **critical** — exploitable RCE, auth bypass to admin/superuser, data
-  loss or persistent corruption, financial state error (lost or
-  double-charged money), or a vulnerability that lets an external
-  attacker take over.
-- **high** — privilege escalation between user tiers, sensitive data
-  exposure (PII / credentials / tokens), persistent injection
-  (XSS / SQLi) on user-controlled input, missing auth on a real
-  endpoint, correctness bug that silently produces wrong production
-  results.
-- **medium** — DoS reachable with adversarial but non-trivial input,
-  race condition in a hot path under realistic load, missing input
-  bounds with no obvious abuse path, error swallowing that hides
-  operational issues, measurable performance regression that isn't
-  user-visible.
-- **low** — inefficiency on small N, missing observability/log,
-  brittle error message that confuses operators, defensive code that
-  complicates without protecting, minor design inconsistency.
-- **nit** — style, naming, docs, harmless redundancy, "would be
-  cleaner if".
-
-If a finding's impact straddles two levels, pick the LOWER one.
 Within a group, do NOT inflate severity to make a pattern look more
 systemic — rank each AOI on its own merits.
 
@@ -166,7 +88,6 @@ Return ONLY a JSON object — no prose before or after:
       "severity": "critical | high | medium | low | nit",
       "category": "category-slug",
       "subcategory": "subcategory-slug",
-      "dimension": "the primary dimension",
       "title": "short descriptive title",
       "description": "what's wrong and why it matters",
       "evidence": "what you verified and what you found — summarize key tool results",

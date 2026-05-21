@@ -43,7 +43,6 @@ const validFindingJSON = `{
   "severity": "high",
   "category": "security",
   "subcategory": "auth",
-  "dimension": "security",
   "title": "Hardcoded credential",
   "description": "API key in source.",
   "trigger": "Always.",

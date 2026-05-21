@@ -52,12 +52,6 @@ func ResolveToolsForClient(client Client, systemPrompt string) string {
 	return systemPrompt
 }
 
-// ReviewPRSystemPrompt is the high-quality, agent-driven review prompt
-// used as the base for single-pass PR review.
-//
-//go:embed prompts/review_pr.md
-var ReviewPRSystemPrompt string
-
 // ReviewFilePrompt is the system prompt used when reviewing a single file's diff.
 //
 //go:embed prompts/review_file.md
@@ -82,16 +76,30 @@ var ReviewSynthesisPrompt string
 var ChatPrompt string
 
 // ReviewIndividualPrompt is the base system prompt for individual AOI deep review.
-// Composed with mode preamble, project context, AOI details, and dimensions at runtime.
+// Composed with mode preamble, project context, AOI details, and categories at runtime.
+// Contains a {{REVIEW_COMMON}} placeholder for the shared defenses /
+// trace / severity sections — substituted at build time by
+// review.BuildIndividualPrompt.
 //
 //go:embed prompts/review_individual.md
 var ReviewIndividualPrompt string
 
 // ReviewGroupedPrompt is the base system prompt for grouped subcategory review.
-// Composed with mode preamble, project context, AOI list, and dimensions at runtime.
+// Composed with mode preamble, project context, AOI list, and categories at runtime.
+// Contains a {{REVIEW_COMMON}} placeholder for the shared defenses /
+// trace / severity sections — substituted at build time by
+// review.BuildGroupedPrompt.
 //
 //go:embed prompts/review_grouped.md
 var ReviewGroupedPrompt string
+
+// ReviewCommonPrompt is the shared sections used by both individual
+// and grouped deep-review prompts: defenses_checked vocabulary,
+// end-to-end trace requirements, and severity calibration anchors.
+// Substituted into {{REVIEW_COMMON}} placeholders at prompt-build time.
+//
+//go:embed prompts/review_common.md
+var ReviewCommonPrompt string
 
 // AuditSynthesisPrompt is the system prompt for Phase 4 audit synthesis.
 // It instructs the LLM to produce a structured executive summary from findings.
@@ -123,53 +131,3 @@ var RecheckConsolidatePrompt string
 //
 //go:embed prompts/recheck_dismiss.md
 var RecheckDismissPrompt string
-
-// ReviewPRPrompt is the system prompt for single-pass PR review.
-// Combines the embedded review instructions with structured JSON output
-// requirements and tool workflow guidance. The {{TOOLS}} placeholder is
-// resolved at request time against the active provider.
-var ReviewPRPrompt = ReviewPRSystemPrompt + `
-
-{{TOOLS}}
-
-## Workflow
-
-1. Read the diffs for all changed files.
-2. Read base/head files for surrounding context, especially on refactors.
-3. Find callers and related code before flagging.
-4. Consult the PR Brief in the PR Context section above for prior comments, prior AI reviews, and CI status — do not re-raise resolved points or restate prior findings.
-
-## Output Format
-
-You MUST return ONLY a JSON object matching this exact schema — no prose before or after:
-
-` + "```json" + `
-{
-  "summary": "one paragraph capturing what the PR does and overall quality",
-  "verdict": "approve | request_changes | comment",
-  "findings": [
-    {
-      "severity": "critical | high | medium | low | nit",
-      "category": "bug | security | performance | testing | style | architecture | docs",
-      "file": "path/to/file.go",
-      "line": 42,
-      "title": "short title",
-      "detail": "what's wrong and why it matters",
-      "suggestion": "smallest change that resolves the issue, matching the codebase's existing patterns; code snippet preferred",
-      "cwe": "CWE-XXX (for security findings only, omit for non-security)"
-    }
-  ],
-  "missing_tests": ["behaviors that should be tested but aren't"],
-  "questions_for_author": ["genuine ambiguities, not rhetorical"]
-}
-` + "```" + `
-
-Guidelines:
-- "findings" array MUST be sorted by severity: critical first, nit last
-- Every finding MUST include file and line
-- "suggestion" may be empty string if no concrete fix is obvious
-- "suggestion" scope is absolute: do NOT propose new utilities, helper functions, abstractions, refactors of adjacent code, or pattern changes not already in the codebase. Fix the issue, nothing more
-- "missing_tests": populate when the PR adds new behavior without test coverage. Don't leave empty out of caution — listing missing tests is the job, not scope creep
-- "questions_for_author": populate when something is genuinely uncertain or needs author input. Don't leave empty out of caution
-- If the PR is clean, return verdict "approve" with an empty findings array
-- Return ONLY the JSON — no markdown, no prose, no explanation`

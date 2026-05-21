@@ -94,6 +94,52 @@ func TestParseReviewEvent_BatchActiveDoesNotIncrement(t *testing.T) {
 	}
 }
 
+// TestParseReviewEvent_BatchesPanelStateRouting pins that batch
+// lifecycle events under phase1 populate the State.Batches map (read
+// by the Batches panel) in addition to the aggregate counters above.
+// Without this, the panel would render empty rows even though the
+// aggregate counters tick correctly.
+func TestParseReviewEvent_BatchesPanelStateRouting(t *testing.T) {
+	s := newState()
+	parseReviewEvent(s, "phase1", "Initialized 2 batches (1 AOI-driven, 1 general)")
+	parseReviewEvent(s, "phase1", `Batch 1: init label="auth/injection [critical]" files=2 kind=aoi-driven`)
+	parseReviewEvent(s, "phase1", `Batch 2: init label="internal/ui" files=3 kind=general`)
+	parseReviewEvent(s, "phase1", "Batch 1: active")
+	parseReviewEvent(s, "phase1", "Batch 1: stream bytes=800")
+	parseReviewEvent(s, "phase1", "Batch 1: done")
+	parseReviewEvent(s, "phase1", "Batch 2: cached")
+
+	b1 := s.Batches[0]
+	if b1 == nil {
+		t.Fatal("batch 0 not populated")
+	}
+	if b1.Label != "auth/injection [critical]" || b1.Files != 2 || b1.Kind != "aoi-driven" {
+		t.Errorf("batch 0: got %+v", b1)
+	}
+	if b1.Status != progress.BatchDone {
+		t.Errorf("batch 0 status = %q, want done", b1.Status)
+	}
+	if b1.Bytes != 800 {
+		t.Errorf("batch 0 bytes = %d, want 800", b1.Bytes)
+	}
+
+	b2 := s.Batches[1]
+	if b2 == nil {
+		t.Fatal("batch 1 not populated")
+	}
+	if b2.Kind != "general" || b2.Status != progress.BatchCached {
+		t.Errorf("batch 1: got status=%q kind=%q, want cached/general", b2.Status, b2.Kind)
+	}
+
+	// Aggregate counters still tick — Batches panel parser is additive.
+	if got := s.Counters["batches_done"]; got != 1 {
+		t.Errorf("batches_done = %d, want 1", got)
+	}
+	if got := s.Counters["batches_cached"]; got != 1 {
+		t.Errorf("batches_cached = %d, want 1", got)
+	}
+}
+
 // ── ProgressFn ─────────────────────────────────────────────────────────
 
 func TestAOIProgress_RatioOfCounters(t *testing.T) {
@@ -221,6 +267,47 @@ func TestDeepReviewSummary_BreakdownFromCounters(t *testing.T) {
 	want := "35 done · 3 cached · 1 failed (12 AOI-driven + 27 general)"
 	if got := deepReviewSummary(s); got != want {
 		t.Errorf("deepReviewSummary = %q, want %q", got, want)
+	}
+}
+
+func TestDeepReviewSummary_IncludesFindingsTotalWhenPresent(t *testing.T) {
+	// When the per-batch findings count rolled up via the new
+	// `findings=N` wire token, the summary appends "· N findings"
+	// before the AOI/general breakdown.
+	s := &progress.State{Counters: map[string]int{
+		"batches_total":          4,
+		"batches_done":           3,
+		"batches_cached":         1,
+		"batches_failed":         0,
+		"batches_aoi_driven":     2,
+		"batches_general":        2,
+		"batches_findings_total": 19,
+	}}
+	want := "3 done · 1 cached · 0 failed · 19 findings (2 AOI-driven + 2 general)"
+	if got := deepReviewSummary(s); got != want {
+		t.Errorf("deepReviewSummary = %q, want %q", got, want)
+	}
+}
+
+func TestParseReviewEvent_SumsFindingsFromTerminalEvents(t *testing.T) {
+	// done findings=N and cached findings=N both contribute. failed
+	// has no count token (would always be zero) and is skipped.
+	s := newState()
+	parseReviewEvent(s, "phase1", "Batch 1: done findings=4")
+	parseReviewEvent(s, "phase1", "Batch 2: cached findings=2")
+	parseReviewEvent(s, "phase1", "Batch 3: done findings=0")
+	parseReviewEvent(s, "phase1", "Batch 4: failed")
+	if got := s.Counters["batches_findings_total"]; got != 6 {
+		t.Errorf("batches_findings_total = %d, want 6", got)
+	}
+	if got := s.Counters["batches_done"]; got != 2 {
+		t.Errorf("batches_done = %d, want 2", got)
+	}
+	if got := s.Counters["batches_cached"]; got != 1 {
+		t.Errorf("batches_cached = %d, want 1", got)
+	}
+	if got := s.Counters["batches_failed"]; got != 1 {
+		t.Errorf("batches_failed = %d, want 1", got)
 	}
 }
 

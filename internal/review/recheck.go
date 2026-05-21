@@ -32,10 +32,21 @@ type RecheckOptions struct {
 	// skip the cross-check.
 	RepoRoot string
 
-	// MaxFindingsPerBatch caps findings per LLM call.
-	// If total findings exceed this, they're split by file.
-	// Default: 50.
+	// MaxFindingsPerBatch caps findings per LLM call in the
+	// consolidate pass. If total findings exceed this, they're split
+	// by category. Default: 50.
+	//
+	// The dismiss pass uses DismissBatchSize instead — dismissals
+	// benefit from much smaller batches because the model judges each
+	// finding individually rather than looking for cross-finding
+	// patterns.
 	MaxFindingsPerBatch int
+
+	// DismissBatchSize caps findings per LLM call in the dismiss
+	// pass. Findings are first grouped by category, then each
+	// category is chunked into batches of this size. Default: 3.
+	// 1 means one LLM call per finding (most focused, most expensive).
+	DismissBatchSize int
 
 	// MaxConcurrency caps parallel batch calls. Default: 5.
 	MaxConcurrency int
@@ -53,6 +64,20 @@ type RecheckOptions struct {
 	// at total during that final pass. It's typically fast (<2s)
 	// and treating it as overhead simplifies the contract.
 	OnProgress func(done, total int)
+
+	// OnBatchInit fires once per dismiss-pass batch before any goroutine
+	// launches. Used by the Batches panel to populate row identity so
+	// recheck shows the same "rows you can watch" the deep-review
+	// phase does. Optional.
+	OnBatchInit func(index int, label string, numFindings int)
+
+	// OnBatchActive fires when a dismiss-pass batch's goroutine
+	// acquires its semaphore slot, just before the LLM call. Optional.
+	OnBatchActive func(index int)
+
+	// OnBatchDone fires when a dismiss-pass batch finishes (success or
+	// error). err is non-nil on failure. Optional.
+	OnBatchDone func(index int, err error)
 }
 
 // RecheckResult holds the output of the recheck phase.
@@ -135,50 +160,52 @@ func RecheckFindings(
 	// ── Pass 1: Cross-file consolidation ────────────────────────
 	// Consolidation runs on the FULL set in a single call when it
 	// fits. Above the per-batch cap, we group by category — patterns
-	// almost always live within a category, so within-category
-	// batches preserve consolidation opportunities. Cross-category
-	// patterns are rare enough that we accept missing them at scale
-	// rather than ballooning the call into one massive request.
-	postConsolidate, consolidations, consolErr := runConsolidatePass(ctx, client, findings, opts, maxPerBatch)
+	// almost always live within a category. Cross-category patterns
+	// are rare enough that we accept missing them at scale rather
+	// than ballooning the call into one massive request.
+	//
+	// Output is a single combined list: originals not in any merge
+	// group + new merged findings. Everything then flows into Pass 2
+	// (dismiss) — including the merged ones — so a bad consolidation
+	// can still be dropped downstream.
+	// Wrap the panel hooks with a "consolidate · " label prefix so
+	// the Batches panel can tell consolidate rows from dismiss rows
+	// at a glance.
+	consolOpts := withLabelPrefix(opts, "consolidate · ")
+	postConsolidate, consolidatedCount, consolBatches, consolErr := runConsolidatePass(ctx, client, findings, consolOpts, maxPerBatch)
 	if consolErr != nil {
 		log.Printf("Recheck pass 1 (consolidate) failed: %v — proceeding with original findings", consolErr)
 		postConsolidate = findings
-		consolidations = nil
+		consolidatedCount = 0
 	}
 
-	// Enforce the systemic gate: a consolidated finding that didn't
-	// reach the 3-distinct-sites bar gets the "Systemic:" framing
-	// stripped (and is treated as a regular finding for the rest of
-	// the pipeline). Severity is untouched; the consolidator may
-	// have justifiably raised it.
-	if len(consolidations) > 0 {
-		consolidations = ApplySystemicGate(consolidations)
-	}
+	// Apply the systemic gate to any "Systemic:"-flagged finding
+	// that didn't reach the 3-distinct-sites bar. Severity is
+	// untouched — only the Systemic prefix and flag.
+	postConsolidate = ApplySystemicGate(postConsolidate)
 
-	// ── Pass 2: Per-file dismissal ─────────────────────────────
-	dismissResult, dismissErr := runDismissPass(ctx, client, postConsolidate, opts, maxPerBatch, emit)
+	// ── Pass 2: Dismissal over the merged set ──────────────────
+	// Offset the dismiss batch indices by the consolidate batch
+	// count so the two passes don't collide in the panel's
+	// State.Batches map. Prefix the labels so they're distinguishable.
+	dismissOpts := withLabelPrefix(opts, "dismiss · ")
+	dismissOpts = withIndexOffset(dismissOpts, consolBatches)
+	dismissResult, dismissErr := runDismissPass(ctx, client, postConsolidate, dismissOpts, emit)
 	if dismissErr != nil {
 		log.Printf("Recheck pass 2 (dismiss) failed: %v — keeping post-consolidate set", dismissErr)
-		// Fall back: keep everything that survived consolidation, no dismissal records.
 		emit(total)
 		return &RecheckResult{
-			Findings:          append(append([]state.DeepFinding(nil), consolidations...), postConsolidate...),
-			ConsolidatedCount: len(findings) - len(postConsolidate),
+			Findings:          postConsolidate,
+			ConsolidatedCount: consolidatedCount,
 		}, nil
 	}
 
-	// Merge: consolidations go first (systemic findings are usually
-	// higher priority), then per-file kept/modified.
-	merged := make([]state.DeepFinding, 0, len(consolidations)+len(dismissResult.Findings))
-	merged = append(merged, consolidations...)
-	merged = append(merged, dismissResult.Findings...)
-
 	emit(total)
 	return &RecheckResult{
-		Findings:          merged,
+		Findings:          dismissResult.Findings,
 		Dismissed:         dismissResult.Dismissed,
 		DismissedCount:    len(dismissResult.Dismissed),
-		ConsolidatedCount: len(findings) - len(postConsolidate),
+		ConsolidatedCount: consolidatedCount,
 		ModifiedCount:     dismissResult.ModifiedCount,
 	}, nil
 }
@@ -186,24 +213,41 @@ func RecheckFindings(
 // runConsolidatePass runs cross-file consolidation. Returns the
 // findings that survived consolidation (i.e. were not absorbed into
 // a systemic finding) and the consolidated systemic findings as a
-// separate slice. The two are returned separately so the caller can
-// route only the non-systemic findings to the per-file dismiss pass.
+// returned as a single flat list: originals not merged + any new
+// merged findings. Both flow into the dismiss pass downstream — a
+// bad consolidation can still be dropped there.
+//
+// absorbedCount sums the constituents of every accepted merge group
+// (e.g. one merge of 3 findings = 3 absorbed). Tracks "how many of
+// the input findings ended up inside a systemic" for the report.
+//
+// batchCount is the number of LLM calls made — used by the caller
+// to offset the dismiss pass's batch indices so they don't collide
+// with the consolidate pass's indices in the Batches panel.
 func runConsolidatePass(
 	ctx context.Context,
 	client ai.Client,
 	findings []state.DeepFinding,
 	opts RecheckOptions,
 	maxPerBatch int,
-) (kept []state.DeepFinding, consolidations []state.DeepFinding, err error) {
+) (out []state.DeepFinding, absorbedCount int, batchCount int, err error) {
 	if len(findings) == 0 {
-		return findings, nil, nil
+		return findings, 0, 0, nil
 	}
 	if len(findings) <= maxPerBatch {
-		result, err := recheckConsolidateBatch(ctx, client, findings, opts)
-		if err != nil {
-			return nil, nil, err
+		// Single-batch path. Fire the panel hooks so the consolidate
+		// step shows a row even when there's only one call.
+		if opts.OnBatchInit != nil {
+			opts.OnBatchInit(0, recheckBatchLabel(findings), len(findings))
 		}
-		return result.kept, result.consolidations, nil
+		if opts.OnBatchActive != nil {
+			opts.OnBatchActive(0)
+		}
+		r, absorbed, err := recheckConsolidateBatch(ctx, client, findings, opts)
+		if opts.OnBatchDone != nil {
+			opts.OnBatchDone(0, err)
+		}
+		return r, absorbed, 1, err
 	}
 
 	// Batch by category. Each batch is consolidated independently —
@@ -216,11 +260,17 @@ func runConsolidatePass(
 		maxConc = 5
 	}
 
+	// Announce every batch up front so the panel shows them all as
+	// queued before any LLM call lands.
+	if opts.OnBatchInit != nil {
+		for i, batch := range batches {
+			opts.OnBatchInit(i, recheckBatchLabel(batch), len(batch))
+		}
+	}
+
 	type batchOut struct {
-		index  int
-		kept   []state.DeepFinding
-		consol []state.DeepFinding
-		err    error
+		findings []state.DeepFinding
+		absorbed int
 	}
 	outs := make([]batchOut, len(batches))
 	sem := make(chan struct{}, maxConc)
@@ -233,29 +283,46 @@ func runConsolidatePass(
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				outs[i] = batchOut{index: i, kept: batch, err: ctx.Err()}
+				outs[i] = batchOut{findings: batch}
+				if opts.OnBatchDone != nil {
+					opts.OnBatchDone(i, ctx.Err())
+				}
 				return
 			}
-			r, err := recheckConsolidateBatch(ctx, client, batch, opts)
+			if opts.OnBatchActive != nil {
+				opts.OnBatchActive(i)
+			}
+			r, absorbed, err := recheckConsolidateBatch(ctx, client, batch, opts)
 			if err != nil {
 				log.Printf("Recheck consolidate batch %d failed: %v (keeping all)", i+1, err)
-				outs[i] = batchOut{index: i, kept: batch}
+				outs[i] = batchOut{findings: batch}
+				if opts.OnBatchDone != nil {
+					opts.OnBatchDone(i, err)
+				}
 				return
 			}
-			outs[i] = batchOut{index: i, kept: r.kept, consol: r.consolidations}
+			outs[i] = batchOut{findings: r, absorbed: absorbed}
+			if opts.OnBatchDone != nil {
+				opts.OnBatchDone(i, nil)
+			}
 		}(i, batch)
 	}
 	wg.Wait()
 
+	var combined []state.DeepFinding
+	totalAbsorbed := 0
 	for _, o := range outs {
-		kept = append(kept, o.kept...)
-		consolidations = append(consolidations, o.consol...)
+		combined = append(combined, o.findings...)
+		totalAbsorbed += o.absorbed
 	}
-	return kept, consolidations, nil
+	return combined, totalAbsorbed, len(batches), nil
 }
 
-// runDismissPass runs per-file dismissal on the post-consolidate set.
-// Batched by file so each batch has the full file-level context.
+// runDismissPass runs dismissal on the post-consolidate set.
+// Findings are grouped by category and chunked into batches of
+// DismissBatchSize (default 3). Each batch is one LLM call; calls
+// run in parallel up to MaxConcurrency.
+//
 // Returns the same shape as the original recheck pipeline so the
 // caller can fold its output into the merged result.
 func runDismissPass(
@@ -263,22 +330,31 @@ func runDismissPass(
 	client ai.Client,
 	findings []state.DeepFinding,
 	opts RecheckOptions,
-	maxPerBatch int,
 	emit func(int),
 ) (*RecheckResult, error) {
 	if len(findings) == 0 {
 		return &RecheckResult{}, nil
 	}
-	if len(findings) <= maxPerBatch {
-		// Single batch — covers the small-audit case.
-		result, err := recheckDismissBatch(ctx, client, findings, opts)
-		return result, err
-	}
 
-	batches := splitFindingsByFile(findings, maxPerBatch)
+	chunkSize := opts.DismissBatchSize
+	if chunkSize <= 0 {
+		chunkSize = 3
+	}
+	batches := splitFindingsByCategoryChunked(findings, chunkSize)
+
 	maxConc := opts.MaxConcurrency
 	if maxConc <= 0 {
 		maxConc = 5
+	}
+
+	// Surface batch identity to the Batches panel before the goroutines
+	// launch so all rows appear as queued together, then transition to
+	// active as slots open. Matches the deep-review init/active/done
+	// shape.
+	if opts.OnBatchInit != nil {
+		for i, batch := range batches {
+			opts.OnBatchInit(i, recheckBatchLabel(batch), len(batch))
+		}
 	}
 
 	type batchOutcome struct {
@@ -306,13 +382,22 @@ func runDismissPass(
 				defer func() { <-sem }()
 			case <-ctx.Done():
 				outcomes[i] = batchOutcome{index: i, findings: batch}
+				if opts.OnBatchDone != nil {
+					opts.OnBatchDone(i, ctx.Err())
+				}
 				return
+			}
+			if opts.OnBatchActive != nil {
+				opts.OnBatchActive(i)
 			}
 			log.Printf("Recheck dismiss batch %d/%d: %d findings", i+1, len(batches), len(batch))
 			result, err := recheckDismissBatch(ctx, client, batch, opts)
 			if err != nil {
 				log.Printf("Recheck dismiss batch %d failed: %v (keeping all findings)", i+1, err)
 				outcomes[i] = batchOutcome{index: i, findings: batch}
+				if opts.OnBatchDone != nil {
+					opts.OnBatchDone(i, err)
+				}
 				return
 			}
 			outcomes[i] = batchOutcome{
@@ -320,6 +405,9 @@ func runDismissPass(
 				findings:        result.Findings,
 				dismissedRecord: result.Dismissed,
 				modified:        result.ModifiedCount,
+			}
+			if opts.OnBatchDone != nil {
+				opts.OnBatchDone(i, nil)
 			}
 		}(i, batch)
 	}
@@ -344,6 +432,78 @@ func runDismissPass(
 // splitFindingsByCategory groups findings by Category for the
 // consolidator's batches. Patterns almost always live within a
 // category (input-validation, error-handling, …), so within-
+// recheckBatchLabel picks a readable label for a dismiss-pass
+// batch. Dismiss now batches by category, so every finding in the
+// batch shares one — use it as the label. Falls back to
+// "_uncategorized" when missing. Returns "mixed" when the batch
+// spans 2+ distinct categories — single-batch consolidate hits this
+// path, and labeling such a row with the first finding's category
+// reads as if only that one category is being processed.
+func recheckBatchLabel(batch []state.DeepFinding) string {
+	if len(batch) == 0 {
+		return "empty"
+	}
+	cats := make(map[string]struct{}, 2)
+	for _, f := range batch {
+		c := f.Category
+		if c == "" {
+			c = "_uncategorized"
+		}
+		cats[c] = struct{}{}
+		if len(cats) > 1 {
+			return "mixed"
+		}
+	}
+	cat := batch[0].Category
+	if cat == "" {
+		return "_uncategorized"
+	}
+	return cat
+}
+
+// withLabelPrefix returns a copy of opts whose OnBatchInit prepends
+// the given prefix to each label. Lets the recheck wrapper tag
+// consolidate vs dismiss rows in the panel without changing the
+// underlying batch functions.
+func withLabelPrefix(opts RecheckOptions, prefix string) RecheckOptions {
+	if opts.OnBatchInit == nil {
+		return opts
+	}
+	inner := opts.OnBatchInit
+	opts.OnBatchInit = func(idx int, label string, n int) {
+		inner(idx, prefix+label, n)
+	}
+	return opts
+}
+
+// withIndexOffset returns a copy of opts whose OnBatch* hooks shift
+// every batch index by offset. Used so the dismiss pass's batches
+// don't collide with the consolidate pass's in the panel state.
+func withIndexOffset(opts RecheckOptions, offset int) RecheckOptions {
+	if offset == 0 {
+		return opts
+	}
+	if opts.OnBatchInit != nil {
+		inner := opts.OnBatchInit
+		opts.OnBatchInit = func(idx int, label string, n int) {
+			inner(idx+offset, label, n)
+		}
+	}
+	if opts.OnBatchActive != nil {
+		inner := opts.OnBatchActive
+		opts.OnBatchActive = func(idx int) {
+			inner(idx + offset)
+		}
+	}
+	if opts.OnBatchDone != nil {
+		inner := opts.OnBatchDone
+		opts.OnBatchDone = func(idx int, err error) {
+			inner(idx+offset, err)
+		}
+	}
+	return opts
+}
+
 // category batches give the LLM the right neighborhood to spot
 // them while keeping each call's token budget bounded.
 func splitFindingsByCategory(findings []state.DeepFinding, maxPerBatch int) [][]state.DeepFinding {
@@ -380,33 +540,25 @@ func splitFindingsByCategory(findings []state.DeepFinding, maxPerBatch int) [][]
 	return batches
 }
 
-// consolidateBatchResult is the output of recheckConsolidateBatch.
-// Separating kept from consolidations lets the orchestrator route
-// only the non-systemic findings to the per-file dismiss pass.
-type consolidateBatchResult struct {
-	kept           []state.DeepFinding
-	consolidations []state.DeepFinding
-}
-
 // recheckConsolidateBatch runs ONE consolidator LLM call on the
-// given findings using RecheckConsolidatePrompt. It expects the
-// model to produce only `kept` and `consolidated` buckets; any
-// `dismissed` or `modified` entries (which the consolidator prompt
-// forbids) are treated as a kept passthrough — the model violated
-// the contract but we err on the safe side rather than dropping
-// the finding.
+// given findings using RecheckConsolidatePrompt. The model only
+// emits merge groups; anything not in a group is implicitly kept by
+// the parser. Returns the combined post-merge set (originals not
+// merged + newly created merged findings). Any stray `dismissed`
+// or `modified` entries from the model (forbidden by the prompt)
+// are re-attached to the result rather than dropped.
 func recheckConsolidateBatch(
 	ctx context.Context,
 	client ai.Client,
 	findings []state.DeepFinding,
 	opts RecheckOptions,
-) (*consolidateBatchResult, error) {
+) ([]state.DeepFinding, int, error) {
 	systemPrompt := buildRecheckSystemPrompt(ai.RecheckConsolidatePrompt, opts)
 	systemPrompt = ai.ResolveToolsForClient(client, systemPrompt)
 
 	findingsJSON, err := json.MarshalIndent(findings, "", "  ")
 	if err != nil {
-		return nil, fmt.Errorf("marshal findings: %w", err)
+		return nil, 0, fmt.Errorf("marshal findings: %w", err)
 	}
 	messages := []ai.Message{{
 		Role: "user",
@@ -423,7 +575,7 @@ func recheckConsolidateBatch(
 		return client.ChatStream(ctx, systemPrompt, messages, nil)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("recheck consolidate call: %w", err)
+		return nil, 0, fmt.Errorf("recheck consolidate call: %w", err)
 	}
 	if opts.OnLLMCall != nil {
 		opts.OnLLMCall(systemPrompt, messages[0].Content, raw)
@@ -431,36 +583,21 @@ func recheckConsolidateBatch(
 
 	result, err := parseRecheckResult(findings, raw)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// The consolidator prompt forbids `dismissed` and `modified`.
 	// If the model emitted either, log it and treat as kept — we
-	// trust the per-file pass to handle those decisions.
+	// trust the dismiss pass to handle those decisions later.
 	if len(result.Dismissed) > 0 || result.ModifiedCount > 0 {
-		log.Printf("Recheck consolidate: model emitted %d dismiss(es) and %d modification(s) it was told not to — re-attaching to kept set",
+		log.Printf("Recheck consolidate: model emitted %d dismiss(es) and %d modification(s) it was told not to — re-attaching",
 			len(result.Dismissed), result.ModifiedCount)
 		for _, d := range result.Dismissed {
 			result.Findings = append(result.Findings, d.Finding)
 		}
 	}
 
-	// Split result.Findings into (constituents-of-consolidations,
-	// systemic-consolidated). parseRecheckResult already removed
-	// the constituent IDs and appended the merged findings, tagging
-	// the merged ones with Systemic=true. Use the flag — not a
-	// File/Title heuristic — to route them: any deviation in
-	// prompt convention (e.g., a different File value) would
-	// otherwise leak a systemic finding into the dismiss pass.
-	var kept, consols []state.DeepFinding
-	for _, f := range result.Findings {
-		if f.Systemic {
-			consols = append(consols, f)
-		} else {
-			kept = append(kept, f)
-		}
-	}
-	return &consolidateBatchResult{kept: kept, consolidations: consols}, nil
+	return result.Findings, result.ConsolidatedCount, nil
 }
 
 // recheckDismissBatch runs ONE per-file dismissal LLM call using
@@ -670,9 +807,19 @@ func parseRecheckResult(original []state.DeepFinding, raw string) (*RecheckResul
 		modifiedCount++
 	}
 
-	// 3. Consolidated — merge into single finding
+	// 3. Consolidated — merge into single finding.
+	//
+	// Single-ID groups are ignored: a merge that doesn't actually
+	// combine 2+ findings is no merge at all. The original finding
+	// stays in byID (no delete), so it's picked up by the safety
+	// net below.
 	consolidatedCount := 0
 	for _, cons := range resp.Consolidated {
+		if len(cons.FindingIDs) < 2 {
+			log.Printf("Recheck consolidate: ignoring merge group with %d finding_id(s) — needs 2+", len(cons.FindingIDs))
+			continue
+		}
+		consolidatedCount += len(cons.FindingIDs)
 		// Remove all constituent findings from lookup
 		for _, id := range cons.FindingIDs {
 			delete(byID, id)
@@ -687,7 +834,6 @@ func parseRecheckResult(original []state.DeepFinding, raw string) (*RecheckResul
 		}
 		merged.Systemic = true
 		result = append(result, merged)
-		consolidatedCount += len(cons.FindingIDs) - 1 // net reduction
 	}
 
 	// 4. Dismissed — record original finding + rationale so the
@@ -761,5 +907,44 @@ func splitFindingsByFile(findings []state.DeepFinding, maxPerBatch int) [][]stat
 		batches = append(batches, current)
 	}
 
+	return batches
+}
+
+// splitFindingsByCategoryChunked groups findings by category, then
+// chunks each category into batches of at most chunkSize findings.
+// Used by the dismiss pass so each LLM call sees a small slice of
+// one category's findings — the model can focus on judging each
+// finding without cross-category context bleed.
+//
+// Category order is preserved by first appearance. chunkSize <= 0 is
+// treated as 1 (one finding per batch).
+func splitFindingsByCategoryChunked(findings []state.DeepFinding, chunkSize int) [][]state.DeepFinding {
+	if chunkSize <= 0 {
+		chunkSize = 1
+	}
+	byCat := make(map[string][]state.DeepFinding)
+	var order []string
+	for _, f := range findings {
+		key := f.Category
+		if key == "" {
+			key = "_uncategorized"
+		}
+		if _, seen := byCat[key]; !seen {
+			order = append(order, key)
+		}
+		byCat[key] = append(byCat[key], f)
+	}
+
+	var batches [][]state.DeepFinding
+	for _, cat := range order {
+		group := byCat[cat]
+		for start := 0; start < len(group); start += chunkSize {
+			end := start + chunkSize
+			if end > len(group) {
+				end = len(group)
+			}
+			batches = append(batches, group[start:end])
+		}
+	}
 	return batches
 }

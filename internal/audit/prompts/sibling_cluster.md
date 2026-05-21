@@ -6,7 +6,7 @@ You will receive an array of AOIs, each carrying:
 
 - `id` — stable identifier
 - `file` — path
-- `category` / `subcategory` — the dimension this AOI falls under
+- `category` / `subcategory` — the category this AOI falls under
 - `concern` — the AOI scanner's one-line note
 - `context` — additional context, often a description of the surface
 

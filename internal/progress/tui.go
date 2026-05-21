@@ -64,6 +64,13 @@ type PhaseDef struct {
 	// Skipped when total <= 0. Optional.
 	Counter func(s *State) (done, total int)
 
+	// CounterUnit is the unit shown after the X/Y, e.g. "batches",
+	// "findings", "files". Empty omits the unit (legacy behavior).
+	// Surfacing this is what tells the user whether 0/3 means three
+	// files, three batches, or three findings — the absence of a
+	// unit reads as ambiguous noise.
+	CounterUnit string
+
 	// Summary returns a stable description of what this phase
 	// accomplished. Rendered as the row's detail line when the phase
 	// reaches `done` state, replacing the last-write-wins live detail.
@@ -82,6 +89,64 @@ type PhaseDef struct {
 type State struct {
 	Counters map[string]int
 	Elapsed  time.Duration
+
+	// Batches is populated by ParseEvent for modes whose pipelines
+	// emit per-batch lifecycle events (Batch K: init/active/stream/
+	// done/cached/failed). The Batches panel renders these as one
+	// row per active batch plus a recent-completions tail. Nil for
+	// modes that don't emit those events.
+	Batches map[int]*BatchState
+}
+
+// BatchStatus lifecycle for one batch row in the Batches panel.
+type BatchStatus string
+
+const (
+	BatchQueued BatchStatus = "queued"
+	BatchActive BatchStatus = "active"
+	BatchDone   BatchStatus = "done"
+	BatchCached BatchStatus = "cached"
+	BatchFailed BatchStatus = "failed"
+)
+
+// BatchState is one row in the Batches panel.
+type BatchState struct {
+	// Index is the call's original 0-based index (1-based on the
+	// wire as "Batch K"). Stable across the run.
+	Index int
+	// Label is the human-readable description: directory ("internal/ui")
+	// for general batches, "category/subcategory" (with " [critical]"
+	// suffix for individual calls) for AOI-driven ones.
+	Label string
+	// Files is the count rendered in the panel's middle column. The
+	// semantic depends on Unit: "files" for deep-review batches,
+	// "findings" for recheck batches. Naming is legacy — kept as
+	// "Files" so existing snapshot tests don't churn.
+	Files int
+	// Unit is the noun shown after Files in the panel ("files",
+	// "findings"). Empty defaults to "files" so deep-review wire
+	// shape (kind=aoi-driven|general, no unit token) keeps working.
+	Unit string
+	// Kind is "aoi-driven" or "general". Drives the row's accent color.
+	Kind string
+	// Status is the lifecycle stage.
+	Status BatchStatus
+	// StartedAt is set when the batch transitions to active. Zero
+	// while queued. Used to compute the elapsed timer on the row.
+	StartedAt time.Time
+	// EndedAt is set when the batch transitions to done/cached/failed.
+	// Zero while queued or active.
+	EndedAt time.Time
+	// Bytes is the cumulative content-byte count received from the
+	// LLM stream for this batch. Drives the per-row progress bar
+	// when non-zero; the row falls back to an indeterminate spinner
+	// when zero.
+	Bytes int
+	// Findings is the number of findings this batch produced. Set
+	// from the optional `findings=N` token on terminal events
+	// (done/cached). Rendered next to the elapsed time on finished
+	// rows so the user can see what work each call delivered.
+	Findings int
 }
 
 // Header is the title block shown at the top of the TUI.
@@ -116,6 +181,13 @@ type Config struct {
 	// caller to cancel the context it passed to RunTask so the
 	// in-flight LLM call returns quickly instead of orphaning. Optional.
 	OnCancel func()
+
+	// BatchPhases lists the phase Names whose active state should
+	// trigger the Batches panel. The panel renders below the phase
+	// list while one of these is the active phase. Empty disables
+	// the panel — modes whose pipelines don't emit per-batch
+	// lifecycle events leave this nil.
+	BatchPhases []string
 }
 
 // ErrCancelled is returned from Run when the user exits the TUI before
@@ -216,8 +288,14 @@ func newUI(cfg Config) *model {
 	// accent, same as the spinner) → green (done). Reads as
 	// "progressing toward complete" instead of the bubbles default
 	// magenta→purple which fights with everything else on screen.
+	//
+	// WithGradient (not WithScaledGradient) anchors the colors to the
+	// bar's full width so the transition is visible as the fill
+	// grows: at 25% you see blue, at 75% the fill has crossed into
+	// teal and green. The scaled variant squeezed the whole gradient
+	// into the filled portion, so 5% and 95% looked the same colorwise.
 	pb := progress.New(
-		progress.WithScaledGradient("#89B4FA", "#A6E3A1"),
+		progress.WithGradient("#89B4FA", "#A6E3A1"),
 		progress.WithWidth(40),
 	)
 
@@ -227,9 +305,12 @@ func newUI(cfg Config) *model {
 	}
 
 	return &model{
-		cfg:      cfg,
-		phases:   phases,
-		state:    &State{Counters: make(map[string]int)},
+		cfg:    cfg,
+		phases: phases,
+		state: &State{
+			Counters: make(map[string]int),
+			Batches:  make(map[int]*BatchState),
+		},
 		spinner:  sp,
 		progress: pb,
 	}
@@ -269,13 +350,14 @@ func (m *model) runTask() tea.Cmd {
 // applyEvent records a (phase, message) into the model on the main
 // goroutine. Sequencing: first non-waiting transition activates the
 // phase and marks earlier active phases done; the message becomes the
-// phase detail.
+// phase detail unless it's a silent parser-only ping.
 func (m *model) applyEvent(phase, message string) {
 	if phase == "warning" {
 		m.warning = message
 		return
 	}
 
+	silent := isSilentMessage(message)
 	for i := range m.phases {
 		if m.phases[i].Def.Name != phase {
 			continue
@@ -287,8 +369,19 @@ func (m *model) applyEvent(phase, message string) {
 					m.phases[j].Status = PhaseDone
 				}
 			}
+			// When a new BatchPhase activates, clear the Batches map
+			// so the panel switches contexts. Without this, the
+			// previous phase's batches stay around as a stale
+			// recent-completions tail or active rows that no longer
+			// reflect reality. Phases not in BatchPhases keep the map
+			// untouched (their events would never populate it anyway).
+			if m.cfg.isBatchPhase(phase) {
+				m.state.Batches = make(map[int]*BatchState)
+			}
 		}
-		m.phases[i].Detail = message
+		if !silent {
+			m.phases[i].Detail = message
+		}
 		break
 	}
 
@@ -373,6 +466,22 @@ func (m *model) View() string {
 		}
 	}
 
+	// Batches panel — rendered while one of the configured
+	// BatchPhases is active. Animation tick comes from tickMsg so
+	// the spinner-fallback bar advances even when no stream events
+	// land between frames.
+	if !m.done && m.cfg.BatchPanelActive(m.phases) {
+		panel := RenderBatchesPanel(m.state, BatchPanelOptions{
+			MaxActiveRows: 10,
+			RecentTail:    10,
+			Animation:     int(m.state.Elapsed / (100 * time.Millisecond)),
+		})
+		if panel != "" {
+			b.WriteString("\n")
+			b.WriteString(panel)
+		}
+	}
+
 	// Summary
 	if m.done {
 		b.WriteString("\n")
@@ -424,7 +533,11 @@ func RenderPhaseList(phases []PhaseInfo, state *State, activeSpinner string, max
 
 		if p.Def.Counter != nil && (p.Status == PhaseActive || p.Status == PhaseDone) {
 			if done, tot := p.Def.Counter(state); tot > 0 {
-				b.WriteString(sSubtle.Render(fmt.Sprintf("  %d/%d", done, tot)))
+				suffix := ""
+				if p.Def.CounterUnit != "" {
+					suffix = " " + p.Def.CounterUnit
+				}
+				b.WriteString(sSubtle.Render(fmt.Sprintf("  %d/%d%s", done, tot, suffix)))
 			}
 		}
 
@@ -465,6 +578,32 @@ func phaseLabel(p PhaseInfo) string {
 	default:
 		return sPhaseWait.Render(p.Def.Label)
 	}
+}
+
+// isSilentMessage reports whether a (phase, message) emit is a
+// parser-only counter ping that should NOT appear on the phase's
+// detail line. These messages exist purely to feed ParseEvent
+// counters; rendering them as detail produces noise like
+// "synthesis estimate 6000" and a churning byte counter the user
+// didn't ask to see.
+//
+// Per-batch lifecycle events that the Batches panel already
+// renders (init / active / stream) are also silenced here so the
+// Deep Review row doesn't flicker between "Batch 5: active" and
+// "Batch 12: stream bytes=1024" while the panel below shows the
+// real state. Terminal events (done / cached / failed) stay
+// visible — they're useful as transient detail.
+func isSilentMessage(message string) bool {
+	if strings.HasPrefix(message, "synthesis estimate ") ||
+		strings.HasPrefix(message, "synthesis received ") {
+		return true
+	}
+	if !strings.HasPrefix(message, "Batch ") {
+		return false
+	}
+	return strings.Contains(message, ": init ") ||
+		strings.HasSuffix(message, ": active") ||
+		strings.Contains(message, ": stream bytes=")
 }
 
 // truncate trims s to at most n runes, appending ellipsis when cut.

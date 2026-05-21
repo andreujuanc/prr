@@ -106,6 +106,19 @@ func (a *reviewReporterAdapter) InitBatches(batches []review.BatchInfo) {
 func (a *reviewReporterAdapter) BatchProgress(batch int, status review.BatchStatus) {
 	a.rr.BatchProgress(batch, batchStatusFromReview(status))
 }
+func (a *reviewReporterAdapter) BatchProgressWithFindings(batch int, status review.BatchStatus, _ int) {
+	// The in-app TUI's batch row doesn't surface the per-call finding
+	// count today (the renderer in renderBatchList shows label + status
+	// only). Forward to the status-only call so the row still flips
+	// to done/cached — drop the count.
+	a.rr.BatchProgress(batch, batchStatusFromReview(status))
+}
+func (a *reviewReporterAdapter) BatchStream(int, int) {
+	// The in-app TUI doesn't render the Batches panel today — it
+	// renders renderBatchList instead. Per-batch byte deltas have no
+	// consumer here, so we drop them. The headless shared progress UI
+	// (internal/progress) is the only consumer for now.
+}
 func (a *reviewReporterAdapter) RecheckProgress(status string) {
 	a.rr.PhaseProgress("recheck", status, false)
 }
@@ -347,7 +360,7 @@ func runBatchesOnly(
 	adapter := &reviewReporterAdapter{rr: rr}
 
 	findings, fileFindings, err := review.RunBatchesOnly(ctx, client, prMeta, rawDiffs,
-		customInstructions, reviewState, batches, adapter)
+		customInstructions, reviewState, batches, 0, adapter)
 	if err != nil {
 		return AIChatDoneMsg{Err: err}
 	}

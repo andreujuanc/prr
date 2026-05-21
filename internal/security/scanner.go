@@ -22,8 +22,21 @@ import (
 //go:embed prompts/aoi_scan.md
 var aoiScanPrompt string
 
-//go:embed prompts/revalidate.md
-var revalidatePrompt string
+// Mode-specific partials composed into aoiScanPrompt via {MODE_RULES}
+// and {INPUT_FORMAT} placeholders. Split out so the shared body lives
+// in one place — see internal/security/prompts/aoi_scan.md.
+//
+//go:embed prompts/aoi_scan_pr_rules.md
+var aoiScanPRRules string
+
+//go:embed prompts/aoi_scan_pr_input_format.md
+var aoiScanPRInputFormat string
+
+//go:embed prompts/aoi_scan_audit_rules.md
+var aoiScanAuditRules string
+
+//go:embed prompts/aoi_scan_audit_input_format.md
+var aoiScanAuditInputFormat string
 
 // AOIScanPrompt returns the AOI scan system prompt for PR review mode.
 func AOIScanPrompt() string { return buildAOIScanPrompt(false) }
@@ -43,49 +56,39 @@ func AOIScanPromptHash(auditMode bool) string {
 // AOIAuditPrompt returns the AOI scan system prompt for full-project audit mode.
 func AOIAuditPrompt() string { return buildAOIScanPrompt(true) }
 
-const prModeRules = `1. ONLY flag code in the DIFF (added or modified lines, the + lines).
-2. Do NOT flag pre-existing code that was not changed.
-3. Use the CONTEXT lines (unchanged lines around the diff hunks) to understand
-   data flow — trace where variables originate and how they reach sinks.
-   The diff may include extra context lines beyond the standard 3 to help you
-   see the full picture. Use them.`
-
-const auditModeRules = `1. Scan ALL code in the file — this is a full-project audit, not a diff review.
-2. Flag any code location that could contain a bug, vulnerability, or design flaw.
-3. Use the full file context to understand data flow, variable origins, and sinks.`
-
-// buildAOIScanPrompt composes the AOI scan prompt template with all dimension
-// partials injected at the {DIMENSIONS} placeholder.
+// buildAOIScanPrompt composes the AOI scan prompt template with all category
+// partials injected at the {CATEGORIES} placeholder.
 func buildAOIScanPrompt(auditMode bool) string {
-	return buildAOIScanPromptWithDimensions(auditMode, nil)
+	return buildAOIScanPromptWithCategories(auditMode, nil)
 }
 
-// buildAOIScanPromptWithDimensions composes the AOI scan prompt with specific
-// dimensions. If dims is nil or empty, all dimensions are included.
-func buildAOIScanPromptWithDimensions(auditMode bool, dims []string) string {
-	var dimensionContent string
+// buildAOIScanPromptWithCategories composes the AOI scan prompt with specific
+// categories. If cats is nil or empty, all categories are included.
+func buildAOIScanPromptWithCategories(auditMode bool, cats []string) string {
+	var categoryContent string
 	var slugs []string
-	if len(dims) > 0 {
-		dimensionContent = ai.GetDimensions(dims)
-		slugs = make([]string, len(dims))
-		copy(slugs, dims)
+	if len(cats) > 0 {
+		categoryContent = ai.GetCategories(cats)
+		slugs = make([]string, len(cats))
+		copy(slugs, cats)
 		sort.Strings(slugs)
 	} else {
-		dimensionContent = ai.AllDimensions()
-		slugs = ai.AllDimensionSlugs()
+		categoryContent = ai.AllCategories()
+		slugs = ai.AllCategorySlugs()
 	}
 	slugList := strings.Join(slugs, ", ")
-	prompt := strings.Replace(aoiScanPrompt, "{DIMENSIONS}", dimensionContent, 1)
-	prompt = strings.Replace(prompt, "{DIMENSION_SLUGS}", slugList, 1)
-	rules := prModeRules
-	if auditMode {
-		rules = auditModeRules
-	}
-	return strings.Replace(prompt, "{MODE_RULES}", rules, 1)
-}
 
-// RevalidatePrompt returns the embedded revalidation system prompt.
-func RevalidatePrompt() string { return revalidatePrompt }
+	rules, inputFmt := aoiScanPRRules, aoiScanPRInputFormat
+	if auditMode {
+		rules, inputFmt = aoiScanAuditRules, aoiScanAuditInputFormat
+	}
+
+	prompt := strings.Replace(aoiScanPrompt, "{CATEGORIES}", categoryContent, 1)
+	prompt = strings.Replace(prompt, "{CATEGORY_SLUGS}", slugList, 1)
+	prompt = strings.Replace(prompt, "{MODE_RULES}", rules, 1)
+	prompt = strings.Replace(prompt, "{INPUT_FORMAT}", inputFmt, 1)
+	return prompt
+}
 
 // aoiBatchMaxChars is the max diff size per AOI scan batch.
 // Kept generous since the cheap model handles large contexts fast.
@@ -110,7 +113,7 @@ func SetAOIConcurrency(n int) {
 }
 
 // ScanAreasOfInterest runs the AOI pre-scan on all changed files using
-// a lightweight LLM. It batches files by dimension set (or all together
+// a lightweight LLM. It batches files by category set (or all together
 // if no classifications are provided) and runs up to aoiMaxConcurrency
 // batches in parallel.
 //
@@ -147,15 +150,15 @@ func ScanAreasOfInterestDebug(
 }
 
 // ScanAreasOfInterestClassified is like ScanAreasOfInterestDebug but with
-// per-file dimension filtering. fileDimensions maps file paths to their
-// dimension slugs. Files not in the map get all dimensions. If fileDimensions
-// is nil, all files get all dimensions.
+// per-file category filtering. fileCategories maps file paths to their
+// category slugs. Files not in the map get all categories. If fileCategories
+// is nil, all files get all categories.
 func ScanAreasOfInterestClassified(
 	ctx context.Context,
 	client ai.Client,
 	rawDiffs map[string]string,
 	cachedResults map[string]*AOIScanResult,
-	fileDimensions map[string][]string,
+	fileCategories map[string][]string,
 	onProgress func(status string),
 	debugHook AOIDebugHook,
 	auditMode bool,
@@ -176,7 +179,7 @@ func ScanAreasOfInterestClassified(
 		onProgress(fmt.Sprintf("using cached AOI results for %d file(s)", len(cachedAOIs)))
 	}
 
-	batches := buildAOIBatchesClassified(uncachedDiffs, fileDimensions, auditMode)
+	batches := buildAOIBatchesClassified(uncachedDiffs, fileCategories, auditMode)
 	log.Printf("[aoi-debug] built %d batches from %d uncached files", len(batches), len(uncachedDiffs))
 	if len(batches) == 0 && len(cachedAOIs) == 0 {
 		return &AOIReport{}, nil
@@ -355,65 +358,13 @@ func ScanAreasOfInterestClassified(
 	return report, nil
 }
 
-// RevalidateFindings runs a security-focused revalidation pass on the
-// security-category findings from a review. Returns revalidation verdicts.
-func RevalidateFindings(
-	ctx context.Context,
-	client ai.Client,
-	findings []FindingForRevalidation,
-	onProgress func(status string),
-) ([]Revalidation, error) {
-	if len(findings) == 0 {
-		return nil, nil
-	}
-
-	if onProgress != nil {
-		onProgress(fmt.Sprintf("revalidating %d security finding(s)...", len(findings)))
-	}
-
-	findingsJSON, err := json.Marshal(findings)
-	if err != nil {
-		return nil, fmt.Errorf("marshal findings: %w", err)
-	}
-
-	messages := []ai.Message{
-		{Role: "user", Content: fmt.Sprintf(
-			"Revalidate these %d security findings. Use tools to verify each one against the actual code.\n\n%s",
-			len(findings), string(findingsJSON),
-		)},
-	}
-
-	// Retry transient HTTP errors.
-	result, err := ai.RetryTransient(ctx, 3, "security-revalidate", func(ctx context.Context) (string, error) {
-		return client.ChatStream(ctx, revalidatePrompt, messages, nil)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("revalidation: %w", err)
-	}
-
-	return parseRevalidationResult(result)
-}
-
-// FindingForRevalidation is a simplified finding struct for the revalidation prompt.
-type FindingForRevalidation struct {
-	Index      int    `json:"finding_index"`
-	Severity   string `json:"severity"`
-	Category   string `json:"category"`
-	File       string `json:"file"`
-	Line       int    `json:"line"`
-	Title      string `json:"title"`
-	Detail     string `json:"detail"`
-	Suggestion string `json:"suggestion,omitempty"`
-	CWE        string `json:"cwe,omitempty"`
-}
-
 // ── AOI batch logic ────────────────────────────────────────────────────
 
 type aoiBatch struct {
 	label      string
 	files      []string
 	diffs      string
-	dimensions []string // dimension slugs for this batch (nil = all)
+	categories []string // category slugs for this batch (nil = all)
 }
 
 func buildAOIBatches(rawDiffs map[string]string) []aoiBatch {
@@ -450,20 +401,20 @@ func prefixLineNumbers(body string) string {
 	return b.String()
 }
 
-// dimensionKey returns a stable string key for a set of dimension slugs.
-// Used to group files with the same dimensions into the same batch.
-func dimensionKey(dims []string) string {
-	if len(dims) == 0 {
+// categoryKey returns a stable string key for a set of category slugs.
+// Used to group files with the same categories into the same batch.
+func categoryKey(cats []string) string {
+	if len(cats) == 0 {
 		return "_all_"
 	}
-	sorted := make([]string, len(dims))
-	copy(sorted, dims)
+	sorted := make([]string, len(cats))
+	copy(sorted, cats)
 	sort.Strings(sorted)
 	return strings.Join(sorted, ",")
 }
 
-func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[string][]string, auditMode bool) []aoiBatch {
-	// Group by dimension set, skip excluded files
+func buildAOIBatchesClassified(rawDiffs map[string]string, fileCategories map[string][]string, auditMode bool) []aoiBatch {
+	// Group by category set, skip excluded files
 	type fileEntry struct {
 		path string
 		diff string
@@ -475,14 +426,14 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 		if config.ShouldExcludeFromReview(p) {
 			continue
 		}
-		var dims []string
-		if fileDimensions != nil {
-			dims = fileDimensions[p]
+		var cats []string
+		if fileCategories != nil {
+			cats = fileCategories[p]
 		}
-		key := dimensionKey(dims)
+		key := categoryKey(cats)
 		groups[key] = append(groups[key], fileEntry{path: p, diff: diff})
 		if _, ok := groupDims[key]; !ok {
-			groupDims[key] = dims
+			groupDims[key] = cats
 		}
 	}
 
@@ -495,7 +446,7 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 	var batches []aoiBatch
 	for _, key := range keys {
 		entries := groups[key]
-		dims := groupDims[key]
+		cats := groupDims[key]
 
 		// Sort files within group for determinism
 		sort.Slice(entries, func(i, j int) bool {
@@ -517,7 +468,7 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 					label:      key,
 					files:      curFiles,
 					diffs:      curDiff.String(),
-					dimensions: dims,
+					categories: cats,
 				})
 				curFiles = nil
 				curDiff.Reset()
@@ -532,7 +483,7 @@ func buildAOIBatchesClassified(rawDiffs map[string]string, fileDimensions map[st
 				label:      key,
 				files:      curFiles,
 				diffs:      curDiff.String(),
-				dimensions: dims,
+				categories: cats,
 			})
 		}
 	}
@@ -561,8 +512,8 @@ var errAOIParse = errors.New("aoi: parse failure")
 //   - Empty or out-of-taxonomy `category` values. Phase 3 buckets AOIs
 //     by subcategory; a category like "shitposting" or "" would still
 //     be bucketed somewhere and pollute that bucket's review.
-//   - Dimension slugs not in the partial taxonomy. Used by --focus
-//     filtering; an unknown dim is silently dropped from filtering.
+//   - Category slugs not in the partial taxonomy. Used by --focus
+//     filtering; an unknown slug is silently dropped from filtering.
 //   - Duplicate IDs within a single file. IDs feed caching and
 //     cross-referencing; duplicates corrupt those.
 //
@@ -576,16 +527,9 @@ func validateAOIs(results []AOIScanResult) {
 			if aoi.Category == "" {
 				log.Printf("aoi: %s [id=%s] missing category (model output, not coerced)",
 					r.File, aoi.ID)
-			} else if !ai.DimensionExists(aoi.Category) {
+			} else if !ai.CategoryExists(aoi.Category) {
 				log.Printf("aoi: %s [id=%s] uses out-of-taxonomy category %q (not coerced; Phase 3 routing may be off)",
 					r.File, aoi.ID, aoi.Category)
-			}
-
-			for _, d := range aoi.Dimensions {
-				if !ai.DimensionExists(d) {
-					log.Printf("aoi: %s [id=%s] uses unknown dimension %q (will be ignored by --focus filtering)",
-						r.File, aoi.ID, d)
-				}
 			}
 
 			if aoi.ID != "" {
@@ -658,7 +602,7 @@ func scanBatchWithRetry(ctx context.Context, client ai.Client, batch aoiBatch, d
 
 // scanBatch sends a single batch of diffs to the AOI scanner.
 func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook AOIDebugHook, auditMode bool) ([]AOIScanResult, error) {
-	systemPrompt := buildAOIScanPromptWithDimensions(auditMode, batch.dimensions)
+	systemPrompt := buildAOIScanPromptWithCategories(auditMode, batch.categories)
 	userMsg := fmt.Sprintf(
 		"Scan these %d file(s) for areas of interest:\n\n%s",
 		len(batch.files), batch.diffs,
@@ -711,7 +655,7 @@ func scanBatch(ctx context.Context, client ai.Client, batch aoiBatch, debugHook 
 	log.Printf("[aoi-debug] parsed %d file results", len(parsed))
 
 	// Surface semantic issues in the parsed results (invalid categories,
-	// unknown dimensions, duplicate IDs). Informational only — output
+	// unknown categories, duplicate IDs). Informational only — output
 	// is not modified, so the caller can still see what the model
 	// emitted.
 	validateAOIs(parsed)
@@ -771,56 +715,6 @@ func parseAOIResult(raw string) ([]AOIScanResult, error) {
 			if results[i].AreasOfInterest[j].File == "" {
 				results[i].AreasOfInterest[j].File = results[i].File
 			}
-		}
-	}
-
-	return results, nil
-}
-
-func parseRevalidationResult(raw string) ([]Revalidation, error) {
-	s := strings.TrimSpace(raw)
-
-	// Strip markdown code fences
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
-	}
-
-	if !strings.HasPrefix(s, "[") {
-		start := strings.Index(s, "[")
-		if start == -1 {
-			return nil, fmt.Errorf("no JSON array found in revalidation response")
-		}
-		s = s[start:]
-	}
-
-	// Parse into intermediate struct that includes finding_index
-	type revalEntry struct {
-		FindingIndex int    `json:"finding_index"`
-		Verdict      string `json:"verdict"`
-		Reasoning    string `json:"reasoning"`
-		Confidence   string `json:"confidence"`
-		CWE          string `json:"cwe,omitempty"`
-	}
-
-	var entries []revalEntry
-	s = sanitizeJSON(s)
-	if err := json.Unmarshal([]byte(s), &entries); err != nil {
-		return nil, fmt.Errorf("parse revalidation JSON: %w", err)
-	}
-
-	results := make([]Revalidation, len(entries))
-	for i, e := range entries {
-		results[i] = Revalidation{
-			Verdict:    e.Verdict,
-			Reasoning:  e.Reasoning,
-			Confidence: e.Confidence,
-			CWE:        e.CWE,
 		}
 	}
 

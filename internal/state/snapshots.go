@@ -1,10 +1,13 @@
 package state
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -127,4 +130,64 @@ func writeSnapshot(dir, name string, data []byte) (string, error) {
 		return "", fmt.Errorf("renaming snapshot file: %w", err)
 	}
 	return finalPath, nil
+}
+
+// ReviewSnapshot mirrors the JSON shape written by
+// review.MarshalResultJSON. Single source of truth for "what one
+// review run produced" — the TUI hydrates from this on open so a
+// headless `prr review` and a TUI-triggered review both surface the
+// same way.
+type ReviewSnapshot struct {
+	PRNumber      int           `json:"pr_number,omitempty"`
+	PRTitle       string        `json:"pr_title,omitempty"`
+	FilesReviewed int           `json:"files_reviewed,omitempty"`
+	Review        *ReviewOutput `json:"review,omitempty"`
+	DeepFindings  []DeepFinding `json:"deep_findings,omitempty"`
+}
+
+// LatestReviewSnapshot returns the most recent snapshot for the given
+// PR, picked by the timestamp embedded in the filename (sortable as
+// a string by construction). Returns (nil, "", nil) when no snapshot
+// exists — callers treat that as "no prior review."
+//
+// Filename pattern: pr-<N>-review-<timestamp>.json. We rely on the
+// timestamp being lexically sortable so this stays O(n) without
+// stat'ing every file.
+func LatestReviewSnapshot(prNumber string) (*ReviewSnapshot, string, error) {
+	if !validStateKey.MatchString(prNumber) {
+		return nil, "", fmt.Errorf("invalid PR number: %q", prNumber)
+	}
+	dir, err := ReviewsDir()
+	if err != nil {
+		return nil, "", err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, "", fmt.Errorf("listing reviews dir: %w", err)
+	}
+	prefix := fmt.Sprintf("pr-%s-review-", prNumber)
+	var matching []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".json") {
+			matching = append(matching, name)
+		}
+	}
+	if len(matching) == 0 {
+		return nil, "", nil
+	}
+	sort.Strings(matching)
+	latestPath := filepath.Join(dir, matching[len(matching)-1])
+	data, err := os.ReadFile(latestPath)
+	if err != nil {
+		return nil, latestPath, fmt.Errorf("reading snapshot %s: %w", latestPath, err)
+	}
+	var snap ReviewSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil, latestPath, fmt.Errorf("parsing snapshot %s: %w", latestPath, err)
+	}
+	return &snap, latestPath, nil
 }

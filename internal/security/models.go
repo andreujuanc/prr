@@ -4,14 +4,14 @@ import "github.com/andreujuanc/prr/internal/state"
 
 // AreaOfInterest represents a code location identified by the AOI scanner
 // that warrants deeper review. Each AOI is tagged with a category/subcategory
-// from the review dimension taxonomy and an urgency level that controls
+// from the review category taxonomy and an urgency level that controls
 // how it is reviewed in Phase 3.
 type AreaOfInterest struct {
 	File    string `json:"file"`
 	Line    int    `json:"line"`
 	EndLine int    `json:"end_line,omitempty"` // optional: range end
 
-	// Category + Subcategory from the dimension taxonomy (e.g. "error-handling" / "swallowed-errors").
+	// Category + Subcategory from the category taxonomy (e.g. "error-handling" / "swallowed-errors").
 	Category    string `json:"category"`
 	Subcategory string `json:"subcategory,omitempty"`
 
@@ -20,10 +20,6 @@ type AreaOfInterest struct {
 	//   "grouped"    — batched with other AOIs in the same subcategory
 	// Empty string treated as "grouped" for backward compatibility.
 	Urgency string `json:"urgency,omitempty"`
-
-	// Dimensions lists which review dimensions are relevant (e.g. ["correctness", "error-handling"]).
-	// Used for --focus filtering at Phase 3.
-	Dimensions []string `json:"dimensions,omitempty"`
 
 	// ID is a stable identifier for this AOI (e.g. "charge-go-float-currency").
 	// Used for caching and cross-referencing between phases.
@@ -75,24 +71,4 @@ type AOIReport struct {
 	Files          []AOIScanResult `json:"files"`
 	TotalAOIs      int             `json:"total_aois"`
 	SecurityDigest string          `json:"-"` // formatted text for injection into review prompts
-}
-
-// Revalidation holds the result of a security revalidation pass on a finding.
-type Revalidation struct {
-	Verdict    string `json:"verdict"`    // "true-positive", "false-positive", "fixed", "uncertain"
-	Reasoning  string `json:"reasoning"`  // why this verdict was chosen
-	Confidence string `json:"confidence"` // "high", "medium", "low"
-	CWE        string `json:"cwe,omitempty"`
-}
-
-// SecuritySummary aggregates security metrics for a PR review.
-type SecuritySummary struct {
-	TotalFindings    int            `json:"total_findings"`
-	BySeverity       map[string]int `json:"by_severity"`       // critical/high/medium/low counts
-	ByCWE            map[string]int `json:"by_cwe,omitempty"`  // CWE-ID -> count
-	AOIsCovered      int            `json:"aois_covered"`      // how many AOIs led to findings
-	AOIsTotal        int            `json:"aois_total"`        // total AOIs identified
-	RevalidatedCount int            `json:"revalidated_count"` // findings that were revalidated
-	TruePositives    int            `json:"true_positives"`    // confirmed true positives
-	FalsePositives   int            `json:"false_positives"`   // confirmed false positives
 }

@@ -187,6 +187,40 @@ func TestParseAuditEvent_Phase3StatusEmits(t *testing.T) {
 	})
 }
 
+// TestParseAuditEvent_BatchesPanelStateRouting pins that phase3 batch
+// lifecycle events populate the State.Batches map (read by the
+// Batches panel) and do not double-count the aggregate review_*
+// counters. The two parsers run in sequence and must stay
+// independent.
+func TestParseAuditEvent_BatchesPanelStateRouting(t *testing.T) {
+	s := newState()
+	parseAuditEvent(s, "phase3", `Batch 1: init label="injection/sql [critical]" files=2 kind=aoi-driven`)
+	parseAuditEvent(s, "phase3", "Batch 1: active")
+	parseAuditEvent(s, "phase3", "Batch 1: stream bytes=512")
+	parseAuditEvent(s, "phase3", "Batch 1: done")
+
+	b := s.Batches[0]
+	if b == nil {
+		t.Fatal("batch 0 not populated")
+	}
+	if b.Label != "injection/sql [critical]" {
+		t.Errorf("label = %q, want %q", b.Label, "injection/sql [critical]")
+	}
+	if b.Status != progress.BatchDone {
+		t.Errorf("status = %q, want done", b.Status)
+	}
+	if b.Bytes != 512 {
+		t.Errorf("bytes = %d, want 512", b.Bytes)
+	}
+
+	// The new Batch K: events must NOT touch the existing aggregate
+	// review_* counters — those are still driven by the `Review X/Y`
+	// and `complete (cached)` / `failed:` emits.
+	if s.Counters["review_done"] != 0 || s.Counters["review_cached"] != 0 || s.Counters["review_failed"] != 0 {
+		t.Errorf("batch lifecycle parser leaked into aggregate counters: %+v", s.Counters)
+	}
+}
+
 // ── EstimateSynthesisChars ─────────────────────────────────────────────
 
 func TestEstimateSynthesisChars(t *testing.T) {

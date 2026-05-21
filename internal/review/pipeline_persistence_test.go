@@ -72,9 +72,8 @@ func pinDeepFindingsResponse(aoiID, file, lines string) string {
   "file": "%s",
   "lines": "%s",
   "severity": "high",
-  "category": "security",
-  "subcategory": "auth",
-  "dimension": "security",
+  "category": "authentication",
+  "subcategory": "missing-check",
   "title": "Issue for %s",
   "description": "A real-looking finding for testing.",
   "trigger": "Triggered under X.",
@@ -182,7 +181,7 @@ func TestPipeline_DeepFindings_PersistedAcrossSessions(t *testing.T) {
 		if !strings.HasPrefix(f.Title, "Issue for") {
 			t.Errorf("got[%d].Title = %q, want prefix 'Issue for' (content lost on reopen)", i, f.Title)
 		}
-		if f.Severity != "high" || f.Category != "security" {
+		if f.Severity != "high" || f.Category != "authentication" {
 			t.Errorf("got[%d] severity/category lost: %+v", i, f)
 		}
 		if f.File != "src/auth.go" {

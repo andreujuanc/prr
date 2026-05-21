@@ -11,10 +11,17 @@ import (
 	"github.com/andreujuanc/prr/internal/security"
 )
 
-// ReviewCall represents a single LLM call to be made during Phase 3.
-// Either an individual deep review or a grouped subcategory review.
+// ReviewCall represents a single LLM call made during the deep-review
+// phase. Three flavors:
+//
+//   - "individual": one AOI per call, AOI-targeted prompt.
+//   - "grouped":    multiple AOIs sharing a subcategory, AOI-targeted prompt.
+//   - "fallback-batch": directory-level review of files the AOI scan
+//     didn't flag. Uses the general directory-batch prompt, parses
+//     into DeepFinding shape so the rest of the pipeline (recheck,
+//     synthesis) handles it the same way as AOI-driven findings.
 type ReviewCall struct {
-	// Type is "individual" or "grouped".
+	// Type is "individual", "grouped", or "fallback-batch".
 	Type string
 
 	// Category and Subcategory identify the concern area.
@@ -68,20 +75,20 @@ type RouteResult struct {
 // RouteAOIs takes all AOI scan results and organizes them into review calls.
 // Individual AOIs get their own call; grouped AOIs are batched by subcategory.
 //
-// focusDimensions filters which AOIs make it to Phase 3. If nil or empty,
-// all AOIs are included. If set, only AOIs whose dimensions overlap with
+// focusCategories filters which AOIs make it to Phase 3. If nil or empty,
+// all AOIs are included. If set, only AOIs whose categories overlap with
 // the focus set are included.
 //
 // maxGroupSize caps the number of AOIs per grouped call. If a subcategory
 // has more AOIs than this, it is split into multiple grouped calls.
 // Use 0 for no limit.
-func RouteAOIs(results []security.AOIScanResult, focusDimensions []string, maxGroupSize int) *RouteResult {
+func RouteAOIs(results []security.AOIScanResult, focusCategories []string, maxGroupSize int) *RouteResult {
 	if maxGroupSize <= 0 {
 		maxGroupSize = 10 // default cap per the plan
 	}
 
-	focusSet := make(map[string]bool, len(focusDimensions))
-	for _, d := range focusDimensions {
+	focusSet := make(map[string]bool, len(focusCategories))
+	for _, d := range focusCategories {
 		focusSet[d] = true
 	}
 	hasFocus := len(focusSet) > 0
@@ -214,19 +221,15 @@ func (r *RouteResult) SkippedSubcategories(maxCalls int) []string {
 	return result
 }
 
-// aoiMatchesFocus returns true if any of the AOI's dimensions overlap
-// with the focus set.
+// aoiMatchesFocus returns true if the AOI's category is in the focus
+// set. One AOI = one category — see the AOI scan prompt.
 func aoiMatchesFocus(aoi security.AreaOfInterest, focusSet map[string]bool) bool {
-	if len(aoi.Dimensions) == 0 {
-		// Legacy AOIs without dimensions: always include
+	if aoi.Category == "" {
+		// AOIs without a category: include rather than silently drop.
+		// validateAOIs already logs these for human attention.
 		return true
 	}
-	for _, dim := range aoi.Dimensions {
-		if focusSet[dim] {
-			return true
-		}
-	}
-	return false
+	return focusSet[aoi.Category]
 }
 
 func subcategoryKey(category, subcategory string) string {

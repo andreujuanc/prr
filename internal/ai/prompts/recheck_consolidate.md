@@ -60,28 +60,31 @@ A 2-finding pattern is usually NOT a pattern — it's a coincidence
 in a small codebase. Hold those for the per-file pass to evaluate
 individually.
 
-### 2. Pass through everything else
-Findings that aren't part of a confirmed cross-file pattern go into
-`kept` unchanged. **Do not dismiss, do not modify severity, do not
-rewrite descriptions.** That's the second pass's job, and it has
-more context than you do.
+### 2. Leave everything else alone
+Findings that aren't part of a confirmed cross-file pattern do not
+need to be listed anywhere — anything you don't put in a merge
+group is automatically preserved by the code on the receiving end.
+**Do not dismiss, do not modify severity, do not rewrite
+descriptions.** That's the second pass's job, and it has more
+context than you do.
 
 ## Rules
 
 - **Do not invent new findings** that weren't in the input.
-- Every input finding must appear in exactly one output bucket:
-  `kept` or `consolidated`.
-- The output must account for ALL input IDs — none may be silently
-  dropped. The second pass trusts your output; if you drop something
-  here, it vanishes.
+- Only emit merge groups. Findings you don't mention stay as-is —
+  there is no need to list "kept" IDs anywhere.
+- A merge group MUST list **two or more** `finding_ids`. Groups
+  with a single ID are ignored by the code on the receiving end
+  (the original finding is preserved). If you can't find at least
+  two related findings, leave them alone.
+- Do not dismiss or modify findings. That's the next pass's job.
 
 ## Output format
 
-Return a single JSON object:
+Return a single JSON object with one field:
 
 ```json
 {
-  "kept": ["F-001", "F-005", "F-009"],
   "consolidated": [
     {
       "finding_ids": ["F-002", "F-007", "F-011"],
@@ -92,7 +95,6 @@ Return a single JSON object:
         "severity": "high",
         "category": "input-validation",
         "subcategory": "missing-sanitization",
-        "dimension": "input-validation",
         "title": "Systemic: Missing input sanitization across API handlers",
         "description": "Found in handler.go:45, service.go:112, api.go:78. All three endpoints accept user input without sanitization before passing to database queries.",
         "trigger": "User-controlled input flows to database without sanitization",
@@ -108,8 +110,11 @@ Return a single JSON object:
 }
 ```
 
-For `consolidated` entries: `finding_ids` lists all merged IDs.
-`finding` is the new merged finding — reuse the first constituent's
-ID.
+For each merge group:
+- `finding_ids` lists all merged IDs (2 or more).
+- `finding` is the new merged finding — full DeepFinding shape with
+  line numbers, suggestion, etc. Reuse the first constituent's ID.
+
+If no merge groups apply, return `{ "consolidated": [] }`.
 
 Return ONLY the JSON object. No markdown fences, no prose.

@@ -136,7 +136,6 @@ func TestRecheckFindings_ConsolidatorRunsFirst(t *testing.T) {
 						"severity":    "medium",
 						"category":    "error-handling",
 						"subcategory": "swallowed",
-						"dimension":   "error-handling",
 						"title":       "Systemic: Swallowed errors across multiple files",
 						"description": "Found in a.go:10, b.go:20, c.go:30",
 						"trigger":     "operation returns err",
@@ -149,11 +148,9 @@ func TestRecheckFindings_ConsolidatorRunsFirst(t *testing.T) {
 					},
 				}},
 			),
-			// Pass 2: dismiss pass runs on the empty kept set. It
-			// shouldn't be invoked at all because there's nothing to
-			// process — but if it is, we have a response queued so
-			// the test doesn't crash. We assert call count below.
-			dismissResponse(t, nil, nil),
+			// Pass 2: dismiss now sees the merged finding (F-001).
+			// Keep it as-is.
+			dismissResponse(t, []string{"F-001"}, nil),
 		},
 	}
 
@@ -187,12 +184,13 @@ func TestRecheckFindings_ConsolidatorRunsFirst(t *testing.T) {
 	}
 }
 
-// TestRecheckFindings_ConsolidatedFindingsBypassDismissPass is the
-// behavioral pin: once the consolidator merges findings into a
-// systemic, the per-file dismisser must not see them. Otherwise the
-// dismisser could mistakenly try to dismiss the systemic finding
-// using thin per-file context.
-func TestRecheckFindings_ConsolidatedFindingsBypassDismissPass(t *testing.T) {
+// TestRecheckFindings_ConsolidatedFindingsAlsoFlowThroughDismiss
+// pins the NEW behavior: consolidations DO flow through the dismiss
+// pass. The old design routed consolidations around dismiss, which
+// meant a bad consolidation could never be dropped. New design feeds
+// the merged set (originals not merged + new merged findings) into
+// dismiss.
+func TestRecheckFindings_ConsolidatedFindingsAlsoFlowThroughDismiss(t *testing.T) {
 	findings := []state.DeepFinding{
 		makeFinding("", "a.go", "10", "X", "pattern member", "low"),
 		makeFinding("", "b.go", "20", "X", "pattern member", "low"),
@@ -202,11 +200,11 @@ func TestRecheckFindings_ConsolidatedFindingsBypassDismissPass(t *testing.T) {
 
 	client := &promptRecordingClient{
 		responses: []string{
-			// Consolidator merges the 3 pattern members. F-004 stays kept.
+			// Consolidator merges the 3 pattern members.
 			// affected_sites covers 3 distinct files so the systemic
-			// gate (commit 10) keeps the Systemic flag set.
+			// gate keeps the Systemic flag set.
 			consolidateResponse(t,
-				[]string{"F-004"},
+				nil, // no "kept" in the new shape — implicit
 				[]map[string]any{{
 					"finding_ids": []string{"F-001", "F-002", "F-003"},
 					"finding": map[string]any{
@@ -216,7 +214,6 @@ func TestRecheckFindings_ConsolidatedFindingsBypassDismissPass(t *testing.T) {
 						"severity":    "high",
 						"category":    "X",
 						"subcategory": "x",
-						"dimension":   "X",
 						"title":       "Systemic: Pattern across files",
 						"description": "three files, same pattern",
 						"trigger":     "the trigger",
@@ -229,8 +226,9 @@ func TestRecheckFindings_ConsolidatedFindingsBypassDismissPass(t *testing.T) {
 					},
 				}},
 			),
-			// Dismiss pass: only F-004 should be in its input.
-			dismissResponse(t, []string{"F-004"}, nil),
+			// Dismiss pass input now includes BOTH the merged finding
+			// (F-001) and the isolated one (F-004).
+			dismissResponse(t, []string{"F-001", "F-004"}, nil),
 		},
 	}
 
@@ -243,22 +241,23 @@ func TestRecheckFindings_ConsolidatedFindingsBypassDismissPass(t *testing.T) {
 		t.Fatalf("expected 2 LLM calls (consolidate + dismiss), got %d", client.CallCount())
 	}
 
-	// The dismiss pass call must NOT contain F-001/F-002/F-003 in
-	// its user message — those were consolidated and bypassed.
-	// json.MarshalIndent emits `"finding_id": "F-XXX"` with a space
-	// after the colon, so the substring we look for must include
-	// that space. A no-space variant of this check was tautological
-	// (always passed) and missed real regressions.
 	dismissUserMsg := client.messages[1][0].Content
-	for _, badID := range []string{"F-001", "F-002", "F-003"} {
+	// The merged finding (F-001) MUST be in the dismiss input — it
+	// now flows through so a bad consolidation can still be dropped.
+	if !strings.Contains(dismissUserMsg, `"finding_id": "F-001"`) {
+		t.Errorf("dismiss pass must see the merged finding F-001 under the new design; user message was:\n%.500s",
+			dismissUserMsg)
+	}
+	// The original constituents F-002 and F-003 were absorbed into
+	// the merge; they should not appear individually.
+	for _, badID := range []string{"F-002", "F-003"} {
 		needle := `"finding_id": "` + badID + `"`
 		if strings.Contains(dismissUserMsg, needle) {
-			t.Errorf("dismiss pass must not see consolidated finding %s; user message was:\n%.500s",
+			t.Errorf("dismiss pass must not see absorbed constituent %s; user message was:\n%.500s",
 				badID, dismissUserMsg)
 		}
 	}
-
-	// And F-004 (the isolated finding) MUST be in the dismiss input.
+	// F-004 (the isolated finding) MUST be in the dismiss input.
 	if !strings.Contains(dismissUserMsg, `"finding_id": "F-004"`) {
 		t.Errorf("dismiss pass must see the isolated finding F-004; user message was:\n%.500s",
 			dismissUserMsg)
@@ -275,16 +274,21 @@ func TestRecheckFindings_ConsolidatedFindingsBypassDismissPass(t *testing.T) {
 // through to the dismiss pass and it behaves as the canonical
 // recheck path always has.
 func TestRecheckFindings_NoCrossFilePatternsDismissPassRunsNormally(t *testing.T) {
+	// Two findings in the same category so the dismiss pass uses a
+	// single batch (one category × chunk-size 3 fits both). This
+	// keeps the test deterministic — parallel batches would race
+	// for the response queue.
 	findings := []state.DeepFinding{
 		makeFinding("", "a.go", "10", "X", "thing A", "high"),
-		makeFinding("", "b.go", "20", "Y", "thing B", "medium"),
+		makeFinding("", "b.go", "20", "X", "thing B", "medium"),
 	}
 
 	client := &promptRecordingClient{
 		responses: []string{
 			// Consolidator passes everything through.
 			consolidateResponse(t, []string{"F-001", "F-002"}, nil),
-			// Dismiss pass dismisses one and keeps the other.
+			// One dismiss call for the one category batch:
+			// keep F-001, drop F-002.
 			dismissResponse(t,
 				[]string{"F-001"},
 				[]map[string]any{
@@ -300,7 +304,7 @@ func TestRecheckFindings_NoCrossFilePatternsDismissPassRunsNormally(t *testing.T
 	}
 
 	if client.CallCount() != 2 {
-		t.Fatalf("expected 2 LLM calls, got %d", client.CallCount())
+		t.Fatalf("expected 2 LLM calls (1 consolidate + 1 dismiss), got %d", client.CallCount())
 	}
 	if len(result.Findings) != 1 || result.Findings[0].FindingID != "F-001" {
 		t.Errorf("expected F-001 to survive, got %+v", result.Findings)
@@ -369,7 +373,6 @@ func TestRecheckFindings_DismissPassFailureKeepsConsolidated(t *testing.T) {
 						"severity":    "medium",
 						"category":    "X",
 						"subcategory": "y",
-						"dimension":   "X",
 						"title":       "Systemic: X happens everywhere",
 						"description": "...",
 						"trigger":     "...",
@@ -556,25 +559,20 @@ func TestParseRecheckResult_DoesNotTagKeptOrModifiedSystemic(t *testing.T) {
 	}
 }
 
-// TestRecheckConsolidateBatch_RoutesByFlagNotByHeuristic verifies the
-// routing decision. It feeds the consolidator a response where the
-// merged finding has a concrete (non-"multiple") File path, which
-// the old heuristic would have misclassified as non-systemic. The
-// flag-based routing must still correctly route it into
-// `consolidations`.
-func TestRecheckConsolidateBatch_RoutesByFlagNotByHeuristic(t *testing.T) {
+// TestRecheckConsolidateBatch_MergedFindingFlaggedSystemic verifies
+// that the merged finding emitted by the consolidator carries the
+// Systemic flag through to the caller, even when its File is a
+// concrete path (no heuristic on File="multiple").
+func TestRecheckConsolidateBatch_MergedFindingFlaggedSystemic(t *testing.T) {
 	findings := []state.DeepFinding{
 		makeFinding("", "a.go", "10", "X", "thing", "low"),
 		makeFinding("", "b.go", "20", "X", "thing", "low"),
 	}
 	AssignFindingIDs(findings)
 
-	// Consolidator response: merged finding has File="auth.go"
-	// (would NOT match the old File=="multiple" heuristic).
 	client := &promptRecordingClient{
 		responses: []string{
 			`{
-				"kept": [],
 				"consolidated": [{
 					"finding_ids": ["F-001", "F-002"],
 					"finding": {
@@ -593,18 +591,17 @@ func TestRecheckConsolidateBatch_RoutesByFlagNotByHeuristic(t *testing.T) {
 		},
 	}
 
-	r, err := recheckConsolidateBatch(context.Background(), client, findings, RecheckOptions{Mode: ModeAudit})
+	out, absorbed, err := recheckConsolidateBatch(context.Background(), client, findings, RecheckOptions{Mode: ModeAudit})
 	if err != nil {
 		t.Fatalf("recheckConsolidateBatch: %v", err)
 	}
-	if len(r.consolidations) != 1 {
-		t.Fatalf("expected 1 consolidation, got %d (the merged finding got misrouted to kept under the old heuristic)",
-			len(r.consolidations))
+	if len(out) != 1 {
+		t.Fatalf("expected 1 finding (the merged one), got %d", len(out))
 	}
-	if len(r.kept) != 0 {
-		t.Errorf("expected no kept findings, got %d", len(r.kept))
+	if absorbed != 2 {
+		t.Errorf("expected 2 findings absorbed into the merge, got %d", absorbed)
 	}
-	if !r.consolidations[0].Systemic {
+	if !out[0].Systemic {
 		t.Error("consolidation must carry the Systemic flag through to the caller")
 	}
 }

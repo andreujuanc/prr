@@ -10,6 +10,33 @@ import (
 	"github.com/andreujuanc/prr/internal/state"
 )
 
+// TestRunRecheck_EmitsEvenWithNoFindings pins the contract that
+// RunRecheck pings the progress channel before returning, even when
+// there's nothing to recheck. Without this, a clean PR with zero
+// deep findings leaves the Recheck phase row in PhaseWaiting (gray)
+// and users read that as "skipped" when it actually ran fine.
+func TestRunRecheck_EmitsEvenWithNoFindings(t *testing.T) {
+	var got []string
+	onProgress := func(msg string) { got = append(got, msg) }
+
+	kept, dismissals, changed := RunRecheck(
+		context.Background(),
+		nil, // client unused when findings is empty — early return
+		nil, // no findings
+		ModePR,
+		"",
+		onProgress,
+		nil,
+	)
+
+	if len(kept) != 0 || dismissals != nil || changed {
+		t.Errorf("empty-findings path: unexpected non-zero return values")
+	}
+	if len(got) == 0 {
+		t.Fatal("RunRecheck must emit at least one progress event so the phase row activates")
+	}
+}
+
 func TestAssignFindingIDs(t *testing.T) {
 	findings := []state.DeepFinding{
 		{File: "a.go", Title: "first"},
@@ -285,8 +312,8 @@ func TestParseRecheckResult_Consolidate(t *testing.T) {
 	if len(result.Findings) != 2 {
 		t.Fatalf("expected 2 findings (1 kept + 1 consolidated), got %d", len(result.Findings))
 	}
-	if result.ConsolidatedCount != 1 {
-		t.Errorf("expected 1 consolidated (net reduction), got %d", result.ConsolidatedCount)
+	if result.ConsolidatedCount != 2 {
+		t.Errorf("expected 2 (sum of absorbed constituents), got %d", result.ConsolidatedCount)
 	}
 }
 

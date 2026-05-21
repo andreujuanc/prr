@@ -165,6 +165,19 @@ type RuntimeEntryPoint struct {
 	// "cli", "rpc", "webhook", "other".
 	Kind string `json:"kind"`
 
+	// File is an optional path to a representative example of this
+	// entry-point kind (e.g. "internal/api/handlers/routes.go").
+	// Populated when one identifiable file exemplifies the kind;
+	// omitted when the surface is spread across many files with no
+	// single anchor. Used by Phase 3 prompts as a concrete reference
+	// when classifying boundaries.
+	File string `json:"file,omitempty"`
+
+	// Symbol is an optional function/route/handler name within File
+	// (e.g. "registerAdminRoutes"). Pairs with File. Omitted when
+	// File is empty or when no specific symbol stands out.
+	Symbol string `json:"symbol,omitempty"`
+
 	// RetryModel describes who retries on failure and what triggers
 	// retry (e.g., "API Gateway does not retry — caller's job",
 	// "SNS retries with exponential backoff per record").
@@ -293,6 +306,13 @@ func (m *RuntimeModel) Render() string {
 				kind = "other"
 			}
 			fmt.Fprintf(&b, "- `%s`", kind)
+			if f := strings.TrimSpace(ep.File); f != "" {
+				if s := strings.TrimSpace(ep.Symbol); s != "" {
+					fmt.Fprintf(&b, " — `%s:%s`", f, s)
+				} else {
+					fmt.Fprintf(&b, " — `%s`", f)
+				}
+			}
 			if v := strings.TrimSpace(ep.ValidationAt); v != "" {
 				fmt.Fprintf(&b, " — validation at %s", v)
 			}
@@ -461,8 +481,8 @@ type State struct {
 	SiblingClusterHash     string          `json:"sibling_cluster_hash,omitempty"`
 
 	// DeepReviews caches Phase 3 deep review results. Keyed by a hash of the
-	// review inputs (file content + AOI content + focus dimensions for individual;
-	// all AOI content + focus dimensions for grouped).
+	// review inputs (file content + AOI content + focus categories for individual;
+	// all AOI content + focus categories for grouped).
 	DeepReviews map[string]*DeepReviewResult `json:"deep_reviews,omitempty"`
 
 	// RecheckCache caches Phase 3b recheck output by hash of the input
@@ -658,7 +678,6 @@ type DeepFinding struct {
 	Severity    string `json:"severity"` // "critical", "high", "medium", "low", "nit"
 	Category    string `json:"category"`
 	Subcategory string `json:"subcategory,omitempty"`
-	Dimension   string `json:"dimension"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Evidence    string `json:"evidence,omitempty"` // what was verified and found (tool-backed)

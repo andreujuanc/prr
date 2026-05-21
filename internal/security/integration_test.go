@@ -45,10 +45,78 @@ func TestAOIScanPrompt(t *testing.T) {
 	}
 }
 
-func TestRevalidatePrompt(t *testing.T) {
-	p := RevalidatePrompt()
-	if p == "" {
-		t.Fatal("RevalidatePrompt() should not be empty")
+// TestAOIScanPrompt_NoUnsubstitutedPlaceholders guards the template
+// composition: every {PLACEHOLDER} in the parent prompt must have a
+// matching substitution at runtime. A leak here means the rendered
+// prompt reaches the model with a literal "{...}" token, which would
+// poison output and silently break parsing.
+func TestAOIScanPrompt_NoUnsubstitutedPlaceholders(t *testing.T) {
+	cases := []struct {
+		name   string
+		prompt string
+	}{
+		{"PR mode", AOIScanPrompt()},
+		{"audit mode", AOIAuditPrompt()},
+	}
+	for _, c := range cases {
+		for _, ph := range []string{"{CATEGORIES}", "{CATEGORY_SLUGS}", "{MODE_RULES}", "{INPUT_FORMAT}"} {
+			if strings.Contains(c.prompt, ph) {
+				t.Errorf("%s: unsubstituted placeholder %s", c.name, ph)
+			}
+		}
+	}
+}
+
+// TestAOIScanPrompt_HasDedupeRule pins the (file, line, category)
+// dedup rule. Without it, the model can emit multiple AOIs at the
+// same line for the same root issue (e.g. a TODO surface-area rule
+// and a broad correctness scan both firing on the same line), which
+// wastes Phase 3 LLM calls on near-duplicates. The rule lives in the
+// shared parent prompt, so both modes get it.
+func TestAOIScanPrompt_HasDedupeRule(t *testing.T) {
+	for _, c := range []struct{ name, prompt string }{
+		{"PR mode", AOIScanPrompt()},
+		{"audit mode", AOIAuditPrompt()},
+	} {
+		if !strings.Contains(c.prompt, "One AOI per `(file, line, category)`") {
+			t.Errorf("%s: missing (file, line, category) dedup rule", c.name)
+		}
+	}
+}
+
+// TestAOIScanPrompt_ModeContentMatchesMode pins the central reason for
+// the PR/audit split: each rendered prompt must include only its own
+// mode's load-bearing rules. Specifically:
+//
+//   - Audit mode MUST instruct the model to copy line numbers from the
+//     " NN: " input prefix verbatim. This is the only correctness
+//     anchor for audit-mode AOI line accuracy.
+//   - PR mode MUST instruct the model to use @@ -X,Y +A,B @@ hunk
+//     headers and MUST NOT instruct it to look for line-number prefixes
+//     (a previous version of the prompt had a "audit-mode rule above
+//     does not apply" caveat that was easy for models to mis-apply).
+func TestAOIScanPrompt_ModeContentMatchesMode(t *testing.T) {
+	pr := AOIScanPrompt()
+	audit := AOIAuditPrompt()
+
+	// "Every input line is prefixed with its source line number" is the
+	// load-bearing audit-mode invariant — without it, the model cannot
+	// produce accurate `line` / `end_line` values from prefixed input.
+	if !strings.Contains(audit, "Every input line is prefixed with its source line number") {
+		t.Error("audit prompt missing line-number-prefix rule (the load-bearing audit-mode invariant)")
+	}
+	if !strings.Contains(audit, "Scan ALL code in the file") {
+		t.Error("audit prompt missing audit-mode rules")
+	}
+
+	if !strings.Contains(pr, "@@ -X,Y +A,B @@") {
+		t.Error("PR prompt missing hunk-header instruction")
+	}
+	if !strings.Contains(pr, "ONLY flag code in the DIFF") {
+		t.Error("PR prompt missing PR-mode rules")
+	}
+	if strings.Contains(pr, "Every input line is prefixed with its source line number") {
+		t.Error("PR prompt leaked audit-mode line-prefix rule — model may fabricate line numbers from a non-existent prefix")
 	}
 }
 
@@ -59,9 +127,8 @@ func TestRevalidatePrompt(t *testing.T) {
 // there is a single source of truth across leak-test sites.
 func TestSecurityPrompts_NoToolNamesLeakIntoClaudeCode(t *testing.T) {
 	prompts := map[string]string{
-		"AOIScanPrompt":    AOIScanPrompt(),
-		"AOIAuditPrompt":   AOIAuditPrompt(),
-		"RevalidatePrompt": RevalidatePrompt(),
+		"AOIScanPrompt":  AOIScanPrompt(),
+		"AOIAuditPrompt": AOIAuditPrompt(),
 	}
 
 	claude := aitesting.ClaudeCodeProvider{}
@@ -172,62 +239,5 @@ func TestScanAreasOfInterest_ClientError(t *testing.T) {
 	}
 	if report != nil {
 		t.Fatal("report should be nil when all batches fail")
-	}
-}
-
-func TestRevalidateFindings_Empty(t *testing.T) {
-	ctx := context.Background()
-	client := &mockClient{}
-
-	results, err := RevalidateFindings(ctx, client, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if results != nil {
-		t.Errorf("expected nil for empty findings, got %v", results)
-	}
-}
-
-func TestRevalidateFindings_WithMockClient(t *testing.T) {
-	ctx := context.Background()
-	response := `[{"verdict":"true_positive","reasoning":"confirmed SQL injection","confidence":"high","cwe":"CWE-89"}]`
-	client := &mockClient{response: response}
-
-	findings := []FindingForRevalidation{
-		{Index: 0, Severity: "high", Category: "sql", File: "handler.go", Line: 10, Title: "SQL injection"},
-	}
-
-	var progressMsgs []string
-	results, err := RevalidateFindings(ctx, client, findings, func(s string) {
-		progressMsgs = append(progressMsgs, s)
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Verdict != "true_positive" {
-		t.Errorf("verdict = %q, want %q", results[0].Verdict, "true_positive")
-	}
-	if results[0].CWE != "CWE-89" {
-		t.Errorf("CWE = %q, want %q", results[0].CWE, "CWE-89")
-	}
-	if len(progressMsgs) == 0 {
-		t.Error("expected progress messages")
-	}
-}
-
-func TestRevalidateFindings_ClientError(t *testing.T) {
-	ctx := context.Background()
-	client := &mockClient{err: context.DeadlineExceeded}
-
-	findings := []FindingForRevalidation{
-		{Index: 0, Severity: "high", File: "x.go"},
-	}
-
-	_, err := RevalidateFindings(ctx, client, findings, nil)
-	if err == nil {
-		t.Fatal("expected error from client failure")
 	}
 }

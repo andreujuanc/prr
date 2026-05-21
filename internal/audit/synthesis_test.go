@@ -50,7 +50,6 @@ func makeFindings(n int) []state.DeepFinding {
 			Severity:    sev,
 			Category:    fmt.Sprintf("cat%d", i%3),
 			Subcategory: "sub",
-			Dimension:   "security",
 			Title:       fmt.Sprintf("Finding %d", i),
 			Description: fmt.Sprintf("Description for finding %d", i),
 			Trigger:     state.FindingTrigger{Repro: "trigger"},

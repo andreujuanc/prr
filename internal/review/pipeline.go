@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -297,6 +296,13 @@ func (p *progressReporter) ClassifyProgress(status string) {
 func (p *progressReporter) AOIPrescanProgress(status string, done bool, aoiCount int) {
 	p.onProgress("aoi", status)
 }
+
+// batchPhase is the progress-phase name the Batches panel listens on
+// for per-batch lifecycle messages. Single constant so a rename is one
+// edit, not many — and so the pinning tests in this package can
+// reference the same value.
+const batchPhase = "phase1"
+
 func (p *progressReporter) InitBatches(batches []BatchInfo) {
 	// Emit total + breakdown in one message so the TUI's deep-review
 	// row can show "5 AOI-driven + 7 general" instead of just a flat
@@ -312,25 +318,52 @@ func (p *progressReporter) InitBatches(batches []BatchInfo) {
 			general++
 		}
 	}
-	p.onProgress("phase1", fmt.Sprintf("Initialized %d batches (%d AOI-driven, %d general)",
+	p.onProgress(batchPhase, fmt.Sprintf("Initialized %d batches (%d AOI-driven, %d general)",
 		len(batches), aoi, general))
+
+	// Per-batch identity. These feed the Batches panel parser so each
+	// batch row knows what it's about. The aggregate line above keeps
+	// the phase Summary working; the per-batch lines populate
+	// progress.State.Batches without touching the aggregate counters.
+	for i, b := range batches {
+		kind := "aoi-driven"
+		if b.Kind == BatchGeneral {
+			kind = "general"
+		}
+		p.onProgress(batchPhase, fmt.Sprintf("Batch %d: init label=%q files=%d kind=%s",
+			i+1, b.Label, b.NumFiles, kind))
+	}
 }
 func (p *progressReporter) BatchProgress(batch int, status BatchStatus) {
-	// Skip StatusActive: with parallel batches, "active" messages
-	// flip the detail line chaotically (Batch 12: active → Batch 8:
-	// active → Batch 14: active …) without conveying real progress.
-	// The inline counter "X/Y" plus terminal-status messages give
-	// users an honest read of how much is done.
 	label := "done"
 	switch status {
 	case StatusActive:
-		return
+		label = "active"
 	case StatusCached:
 		label = "cached"
 	case StatusFailed:
 		label = "failed"
 	}
-	p.onProgress("phase1", fmt.Sprintf("Batch %d: %s", batch+1, label))
+	p.onProgress(batchPhase, fmt.Sprintf("Batch %d: %s", batch+1, label))
+}
+func (p *progressReporter) BatchProgressWithFindings(batch int, status BatchStatus, findings int) {
+	// Active/failed don't carry a finding count — fall back to the
+	// status-only emit so the wire format stays consistent.
+	if status == StatusActive || status == StatusFailed {
+		p.BatchProgress(batch, status)
+		return
+	}
+	label := "done"
+	if status == StatusCached {
+		label = "cached"
+	}
+	p.onProgress(batchPhase, fmt.Sprintf("Batch %d: %s findings=%d", batch+1, label, findings))
+}
+func (p *progressReporter) BatchStream(batch int, bytes int) {
+	// The producer (RunReviewCalls / RunBatchesOnly) already throttles
+	// at ≥256-byte deltas, so we just forward verbatim. The Batches
+	// panel parser updates the per-batch Bytes counter on every emit.
+	p.onProgress(batchPhase, fmt.Sprintf("Batch %d: stream bytes=%d", batch+1, bytes))
 }
 func (p *progressReporter) RecheckProgress(status string) {
 	p.onProgress("recheck", status)
@@ -520,12 +553,17 @@ func RunRecheck(
 	debugHook func(systemPrompt, userMsg, response string),
 	settings ...RecheckSettings,
 ) (kept []state.DeepFinding, dismissals []state.DismissedRecord, changed bool) {
-	if len(findings) == 0 {
-		return findings, nil, false
-	}
-
 	if onProgress == nil {
 		onProgress = func(string) {}
+	}
+
+	if len(findings) == 0 {
+		// Still ping the progress channel so the Recheck phase row
+		// activates and gets promoted to done — without this, a clean
+		// PR with no deep findings leaves the row in gray
+		// (PhaseWaiting), which the user reads as "skipped".
+		onProgress("no findings to recheck")
+		return findings, nil, false
 	}
 
 	var s RecheckSettings
@@ -546,6 +584,29 @@ func RunRecheck(
 			// duplicated the X/Y already shown by the inline counter.
 			// "findings" is implicit from the phase label "Recheck".
 			onProgress(fmt.Sprintf("rechecked %d/%d", done, total))
+		},
+		// Per-batch lifecycle so the Batches panel can render
+		// recheck the same way it renders Deep Review. Labels come
+		// from the dominant file in each batch so panel rows read
+		// like "internal/ui/foo.go" rather than "batch 3".
+		OnBatchInit: func(idx int, label string, n int) {
+			// unit=findings tells the Batches panel to label the
+			// count column "findings" rather than the default "files".
+			// Recheck batches reason over findings, not files; the
+			// previous "N files" reading was numerically right
+			// (distinct file count) but semantically off — the row
+			// reports the work the LLM call is doing.
+			onProgress(fmt.Sprintf("Batch %d: init label=%q files=%d kind=general unit=findings", idx+1, label, n))
+		},
+		OnBatchActive: func(idx int) {
+			onProgress(fmt.Sprintf("Batch %d: active", idx+1))
+		},
+		OnBatchDone: func(idx int, err error) {
+			if err != nil {
+				onProgress(fmt.Sprintf("Batch %d: failed", idx+1))
+			} else {
+				onProgress(fmt.Sprintf("Batch %d: done", idx+1))
+			}
 		},
 	})
 	if recheckErr != nil {
@@ -708,7 +769,7 @@ func RunReviewCore(
 		}
 	}
 
-	// ── Classification: narrow per-file dimensions ───────────────
+	// ── Classification: narrow per-file categories ───────────────
 	// Each diffed file gets classified by the fast model (handler /
 	// test / repository / model / …). The result drives the AOI
 	// pre-scan: a test file doesn't get a cryptography pass, a
@@ -717,7 +778,7 @@ func RunReviewCore(
 	// Cache invalidation: RunPRReview already calls ClearAllCaches
 	// when --no-cache is set, so the FileType lookups below find no
 	// entries on a forced re-run. No need to thread the flag through.
-	fileDimensions := classifyChangedFiles(ctx, aoiClient, reviewState, opts.RepoRoot, opts.RawDiffs, rr.ClassifyProgress)
+	fileCategories := classifyChangedFiles(ctx, aoiClient, reviewState, opts.RepoRoot, opts.RawDiffs, rr.ClassifyProgress)
 
 	// AOI pre-scan
 	aoiContextLines := opts.AOIContextLines
@@ -770,7 +831,7 @@ func RunReviewCore(
 				dbgw.Separator()
 			}
 		}
-		aoiReport, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, aoiDiffs, aoiCache, fileDimensions, func(status string) {
+		aoiReport, err := security.ScanAreasOfInterestClassified(ctx, aoiClient, aoiDiffs, aoiCache, fileCategories, func(status string) {
 			rr.AOIPrescanProgress(status, false, 0)
 		}, aoiDebugHook, false)
 		if err != nil {
@@ -899,30 +960,47 @@ func RunReviewCore(
 		log.Printf("review-mode=aoi-only: %d file(s) skipped (no AOIs)", len(skippedNonAOI))
 	}
 
+	// Wrap fallback directory batches as ReviewCall entries with
+	// Type="fallback-batch". After this point every item in
+	// reviewCalls flows through the same executor (RunReviewCalls)
+	// and produces DeepFinding-shape output — one queue, one
+	// semaphore, one recheck pass over the union.
+	for _, b := range fallbackBatches {
+		fileDiffs := make(map[string]string, len(b.Files))
+		for _, f := range b.Files {
+			if d, ok := opts.RawDiffs[f]; ok {
+				fileDiffs[f] = d
+			}
+		}
+		reviewCalls = append(reviewCalls, ReviewCall{
+			Type:      "fallback-batch",
+			Category:  b.Label,
+			Files:     b.Files,
+			FileDiffs: fileDiffs,
+		})
+	}
+
 	// Initialize batch list in reporter. Kind lets the progress UI
 	// render the AOI-driven / general breakdown — without it the
 	// "Initialized N batches" row gives no hint that some calls are
 	// targeted on AOI findings while others are blanket diff reviews.
-	batchInfos := make([]BatchInfo, 0, totalCalls)
+	batchInfos := make([]BatchInfo, 0, len(reviewCalls))
 	for _, call := range reviewCalls {
+		kind := BatchAOIDriven
 		label := call.Category
 		if call.Subcategory != "" {
 			label += "/" + call.Subcategory
 		}
-		if call.Type == "individual" {
+		switch call.Type {
+		case "individual":
 			label += " [critical]"
+		case "fallback-batch":
+			kind = BatchGeneral
 		}
 		batchInfos = append(batchInfos, BatchInfo{
 			Label:    label,
 			NumFiles: len(call.Files),
-			Kind:     BatchAOIDriven,
-		})
-	}
-	for _, b := range fallbackBatches {
-		batchInfos = append(batchInfos, BatchInfo{
-			Label:    b.Label,
-			NumFiles: len(b.Files),
-			Kind:     BatchGeneral,
+			Kind:     kind,
 		})
 	}
 	rr.InitBatches(batchInfos)
@@ -958,23 +1036,27 @@ func RunReviewCore(
 		execOpts := ExecuteOptions{
 			Mode:               ModePR,
 			ProjectContext:     projectContext,
+			PRMeta:             opts.PRMeta,
 			RuntimeModel:       runtimeModel,
 			CustomInstructions: enhancedInstructions,
 			MaxConcurrency:     maxConc,
 			RepoRoot:           opts.RepoRoot,
 			BugPriors:          bugPriorsContent,
-			OnProgress: func(completed, total int, cached bool, callErr error) {
-				idx := completed - 1
-				if idx < 0 || idx >= len(reviewCalls) {
-					return
-				}
-				if cached {
-					rr.BatchProgress(idx, StatusCached)
-				} else if callErr != nil {
+			OnCallStart: func(idx int) {
+				rr.BatchProgress(idx, StatusActive)
+			},
+			OnCallEnd: func(idx int, cached bool, callErr error, findings int) {
+				switch {
+				case cached:
+					rr.BatchProgressWithFindings(idx, StatusCached, findings)
+				case callErr != nil:
 					rr.BatchProgress(idx, StatusFailed)
-				} else {
-					rr.BatchProgress(idx, StatusDone)
+				default:
+					rr.BatchProgressWithFindings(idx, StatusDone, findings)
 				}
+			},
+			OnCallStream: func(idx, bytes int) {
+				rr.BatchStream(idx, bytes)
 			},
 		}
 		if dbgw.Enabled() {
@@ -1032,22 +1114,6 @@ func RunReviewCore(
 		// status (done / cached / failed). A second pass would
 		// double-count completions and overwrite cached/failed with
 		// done — both wrong.
-	}
-
-	aoiCallOffset := len(reviewCalls)
-
-	// ── Phase 1b: Fallback directory batches ─────────────────────
-	if len(fallbackBatches) > 0 {
-		fbReporter := &OffsetReporter{RR: rr, Offset: aoiCallOffset}
-
-		fbFindings, fbFF, fbErr := RunBatchesOnly(ctx, reviewClient, opts.PRMeta, opts.RawDiffs,
-			enhancedInstructions, reviewState, fallbackBatches, fbReporter)
-		if fbErr != nil {
-			return nil, fmt.Errorf("fallback batches: %w", fbErr)
-		}
-
-		allFindings.WriteString(fbFindings)
-		maps.Copy(allFileFindings, fbFF)
 	}
 
 	// ── Phase 1c: Recheck ────────────────────────────────────────
@@ -1189,15 +1255,15 @@ func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed in
 
 // classifyChangedFiles classifies each diffed file by architectural
 // role (handler / test / repository / …) so the AOI pre-scan can be
-// narrowed to relevant dimensions per file. Returns a map of
-// filepath → dimension slugs suitable for
+// narrowed to relevant categories per file. Returns a map of
+// filepath → category slugs suitable for
 // security.ScanAreasOfInterestClassified.
 //
 // File contents are read from the working tree relative to repoRoot.
 // This matches what `prr audit` does via CollectFiles — by the time
 // prr is invoked the user has already checked out the head ref we
 // want to review. Files that can't be read (deleted, outside repo,
-// perm error) are skipped — they get all dimensions (unknown
+// perm error) are skipped — they get all categories (unknown
 // classification) when the AOI scan runs.
 //
 // Classifications are cached in state.FileType. Diff-driven
@@ -1209,7 +1275,7 @@ func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed in
 // thread the flag through here.
 //
 // Failures are non-fatal: a classifier error means we fall back to
-// nil (all dimensions for all files), which is the same as the
+// nil (all categories for all files), which is the same as the
 // pre-classification behavior.
 func classifyChangedFiles(
 	ctx context.Context,
@@ -1251,7 +1317,7 @@ func classifyChangedFiles(
 
 	classifications, err := classify.Classify(ctx, aoiClient, files, cached, onProgress)
 	if err != nil {
-		log.Printf("Classification partial/failed (non-fatal): %v — affected files fall back to all dimensions", err)
+		log.Printf("Classification partial/failed (non-fatal): %v — affected files fall back to all categories", err)
 	}
 
 	if reviewState != nil {
@@ -1260,9 +1326,9 @@ func classifyChangedFiles(
 		}
 	}
 
-	dims := make(map[string][]string, len(classifications))
+	cats := make(map[string][]string, len(classifications))
 	for path, ft := range classifications {
-		dims[path] = classify.DimensionsForType(ft)
+		cats[path] = classify.CategoriesForType(ft)
 	}
-	return dims
+	return cats
 }

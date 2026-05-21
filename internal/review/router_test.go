@@ -6,14 +6,13 @@ import (
 	"github.com/andreujuanc/prr/internal/security"
 )
 
-func makeAOI(file string, line int, cat, subcat, urgency string, dims []string) security.AreaOfInterest {
+func makeAOI(file string, line int, cat, subcat, urgency string) security.AreaOfInterest {
 	return security.AreaOfInterest{
 		File:        file,
 		Line:        line,
 		Category:    cat,
 		Subcategory: subcat,
 		Urgency:     urgency,
-		Dimensions:  dims,
 		Concern:     "test concern",
 		ID:          file + "-" + subcat,
 	}
@@ -24,15 +23,15 @@ func TestRouteAOIs_BasicRouting(t *testing.T) {
 		{
 			File: "billing/charge.go",
 			AreasOfInterest: []security.AreaOfInterest{
-				makeAOI("billing/charge.go", 45, "financial", "money-arithmetic", "individual", []string{"correctness"}),
-				makeAOI("billing/charge.go", 88, "error-handling", "swallowed-errors", "grouped", []string{"error-handling"}),
+				makeAOI("billing/charge.go", 45, "financial", "money-arithmetic", "individual"),
+				makeAOI("billing/charge.go", 88, "error-handling", "swallowed-errors", "grouped"),
 			},
 		},
 		{
 			File: "auth/handler.go",
 			AreasOfInterest: []security.AreaOfInterest{
-				makeAOI("auth/handler.go", 33, "error-handling", "swallowed-errors", "grouped", []string{"error-handling"}),
-				makeAOI("auth/handler.go", 100, "authentication", "token-validation", "individual", []string{"authentication"}),
+				makeAOI("auth/handler.go", 33, "error-handling", "swallowed-errors", "grouped"),
+				makeAOI("auth/handler.go", 100, "authentication", "token-validation", "individual"),
 			},
 		},
 	}
@@ -73,9 +72,9 @@ func TestRouteAOIs_FocusFilter(t *testing.T) {
 		{
 			File: "a.go",
 			AreasOfInterest: []security.AreaOfInterest{
-				makeAOI("a.go", 10, "financial", "money-arithmetic", "individual", []string{"correctness", "financial"}),
-				makeAOI("a.go", 20, "error-handling", "swallowed-errors", "grouped", []string{"error-handling"}),
-				makeAOI("a.go", 30, "performance", "memory", "grouped", []string{"performance"}),
+				makeAOI("a.go", 10, "financial", "money-arithmetic", "individual"),
+				makeAOI("a.go", 20, "error-handling", "swallowed-errors", "grouped"),
+				makeAOI("a.go", 30, "performance", "memory", "grouped"),
 			},
 		},
 	}
@@ -97,7 +96,7 @@ func TestRouteAOIs_FocusFilter(t *testing.T) {
 func TestRouteAOIs_MaxGroupSize(t *testing.T) {
 	var aois []security.AreaOfInterest
 	for i := range 25 {
-		aois = append(aois, makeAOI("a.go", i+1, "error-handling", "swallowed-errors", "grouped", []string{"error-handling"}))
+		aois = append(aois, makeAOI("a.go", i+1, "error-handling", "swallowed-errors", "grouped"))
 	}
 
 	results := []security.AOIScanResult{
@@ -117,9 +116,9 @@ func TestRouteAOIs_PrioritizedCalls(t *testing.T) {
 		{
 			File: "a.go",
 			AreasOfInterest: []security.AreaOfInterest{
-				makeAOI("a.go", 10, "authentication", "token-validation", "individual", nil),
-				makeAOI("a.go", 20, "error-handling", "swallowed-errors", "grouped", nil),
-				makeAOI("a.go", 30, "concurrency", "race-conditions", "grouped", nil),
+				makeAOI("a.go", 10, "authentication", "token-validation", "individual"),
+				makeAOI("a.go", 20, "error-handling", "swallowed-errors", "grouped"),
+				makeAOI("a.go", 30, "concurrency", "race-conditions", "grouped"),
 			},
 		},
 	}
@@ -141,7 +140,7 @@ func TestRouteAOIs_EmptyUrgencyDefaultsToGrouped(t *testing.T) {
 		{
 			File: "a.go",
 			AreasOfInterest: []security.AreaOfInterest{
-				makeAOI("a.go", 10, "error-handling", "swallowed-errors", "", nil), // empty urgency
+				makeAOI("a.go", 10, "error-handling", "swallowed-errors", ""), // empty urgency
 			},
 		},
 	}
@@ -156,32 +155,14 @@ func TestRouteAOIs_EmptyUrgencyDefaultsToGrouped(t *testing.T) {
 	}
 }
 
-func TestRouteAOIs_LegacyAOIsPassFocusFilter(t *testing.T) {
-	// Legacy AOIs without dimensions should always pass focus filter
-	results := []security.AOIScanResult{
-		{
-			File: "a.go",
-			AreasOfInterest: []security.AreaOfInterest{
-				{File: "a.go", Line: 10, Category: "sql", Confidence: "high"}, // legacy, no dimensions
-			},
-		},
-	}
-
-	r := RouteAOIs(results, []string{"correctness"}, 0)
-
-	if r.TotalAOIs != 1 {
-		t.Errorf("TotalAOIs: got %d, want 1 (legacy AOIs should pass focus filter)", r.TotalAOIs)
-	}
-}
-
 func TestSkippedSubcategories(t *testing.T) {
 	results := []security.AOIScanResult{
 		{
 			File: "a.go",
 			AreasOfInterest: []security.AreaOfInterest{
-				makeAOI("a.go", 10, "auth", "token-validation", "individual", nil),
-				makeAOI("a.go", 20, "error-handling", "swallowed-errors", "grouped", nil),
-				makeAOI("a.go", 30, "concurrency", "race-conditions", "grouped", nil),
+				makeAOI("a.go", 10, "auth", "token-validation", "individual"),
+				makeAOI("a.go", 20, "error-handling", "swallowed-errors", "grouped"),
+				makeAOI("a.go", 30, "concurrency", "race-conditions", "grouped"),
 			},
 		},
 	}

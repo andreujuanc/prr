@@ -1750,7 +1750,7 @@ Files changed (2):
 +    return s
 +}`
 
-	systemPrompt := ReviewPRPrompt + "\n\n" + diffContext
+	systemPrompt := ReviewBatchPrompt + "\n\n" + diffContext
 
 	var tokens []string
 	result, err := agent.ChatStream(ctx, systemPrompt,

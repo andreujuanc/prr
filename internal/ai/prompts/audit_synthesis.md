@@ -16,6 +16,10 @@ You will receive:
    do NOT copy verbatim into the output)
 3. Project context (if available)
 
+You produce the **report header** (executive summary, top risks,
+systemic patterns, recommendations). Per-finding details are emitted
+elsewhere by the report writer — do not duplicate them.
+
 ## Output
 
 Produce a JSON object with these fields:
