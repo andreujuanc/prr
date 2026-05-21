@@ -2085,6 +2085,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch m.focusedPane {
 	case PaneFileList:
+		if mm, ok := msg.(tea.MouseMsg); ok && mm.Action == tea.MouseActionPress {
+			// Wheel scroll on the file list — match the findings-pane
+			// behaviour so users get the same feel across panes. 3
+			// rows per tick is bubbles/viewport's default.
+			switch mm.Button {
+			case tea.MouseButtonWheelUp:
+				m.fileTree.scroll(-3)
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				m.fileTree.scroll(3)
+				return m, nil
+			}
+		}
 		if km, ok := msg.(tea.KeyMsg); ok {
 			switch km.String() {
 			case "j", "down":

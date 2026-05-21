@@ -331,6 +331,21 @@ func (ft *fileTree) ensureVisible() {
 	}
 }
 
+// scroll shifts the visible window by delta rows without moving the
+// cursor — matches viewport scroll semantics so wheel events on the
+// file list behave like wheel events on the findings list.
+func (ft *fileTree) scroll(delta int) {
+	maxOffset := max(len(ft.flat)-ft.height, 0)
+	newOffset := ft.offset + delta
+	if newOffset < 0 {
+		newOffset = 0
+	}
+	if newOffset > maxOffset {
+		newOffset = maxOffset
+	}
+	ft.offset = newOffset
+}
+
 // ── Render ──────────────────────────────────────────────────────────────
 
 func (ft *fileTree) View() string {
