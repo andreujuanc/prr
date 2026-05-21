@@ -40,10 +40,14 @@ type BatchFinding struct {
 	Title          string `json:"title,omitempty"`
 	Line           int    `json:"line,omitempty"`
 	Detail         string `json:"detail,omitempty"`
-	Suggestion     string `json:"suggestion,omitempty"`
-	CWE            string `json:"cwe,omitempty"`
-	Exploitability string `json:"exploitability,omitempty"`
-	Impact         string `json:"impact,omitempty"`
+	// EvidenceSnippet is a verbatim 1-3 line copy from the cited file:line.
+	// Carried into state.DeepFinding.EvidenceSnippet by the fallback
+	// converter so recheck can locate the suspect code.
+	EvidenceSnippet string `json:"evidence_snippet,omitempty"`
+	Suggestion      string `json:"suggestion,omitempty"`
+	CWE             string `json:"cwe,omitempty"`
+	Exploitability  string `json:"exploitability,omitempty"`
+	Impact          string `json:"impact,omitempty"`
 }
 
 // BatchFindings holds the findings for one file. It deserializes from either

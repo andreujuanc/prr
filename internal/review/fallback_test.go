@@ -23,6 +23,7 @@ func pinBatchResponse(file string) string {
         "title": "Missing input validation",
         "line": 42,
         "detail": "the handler does not validate the request body",
+        "evidence_snippet": "if err := json.Decode(body, &v); err != nil {",
         "suggestion": "add validation before persisting"
       }
     ]
@@ -69,6 +70,11 @@ func TestConvertFallbackToDeepFindings(t *testing.T) {
 	if f.Category != "security" {
 		t.Errorf("Category = %q, want security", f.Category)
 	}
+	// EvidenceSnippet is required by review_batch.md and must round-trip
+	// into DeepFinding so recheck can locate the suspect code.
+	if !strings.Contains(f.EvidenceSnippet, "json.Decode") {
+		t.Errorf("EvidenceSnippet not propagated; got %q", f.EvidenceSnippet)
+	}
 }
 
 // TestRunReviewCalls_FallbackBatchProducesDeepFindings runs a single
@@ -92,10 +98,7 @@ func TestRunReviewCalls_FallbackBatchProducesDeepFindings(t *testing.T) {
 		PRMeta:             "PR #1: test",
 		ProjectContext:     "",
 		CustomInstructions: "",
-		SkipEvidenceVerify: true, // no real source tree
-		// RepoRoot deliberately empty so the AOI evidence verifier
-		// stays skipped — that path expects DeepFindings with
-		// EvidenceSnippet, which fallback findings don't carry.
+		SkipEvidenceVerify: true, // no real source tree to grep against
 	}
 
 	res, err := RunReviewCalls(context.Background(), client, []ReviewCall{call}, opts)

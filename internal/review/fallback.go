@@ -101,10 +101,13 @@ func assembleFallbackDiffs(call ReviewCall) string {
 }
 
 // convertFallbackToDeepFindings adapts the BatchFileReview output
-// (the shape RunBatchesOnly's prompt produces) into DeepFinding so
-// downstream code sees one finding type. AOI-specific fields
-// (Trace, EvidenceSnippet, DefensesChecked, SiblingDeviation) stay
-// empty — fallback findings don't have that information.
+// (the shape the fallback-batch prompt produces) into DeepFinding so
+// downstream code sees one finding type. AOI-specific fields (Trace,
+// DefensesChecked, SiblingDeviation) stay empty — fallback findings
+// don't have that information. EvidenceSnippet IS populated: the
+// fallback prompt requires it, and recheck's "re-read ±20 lines"
+// pass benefits when the snippet is present even if the in-loop
+// evidence verifier is skipped for fallback calls.
 //
 // Lines is rendered as a string for DeepFinding.Lines because
 // BatchFinding only carries a single line number; recheck and
@@ -124,6 +127,7 @@ func convertFallbackToDeepFindings(parsed []BatchFileReview) []state.DeepFinding
 				Category:            f.Category,
 				Title:               f.Title,
 				Description:         f.Detail,
+				EvidenceSnippet:     f.EvidenceSnippet,
 				Suggestion:          f.Suggestion,
 				ConfidenceScore:     f.ConfidenceScore,
 				ConfidenceReasoning: f.ConfidenceReasoning,
