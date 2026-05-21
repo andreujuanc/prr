@@ -22,9 +22,6 @@ import (
 //go:embed prompts/aoi_scan.md
 var aoiScanPrompt string
 
-//go:embed prompts/revalidate.md
-var revalidatePrompt string
-
 // AOIScanPrompt returns the AOI scan system prompt for PR review mode.
 func AOIScanPrompt() string { return buildAOIScanPrompt(false) }
 
@@ -83,9 +80,6 @@ func buildAOIScanPromptWithCategories(auditMode bool, cats []string) string {
 	}
 	return strings.Replace(prompt, "{MODE_RULES}", rules, 1)
 }
-
-// RevalidatePrompt returns the embedded revalidation system prompt.
-func RevalidatePrompt() string { return revalidatePrompt }
 
 // aoiBatchMaxChars is the max diff size per AOI scan batch.
 // Kept generous since the cheap model handles large contexts fast.
@@ -353,58 +347,6 @@ func ScanAreasOfInterestClassified(
 	}
 
 	return report, nil
-}
-
-// RevalidateFindings runs a security-focused revalidation pass on the
-// security-category findings from a review. Returns revalidation verdicts.
-func RevalidateFindings(
-	ctx context.Context,
-	client ai.Client,
-	findings []FindingForRevalidation,
-	onProgress func(status string),
-) ([]Revalidation, error) {
-	if len(findings) == 0 {
-		return nil, nil
-	}
-
-	if onProgress != nil {
-		onProgress(fmt.Sprintf("revalidating %d security finding(s)...", len(findings)))
-	}
-
-	findingsJSON, err := json.Marshal(findings)
-	if err != nil {
-		return nil, fmt.Errorf("marshal findings: %w", err)
-	}
-
-	messages := []ai.Message{
-		{Role: "user", Content: fmt.Sprintf(
-			"Revalidate these %d security findings. Use tools to verify each one against the actual code.\n\n%s",
-			len(findings), string(findingsJSON),
-		)},
-	}
-
-	// Retry transient HTTP errors.
-	result, err := ai.RetryTransient(ctx, 3, "security-revalidate", func(ctx context.Context) (string, error) {
-		return client.ChatStream(ctx, revalidatePrompt, messages, nil)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("revalidation: %w", err)
-	}
-
-	return parseRevalidationResult(result)
-}
-
-// FindingForRevalidation is a simplified finding struct for the revalidation prompt.
-type FindingForRevalidation struct {
-	Index      int    `json:"finding_index"`
-	Severity   string `json:"severity"`
-	Category   string `json:"category"`
-	File       string `json:"file"`
-	Line       int    `json:"line"`
-	Title      string `json:"title"`
-	Detail     string `json:"detail"`
-	Suggestion string `json:"suggestion,omitempty"`
-	CWE        string `json:"cwe,omitempty"`
 }
 
 // ── AOI batch logic ────────────────────────────────────────────────────
@@ -771,56 +713,6 @@ func parseAOIResult(raw string) ([]AOIScanResult, error) {
 			if results[i].AreasOfInterest[j].File == "" {
 				results[i].AreasOfInterest[j].File = results[i].File
 			}
-		}
-	}
-
-	return results, nil
-}
-
-func parseRevalidationResult(raw string) ([]Revalidation, error) {
-	s := strings.TrimSpace(raw)
-
-	// Strip markdown code fences
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
-	}
-
-	if !strings.HasPrefix(s, "[") {
-		start := strings.Index(s, "[")
-		if start == -1 {
-			return nil, fmt.Errorf("no JSON array found in revalidation response")
-		}
-		s = s[start:]
-	}
-
-	// Parse into intermediate struct that includes finding_index
-	type revalEntry struct {
-		FindingIndex int    `json:"finding_index"`
-		Verdict      string `json:"verdict"`
-		Reasoning    string `json:"reasoning"`
-		Confidence   string `json:"confidence"`
-		CWE          string `json:"cwe,omitempty"`
-	}
-
-	var entries []revalEntry
-	s = sanitizeJSON(s)
-	if err := json.Unmarshal([]byte(s), &entries); err != nil {
-		return nil, fmt.Errorf("parse revalidation JSON: %w", err)
-	}
-
-	results := make([]Revalidation, len(entries))
-	for i, e := range entries {
-		results[i] = Revalidation{
-			Verdict:    e.Verdict,
-			Reasoning:  e.Reasoning,
-			Confidence: e.Confidence,
-			CWE:        e.CWE,
 		}
 	}
 

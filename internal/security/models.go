@@ -78,22 +78,3 @@ type AOIReport struct {
 	SecurityDigest string          `json:"-"` // formatted text for injection into review prompts
 }
 
-// Revalidation holds the result of a security revalidation pass on a finding.
-type Revalidation struct {
-	Verdict    string `json:"verdict"`    // "true-positive", "false-positive", "fixed", "uncertain"
-	Reasoning  string `json:"reasoning"`  // why this verdict was chosen
-	Confidence string `json:"confidence"` // "high", "medium", "low"
-	CWE        string `json:"cwe,omitempty"`
-}
-
-// SecuritySummary aggregates security metrics for a PR review.
-type SecuritySummary struct {
-	TotalFindings    int            `json:"total_findings"`
-	BySeverity       map[string]int `json:"by_severity"`       // critical/high/medium/low counts
-	ByCWE            map[string]int `json:"by_cwe,omitempty"`  // CWE-ID -> count
-	AOIsCovered      int            `json:"aois_covered"`      // how many AOIs led to findings
-	AOIsTotal        int            `json:"aois_total"`        // total AOIs identified
-	RevalidatedCount int            `json:"revalidated_count"` // findings that were revalidated
-	TruePositives    int            `json:"true_positives"`    // confirmed true positives
-	FalsePositives   int            `json:"false_positives"`   // confirmed false positives
-}

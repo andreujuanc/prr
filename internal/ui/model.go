@@ -2552,43 +2552,6 @@ func (m *Model) buildAIMessages() []state.Message {
 	return nil
 }
 
-func (m *Model) getAIContext() (string, string) {
-	// Build PR metadata header
-	var meta strings.Builder
-	if m.pr != nil {
-		meta.WriteString(fmt.Sprintf("PR #%d: %s\n", m.pr.Number, m.pr.Title))
-		if m.pr.Body != "" {
-			meta.WriteString(fmt.Sprintf("Description:\n%s\n", m.pr.Body))
-		}
-		meta.WriteString(fmt.Sprintf("Base: %s → Head: %s\n\n", m.pr.BaseRefName, m.pr.HeadRefName))
-	}
-
-	if m.viewMode != viewModeFile {
-		// PR overview: file listing with stats — diffs are fetched via git_diff tool
-		paths := make([]string, 0, len(m.rawDiffs))
-		for p := range m.rawDiffs {
-			paths = append(paths, p)
-		}
-		sort.Strings(paths)
-
-		var allDiffs strings.Builder
-		allDiffs.WriteString(meta.String())
-		allDiffs.WriteString(fmt.Sprintf("Files changed (%d):\n", len(paths)))
-		for _, p := range paths {
-			diff := m.rawDiffs[p]
-			added, removed := countDiffStats(diff)
-			allDiffs.WriteString(fmt.Sprintf("  %-50s +%-4d -%d\n", p, added, removed))
-		}
-		allDiffs.WriteString(ai.HintPROverview)
-
-		return m.withInstructions(ai.ReviewPRPrompt), allDiffs.String()
-	}
-
-	// Single file — return metadata + diff
-	diff := m.rawDiffs[m.selectedFile]
-	return m.withInstructions(ai.ReviewFilePrompt), meta.String() + "File: " + m.selectedFile + "\n```diff\n" + diff + "\n```"
-}
-
 // withInstructions appends custom review instructions to a system prompt.
 func (m *Model) withInstructions(prompt string) string {
 	if m.customInstructions == "" {

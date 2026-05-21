@@ -45,13 +45,6 @@ func TestAOIScanPrompt(t *testing.T) {
 	}
 }
 
-func TestRevalidatePrompt(t *testing.T) {
-	p := RevalidatePrompt()
-	if p == "" {
-		t.Fatal("RevalidatePrompt() should not be empty")
-	}
-}
-
 // TestSecurityPrompts_NoToolNamesLeakIntoClaudeCode mirrors the leak
 // check in internal/ai/prompt_test.go for prompts that live in this
 // package. Any inline tool name that wasn't rephrased shows up here.
@@ -59,9 +52,8 @@ func TestRevalidatePrompt(t *testing.T) {
 // there is a single source of truth across leak-test sites.
 func TestSecurityPrompts_NoToolNamesLeakIntoClaudeCode(t *testing.T) {
 	prompts := map[string]string{
-		"AOIScanPrompt":    AOIScanPrompt(),
-		"AOIAuditPrompt":   AOIAuditPrompt(),
-		"RevalidatePrompt": RevalidatePrompt(),
+		"AOIScanPrompt":  AOIScanPrompt(),
+		"AOIAuditPrompt": AOIAuditPrompt(),
 	}
 
 	claude := aitesting.ClaudeCodeProvider{}
@@ -175,59 +167,3 @@ func TestScanAreasOfInterest_ClientError(t *testing.T) {
 	}
 }
 
-func TestRevalidateFindings_Empty(t *testing.T) {
-	ctx := context.Background()
-	client := &mockClient{}
-
-	results, err := RevalidateFindings(ctx, client, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if results != nil {
-		t.Errorf("expected nil for empty findings, got %v", results)
-	}
-}
-
-func TestRevalidateFindings_WithMockClient(t *testing.T) {
-	ctx := context.Background()
-	response := `[{"verdict":"true_positive","reasoning":"confirmed SQL injection","confidence":"high","cwe":"CWE-89"}]`
-	client := &mockClient{response: response}
-
-	findings := []FindingForRevalidation{
-		{Index: 0, Severity: "high", Category: "sql", File: "handler.go", Line: 10, Title: "SQL injection"},
-	}
-
-	var progressMsgs []string
-	results, err := RevalidateFindings(ctx, client, findings, func(s string) {
-		progressMsgs = append(progressMsgs, s)
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Verdict != "true_positive" {
-		t.Errorf("verdict = %q, want %q", results[0].Verdict, "true_positive")
-	}
-	if results[0].CWE != "CWE-89" {
-		t.Errorf("CWE = %q, want %q", results[0].CWE, "CWE-89")
-	}
-	if len(progressMsgs) == 0 {
-		t.Error("expected progress messages")
-	}
-}
-
-func TestRevalidateFindings_ClientError(t *testing.T) {
-	ctx := context.Background()
-	client := &mockClient{err: context.DeadlineExceeded}
-
-	findings := []FindingForRevalidation{
-		{Index: 0, Severity: "high", File: "x.go"},
-	}
-
-	_, err := RevalidateFindings(ctx, client, findings, nil)
-	if err == nil {
-		t.Fatal("expected error from client failure")
-	}
-}

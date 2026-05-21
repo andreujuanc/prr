@@ -27,7 +27,6 @@ func (f fakeProvider) StreamChat(_ context.Context, _ ChatRequest) (<-chan ChatE
 // keyed by a short name. This is the surface ResolveTools must clean.
 func allEmbeddedPrompts() map[string]string {
 	return map[string]string{
-		"ReviewPRSystemPrompt":   ReviewPRSystemPrompt,
 		"ReviewFilePrompt":       ReviewFilePrompt,
 		"ReviewBatchPrompt":      ReviewBatchPrompt,
 		"ReviewSynthesisPrompt":  ReviewSynthesisPrompt,
@@ -36,7 +35,6 @@ func allEmbeddedPrompts() map[string]string {
 		"ReviewGroupedPrompt":    ReviewGroupedPrompt,
 		"AuditSynthesisPrompt":   AuditSynthesisPrompt,
 		"RecheckPrompt":          RecheckPrompt,
-		"ReviewPRPrompt":         ReviewPRPrompt,
 	}
 }
 

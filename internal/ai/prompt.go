@@ -52,12 +52,6 @@ func ResolveToolsForClient(client Client, systemPrompt string) string {
 	return systemPrompt
 }
 
-// ReviewPRSystemPrompt is the high-quality, agent-driven review prompt
-// used as the base for single-pass PR review.
-//
-//go:embed prompts/review_pr.md
-var ReviewPRSystemPrompt string
-
 // ReviewFilePrompt is the system prompt used when reviewing a single file's diff.
 //
 //go:embed prompts/review_file.md
@@ -123,53 +117,3 @@ var RecheckConsolidatePrompt string
 //
 //go:embed prompts/recheck_dismiss.md
 var RecheckDismissPrompt string
-
-// ReviewPRPrompt is the system prompt for single-pass PR review.
-// Combines the embedded review instructions with structured JSON output
-// requirements and tool workflow guidance. The {{TOOLS}} placeholder is
-// resolved at request time against the active provider.
-var ReviewPRPrompt = ReviewPRSystemPrompt + `
-
-{{TOOLS}}
-
-## Workflow
-
-1. Read the diffs for all changed files.
-2. Read base/head files for surrounding context, especially on refactors.
-3. Find callers and related code before flagging.
-4. Consult the PR Brief in the PR Context section above for prior comments, prior AI reviews, and CI status — do not re-raise resolved points or restate prior findings.
-
-## Output Format
-
-You MUST return ONLY a JSON object matching this exact schema — no prose before or after:
-
-` + "```json" + `
-{
-  "summary": "one paragraph capturing what the PR does and overall quality",
-  "verdict": "approve | request_changes | comment",
-  "findings": [
-    {
-      "severity": "critical | high | medium | low | nit",
-      "category": "bug | security | performance | testing | style | architecture | docs",
-      "file": "path/to/file.go",
-      "line": 42,
-      "title": "short title",
-      "detail": "what's wrong and why it matters",
-      "suggestion": "smallest change that resolves the issue, matching the codebase's existing patterns; code snippet preferred",
-      "cwe": "CWE-XXX (for security findings only, omit for non-security)"
-    }
-  ],
-  "missing_tests": ["behaviors that should be tested but aren't"],
-  "questions_for_author": ["genuine ambiguities, not rhetorical"]
-}
-` + "```" + `
-
-Guidelines:
-- "findings" array MUST be sorted by severity: critical first, nit last
-- Every finding MUST include file and line
-- "suggestion" may be empty string if no concrete fix is obvious
-- "suggestion" scope is absolute: do NOT propose new utilities, helper functions, abstractions, refactors of adjacent code, or pattern changes not already in the codebase. Fix the issue, nothing more
-- "missing_tests": populate when the PR adds new behavior without test coverage. Don't leave empty out of caution — listing missing tests is the job, not scope creep
-- "questions_for_author": populate when something is genuinely uncertain or needs author input. Don't leave empty out of caution
-- If the PR is clean, return verdict "approve" with an empty findings array
-- Return ONLY the JSON — no markdown, no prose, no explanation`

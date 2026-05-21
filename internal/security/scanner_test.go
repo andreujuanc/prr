@@ -200,64 +200,6 @@ func TestParseAOIResult_LegacyFormatStillWorks(t *testing.T) {
 	}
 }
 
-func TestParseRevalidationResult(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantLen int
-		wantErr bool
-	}{
-		{
-			name: "valid revalidation",
-			input: `[
-				{
-					"finding_index": 0,
-					"verdict": "true-positive",
-					"reasoning": "The SQL query uses string concatenation",
-					"confidence": "high",
-					"cwe": "CWE-89"
-				},
-				{
-					"finding_index": 1,
-					"verdict": "false-positive",
-					"reasoning": "Input is validated by middleware",
-					"confidence": "high",
-					"cwe": ""
-				}
-			]`,
-			wantLen: 2,
-		},
-		{
-			name:    "no JSON",
-			input:   "Nothing to report",
-			wantErr: true,
-		},
-		{
-			name:    "wrapped in fences",
-			input:   "```json\n" + `[{"finding_index":0,"verdict":"fixed","reasoning":"patched","confidence":"medium"}]` + "\n```",
-			wantLen: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			results, err := parseRevalidationResult(tt.input)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(results) != tt.wantLen {
-				t.Errorf("got %d results, want %d", len(results), tt.wantLen)
-			}
-		})
-	}
-}
-
 func TestBuildReport(t *testing.T) {
 	results := []AOIScanResult{
 		{
