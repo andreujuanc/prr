@@ -7,7 +7,7 @@ import (
 
 func TestCategoriesLoaded(t *testing.T) {
 	slugs := AllCategorySlugs()
-	const expected = 21
+	const expected = 22
 	if len(slugs) != expected {
 		t.Errorf("expected %d categories, got %d: %v", expected, len(slugs), slugs)
 	}

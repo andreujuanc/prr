@@ -124,6 +124,75 @@ Skip when the unit-or-domain claim isn't backed by either a typed
 brand or a clear name-shape signal — guessing about units invites
 false positives.
 
+### Trojan-source, homoglyphs, and dependency-file edits
+
+These three shapes are how malicious contributions hide from casual
+review. Each is cheap to spot mechanically but catastrophic if
+missed — emit an AOI whenever you see one, even when the
+surrounding code looks innocent. The deep reviewer needs a chance
+to look at every dependency change and every Unicode oddity.
+
+**Bidirectional-override and zero-width characters** — Unicode
+points that change how text *renders* without changing what it
+*means* to the compiler. Used in *trojan source* attacks to make
+the reviewer see one thing and the compiler see another:
+- Bidi overrides: U+202A (LRE), U+202B (RLE), U+202C (PDF),
+  U+202D (LRO), U+202E (RLO), U+2066 (LRI), U+2067 (RLI),
+  U+2068 (FSI), U+2069 (PDI)
+- Zero-width characters in identifiers, string literals, or
+  comments: U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ),
+  U+FEFF (BOM other than at file start)
+- Emit one AOI per occurrence, citing the line and the codepoint.
+
+**Mixed-script identifiers** — function, variable, or type names
+that combine characters from two different Unicode scripts where a
+single-script identifier was expected (e.g., Latin `a` mixed with
+Cyrillic `а` U+0430, Latin `o` mixed with Cyrillic `о` U+043E).
+These are *homoglyph attacks*: two functions look identical on
+screen but resolve to different symbols at compile time. Flag any
+identifier whose characters aren't all from the same script as the
+surrounding code.
+
+**Dependency-file edits** — touching any of these files is, on its
+own, an AOI worth flagging:
+- Go: `go.mod`, `go.sum`
+- Node: `package.json`, `package-lock.json`, `yarn.lock`,
+  `pnpm-lock.yaml`, `.npmrc`
+- Python: `requirements*.txt`, `Pipfile`, `Pipfile.lock`,
+  `pyproject.toml`, `poetry.lock`, `setup.py`, `setup.cfg`
+- Rust: `Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`
+- Ruby: `Gemfile`, `Gemfile.lock`
+- Java/Kotlin: `pom.xml`, `build.gradle`, `build.gradle.kts`,
+  `settings.gradle*`, `gradle/wrapper/gradle-wrapper.properties`
+- PHP: `composer.json`, `composer.lock`
+- CI / build: `.github/workflows/*.yml`, `.gitlab-ci.yml`,
+  `Dockerfile*`, `docker-compose*.yml`, `Makefile` install/build
+  targets newly piping `curl`/`wget` into a shell
+- Lockfile changes that don't match the source-side changes in the
+  same PR are extra-suspicious — flag the mismatch explicitly in
+  `concern`.
+
+Emit *one AOI per touched dependency file*, even if the change
+looks routine. The deep reviewer decides whether the change is
+legitimate; a recall-biased pre-filter shouldn't make that call.
+
+For each such AOI:
+- `category` = `malicious-code`
+- `subcategory` =
+  - `obfuscation-and-hidden-control-flow` for bidi / zero-width / homoglyph hits
+  - `suspicious-dependencies` for dep-file edits (use
+    `build-and-ci-tampering` instead when the file is a CI workflow,
+    Dockerfile, or build script)
+- `concern` = one sentence naming what was found
+  (e.g., "bidi override U+202E in string literal",
+  "dependency file modified",
+  "lockfile entry changed without matching source change")
+- `context` = "trojan-source pattern", "homoglyph identifier", or
+  "dependency change — confirm provenance"
+- Urgency: `grouped` is fine for most cases; promote to `individual`
+  when the AOI sits in a security-sensitive path (auth, crypto,
+  release pipeline) AND no sibling AOIs share the same shape.
+
 ## Input Format
 
 In audit mode every input line is prefixed with its source line number

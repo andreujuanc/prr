@@ -69,7 +69,7 @@ prr has three modes. The interactive TUI is the primary one; the headless modes 
 
 **Headless review** (`prr review <PR#>`) — runs the full multi-pass review pipeline against a single PR and emits a JSON report. Designed for CI: no TUI, no interaction. See [Headless review](#headless-review).
 
-**Project audit** (`prr audit`) — scans the entire codebase (or a recent slice) for latent issues across configurable dimensions. Not tied to a PR. See [Project audit](#project-audit).
+**Project audit** (`prr audit`) — scans the entire codebase (or a recent slice) for latent issues across configurable categories. Not tied to a PR. See [Project audit](#project-audit).
 
 ### Headless review
 
@@ -101,7 +101,7 @@ prr audit --focus=security,correctness --audit-recent=30
 
 | Flag | Action |
 |------|--------|
-| `--focus=<dims>` | Comma-separated dimensions to focus on (default: all) |
+| `--focus=<cats>` | Comma-separated categories to focus on (default: all) |
 | `--exclude=<globs>` | Additional exclude patterns |
 | `--include=<globs>` | Force-include patterns (override exclusions) |
 | `--max-reviews=<n>` | Cap on Phase 3 review calls |
@@ -116,7 +116,7 @@ prr audit --focus=security,correctness --audit-recent=30
 | `--quiet`, `-q` | Suppress terminal output (use with `--output`) |
 | `--debug` | Print LLM tool calls, prompts, and responses to stderr |
 
-**Available dimensions:** `authentication`, `authorization`, `input-validation`, `data-integrity`, `cryptography`, `error-handling`, `concurrency`, `external-io`, `financial`, `configuration`, `api-design`, `resource-management`, `testing`, `test-coverage`, `correctness`, `design`, `performance`, `readability`, `cross-cutting`, `observability`, `web-security`.
+**Available categories:** `authentication`, `authorization`, `input-validation`, `data-integrity`, `cryptography`, `error-handling`, `concurrency`, `external-io`, `financial`, `configuration`, `api-design`, `resource-management`, `testing`, `test-coverage`, `correctness`, `design`, `performance`, `readability`, `cross-cutting`, `observability`, `web-security`, `malicious-code`.
 
 **Cache invalidation.** The deep-review and recheck cache keys hash the prompts, the runtime model, and (when `--bug-priors` is enabled) the bug-priors content. Prompt edits and new fix-shaped commits automatically invalidate stale entries on the next run; no manual cache flush needed.
 

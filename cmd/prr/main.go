@@ -461,7 +461,7 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "    cryptography, error-handling, concurrency, external-io, financial,\n")
 	fmt.Fprintf(os.Stderr, "    configuration, api-design, resource-management, testing, test-coverage,\n")
 	fmt.Fprintf(os.Stderr, "    correctness, design, performance, readability, cross-cutting,\n")
-	fmt.Fprintf(os.Stderr, "    observability, web-security\n\n")
+	fmt.Fprintf(os.Stderr, "    observability, web-security, malicious-code\n\n")
 }
 
 // ── Review mode ────────────────────────────────────────────────────────
