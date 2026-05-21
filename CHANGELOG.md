@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.9.0](https://github.com/andreujuanc/prr/compare/v1.8.0...v1.9.0) (2026-05-21)
+
+
+### Features
+
+* **aoi:** same-category dedup rule at file:line ([77e2e92](https://github.com/andreujuanc/prr/commit/77e2e924a57ba01ffba37b515ff42e7d70af112e))
+* **categories:** add malicious-code category + AOI surface-area rule ([063a8ef](https://github.com/andreujuanc/prr/commit/063a8ef6983a934fc928fb35d5e27f07b75982e5))
+* **progress:** emit per-batch lifecycle events ([b6fe6fb](https://github.com/andreujuanc/prr/commit/b6fe6fb63be8fc677a01aae7d336276c6a0a5ef5))
+* **progress:** fix bar gradient anchoring and clearer file counts ([ee04578](https://github.com/andreujuanc/prr/commit/ee0457886ef56e578808a3060e415349910f27f4))
+* **progress:** parse per-batch lifecycle into State.Batches ([a3a8976](https://github.com/andreujuanc/prr/commit/a3a89768df21490802971ca08db13dd1b18e5f5b))
+* **progress:** per-batch panel for Deep Review ([3df7be3](https://github.com/andreujuanc/prr/commit/3df7be33a3f9623ce30a6cf80fa62e172edecc24))
+* **progress:** plumb per-batch token streaming ([9ae61de](https://github.com/andreujuanc/prr/commit/9ae61de22844afb9ec215c498ee1c726818ba91e))
+* **progress:** recheck panel + counter units ([24c5463](https://github.com/andreujuanc/prr/commit/24c54635caf9de1cc934e0a39939903027308cd6))
+* **progress:** render per-batch panel during Deep Review ([1006a12](https://github.com/andreujuanc/prr/commit/1006a12880e86bb6f34a6b2ae0f31b13af8e2a93))
+* **progress:** tail shows up to 10 finished rows with overflow line ([9c0b448](https://github.com/andreujuanc/prr/commit/9c0b44823e28701d07f5b97bb85ae2f840eebcde))
+* **progress:** widen batch label column from 28 to 38 chars ([e40e72a](https://github.com/andreujuanc/prr/commit/e40e72a2f304178372b43bc4fa4651129bb8746d))
+* **review:** unify Phase 1a + 1b into one queue ([bee1931](https://github.com/andreujuanc/prr/commit/bee1931516b21fda8c1f68b67fa32a289586b74a))
+* **runtime-model:** add optional file+symbol anchors to entry points ([8ec582e](https://github.com/andreujuanc/prr/commit/8ec582ef58455617031b86547bdd095b5790294b))
+* **ui:** mouse wheel scrolls the file list ([8308991](https://github.com/andreujuanc/prr/commit/83089911a36d66ec7f54caf8eb2c19ce6a9cfc4a))
+
+
+### Bug Fixes
+
+* **progress:** hide parser-only events and activate Recheck row ([408b6f0](https://github.com/andreujuanc/prr/commit/408b6f09de3f778690d1bfda2210a17df0fe52a0))
+* **progress:** honest panel labels + surface finding counts ([9f0478e](https://github.com/andreujuanc/prr/commit/9f0478eebce592b2d513c24aeb6006b68d958460))
+* **progress:** right-pad file counts so columns stay aligned ([c9f64e7](https://github.com/andreujuanc/prr/commit/c9f64e76992f15d248e3cf57d6edcfeed81328db))
+* **progress:** surface fallback-batch findings + relax bar cap ([47bf7c6](https://github.com/andreujuanc/prr/commit/47bf7c69d0b57e86ead245a9db4f788dedd79c38))
+* **review:** fallback batch — drop two-phase framing, require snippet ([101e130](https://github.com/andreujuanc/prr/commit/101e130fc94cf53a5c557c48f85821a7e1552b72))
+* **review:** fallback batches honor ParallelReviews ([c6666b3](https://github.com/andreujuanc/prr/commit/c6666b33244f359157b8d8e3850b3fc6a02d494d))
+* **ui:** autoscroll review viewport to selected finding ([c43616d](https://github.com/andreujuanc/prr/commit/c43616d7b43f52a7f79dd35932d8fd8573f83f11))
+* **ui:** unify review storage on snapshots; fix cursor freeze ([161c368](https://github.com/andreujuanc/prr/commit/161c368becf0293dde2b8ff1923b21348417d29a))
+
 ## [1.8.0](https://github.com/andreujuanc/prr/compare/v1.7.0...v1.8.0) (2026-05-20)
 
 
