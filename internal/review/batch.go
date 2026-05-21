@@ -416,6 +416,29 @@ func ParseBatchResult(raw string) []BatchFileReview {
 	return results
 }
 
+// countBatchFindings parses a raw batch response and returns the total
+// finding count across all files. Items-form entries contribute their
+// length; legacy-string entries contribute 1 each. Unparseable input
+// returns 0.
+func countBatchFindings(raw string) int {
+	parsed := ParseBatchResult(raw)
+	if parsed == nil {
+		return 0
+	}
+	n := 0
+	for _, entry := range parsed {
+		if entry.Findings.IsEmpty() {
+			continue
+		}
+		if len(entry.Findings.Items) > 0 {
+			n += len(entry.Findings.Items)
+		} else {
+			n++
+		}
+	}
+	return n
+}
+
 // ── Retry logic ─────────────────────────────────────────────────────────
 
 // ReviewBatchWithRetry calls ChatStream for a batch and retries up to MaxRetries
@@ -813,7 +836,7 @@ func RunBatchesOnly(
 					mu.Lock()
 					maps.Copy(allFileFindings, cachedFF)
 					mu.Unlock()
-					rr.BatchProgress(idx, StatusCached)
+					rr.BatchProgressWithFindings(idx, StatusCached, reviewState.CountCachedBatchFindings(b.Files))
 					return
 				}
 
@@ -824,7 +847,7 @@ func RunBatchesOnly(
 				if err != nil {
 					rr.BatchProgress(idx, StatusFailed)
 				} else {
-					rr.BatchProgress(idx, StatusDone)
+					rr.BatchProgressWithFindings(idx, StatusDone, countBatchFindings(res))
 				}
 			}(i, batch)
 		}
@@ -864,7 +887,7 @@ func RunBatchesOnly(
 			}
 
 			if IsBatchCached(batch, reviewState) {
-				rr.BatchProgress(i, StatusCached)
+				rr.BatchProgressWithFindings(i, StatusCached, reviewState.CountCachedBatchFindings(batch.Files))
 				cached, cachedFF := CollectCachedFindings(batch, reviewState)
 				allFindings.WriteString(fmt.Sprintf("### Batch %d: %s\n", i+1, batch.Label))
 				allFindings.WriteString(fmt.Sprintf("Files: %s\n\n", strings.Join(batch.Files, ", ")))
@@ -881,7 +904,7 @@ func RunBatchesOnly(
 				return "", nil, fmt.Errorf("batch %d/%d (%s): %w", i+1, len(batches), batch.Label, err)
 			}
 
-			rr.BatchProgress(i, StatusDone)
+			rr.BatchProgressWithFindings(i, StatusDone, countBatchFindings(result))
 			parsed, batchFF := PersistBatchFindings(reviewState, batch, result)
 			maps.Copy(allFileFindings, batchFF)
 

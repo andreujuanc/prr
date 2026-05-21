@@ -374,12 +374,20 @@ func batchBar(bytes, estimate, animation int) (bar, status string) {
 	const width = 10
 	if bytes > 0 && estimate > 0 {
 		pct := float64(bytes) / float64(estimate)
-		if pct >= 0.95 {
-			pct = 0.95
+		// Clamp short of 1.0 so the bar never claims "100%" before
+		// the terminal event flips the row to the finished icon.
+		// 0.99 (was 0.95) keeps the visual moving for responses that
+		// run just past the estimate instead of freezing at 95% for
+		// the entire tail.
+		if pct >= 0.99 {
+			pct = 0.99
 		}
 		filled := int(pct * float64(width))
 		if filled < 1 {
 			filled = 1
+		}
+		if filled > width {
+			filled = width
 		}
 		return strings.Repeat("█", filled) + strings.Repeat("░", width-filled),
 			fmt.Sprintf("%d%%", int(pct*100))

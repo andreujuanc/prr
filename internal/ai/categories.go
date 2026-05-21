@@ -3,6 +3,7 @@ package ai
 import (
 	"embed"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -60,13 +61,18 @@ func GetCategory(slug string) string {
 }
 
 // GetCategories returns the content of multiple categories concatenated,
-// separated by double newlines. Unknown slugs are silently skipped.
+// separated by double newlines. Unknown slugs are skipped with a log
+// line so misspelled --focus flags or out-of-taxonomy AOI categories
+// don't quietly produce a truncated prompt.
 func GetCategories(slugs []string) string {
 	var parts []string
 	for _, slug := range slugs {
-		if content, ok := categories[slug]; ok {
-			parts = append(parts, content)
+		content, ok := categories[slug]
+		if !ok {
+			log.Printf("ai.GetCategories: unknown category slug %q — skipping (prompt will omit that section)", slug)
+			continue
 		}
+		parts = append(parts, content)
 	}
 	return strings.Join(parts, "\n\n")
 }

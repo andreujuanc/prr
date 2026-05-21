@@ -2,6 +2,7 @@ package review
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
@@ -338,9 +339,17 @@ func formatAOI(aoi security.AreaOfInterest) string {
 // One AOI = one category — see the AOI scan prompt's "One AOI = one
 // category" rule. Returns the AOI's category as a single-element slice
 // when it's in the canonical taxonomy, or nil otherwise.
+//
+// validateAOIs logs at scan time, but cached AOIs whose category was
+// renamed or removed in the taxonomy land here at prompt-build time
+// without re-validation — the log below surfaces that case.
 func relevantCategories(aoi security.AreaOfInterest) []string {
 	if ai.CategoryExists(aoi.Category) {
 		return []string{aoi.Category}
+	}
+	if aoi.Category != "" {
+		log.Printf("relevantCategories: AOI %s [id=%s] category %q not in taxonomy — prompt omits criteria section",
+			aoi.File, aoi.ID, aoi.Category)
 	}
 	return nil
 }

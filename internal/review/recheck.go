@@ -190,7 +190,7 @@ func RecheckFindings(
 	// State.Batches map. Prefix the labels so they're distinguishable.
 	dismissOpts := withLabelPrefix(opts, "dismiss · ")
 	dismissOpts = withIndexOffset(dismissOpts, consolBatches)
-	dismissResult, dismissErr := runDismissPass(ctx, client, postConsolidate, dismissOpts, maxPerBatch, emit)
+	dismissResult, dismissErr := runDismissPass(ctx, client, postConsolidate, dismissOpts, emit)
 	if dismissErr != nil {
 		log.Printf("Recheck pass 2 (dismiss) failed: %v — keeping post-consolidate set", dismissErr)
 		emit(total)
@@ -324,18 +324,14 @@ func runConsolidatePass(
 // run in parallel up to MaxConcurrency.
 //
 // Returns the same shape as the original recheck pipeline so the
-// caller can fold its output into the merged result. The maxPerBatch
-// parameter is no longer used (kept in the signature for now to
-// minimise call-site churn — drop in a follow-up).
+// caller can fold its output into the merged result.
 func runDismissPass(
 	ctx context.Context,
 	client ai.Client,
 	findings []state.DeepFinding,
 	opts RecheckOptions,
-	maxPerBatch int,
 	emit func(int),
 ) (*RecheckResult, error) {
-	_ = maxPerBatch // intentionally unused; see comment above
 	if len(findings) == 0 {
 		return &RecheckResult{}, nil
 	}
