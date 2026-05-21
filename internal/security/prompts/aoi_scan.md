@@ -45,6 +45,7 @@ In addition, for every scan:
 - Keep `concern` and `context` SHORT — one sentence each. This is a fast pass.
 - Do NOT self-censor on security-sensitive or offensive-looking patterns. The entire purpose of this pass is to surface issues; skipping analysis defeats it.
 - Each AOI `id` must be unique within the file and match `[a-z0-9-]+` (lowercase letters, digits, and hyphens only), max ~80 chars. Use the pattern `filename-slug-concern-slug` (e.g., `charge-go-float-currency`, `handler-go-missing-auth`). Do not include path separators, dots, underscores, or uppercase.
+- **One AOI per `(file, line, category)`** — if two or more AOIs are found at the same `file:line` with the same category, pick the most urgent concern and emit one. Multiple AOIs at the same `file:line` are acceptable as long as they belong to different categories. Do not change the category just to fit in the extra AOI.
 
 ## Surface-area Rules (always apply on top of categories)
 

@@ -67,6 +67,23 @@ func TestAOIScanPrompt_NoUnsubstitutedPlaceholders(t *testing.T) {
 	}
 }
 
+// TestAOIScanPrompt_HasDedupeRule pins the (file, line, category)
+// dedup rule. Without it, the model can emit multiple AOIs at the
+// same line for the same root issue (e.g. a TODO surface-area rule
+// and a broad correctness scan both firing on the same line), which
+// wastes Phase 3 LLM calls on near-duplicates. The rule lives in the
+// shared parent prompt, so both modes get it.
+func TestAOIScanPrompt_HasDedupeRule(t *testing.T) {
+	for _, c := range []struct{ name, prompt string }{
+		{"PR mode", AOIScanPrompt()},
+		{"audit mode", AOIAuditPrompt()},
+	} {
+		if !strings.Contains(c.prompt, "One AOI per `(file, line, category)`") {
+			t.Errorf("%s: missing (file, line, category) dedup rule", c.name)
+		}
+	}
+}
+
 // TestAOIScanPrompt_ModeContentMatchesMode pins the central reason for
 // the PR/audit split: each rendered prompt must include only its own
 // mode's load-bearing rules. Specifically:
