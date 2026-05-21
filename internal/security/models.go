@@ -21,11 +21,6 @@ type AreaOfInterest struct {
 	// Empty string treated as "grouped" for backward compatibility.
 	Urgency string `json:"urgency,omitempty"`
 
-	// Categories lists every category this AOI touches beyond the
-	// primary Category above (e.g. ["correctness", "error-handling"]).
-	// Used for --focus filtering at Phase 3.
-	Categories []string `json:"categories,omitempty"`
-
 	// ID is a stable identifier for this AOI (e.g. "charge-go-float-currency").
 	// Used for caching and cross-referencing between phases.
 	ID string `json:"id,omitempty"`

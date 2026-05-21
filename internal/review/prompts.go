@@ -331,22 +331,10 @@ func formatAOI(aoi security.AreaOfInterest) string {
 }
 
 // relevantCategories returns the category slugs to include for a single AOI.
-// Uses the AOI's categories field, falling back to the primary category.
+// One AOI = one category — see the AOI scan prompt's "One AOI = one
+// category" rule. Returns the AOI's category as a single-element slice
+// when it's in the canonical taxonomy, or nil otherwise.
 func relevantCategories(aoi security.AreaOfInterest) []string {
-	if len(aoi.Categories) > 0 {
-		// Deduplicate and filter to valid categories
-		seen := make(map[string]bool)
-		var result []string
-		for _, c := range aoi.Categories {
-			if !seen[c] && ai.CategoryExists(c) {
-				seen[c] = true
-				result = append(result, c)
-			}
-		}
-		return result
-	}
-
-	// Fallback: use the primary category if it exists
 	if ai.CategoryExists(aoi.Category) {
 		return []string{aoi.Category}
 	}

@@ -221,19 +221,15 @@ func (r *RouteResult) SkippedSubcategories(maxCalls int) []string {
 	return result
 }
 
-// aoiMatchesFocus returns true if any of the AOI's categories overlap
-// with the focus set.
+// aoiMatchesFocus returns true if the AOI's category is in the focus
+// set. One AOI = one category — see the AOI scan prompt.
 func aoiMatchesFocus(aoi security.AreaOfInterest, focusSet map[string]bool) bool {
-	if len(aoi.Categories) == 0 {
-		// Legacy AOIs without categories: always include
+	if aoi.Category == "" {
+		// AOIs without a category: include rather than silently drop.
+		// validateAOIs already logs these for human attention.
 		return true
 	}
-	for _, cat := range aoi.Categories {
-		if focusSet[cat] {
-			return true
-		}
-	}
-	return false
+	return focusSet[aoi.Category]
 }
 
 func subcategoryKey(category, subcategory string) string {

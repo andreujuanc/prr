@@ -88,38 +88,6 @@ func TestValidateAOIs_AcceptsValidCategory(t *testing.T) {
 	}
 }
 
-func TestValidateAOIs_LogsUnknownCategory(t *testing.T) {
-	buf := captureLog(t)
-
-	results := []AOIScanResult{
-		{
-			File: "y.go",
-			AreasOfInterest: []AreaOfInterest{
-				{
-					ID:         "y-1",
-					Line:       2,
-					Category:   "correctness", // valid
-					Categories: []string{"correctness", "made-up-cat"},
-				},
-			},
-		},
-	}
-	validateAOIs(results)
-
-	out := buf.String()
-	if !strings.Contains(out, "unknown category") {
-		t.Errorf("expected 'unknown category' log; got: %q", out)
-	}
-	if !strings.Contains(out, `"made-up-cat"`) {
-		t.Errorf("log should include the invalid category verbatim; got: %q", out)
-	}
-	// The valid category shouldn't appear in the warning text — verifies
-	// we don't log every category.
-	if strings.Contains(out, `"correctness"`) {
-		t.Errorf("valid category should not appear in warning logs; got: %q", out)
-	}
-}
-
 func TestValidateAOIs_LogsDuplicateIDsWithinFile(t *testing.T) {
 	buf := captureLog(t)
 

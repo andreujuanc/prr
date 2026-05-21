@@ -159,9 +159,6 @@ func TestParseAOIResult_NewFormat(t *testing.T) {
 	if aoi.Concern != "Currency conversion with floating point arithmetic" {
 		t.Errorf("got Concern %q", aoi.Concern)
 	}
-	if len(aoi.Categories) != 2 {
-		t.Errorf("got %d categories, want 2", len(aoi.Categories))
-	}
 }
 
 func TestParseAOIResult_LegacyFormatStillWorks(t *testing.T) {
@@ -452,7 +449,7 @@ func TestBuildAOIScanPromptWithCategories(t *testing.T) {
 	}
 
 	// Rule about not inventing names.
-	if !containsSubstring(prompt, "Do not invent new category names") {
+	if !containsSubstring(prompt, "Do not invent, rename, abbreviate, or compress them") {
 		t.Error("prompt should contain the no-invented-names rule")
 	}
 }

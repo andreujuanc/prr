@@ -442,7 +442,6 @@ func defenseAOIsForBoundary(b state.Boundary) []security.AreaOfInterest {
 			Urgency:     "grouped",
 			Concern:     d.concern,
 			Context:     boundaryAOIContext(b),
-			Categories:  []string{d.category},
 		})
 	}
 	return out

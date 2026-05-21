@@ -342,7 +342,6 @@ func synthesizeOutlierAOIs(clusters []clusterLLMResult, aoiByID map[string]secur
 				Urgency:     "individual",
 				Concern:     c.DeviationConcern,
 				Context:     fmt.Sprintf("Sibling pattern: %s", strings.TrimSpace(c.Pattern)),
-				Categories:  []string{c.Category},
 				SiblingDeviation: &state.SiblingDeviation{
 					Pattern:    c.Pattern,
 					SiblingIDs: c.SiblingIDs,

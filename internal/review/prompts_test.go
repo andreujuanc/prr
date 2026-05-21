@@ -32,7 +32,6 @@ func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
 		ID:          "charge-go-float-currency",
 		Concern:     "Currency conversion with floating point arithmetic",
 		Context:     "Multiplies amounts by exchange rates using float64",
-		Categories:  []string{"correctness", "financial"},
 	}
 
 	prompt := BuildIndividualPrompt(ModeAudit, "This is a billing system.", "Always check money math.", "", nil, individualCall(aoi))
@@ -84,8 +83,8 @@ func TestBuildGroupedPrompt_ContainsAllAOIs(t *testing.T) {
 		Category:    "error-handling",
 		Subcategory: "swallowed-errors",
 		AOIs: []security.AreaOfInterest{
-			{File: "a.go", Line: 10, Category: "error-handling", Subcategory: "swallowed-errors", ID: "a-go-err", Concern: "Error ignored in handler", Categories: []string{"error-handling"}},
-			{File: "b.go", Line: 20, Category: "error-handling", Subcategory: "swallowed-errors", ID: "b-go-err", Concern: "Error assigned to _", Categories: []string{"error-handling"}},
+			{File: "a.go", Line: 10, Category: "error-handling", Subcategory: "swallowed-errors", ID: "a-go-err", Concern: "Error ignored in handler"},
+			{File: "b.go", Line: 20, Category: "error-handling", Subcategory: "swallowed-errors", ID: "b-go-err", Concern: "Error assigned to _"},
 		},
 		Files: []string{"a.go", "b.go"},
 	}

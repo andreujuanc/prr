@@ -199,14 +199,18 @@ For each such AOI:
 
 ## Valid category names
 
-The `categories` array on every AOI must contain ONLY names from this list:
+The `category` field MUST be one of these slugs, exactly as written:
 
 {CATEGORY_SLUGS}
 
-Do not invent new category names. Do not rename, abbreviate, or
-compress them. Use the names above exactly as written. If none of
-the names fit, leave the `categories` array empty rather than coining
-a new tag — an empty array is fine; a made-up name is not.
+Do not invent, rename, abbreviate, or compress them. If none fit the
+AOI, omit the AOI entirely — every AOI has exactly one category, and
+that category must come from this list.
+
+One AOI = one category. If a code location touches multiple concerns
+(e.g. an authorization gap with a correctness side-effect), emit
+multiple AOIs — one per concern — instead of one AOI tagged with
+multiple categories.
 
 ## Output Format
 
@@ -226,8 +230,7 @@ with no AOIs (empty areas array).
         "subcategory": "subcategory-slug",
         "urgency": "individual | grouped",
         "concern": "brief description of the potential issue",
-        "context": "why this location matters, what data flows through it",
-        "categories": ["category-slug-1", "category-slug-2"]
+        "context": "why this location matters, what data flows through it"
       }
     ]
   }

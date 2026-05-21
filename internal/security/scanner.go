@@ -532,13 +532,6 @@ func validateAOIs(results []AOIScanResult) {
 					r.File, aoi.ID, aoi.Category)
 			}
 
-			for _, d := range aoi.Categories {
-				if !ai.CategoryExists(d) {
-					log.Printf("aoi: %s [id=%s] uses unknown category %q (will be ignored by --focus filtering)",
-						r.File, aoi.ID, d)
-				}
-			}
-
 			if aoi.ID != "" {
 				seen[aoi.ID]++
 				if seen[aoi.ID] == 2 {
