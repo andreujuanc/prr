@@ -241,4 +241,3 @@ func TestScanAreasOfInterest_ClientError(t *testing.T) {
 		t.Fatal("report should be nil when all batches fail")
 	}
 }
-

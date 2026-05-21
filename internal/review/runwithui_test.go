@@ -275,13 +275,13 @@ func TestDeepReviewSummary_IncludesFindingsTotalWhenPresent(t *testing.T) {
 	// `findings=N` wire token, the summary appends "· N findings"
 	// before the AOI/general breakdown.
 	s := &progress.State{Counters: map[string]int{
-		"batches_total":           4,
-		"batches_done":            3,
-		"batches_cached":          1,
-		"batches_failed":          0,
-		"batches_aoi_driven":      2,
-		"batches_general":         2,
-		"batches_findings_total":  19,
+		"batches_total":          4,
+		"batches_done":           3,
+		"batches_cached":         1,
+		"batches_failed":         0,
+		"batches_aoi_driven":     2,
+		"batches_general":        2,
+		"batches_findings_total": 19,
 	}}
 	want := "3 done · 1 cached · 0 failed · 19 findings (2 AOI-driven + 2 general)"
 	if got := deepReviewSummary(s); got != want {

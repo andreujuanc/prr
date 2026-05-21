@@ -296,6 +296,7 @@ func (p *progressReporter) ClassifyProgress(status string) {
 func (p *progressReporter) AOIPrescanProgress(status string, done bool, aoiCount int) {
 	p.onProgress("aoi", status)
 }
+
 // batchPhase is the progress-phase name the Batches panel listens on
 // for per-batch lifecycle messages. Single constant so a rename is one
 // edit, not many — and so the pinning tests in this package can

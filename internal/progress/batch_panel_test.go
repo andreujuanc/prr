@@ -42,12 +42,12 @@ func TestRenderBatchesPanel_SmallShape(t *testing.T) {
 		},
 		1: {
 			Index: 1, Label: "internal/git", Files: 5, Kind: "general",
-			Status: BatchDone,
+			Status:    BatchDone,
 			StartedAt: fixedNow.Add(-20 * time.Second), EndedAt: fixedNow.Add(-6 * time.Second),
 		},
 		2: {
 			Index: 2, Label: "internal/config", Files: 1, Kind: "general",
-			Status: BatchCached,
+			Status:    BatchCached,
 			StartedAt: fixedNow.Add(-20 * time.Second), EndedAt: fixedNow.Add(-12 * time.Second),
 		},
 	}}
@@ -173,7 +173,7 @@ func TestRenderBatchesPanel_RecentTailCap(t *testing.T) {
 	mk := func(idx int, when time.Duration) *BatchState {
 		return &BatchState{
 			Index: idx, Label: "f" + string(rune('a'+idx)), Files: 1, Kind: "general",
-			Status: BatchDone,
+			Status:    BatchDone,
 			StartedAt: fixedNow.Add(when - 5*time.Second),
 			EndedAt:   fixedNow.Add(when),
 		}

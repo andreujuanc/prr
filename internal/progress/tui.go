@@ -305,8 +305,8 @@ func newUI(cfg Config) *model {
 	}
 
 	return &model{
-		cfg:      cfg,
-		phases:   phases,
+		cfg:    cfg,
+		phases: phases,
 		state: &State{
 			Counters: make(map[string]int),
 			Batches:  make(map[int]*BatchState),

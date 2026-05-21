@@ -36,10 +36,10 @@ type BatchFinding struct {
 	ConfidenceScore     int    `json:"confidence_score,omitempty"`
 	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
 
-	Category       string `json:"category,omitempty"`
-	Title          string `json:"title,omitempty"`
-	Line           int    `json:"line,omitempty"`
-	Detail         string `json:"detail,omitempty"`
+	Category string `json:"category,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 	// EvidenceSnippet is a verbatim 1-3 line copy from the cited file:line.
 	// Carried into state.DeepFinding.EvidenceSnippet by the fallback
 	// converter so recheck can locate the suspect code.
@@ -237,16 +237,16 @@ type Reporter interface {
 // NopReporter is a Reporter that does nothing.
 type NopReporter struct{}
 
-func (NopReporter) DiscoveryProgress(string)             {}
-func (NopReporter) ClassifyProgress(string)              {}
-func (NopReporter) AOIPrescanProgress(string, bool, int) {}
-func (NopReporter) InitBatches([]BatchInfo)              {}
-func (NopReporter) BatchProgress(int, BatchStatus)                    {}
-func (NopReporter) BatchProgressWithFindings(int, BatchStatus, int)   {}
-func (NopReporter) BatchStream(int, int)                              {}
-func (NopReporter) RecheckProgress(string)               {}
-func (NopReporter) SynthesisStarted()                    {}
-func (NopReporter) Token(string)                         {}
+func (NopReporter) DiscoveryProgress(string)                        {}
+func (NopReporter) ClassifyProgress(string)                         {}
+func (NopReporter) AOIPrescanProgress(string, bool, int)            {}
+func (NopReporter) InitBatches([]BatchInfo)                         {}
+func (NopReporter) BatchProgress(int, BatchStatus)                  {}
+func (NopReporter) BatchProgressWithFindings(int, BatchStatus, int) {}
+func (NopReporter) BatchStream(int, int)                            {}
+func (NopReporter) RecheckProgress(string)                          {}
+func (NopReporter) SynthesisStarted()                               {}
+func (NopReporter) Token(string)                                    {}
 
 // OffsetReporter wraps a Reporter and adds an offset to batch indices.
 type OffsetReporter struct {

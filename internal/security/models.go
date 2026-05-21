@@ -72,4 +72,3 @@ type AOIReport struct {
 	TotalAOIs      int             `json:"total_aois"`
 	SecurityDigest string          `json:"-"` // formatted text for injection into review prompts
 }
-
