@@ -159,6 +159,11 @@ func TestChatInputHiddenDuringStreaming(t *testing.T) {
 
 func newTestModel(t *testing.T) Model {
 	t.Helper()
+	// Isolate state writes/reads to a per-test tempdir so tests don't
+	// pollute the dev workspace's real .git/pr-tui/ (and don't read
+	// snapshots leaked by sibling tests). t.Chdir auto-restores cwd
+	// when the test ends.
+	t.Chdir(t.TempDir())
 	m := NewModel("999", nil, nil, 1, 3, false)
 
 	// Simulate PRFetchedMsg

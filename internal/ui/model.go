@@ -912,12 +912,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewState = msg.State
 		m.rawDiffs = msg.RawDiffs
 		m.skippedFiles = msg.SkippedFiles
+
+		// Hydrate from the latest review snapshot if one exists. The
+		// snapshot file is the single source of truth for review
+		// output — both headless `prr review` and the TUI's internal
+		// trigger write it. We always prefer the snapshot's findings
+		// over whatever is on the per-PR state file: if the snapshot
+		// is newer than the state copy, the state copy is the stale
+		// one (e.g. user ran `prr review` after a TUI session).
+		if snap, snapPath, snapErr := state.LatestReviewSnapshot(m.prNumber); snapErr != nil {
+			log.Printf("Warning: failed to load latest review snapshot: %v", snapErr)
+		} else if snap != nil {
+			if snap.Review != nil {
+				if m.reviewState.Review == nil {
+					m.reviewState.Review = &state.AIReview{}
+				}
+				m.reviewState.Review.Structured = snap.Review
+			}
+			if len(snap.DeepFindings) > 0 {
+				m.reviewState.SetDeepFindings(snap.DeepFindings)
+			}
+			log.Printf("Loaded review snapshot %s (findings=%d, has_structured=%v)",
+				snapPath, len(snap.DeepFindings), snap.Review != nil)
+		}
+
 		// Visibility for cache hits: when state arrives with a cached
 		// review, log a summary line. Helps the user confirm that
 		// re-opening prr restored their previous review instead of
 		// silently starting fresh — which would imply they need to
 		// pay for another review.
-		if r := msg.State.Review; r != nil {
+		if r := m.reviewState.Review; r != nil {
 			verdict := "comment"
 			findingCount := 0
 			if r.Structured != nil {
@@ -1498,11 +1522,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Auto-persist a timestamped snapshot — same shape as the
-		// headless `prr review` flow writes. Lets users re-open the
-		// TUI later and see the run, or diff snapshots over time.
-		// Failure is non-fatal; the per-PR state already persists
-		// what the Review tab reads.
-		if wasReview && msg.StructuredReview != nil && m.prNumber != "" {
+		// headless `prr review` flow writes. The snapshot is what the
+		// Review tab loads from on reopen, so this is load-bearing
+		// for "running a review in the TUI persists across sessions."
+		// Write whenever there's *any* review output (structured or
+		// just DeepFindings); MarshalResultJSON handles either side
+		// being absent. Failure is non-fatal; an earlier `prr review`
+		// snapshot may still be present and the per-PR state holds
+		// the run's metadata.
+		if wasReview && m.prNumber != "" && (msg.StructuredReview != nil || len(msg.DeepFindings) > 0) {
 			data, mErr := review.MarshalResultJSON(m.pr, msg.FilesReviewed, msg.StructuredReview, msg.DeepFindings)
 			if mErr != nil {
 				log.Printf("Warning: TUI review snapshot marshal failed: %v", mErr)
@@ -4255,13 +4283,29 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 // when the user moves the finding cursor (j/k) so the indicator updates
 // immediately without async rendering delay.
 func (m *Model) rerenderReviewWithCursor() tea.Cmd {
-	if m.reviewState == nil || m.reviewState.Review == nil || m.reviewState.Review.Structured == nil {
+	if m.reviewState == nil {
+		return nil
+	}
+
+	// Pick the same source renderActiveAIView uses: synthesized Review
+	// when present, otherwise build a synthetic ReviewOutput from
+	// DeepFindings. Without this fallback, j/k updated m.reviewCursor
+	// but the viewport stayed frozen for any review that arrived via
+	// the SkipSynthesis / DeepFindings-only path (which is what
+	// happens after a headless `prr review`).
+	var structured *state.ReviewOutput
+	switch {
+	case m.reviewState.Review != nil && m.reviewState.Review.Structured != nil:
+		structured = m.reviewState.Review.Structured
+	case len(m.reviewState.GetDeepFindings()) > 0:
+		structured = buildSyntheticReviewFromDeepFindings(m.reviewState.GetDeepFindings())
+	default:
 		return nil
 	}
 
 	width := m.reviewViewport.Width - 2
 	stale := m.reviewState.IsReviewStale()
-	rendered, _ := renderStructuredReview(m.reviewState.Review.Structured, width, m.reviewCursor, m.findingsExpanded, stale)
+	rendered, _ := renderStructuredReview(structured, width, m.reviewCursor, m.findingsExpanded, stale)
 	m.aiReviewRendered = rendered
 	m.aiReviewRenderWidth = width
 	m.reviewViewport.SetContent(rendered)
