@@ -22,6 +22,22 @@ import (
 //go:embed prompts/aoi_scan.md
 var aoiScanPrompt string
 
+// Mode-specific partials composed into aoiScanPrompt via {MODE_RULES}
+// and {INPUT_FORMAT} placeholders. Split out so the shared body lives
+// in one place — see internal/security/prompts/aoi_scan.md.
+//
+//go:embed prompts/aoi_scan_pr_rules.md
+var aoiScanPRRules string
+
+//go:embed prompts/aoi_scan_pr_input_format.md
+var aoiScanPRInputFormat string
+
+//go:embed prompts/aoi_scan_audit_rules.md
+var aoiScanAuditRules string
+
+//go:embed prompts/aoi_scan_audit_input_format.md
+var aoiScanAuditInputFormat string
+
 // AOIScanPrompt returns the AOI scan system prompt for PR review mode.
 func AOIScanPrompt() string { return buildAOIScanPrompt(false) }
 
@@ -39,17 +55,6 @@ func AOIScanPromptHash(auditMode bool) string {
 
 // AOIAuditPrompt returns the AOI scan system prompt for full-project audit mode.
 func AOIAuditPrompt() string { return buildAOIScanPrompt(true) }
-
-const prModeRules = `1. ONLY flag code in the DIFF (added or modified lines, the + lines).
-2. Do NOT flag pre-existing code that was not changed.
-3. Use the CONTEXT lines (unchanged lines around the diff hunks) to understand
-   data flow — trace where variables originate and how they reach sinks.
-   The diff may include extra context lines beyond the standard 3 to help you
-   see the full picture. Use them.`
-
-const auditModeRules = `1. Scan ALL code in the file — this is a full-project audit, not a diff review.
-2. Flag any code location that could contain a bug, vulnerability, or design flaw.
-3. Use the full file context to understand data flow, variable origins, and sinks.`
 
 // buildAOIScanPrompt composes the AOI scan prompt template with all category
 // partials injected at the {CATEGORIES} placeholder.
@@ -72,13 +77,17 @@ func buildAOIScanPromptWithCategories(auditMode bool, cats []string) string {
 		slugs = ai.AllCategorySlugs()
 	}
 	slugList := strings.Join(slugs, ", ")
+
+	rules, inputFmt := aoiScanPRRules, aoiScanPRInputFormat
+	if auditMode {
+		rules, inputFmt = aoiScanAuditRules, aoiScanAuditInputFormat
+	}
+
 	prompt := strings.Replace(aoiScanPrompt, "{CATEGORIES}", categoryContent, 1)
 	prompt = strings.Replace(prompt, "{CATEGORY_SLUGS}", slugList, 1)
-	rules := prModeRules
-	if auditMode {
-		rules = auditModeRules
-	}
-	return strings.Replace(prompt, "{MODE_RULES}", rules, 1)
+	prompt = strings.Replace(prompt, "{MODE_RULES}", rules, 1)
+	prompt = strings.Replace(prompt, "{INPUT_FORMAT}", inputFmt, 1)
+	return prompt
 }
 
 // aoiBatchMaxChars is the max diff size per AOI scan batch.
