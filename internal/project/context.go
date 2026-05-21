@@ -13,6 +13,7 @@ package project
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,13 @@ import (
 
 	"github.com/andreujuanc/prr/internal/ai"
 )
+
+// projectContextPrompt is the user-message instructions for the
+// project-context summarizer. Embedded so it can be edited as plain
+// markdown like every other prompt in the repo.
+//
+//go:embed prompts/project_context.md
+var projectContextPrompt string
 
 // maxDocBytes is the maximum bytes to read from any single documentation file.
 const maxDocBytes = 8000
@@ -378,40 +386,7 @@ func synthesizeFromDocs(inputs *discoveredInputs) string {
 // instructions if mixed in here.
 func summarizeWithLLM(ctx context.Context, client ai.Client, inputs *discoveredInputs) (string, error) {
 	var prompt strings.Builder
-
-	prompt.WriteString("Produce a structured project briefing for an AI CODE REVIEWER ")
-	prompt.WriteString("auditing this codebase. The reviewer will use this briefing to:\n")
-	prompt.WriteString("- Calibrate severity (what kinds of bugs hurt THIS project most)\n")
-	prompt.WriteString("- Avoid flagging established patterns as findings\n")
-	prompt.WriteString("- Match suggestions to the codebase's existing style\n\n")
-
-	prompt.WriteString("Output FOUR sections, each preceded by its `###` heading. Skip a section\n")
-	prompt.WriteString("if you have nothing concrete to say (don't pad). Total ≤ 350 words.\n\n")
-
-	prompt.WriteString("### Purpose\n")
-	prompt.WriteString("One sentence on what the project IS and WHO uses it. Be specific —\n")
-	prompt.WriteString("\"CLI tool for in-terminal PR review\" not \"developer productivity tool\".\n\n")
-
-	prompt.WriteString("### Stack\n")
-	prompt.WriteString("Language, frameworks, major libraries. Mention what's *idiomatic* in this\n")
-	prompt.WriteString("stack so the reviewer knows what suggestions belong vs. would be alien.\n\n")
-
-	prompt.WriteString("### Architecture\n")
-	prompt.WriteString("How the code is organized: key packages/modules, their responsibilities,\n")
-	prompt.WriteString("and how they connect. Cite real names from the input.\n\n")
-
-	prompt.WriteString("### Risk Focus\n")
-	prompt.WriteString("Which bug classes matter most for THIS project (e.g., \"data integrity\n")
-	prompt.WriteString("on financial state\", \"race conditions in webhook handlers\", \"auth bypass\n")
-	prompt.WriteString("on user-facing endpoints\"). 2-3 specific risks, not generic phrases.\n\n")
-
-	prompt.WriteString("RULES:\n")
-	prompt.WriteString("- Be factual and dense. No filler, no marketing phrases.\n")
-	prompt.WriteString("- Cite specific names from the input (functions, files, dirs).\n")
-	prompt.WriteString("- Do NOT include setup instructions, contribution guidelines, or license info.\n")
-	prompt.WriteString("- Do NOT include rules directed at AI (\"be concise\", \"verify before\n")
-	prompt.WriteString("  reporting\") — those are processed separately and would interfere with\n")
-	prompt.WriteString("  the reviewer's own instructions.\n\n")
+	prompt.WriteString(projectContextPrompt)
 
 	// Add docs
 	if len(inputs.docs) > 0 {
