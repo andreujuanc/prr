@@ -383,42 +383,55 @@ func scoreDeepResult(findings []state.DeepFinding, groundTruth []deepGroundTruth
 	var r deepModelResult
 	r.totalFindings = len(findings)
 
-	matched := make([]bool, len(groundTruth))
-
-	for _, f := range findings {
-		foundMatch := false
-		for gi, gt := range groundTruth {
-			if matched[gi] {
-				continue
-			}
-			if matchDeepFinding(f, gt) {
-				matched[gi] = true
-				foundMatch = true
-
-				if gt.importance == "must-find" {
-					r.mustFindHits++
-				} else {
-					r.niceFindHits++
-				}
-
-				// Severity accuracy
-				r.severityTotal++
-				if severityDistance(f.Severity, gt.severity) == 0 {
-					r.severityCorrect++
-				}
+	// Each ground truth is an independent assertion: "did ANY finding catch
+	// this expected issue?" The old design consumed GT slots first-match-wins,
+	// which silently underreported recall when GT entries overlapped (same
+	// bug the AOI matcher had — see TestAOIModelComparison for details).
+	gtHit := make([]bool, len(groundTruth))
+	severityHitFinding := make([]*state.DeepFinding, len(groundTruth))
+	for gi, gt := range groundTruth {
+		for i := range findings {
+			if matchDeepFinding(findings[i], gt) {
+				gtHit[gi] = true
+				severityHitFinding[gi] = &findings[i]
 				break
 			}
 		}
-		if !foundMatch {
-			r.falseAlarms++
-		}
 	}
 
-	for _, gt := range groundTruth {
+	for gi, gt := range groundTruth {
 		if gt.importance == "must-find" {
 			r.mustFindTotal++
 		} else {
 			r.niceFindTotal++
+		}
+		if !gtHit[gi] {
+			continue
+		}
+		if gt.importance == "must-find" {
+			r.mustFindHits++
+		} else {
+			r.niceFindHits++
+		}
+		// Severity accuracy: score the first finding that hit this GT.
+		f := severityHitFinding[gi]
+		r.severityTotal++
+		if severityDistance(f.Severity, gt.severity) == 0 {
+			r.severityCorrect++
+		}
+	}
+
+	// False alarms: findings that overlap no GT at all.
+	for i := range findings {
+		matched := false
+		for _, gt := range groundTruth {
+			if matchDeepFinding(findings[i], gt) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			r.falseAlarms++
 		}
 	}
 
@@ -658,7 +671,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 						sevAcc = float64(r.severityCorrect) / float64(r.severityTotal) * 100
 					}
 
-					cost := config.EstimateCost(specCopy.model, r.inputTokens, r.outputTokens, r.cachedTokens)
+					cost := config.EstimateCost(specCopy.provider+"/"+specCopy.model, r.inputTokens, r.outputTokens, r.cachedTokens)
 					t.Logf("  Must: %d/%d | Nice: %d/%d | FP: %d | Findings: %d | Recall: %.1f%% | SevAcc: %.0f%% | Tools: %d | InTok: %d | OutTok: %d | Cost: $%.4f | Time: %.1fs",
 						r.mustFindHits, r.mustFindTotal,
 						r.niceFindHits, r.niceFindTotal,
@@ -720,7 +733,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 			sevAcc = float64(r.severityCorrect) / float64(r.severityTotal) * 100
 		}
 
-		cost := config.EstimateCost(r.spec.model, r.inputTokens, r.outputTokens, r.cachedTokens)
+		cost := config.EstimateCost(r.spec.provider+"/"+r.spec.model, r.inputTokens, r.outputTokens, r.cachedTokens)
 		t.Logf("  %-45s %3d/%-3d %3d/%-3d %5d %5d  %5.1f%% %5.0f%% %6d %8d %8d  $%6.4f %6.1fs",
 			r.spec.name,
 			r.mustFindHits, r.mustFindTotal,
@@ -777,6 +790,52 @@ func TestDeepReviewModelComparison(t *testing.T) {
 	}
 	t.Log("═══════════════════════════════════════════════════════════════════════════════════════════")
 
+	// ── Export benchmark results to ~/.config/prr/review-benchmark-<date>.json ─
+	benchmarks := &config.BenchmarkResults{
+		Version:   1,
+		Timestamp: time.Now(),
+	}
+	for _, r := range results {
+		if r.err != nil {
+			continue
+		}
+		totalGT := r.mustFindTotal + r.niceFindTotal
+		recallPct := float64(0)
+		if totalGT > 0 {
+			recallPct = float64(r.mustFindHits+r.niceFindHits) / float64(totalGT) * 100
+		}
+		mustFindPct := float64(0)
+		if r.mustFindTotal > 0 {
+			mustFindPct = float64(r.mustFindHits) / float64(r.mustFindTotal) * 100
+		}
+		cost := config.EstimateCost(r.spec.provider+"/"+r.spec.model, r.inputTokens, r.outputTokens, r.cachedTokens)
+		benchmarks.Models = append(benchmarks.Models, config.ModelBenchmark{
+			ModelID:         r.spec.model,
+			Provider:        r.spec.provider,
+			ConfigName:      r.spec.name,
+			Temperature:     r.spec.temperature,
+			ThinkingBudget:  r.spec.thinkingBudget,
+			RecallPct:       recallPct,
+			MustFindPct:     mustFindPct,
+			LatencyMs:       int(r.duration.Milliseconds()),
+			CostPerScan:     cost,
+			TotalAOIs:       r.totalFindings,
+			FalseAlarms:     r.falseAlarms,
+			SeverityCorrect: r.severityCorrect,
+			SeverityTotal:   r.severityTotal,
+			ToolCalls:       r.toolCalls,
+		})
+	}
+	if err := config.SaveBenchmarkResults("review", benchmarks); err != nil {
+		// A broken persistence layer is exactly the kind of regression
+		// this test should catch — fail loudly rather than silently lose
+		// the benchmark output.
+		t.Errorf("failed to save benchmark results: %v", err)
+	} else {
+		p, _ := config.BenchmarkArchivePath("review", benchmarks.Timestamp)
+		t.Logf("  Benchmark results saved to %s", p)
+	}
+
 	// Print detailed findings for each model
 	for _, r := range results {
 		if r.err != nil || len(r.findings) == 0 {
@@ -806,63 +865,208 @@ func TestDeepReviewModelComparison(t *testing.T) {
 	}
 }
 
+// ── Benchmark tuning ──────────────────────────────────────────────────────
+//
+// Tuning is fixed by the benchmark so results don't drift with the user's
+// models.json. Each model fans out into the cross product of temperatures ×
+// thinking budgets — one run per combination. Override defaults per-run with
+// env vars:
+//
+//	PRR_DEEP_TEMPERATURE           float, default 0.1   — baseline applied to every spec
+//	PRR_DEEP_TEMPERATURE_VARIANTS  csv,   default ""    — extra temperatures to sweep
+//	PRR_DEEP_THINKING_BUDGET       int,   default 8192  — baseline thinking budget
+//	PRR_DEEP_THINKING_VARIANTS     csv,   default "16384,32768"
+//	    extra budgets explored for thinking-capable models on providers that
+//	    honor the explicit knob (gemini/openai). Copilot and claude-code
+//	    decide thinking internally, so fanning them out wastes calls.
+//	PRR_DEEP_MAX_OUTPUT            int,   default 32000
+//
+// Set a *_VARIANTS env var to the empty string to disable that axis's fan-out
+// while keeping the baseline.
+
+func deepBenchmarkTemperature() float64 {
+	if v, ok := deepEnvFloat("PRR_DEEP_TEMPERATURE"); ok {
+		return v
+	}
+	return 0.1
+}
+
+func deepBenchmarkMaxOutput() int {
+	if v, ok := deepEnvInt("PRR_DEEP_MAX_OUTPUT"); ok {
+		return v
+	}
+	return 32000
+}
+
+func deepBenchmarkThinkingBudget() int {
+	if v, ok := deepEnvInt("PRR_DEEP_THINKING_BUDGET"); ok {
+		return v
+	}
+	return 8192
+}
+
+// deepBenchmarkTemperatures returns the temperatures to sweep — baseline plus
+// any PRR_DEEP_TEMPERATURE_VARIANTS, with duplicates removed.
+func deepBenchmarkTemperatures() []float64 {
+	base := deepBenchmarkTemperature()
+	out := []float64{base}
+	s, present := os.LookupEnv("PRR_DEEP_TEMPERATURE_VARIANTS")
+	if !present {
+		return out
+	}
+	seen := map[float64]bool{base: true}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		var v float64
+		if _, err := fmt.Sscanf(p, "%f", &v); err != nil {
+			continue
+		}
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// deepBenchmarkThinkingBudgets returns the thinking budgets to sweep — baseline
+// plus any PRR_DEEP_THINKING_VARIANTS, with duplicates removed.
+func deepBenchmarkThinkingBudgets() []int {
+	base := deepBenchmarkThinkingBudget()
+	out := []int{base}
+	s, present := os.LookupEnv("PRR_DEEP_THINKING_VARIANTS")
+	if !present {
+		for _, v := range []int{16384, 32768} {
+			if v != base {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	seen := map[int]bool{base: true}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		var v int
+		if _, err := fmt.Sscanf(p, "%d", &v); err != nil {
+			continue
+		}
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func deepEnvInt(name string) (int, bool) {
+	s := os.Getenv(name)
+	if s == "" {
+		return 0, false
+	}
+	var v int
+	if _, err := fmt.Sscanf(s, "%d", &v); err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func deepEnvFloat(name string) (float64, bool) {
+	s := os.Getenv(name)
+	if s == "" {
+		return 0, false
+	}
+	var v float64
+	if _, err := fmt.Sscanf(s, "%f", &v); err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// deepProviderHonorsThinkingBudget reports whether the provider actually
+// applies the explicit thinking-budget knob. Copilot and claude-code both
+// decide thinking internally, so sweeping budgets for them produces
+// redundant runs.
+func deepProviderHonorsThinkingBudget(provider string) bool {
+	return provider != "github-copilot" && provider != "claude-code"
+}
+
+// formatDeepThinkingLabel renders a thinking budget for spec names: "0",
+// "1k", "512" — using the k-suffix only when the budget is a clean
+// multiple of 1024.
+func formatDeepThinkingLabel(budget int) string {
+	if budget == 0 {
+		return "thinking=0"
+	}
+	if budget%1024 == 0 {
+		return fmt.Sprintf("thinking=%dk", budget/1024)
+	}
+	return fmt.Sprintf("thinking=%d", budget)
+}
+
+// expandDeepSpecs fans out one (provider, model) into the cross product of
+// temperatures × thinking budgets. For providers that don't honor the
+// explicit knob, only the baseline budget is used.
+func expandDeepSpecs(provider, modelID, apiKey, baseURL string, supportsThinking bool) []deepModelSpec {
+	temps := deepBenchmarkTemperatures()
+	budgets := []int{deepBenchmarkThinkingBudget()}
+	if supportsThinking && deepProviderHonorsThinkingBudget(provider) {
+		budgets = deepBenchmarkThinkingBudgets()
+	}
+
+	multiTemp := len(temps) > 1
+	multiBudget := len(budgets) > 1
+	maxOut := deepBenchmarkMaxOutput()
+
+	var specs []deepModelSpec
+	for _, t := range temps {
+		for _, b := range budgets {
+			name := fmt.Sprintf("[%s] %s", provider, modelID)
+			var parts []string
+			if multiTemp {
+				parts = append(parts, fmt.Sprintf("temp=%g", t))
+			}
+			if multiBudget {
+				parts = append(parts, formatDeepThinkingLabel(b))
+			}
+			if len(parts) > 0 {
+				name += " (" + strings.Join(parts, ", ") + ")"
+			}
+			specs = append(specs, deepModelSpec{
+				name:           name,
+				model:          modelID,
+				provider:       provider,
+				apiKey:         apiKey,
+				baseURL:        baseURL,
+				temperature:    t,
+				thinkingBudget: b,
+				maxOutput:      maxOut,
+			})
+		}
+	}
+	return specs
+}
+
 // ── Model config helpers ──────────────────────────────────────────────────
 
 func deepModelsFromConfig(cfg *config.Config) []deepModelSpec {
-	modelConfigs, _ := config.LoadModels()
-
-	type modelDef struct {
-		label    string
-		modelID  string
-		provider string
-	}
-
-	// Models to test — thinking-capable only
-	var defs []modelDef
-
+	var specs []deepModelSpec
 	for providerName, pc := range cfg.Providers {
 		if pc.APIKey == "" {
 			continue
 		}
-		known := config.KnownModelsForProvider(providerName)
-		for _, km := range known {
+		for _, km := range config.KnownModelsForProvider(providerName) {
 			if !km.Review || !km.Thinking {
 				continue
 			}
-			defs = append(defs, modelDef{
-				label:    fmt.Sprintf("[%s] %s", providerName, km.ID),
-				modelID:  km.ID,
-				provider: providerName,
-			})
+			specs = append(specs, expandDeepSpecs(providerName, km.ID, pc.APIKey, pc.BaseURL, km.Thinking)...)
 		}
 	}
-
-	// For each model, test thinking budget variants
-	thinkingBudgets := []int{8192, 16384, 32768}
-	temperatures := []float64{0.1} // keep temp fixed for now, vary thinking
-
-	var specs []deepModelSpec
-	for _, def := range defs {
-		mc := config.GetModelConfig(modelConfigs, def.modelID)
-		pc := cfg.ProviderConfigFor(def.provider)
-
-		for _, tb := range thinkingBudgets {
-			for _, temp := range temperatures {
-				name := fmt.Sprintf("%s (think=%dk, t=%.1f)", def.label, tb/1024, temp)
-				specs = append(specs, deepModelSpec{
-					name:           name,
-					model:          def.modelID,
-					provider:       def.provider,
-					apiKey:         pc.APIKey,
-					baseURL:        pc.BaseURL,
-					thinkingBudget: tb,
-					temperature:    temp,
-					maxOutput:      mc.MaxOutputTokens,
-				})
-			}
-		}
-	}
-
 	return specs
 }
 
@@ -873,37 +1077,6 @@ func deepModelsFromEnv(cfg *config.Config) []deepModelSpec {
 	}
 
 	providerName := os.Getenv("PRR_DEEP_PROVIDER")
-
-	modelConfigs, _ := config.LoadModels()
-	thinkingBudgets := []int{8192, 16384, 32768}
-
-	// Allow overriding thinking budgets: PRR_DEEP_THINKING="8192,16384"
-	if envTB := os.Getenv("PRR_DEEP_THINKING"); envTB != "" {
-		thinkingBudgets = nil
-		for s := range strings.SplitSeq(envTB, ",") {
-			s = strings.TrimSpace(s)
-			var tb int
-			fmt.Sscanf(s, "%d", &tb)
-			if tb >= 0 && s != "" {
-				thinkingBudgets = append(thinkingBudgets, tb)
-			}
-		}
-	}
-
-	// Allow overriding concurrency: PRR_DEEP_CONCURRENCY="1,2,4,8"
-	// (handled in the main test function)
-
-	// Allow overriding temperature: PRR_DEEP_TEMP="0.05,0.1,0.2"
-	temperatures := []float64{0.1}
-	if envTemp := os.Getenv("PRR_DEEP_TEMP"); envTemp != "" {
-		temperatures = nil
-		for s := range strings.SplitSeq(envTemp, ",") {
-			s = strings.TrimSpace(s)
-			var temp float64
-			fmt.Sscanf(s, "%f", &temp)
-			temperatures = append(temperatures, temp)
-		}
-	}
 
 	var specs []deepModelSpec
 	for m := range strings.SplitSeq(envModels, ",") {
@@ -917,13 +1090,11 @@ func deepModelsFromEnv(cfg *config.Config) []deepModelSpec {
 		if providerName != "" {
 			provs = []string{providerName}
 		} else {
-			// Check each configured provider for this model
 			for pName, pc := range cfg.Providers {
 				if pc.APIKey == "" {
 					continue
 				}
-				known := config.KnownModelsForProvider(pName)
-				for _, km := range known {
+				for _, km := range config.KnownModelsForProvider(pName) {
 					if km.ID == m {
 						provs = append(provs, pName)
 						break
@@ -931,7 +1102,6 @@ func deepModelsFromEnv(cfg *config.Config) []deepModelSpec {
 				}
 			}
 			if len(provs) == 0 {
-				// Fallback: try GetKnownModel
 				if km, ok := config.GetKnownModel(m); ok {
 					provs = []string{km.Provider}
 				} else {
@@ -940,25 +1110,13 @@ func deepModelsFromEnv(cfg *config.Config) []deepModelSpec {
 			}
 		}
 
-		mc := config.GetModelConfig(modelConfigs, m)
-
 		for _, prov := range provs {
 			pc := cfg.ProviderConfigFor(prov)
-			for _, tb := range thinkingBudgets {
-				for _, temp := range temperatures {
-					name := fmt.Sprintf("[%s] %s (think=%dk, t=%.2f)", prov, m, tb/1024, temp)
-					specs = append(specs, deepModelSpec{
-						name:           name,
-						model:          m,
-						provider:       prov,
-						apiKey:         pc.APIKey,
-						baseURL:        pc.BaseURL,
-						thinkingBudget: tb,
-						temperature:    temp,
-						maxOutput:      mc.MaxOutputTokens,
-					})
-				}
+			supportsThinking := false
+			if km, ok := config.GetKnownModelForProvider(prov, m); ok {
+				supportsThinking = km.Thinking
 			}
+			specs = append(specs, expandDeepSpecs(prov, m, pc.APIKey, pc.BaseURL, supportsThinking)...)
 		}
 	}
 

@@ -22,7 +22,7 @@ func TestLoadModels_EmbeddedDefaults(t *testing.T) {
 		fastBudget      int
 	}{
 		{"gemini-3.1-pro-preview", 65536, 32768, 2048, 1024},
-		{"gemini-3.1-flash-lite", 65536, 8192, 2048, 2048},
+		{"gemini-3.1-flash-lite", 65536, 8192, 2048, 0},
 	}
 
 	for _, tt := range tests {
@@ -143,7 +143,7 @@ func TestLoadModels_CorruptUserFileFallsBackToDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadModels_CreatesUserFileWhenMissing(t *testing.T) {
+func TestLoadModels_DoesNotCreateUserFileWhenMissing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -157,9 +157,9 @@ func TestLoadModels_CreatesUserFileWhenMissing(t *testing.T) {
 		t.Error("expected embedded defaults")
 	}
 
-	// File should have been created
+	// File must NOT be created — a stale snapshot would shadow future default updates.
 	path := filepath.Join(home, ".config", "prr", "models.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Error("expected models.json to be created")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected models.json to not exist, got err=%v", err)
 	}
 }
