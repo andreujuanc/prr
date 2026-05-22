@@ -465,11 +465,20 @@ func doReviewCall(
 		}, parseErr
 	}
 
+	cc := correctorContext{
+		client:           client,
+		call:             call,
+		callIndex:        callIndex,
+		systemPrompt:     systemPrompt,
+		originalMessages: messages,
+		originalRaw:      raw,
+	}
+
 	// Category corrector: up to maxCategoryCorrectorAttempts round
 	// trips on the same chat thread for any finding whose Category
 	// isn't a known slug. Findings still off-list after the loop are
 	// dropped by convertRawToTyped.
-	rawResult = verifyAndCorrectCategory(ctx, client, call, callIndex, systemPrompt, messages, raw, rawResult)
+	rawResult = verifyAndCorrectCategory(ctx, cc, rawResult)
 
 	result, droppedCats := convertRawToTyped(call, rawResult)
 	if len(droppedCats) > 0 {
@@ -486,7 +495,7 @@ func doReviewCall(
 	// (hallucinated coordinates / paraphrased "snippets") at the
 	// producer, before they hit recheck or the user.
 	if !opts.SkipEvidenceVerify && opts.RepoRoot != "" {
-		result = verifyAndCorrectEvidence(ctx, client, call, opts, callIndex, systemPrompt, messages, raw, result)
+		result = verifyAndCorrectEvidence(ctx, cc, opts.RepoRoot, result)
 	}
 
 	// Apply confidence penalties for missing required evidence (3-hop
@@ -517,16 +526,16 @@ type rawDeepFinding struct {
 	DismissedRationale string `json:"dismissed_rationale"`
 }
 
-// rawDeepReviewResult is the raw-category counterpart of
-// state.DeepReviewResult.
+// rawDeepReviewResult embeds state.DeepReviewResult and shadows its
+// Findings field with the raw-category-tolerant rawDeepFinding type.
+// Every other field (Type, Category, Subcategory, CrossCutting,
+// Dismissals, RawOutput) is reused directly from the embedded struct.
 type rawDeepReviewResult struct {
-	Type         string
-	Category     state.Category
-	Subcategory  string
-	CrossCutting string
-	Findings     []rawDeepFinding
-	Dismissals   []state.DeepDismissal
-	RawOutput    json.RawMessage
+	state.DeepReviewResult
+
+	// Findings shadows DeepReviewResult.Findings so JSON unmarshal
+	// accepts off-list categories on individual findings.
+	Findings []rawDeepFinding
 }
 
 // convertRawToTyped promotes raw category strings to state.Category.
@@ -534,14 +543,8 @@ type rawDeepReviewResult struct {
 // run are dropped here; the returned DroppedFinding slice lets callers
 // surface "N dropped" to the user instead of relying on log scraping.
 func convertRawToTyped(call ReviewCall, raw *rawDeepReviewResult) (*state.DeepReviewResult, []DroppedFinding) {
-	out := &state.DeepReviewResult{
-		Type:         raw.Type,
-		Category:     raw.Category,
-		Subcategory:  raw.Subcategory,
-		CrossCutting: raw.CrossCutting,
-		Dismissals:   raw.Dismissals,
-		RawOutput:    raw.RawOutput,
-	}
+	out := raw.DeepReviewResult
+	out.Findings = nil
 	var dropped []DroppedFinding
 	for _, f := range raw.Findings {
 		cat, err := state.ParseCategory(f.Category)
@@ -559,7 +562,7 @@ func convertRawToTyped(call ReviewCall, raw *rawDeepReviewResult) (*state.DeepRe
 		typed.Category = cat
 		out.Findings = append(out.Findings, typed)
 	}
-	return out, dropped
+	return &out, dropped
 }
 
 // buildCallOnToken constructs the ChatStream onToken callback for one
@@ -618,6 +621,19 @@ func buildCallOnToken(opts ExecuteOptions, callIndex int) func(string) {
 	}
 }
 
+// correctorContext bundles the call-identity and chat-thread fields
+// shared by verifyAndCorrectCategory and verifyAndCorrectEvidence.
+// ctx stays out of the struct so it can remain the first parameter
+// (Go convention).
+type correctorContext struct {
+	client           ai.Client
+	call             ReviewCall
+	callIndex        int
+	systemPrompt     string
+	originalMessages []ai.Message
+	originalRaw      string
+}
+
 // verifyAndCorrectEvidence runs the per-finding snippet check, asks
 // the model for corrections on any mismatches via one follow-up
 // round trip on the same chat thread, and drops findings that are
@@ -632,13 +648,8 @@ func buildCallOnToken(opts ExecuteOptions, callIndex int) func(string) {
 // keeping a possibly-mismatched one.
 func verifyAndCorrectEvidence(
 	ctx context.Context,
-	client ai.Client,
-	call ReviewCall,
-	opts ExecuteOptions,
-	callIndex int,
-	systemPrompt string,
-	originalMessages []ai.Message,
-	originalRaw string,
+	cc correctorContext,
+	repoRoot string,
 	result *state.DeepReviewResult,
 ) *state.DeepReviewResult {
 	if result == nil || len(result.Findings) == 0 {
@@ -648,7 +659,7 @@ func verifyAndCorrectEvidence(
 	verdicts := make([]evidenceVerdict, len(result.Findings))
 	mismatchedIdx := make([]int, 0, len(result.Findings))
 	for i, f := range result.Findings {
-		verdicts[i] = verifyEvidence(opts.RepoRoot, f)
+		verdicts[i] = verifyEvidence(repoRoot, f)
 		if verdicts[i] == evidenceMismatch || verdicts[i] == evidenceFileMissing {
 			mismatchedIdx = append(mismatchedIdx, i)
 		}
@@ -658,7 +669,7 @@ func verifyAndCorrectEvidence(
 	}
 
 	log.Printf("review: call %d (%s %s/%s) has %d/%d finding(s) with unverifiable evidence — requesting corrections",
-		callIndex+1, call.Type, call.Category, call.Subcategory,
+		cc.callIndex+1, cc.call.Type, cc.call.Category, cc.call.Subcategory,
 		len(mismatchedIdx), len(result.Findings))
 
 	// Build a corrector message keyed by the per-call finding index.
@@ -667,15 +678,15 @@ func verifyAndCorrectEvidence(
 	// assigned global F-NNN IDs yet at this point in the pipeline.
 	correctorMsg := buildEvidenceCorrectorMessage(result.Findings, verdicts)
 
-	followup := make([]ai.Message, 0, len(originalMessages)+2)
-	followup = append(followup, originalMessages...)
-	followup = append(followup, ai.Message{Role: "assistant", Content: originalRaw})
+	followup := make([]ai.Message, 0, len(cc.originalMessages)+2)
+	followup = append(followup, cc.originalMessages...)
+	followup = append(followup, ai.Message{Role: "assistant", Content: cc.originalRaw})
 	followup = append(followup, ai.Message{Role: "user", Content: correctorMsg})
 
-	correctorRaw, err := client.ChatStream(ctx, systemPrompt, followup, nil)
+	correctorRaw, err := cc.client.ChatStream(ctx, cc.systemPrompt, followup, nil)
 	if err != nil {
 		log.Printf("review: evidence corrector call failed (call %d, non-fatal): %v — dropping unverifiable findings without retry",
-			callIndex+1, err)
+			cc.callIndex+1, err)
 		return dropFindingsAfterCorrector(result, verdicts, nil)
 	}
 
@@ -690,7 +701,7 @@ func verifyAndCorrectEvidence(
 			// logic checks `withdrawn` first.
 			continue
 		}
-		verdicts[i] = verifyEvidence(opts.RepoRoot, result.Findings[i])
+		verdicts[i] = verifyEvidence(repoRoot, result.Findings[i])
 	}
 	return dropFindingsAfterCorrector(result, verdicts, withdrawn)
 }
@@ -744,30 +755,16 @@ type evidenceCorrection struct {
 // corrections, proceed to drop unverifiable findings", which is the
 // safe behavior.
 func parseEvidenceCorrections(raw string) []evidenceCorrection {
-	s := strings.TrimSpace(raw)
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
-	}
-	jsonStart := strings.IndexAny(s, "{")
-	if jsonStart == -1 {
+	extracted, err := extractLastJSONValue([]byte(ai.StripMarkdownFences(raw)))
+	if err != nil {
 		log.Printf("review: evidence corrector response had no JSON; treating as no corrections")
 		return nil
-	}
-	s = s[jsonStart:]
-	if end := strings.LastIndex(s, "}"); end != -1 {
-		s = s[:end+1]
 	}
 	var resp struct {
 		Corrections []evidenceCorrection `json:"corrections"`
 	}
-	if err := unmarshalLLMResponse([]byte(s), &resp); err != nil {
-		log.Printf("review: failed to parse evidence corrector response: %v — response prefix: %q", err, previewForLog([]byte(s), 500))
+	if err := unmarshalLLMResponse(extracted, &resp); err != nil {
+		log.Printf("review: failed to parse evidence corrector response: %v — response prefix: %q", err, previewForLog(extracted, 500))
 		return nil
 	}
 	return resp.Corrections
@@ -990,9 +987,11 @@ func ParseDeepReviewResult(call ReviewCall, raw string) (*state.DeepReviewResult
 // corrector reach this via ParseDeepReviewResult.
 func parseDeepReviewRaw(call ReviewCall, raw string) (*rawDeepReviewResult, error) {
 	result := &rawDeepReviewResult{
-		Type:        call.Type,
-		Category:    call.Category,
-		Subcategory: call.Subcategory,
+		DeepReviewResult: state.DeepReviewResult{
+			Type:        call.Type,
+			Category:    call.Category,
+			Subcategory: call.Subcategory,
+		},
 	}
 
 	s := strings.TrimSpace(raw)

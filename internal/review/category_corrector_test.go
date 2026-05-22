@@ -59,8 +59,8 @@ func makeRawWithBadCategory(badSlug string) *rawDeepReviewResult {
 		Status:   "finding",
 	}
 	return &rawDeepReviewResult{
-		Type:     "individual",
-		Findings: []rawDeepFinding{rf},
+		DeepReviewResult: state.DeepReviewResult{Type: "individual"},
+		Findings:         []rawDeepFinding{rf},
 	}
 }
 
@@ -68,6 +68,15 @@ func dummyCall() ReviewCall {
 	return ReviewCall{
 		Type: "individual",
 		AOIs: []security.AreaOfInterest{{ID: "aoi-1", File: "x.go", Line: 10}},
+	}
+}
+
+func dummyCC(client ai.Client) correctorContext {
+	return correctorContext{
+		client:       client,
+		call:         dummyCall(),
+		systemPrompt: "system",
+		originalRaw:  "original-raw",
 	}
 }
 
@@ -81,10 +90,7 @@ func TestVerifyAndCorrectCategory_HappyPath(t *testing.T) {
 	}
 	raw := makeRawWithBadCategory("vibes")
 
-	out := verifyAndCorrectCategory(
-		context.Background(), client, dummyCall(),
-		0, "system", nil, "original-raw", raw,
-	)
+	out := verifyAndCorrectCategory(context.Background(), dummyCC(client), raw)
 
 	if client.callCount() != 1 {
 		t.Fatalf("expected 1 corrector call, got %d", client.callCount())
@@ -119,10 +125,7 @@ func TestVerifyAndCorrectCategory_SecondAttemptFixes(t *testing.T) {
 	}
 	raw := makeRawWithBadCategory("vibes")
 
-	out := verifyAndCorrectCategory(
-		context.Background(), client, dummyCall(),
-		0, "system", nil, "original-raw", raw,
-	)
+	out := verifyAndCorrectCategory(context.Background(), dummyCC(client), raw)
 
 	if client.callCount() != 2 {
 		t.Fatalf("expected 2 corrector calls (one per attempt), got %d", client.callCount())
@@ -148,10 +151,7 @@ func TestVerifyAndCorrectCategory_StillBadAfterLoop(t *testing.T) {
 	}
 	raw := makeRawWithBadCategory("vibes")
 
-	out := verifyAndCorrectCategory(
-		context.Background(), client, dummyCall(),
-		0, "system", nil, "original-raw", raw,
-	)
+	out := verifyAndCorrectCategory(context.Background(), dummyCC(client), raw)
 
 	if client.callCount() != maxCategoryCorrectorAttempts {
 		t.Fatalf("expected %d attempts, got %d", maxCategoryCorrectorAttempts, client.callCount())
@@ -179,10 +179,7 @@ func TestVerifyAndCorrectCategory_Withdraw(t *testing.T) {
 	}
 	raw := makeRawWithBadCategory("vibes")
 
-	out := verifyAndCorrectCategory(
-		context.Background(), client, dummyCall(),
-		0, "system", nil, "original-raw", raw,
-	)
+	out := verifyAndCorrectCategory(context.Background(), dummyCC(client), raw)
 
 	if len(out.Findings) != 0 {
 		t.Fatalf("expected withdrawal to remove the finding; got %d kept", len(out.Findings))
@@ -205,10 +202,7 @@ func TestVerifyAndCorrectCategory_TransientThenSuccess(t *testing.T) {
 	}
 	raw := makeRawWithBadCategory("vibes")
 
-	out := verifyAndCorrectCategory(
-		context.Background(), client, dummyCall(),
-		0, "system", nil, "original-raw", raw,
-	)
+	out := verifyAndCorrectCategory(context.Background(), dummyCC(client), raw)
 
 	if client.callCount() != 2 {
 		t.Fatalf("expected retry after transient: 2 calls, got %d", client.callCount())
@@ -223,7 +217,7 @@ func TestVerifyAndCorrectCategory_TransientThenSuccess(t *testing.T) {
 func TestVerifyAndCorrectCategory_NoBadCategories_NoCall(t *testing.T) {
 	client := &scriptedClient{responses: []string{}}
 	raw := &rawDeepReviewResult{
-		Type: "individual",
+		DeepReviewResult: state.DeepReviewResult{Type: "individual"},
 		Findings: []rawDeepFinding{
 			{
 				DeepFinding: state.DeepFinding{Title: "good", File: "x.go"},
@@ -233,33 +227,126 @@ func TestVerifyAndCorrectCategory_NoBadCategories_NoCall(t *testing.T) {
 		},
 	}
 
-	verifyAndCorrectCategory(
-		context.Background(), client, dummyCall(),
-		0, "system", nil, "original-raw", raw,
-	)
+	verifyAndCorrectCategory(context.Background(), dummyCC(client), raw)
 
 	if client.callCount() != 0 {
 		t.Fatalf("corrector should not call when no bad categories; got %d calls", client.callCount())
 	}
 }
 
-// TestBuildCategoryCorrectorMessage_IncludesAllListedFindings: the
-// corrector message must reference every bad-category index by number
-// and include the allowed-category list.
+// TestConvertRawToTyped_PreservesEmbeddedFields guards the embed
+// refactor — non-Findings fields (CrossCutting, Dismissals,
+// RawOutput, CacheKey, Subcategory) must survive convertRawToTyped.
+func TestConvertRawToTyped_PreservesEmbeddedFields(t *testing.T) {
+	raw := &rawDeepReviewResult{
+		DeepReviewResult: state.DeepReviewResult{
+			Type:         "grouped",
+			Category:     "correctness",
+			Subcategory:  "off-by-one",
+			CrossCutting: "watch for shared mutable state",
+			CacheKey:     "deadbeef",
+			RawOutput:    []byte(`{"x":1}`),
+			Dismissals: []state.DeepDismissal{
+				{AOIID: "aoi-1", File: "x.go", Rationale: "false positive"},
+			},
+		},
+		Findings: []rawDeepFinding{
+			{
+				DeepFinding: state.DeepFinding{Title: "good", File: "x.go"},
+				Category:    "correctness",
+				Status:      "finding",
+			},
+		},
+	}
+	out, dropped := convertRawToTyped(dummyCall(), raw)
+	if len(dropped) != 0 {
+		t.Fatalf("unexpected drops: %v", dropped)
+	}
+	if out.Type != "grouped" || out.Category != "correctness" || out.Subcategory != "off-by-one" {
+		t.Errorf("identity fields lost: %+v", out)
+	}
+	if out.CrossCutting != "watch for shared mutable state" {
+		t.Errorf("CrossCutting lost: %q", out.CrossCutting)
+	}
+	if out.CacheKey != "deadbeef" {
+		t.Errorf("CacheKey lost: %q", out.CacheKey)
+	}
+	if string(out.RawOutput) != `{"x":1}` {
+		t.Errorf("RawOutput lost: %s", out.RawOutput)
+	}
+	if len(out.Dismissals) != 1 || out.Dismissals[0].AOIID != "aoi-1" {
+		t.Errorf("Dismissals lost: %+v", out.Dismissals)
+	}
+	if len(out.Findings) != 1 || out.Findings[0].Title != "good" {
+		t.Errorf("Findings dropped: %+v", out.Findings)
+	}
+}
+
+// TestVerifyAndCorrectCategory_TypoSkipsLLM: a one-edit typo
+// ("correctnes") is fixed locally; the LLM corrector never runs.
+func TestVerifyAndCorrectCategory_TypoSkipsLLM(t *testing.T) {
+	client := &scriptedClient{responses: []string{}}
+	raw := makeRawWithBadCategory("correctnes")
+
+	out := verifyAndCorrectCategory(context.Background(), dummyCC(client), raw)
+
+	if client.callCount() != 0 {
+		t.Fatalf("typo should be fixed without an LLM call; got %d calls", client.callCount())
+	}
+	if out.Findings[0].Category != "correctness" {
+		t.Fatalf("typo not fixed: %q", out.Findings[0].Category)
+	}
+}
+
+// TestNearestSlug_Boundaries covers the distance/length thresholds
+// directly so they don't drift silently.
+func TestNearestSlug_Boundaries(t *testing.T) {
+	allowed := []string{"correctness", "performance", "design", "testing"}
+
+	if s, ok := nearestSlug("correctnes", allowed); !ok || s != "correctness" {
+		t.Errorf("distance-1 typo should match: got %q ok=%v", s, ok)
+	}
+	if s, ok := nearestSlug("performanc", allowed); !ok || s != "performance" {
+		t.Errorf("distance-1 truncation should match: got %q ok=%v", s, ok)
+	}
+	if _, ok := nearestSlug("shitposting", allowed); ok {
+		t.Errorf("far-off slug should not match")
+	}
+	// Short slugs only accept distance 1, not 2 — too risky for false matches.
+	if _, ok := nearestSlug("dsgn", allowed); ok {
+		t.Errorf("short slug at distance 2 should not match")
+	}
+}
+
+// TestBuildCategoryCorrectorMessage_IncludesAllListedFindings: on
+// attempt 1 the message must reference every bad-category index and
+// include the allowed-category list. On attempt ≥2 the list is
+// omitted (already in prior turn) but the indexes still appear.
 func TestBuildCategoryCorrectorMessage_IncludesAllListedFindings(t *testing.T) {
 	findings := []rawDeepFinding{
 		{DeepFinding: state.DeepFinding{Title: "first"}, Category: "vibes"},
 		{DeepFinding: state.DeepFinding{Title: "second"}, Category: "energy"},
 	}
-	msg := buildCategoryCorrectorMessage(findings, []int{0, 1})
 
-	if !strings.Contains(msg, "index 0") || !strings.Contains(msg, "index 1") {
-		t.Fatalf("message should reference both bad indexes; got:\n%s", msg)
+	first := buildCategoryCorrectorMessage(findings, []int{0, 1}, 1)
+	if !strings.Contains(first, "index 0") || !strings.Contains(first, "index 1") {
+		t.Fatalf("attempt 1 should reference both bad indexes; got:\n%s", first)
 	}
-	if !strings.Contains(msg, "first") || !strings.Contains(msg, "second") {
-		t.Fatalf("message should mention both finding titles; got:\n%s", msg)
+	if !strings.Contains(first, "first") || !strings.Contains(first, "second") {
+		t.Fatalf("attempt 1 should mention both finding titles; got:\n%s", first)
 	}
-	if !strings.Contains(msg, "correctness") {
-		t.Fatalf("message should list known categories (correctness is real); got:\n%s", msg)
+	if !strings.Contains(first, "correctness") {
+		t.Fatalf("attempt 1 should list known categories; got:\n%s", first)
+	}
+
+	second := buildCategoryCorrectorMessage(findings, []int{0, 1}, 2)
+	if !strings.Contains(second, "index 0") || !strings.Contains(second, "index 1") {
+		t.Fatalf("attempt 2 should still reference bad indexes; got:\n%s", second)
+	}
+	if strings.Contains(second, "Allowed categories:") {
+		t.Fatalf("attempt 2 should not re-list allowed categories; got:\n%s", second)
+	}
+	if len(second) >= len(first) {
+		t.Fatalf("attempt 2 should be shorter than attempt 1 (saved tokens); got %d vs %d bytes", len(second), len(first))
 	}
 }
