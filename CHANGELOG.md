@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.10.0](https://github.com/andreujuanc/prr/compare/v1.9.0...v1.10.0) (2026-05-22)
+
+
+### Features
+
+* add ai-slop category and type-safe Category boundary ([9045546](https://github.com/andreujuanc/prr/commit/9045546a61df6a3c3bd20f672e0a7f9d5df8a3a3))
+* ai-slop category, benchmark overhaul, and prompt rework ([0d0b046](https://github.com/andreujuanc/prr/commit/0d0b046f467982a8262c47bb61a0981ffd016e73))
+* **aoi:** emit sources/sinks/sanitizers for security-shaped AOIs ([a1aff88](https://github.com/andreujuanc/prr/commit/a1aff88301c05c4d71a2347bec95a5fdf74da8da))
+* **bench:** capture git SHA and PRR_BENCH_TAG in benchmark archives ([7feab45](https://github.com/andreujuanc/prr/commit/7feab450b731098584b030c1113303dd749510ff))
+
 ## [1.9.0](https://github.com/andreujuanc/prr/compare/v1.8.0...v1.9.0) (2026-05-21)
 
 
