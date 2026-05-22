@@ -21,7 +21,7 @@ func prFiles(paths ...string) []git.PRFile {
 
 func TestValidateAndNormalize_DropsEmptyTitle(t *testing.T) {
 	in := &state.ReviewOutput{Findings: []state.ReviewFinding{
-		{Severity: "high", Category: "bug", File: "foo.go", Line: 1, Title: ""},
+		{Severity: "high", Category: "correctness", File: "foo.go", Line: 1, Title: ""},
 	}}
 	out, dropped := ValidateAndNormalize(in, prFiles("foo.go"), nil)
 	if len(out.Findings) != 0 {
@@ -34,7 +34,7 @@ func TestValidateAndNormalize_DropsEmptyTitle(t *testing.T) {
 
 func TestValidateAndNormalize_DropsHallucinatedFile(t *testing.T) {
 	in := &state.ReviewOutput{Findings: []state.ReviewFinding{
-		{Severity: "high", Category: "bug", File: "imagined.go", Title: "x"},
+		{Severity: "high", Category: "correctness", File: "imagined.go", Title: "x"},
 	}}
 	out, dropped := ValidateAndNormalize(in, prFiles("real.go"), nil)
 	if len(out.Findings) != 0 {
@@ -47,7 +47,7 @@ func TestValidateAndNormalize_DropsHallucinatedFile(t *testing.T) {
 
 func TestValidateAndNormalize_NormalisesUnknownSeverity(t *testing.T) {
 	in := &state.ReviewOutput{Findings: []state.ReviewFinding{
-		{Severity: "warn", Category: "bug", File: "foo.go", Title: "x"},
+		{Severity: "warn", Category: "correctness", File: "foo.go", Title: "x"},
 	}}
 	out, dropped := ValidateAndNormalize(in, prFiles("foo.go"), nil)
 	if len(dropped) != 0 {
@@ -58,23 +58,13 @@ func TestValidateAndNormalize_NormalisesUnknownSeverity(t *testing.T) {
 	}
 }
 
-func TestValidateAndNormalize_NormalisesUnknownCategory(t *testing.T) {
-	in := &state.ReviewOutput{Findings: []state.ReviewFinding{
-		{Severity: "high", Category: "vibes", File: "foo.go", Title: "x"},
-	}}
-	out, _ := ValidateAndNormalize(in, prFiles("foo.go"), nil)
-	if got := out.Findings[0].Category; got != "style" {
-		t.Fatalf("category = %q, want style (normalised)", got)
-	}
-}
-
 func TestValidateAndNormalize_SnapsLineToNearestHunk(t *testing.T) {
 	hunks := map[string][]HunkRange{
 		"foo.go": {{Start: 30, End: 50}, {Start: 80, End: 100}},
 	}
 	in := &state.ReviewOutput{Findings: []state.ReviewFinding{
 		// Out-of-hunk, closer to the second hunk.
-		{Severity: "high", Category: "bug", File: "foo.go", Line: 75, Title: "x"},
+		{Severity: "high", Category: "correctness", File: "foo.go", Line: 75, Title: "x"},
 	}}
 	out, _ := ValidateAndNormalize(in, prFiles("foo.go"), hunks)
 	if got := out.Findings[0].Line; got != 80 {
@@ -87,7 +77,7 @@ func TestValidateAndNormalize_KeepsLineInsideHunk(t *testing.T) {
 		"foo.go": {{Start: 30, End: 50}},
 	}
 	in := &state.ReviewOutput{Findings: []state.ReviewFinding{
-		{Severity: "high", Category: "bug", File: "foo.go", Line: 42, Title: "x"},
+		{Severity: "high", Category: "correctness", File: "foo.go", Line: 42, Title: "x"},
 	}}
 	out, _ := ValidateAndNormalize(in, prFiles("foo.go"), hunks)
 	if got := out.Findings[0].Line; got != 42 {
@@ -97,7 +87,7 @@ func TestValidateAndNormalize_KeepsLineInsideHunk(t *testing.T) {
 
 func TestValidateAndNormalize_PreservesPRLevelFindings(t *testing.T) {
 	in := &state.ReviewOutput{Findings: []state.ReviewFinding{
-		{Severity: "high", Category: "architecture", File: "", Line: 0, Title: "x"},
+		{Severity: "high", Category: "design", File: "", Line: 0, Title: "x"},
 	}}
 	out, dropped := ValidateAndNormalize(in, prFiles("foo.go"), nil)
 	if len(out.Findings) != 1 {
@@ -107,7 +97,7 @@ func TestValidateAndNormalize_PreservesPRLevelFindings(t *testing.T) {
 
 func TestValidateAndNormalize_StripsLeadingDotSlash(t *testing.T) {
 	in := &state.ReviewOutput{Findings: []state.ReviewFinding{
-		{Severity: "high", Category: "bug", File: "./foo.go", Title: "x"},
+		{Severity: "high", Category: "correctness", File: "./foo.go", Title: "x"},
 	}}
 	out, _ := ValidateAndNormalize(in, prFiles("foo.go"), nil)
 	if got := out.Findings[0].File; got != "foo.go" {
@@ -334,7 +324,7 @@ func TestApplyConfidencePenalties_RequiredCategoryEmptyDefensesDocks(t *testing.
 		// medium severity + 3-hop trace not required → only the
 		// defenses penalty fires.
 		findings := []state.DeepFinding{
-			{Category: cat, Severity: "medium", ConfidenceScore: 80},
+			{Category: state.Category(cat), Severity: "medium", ConfidenceScore: 80},
 		}
 		out := ApplyConfidencePenalties(findings)
 		if out[0].ConfidenceScore != 55 {
@@ -367,7 +357,7 @@ func TestApplyConfidencePenalties_NonRequiredCategoryEmptyDefensesUntouched(t *t
 	// defenses — error-handling, correctness, performance, etc.
 	for _, cat := range []string{"correctness", "error-handling", "performance", "testing"} {
 		findings := []state.DeepFinding{
-			{Category: cat, Severity: "medium", ConfidenceScore: 80},
+			{Category: state.Category(cat), Severity: "medium", ConfidenceScore: 80},
 		}
 		out := ApplyConfidencePenalties(findings)
 		if out[0].ConfidenceScore != 80 {
@@ -394,19 +384,10 @@ func TestApplyConfidencePenalties_BothPenaltiesCompound(t *testing.T) {
 	}
 }
 
-func TestApplyConfidencePenalties_CategoryCaseInsensitive(t *testing.T) {
-	// LLM might emit "Authorization" or "AUTHORIZATION" — match
-	// case-insensitively.
-	for _, cat := range []string{"Authorization", "INPUT-VALIDATION", "External-IO"} {
-		findings := []state.DeepFinding{
-			{Category: cat, Severity: "medium", ConfidenceScore: 80},
-		}
-		out := ApplyConfidencePenalties(findings)
-		if out[0].ConfidenceScore != 55 {
-			t.Errorf("category %q: case-insensitive match failed; got %d", cat, out[0].ConfidenceScore)
-		}
-	}
-}
+// Category case normalisation is now the type's invariant —
+// state.ParseCategory lowercases on entry, so by the time a finding
+// holds a Category it's already lowercase. No defensesRequired-side
+// fallback needed.
 
 func TestApplyConfidencePenalties_OtherTagSatisfiesDefenses(t *testing.T) {
 	// `other:<tag>` is the documented escape hatch for defense

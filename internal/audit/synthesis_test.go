@@ -48,7 +48,7 @@ func makeFindings(n int) []state.DeepFinding {
 			File:        fmt.Sprintf("pkg/file%d.go", i),
 			Lines:       fmt.Sprintf("%d-%d", i*10, i*10+5),
 			Severity:    sev,
-			Category:    fmt.Sprintf("cat%d", i%3),
+			Category:    state.Category(fmt.Sprintf("cat%d", i%3)),
 			Subcategory: "sub",
 			Title:       fmt.Sprintf("Finding %d", i),
 			Description: fmt.Sprintf("Description for finding %d", i),

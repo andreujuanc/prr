@@ -11,7 +11,7 @@ import (
 func f(file, category, subcat, title, severity string) state.DeepFinding {
 	return state.DeepFinding{
 		File:        file,
-		Category:    category,
+		Category:    state.Category(category),
 		Subcategory: subcat,
 		Title:       title,
 		Severity:    severity,
@@ -118,7 +118,7 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 	}
 
 	findings := []state.DeepFinding{
-		f("a.go", "bug", "", "nil deref", "high"),
+		f("a.go", "correctness", "", "nil deref", "high"),
 	}
 	if err := SaveSnapshot(tmp, findings); err != nil {
 		t.Fatalf("save: %v", err)

@@ -46,25 +46,32 @@ func TestValidateAOIs_LogsMissingCategory(t *testing.T) {
 	}
 }
 
-func TestValidateAOIs_LogsOutOfTaxonomyCategory(t *testing.T) {
+// Out-of-taxonomy categories are now dropped at JSON unmarshal time by
+// the AOIScanResult.UnmarshalJSON tolerance loop — one bad AOI does
+// not poison its sibling AOIs in the same file.
+func TestAOIScanResult_UnmarshalJSON_DropsBadCategory(t *testing.T) {
 	buf := captureLog(t)
 
-	results := []AOIScanResult{
-		{
-			File: "x.go",
-			AreasOfInterest: []AreaOfInterest{
-				{ID: "x-go-1", Line: 5, Category: "shitposting"},
-			},
-		},
+	const input = `{
+		"file": "x.go",
+		"areas_of_interest": [
+			{"id": "good-1", "line": 1, "category": "correctness"},
+			{"id": "bad-1",  "line": 5, "category": "shitposting"}
+		]
+	}`
+	var r AOIScanResult
+	if err := r.UnmarshalJSON([]byte(input)); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	validateAOIs(results)
-
+	if len(r.AreasOfInterest) != 1 {
+		t.Fatalf("expected 1 surviving AOI (the bad one dropped), got %d", len(r.AreasOfInterest))
+	}
+	if r.AreasOfInterest[0].ID != "good-1" {
+		t.Fatalf("wrong survivor: %+v", r.AreasOfInterest[0])
+	}
 	out := buf.String()
-	if !strings.Contains(out, "out-of-taxonomy") {
-		t.Errorf("expected 'out-of-taxonomy' log; got: %q", out)
-	}
-	if !strings.Contains(out, `"shitposting"`) {
-		t.Errorf("log should include the invalid category verbatim; got: %q", out)
+	if !strings.Contains(out, "shitposting") {
+		t.Errorf("expected drop log to include the rejected slug; got: %q", out)
 	}
 }
 

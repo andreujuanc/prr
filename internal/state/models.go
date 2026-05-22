@@ -97,14 +97,14 @@ type ReviewFinding struct {
 	// (see commits 4 + 5 in the audit-quality plan).
 	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
 
-	Category   string `json:"category"` // "bug", "security", "performance", "testing", "style", "architecture", "docs"
-	File       string `json:"file"`
-	Line       int    `json:"line"`
-	Title      string `json:"title"`
-	Detail     string `json:"detail"`
-	Suggestion string `json:"suggestion,omitempty"`
-	CWE        string `json:"cwe,omitempty"`      // e.g. "CWE-89" — populated for security findings
-	Resolved   bool   `json:"resolved,omitempty"` // user-toggled or auto-resolved by task completion
+	Category   Category `json:"category"`
+	File       string   `json:"file"`
+	Line       int      `json:"line"`
+	Title      string   `json:"title"`
+	Detail     string   `json:"detail"`
+	Suggestion string   `json:"suggestion,omitempty"`
+	CWE        string   `json:"cwe,omitempty"`      // e.g. "CWE-89" — populated for security findings
+	Resolved   bool     `json:"resolved,omitempty"` // user-toggled or auto-resolved by task completion
 
 	// SourceIDs lists the deep-finding IDs (e.g. "F-001", "F-007") this
 	// synthesis finding derives from. One synthesis finding can cite
@@ -585,8 +585,8 @@ type DeepReviewResult struct {
 	CacheKey string `json:"cache_key"`
 
 	// Category and Subcategory identify the concern area.
-	Category    string `json:"category"`
-	Subcategory string `json:"subcategory,omitempty"`
+	Category    Category `json:"category"`
+	Subcategory string   `json:"subcategory,omitempty"`
 
 	// RawOutput is the LLM's JSON response (unparsed for flexibility).
 	RawOutput json.RawMessage `json:"raw_output"`
@@ -671,16 +671,16 @@ type TraceHop struct {
 
 // DeepFinding is a confirmed issue from Phase 3 review.
 type DeepFinding struct {
-	FindingID   string `json:"finding_id,omitempty"` // assigned before recheck (e.g. "F-001")
-	AOIID       string `json:"aoi_id"`
-	File        string `json:"file"`
-	Lines       string `json:"lines"`
-	Severity    string `json:"severity"` // "critical", "high", "medium", "low", "nit"
-	Category    string `json:"category"`
-	Subcategory string `json:"subcategory,omitempty"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Evidence    string `json:"evidence,omitempty"` // what was verified and found (tool-backed)
+	FindingID   string   `json:"finding_id,omitempty"` // assigned before recheck (e.g. "F-001")
+	AOIID       string   `json:"aoi_id"`
+	File        string   `json:"file"`
+	Lines       string   `json:"lines"`
+	Severity    string   `json:"severity"` // "critical", "high", "medium", "low", "nit"
+	Category    Category `json:"category"`
+	Subcategory string   `json:"subcategory,omitempty"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Evidence    string   `json:"evidence,omitempty"` // what was verified and found (tool-backed)
 	// EvidenceSnippet is 1-3 verbatim lines from File at Lines that
 	// prove the finding. Phase 3's prompt requires it, and the
 	// in-loop verifier matches this against the file before the

@@ -29,7 +29,7 @@ func RenderCategoryChart(findings []state.DeepFinding) string {
 	// Count by category
 	counts := map[string]int{}
 	for _, f := range findings {
-		counts[f.Category]++
+		counts[f.Category.String()]++
 	}
 
 	// Sort by count descending

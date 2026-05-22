@@ -36,10 +36,10 @@ type BatchFinding struct {
 	ConfidenceScore     int    `json:"confidence_score,omitempty"`
 	ConfidenceReasoning string `json:"confidence_reasoning,omitempty"`
 
-	Category string `json:"category,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Line     int    `json:"line,omitempty"`
-	Detail   string `json:"detail,omitempty"`
+	Category state.Category `json:"category,omitempty"`
+	Title    string         `json:"title,omitempty"`
+	Line     int            `json:"line,omitempty"`
+	Detail   string         `json:"detail,omitempty"`
 	// EvidenceSnippet is a verbatim 1-3 line copy from the cited file:line.
 	// Carried into state.DeepFinding.EvidenceSnippet by the fallback
 	// converter so recheck can locate the suspect code.
@@ -121,7 +121,7 @@ func (bf BatchFindings) Text() string {
 			b.WriteString("[confidence: " + f.Confidence + "] ")
 		}
 		if f.Category != "" {
-			b.WriteString("[" + f.Category + "] ")
+			b.WriteString("[" + f.Category.String() + "] ")
 		}
 		if f.Title != "" {
 			b.WriteString(f.Title)

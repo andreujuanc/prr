@@ -170,7 +170,7 @@ func TestParseAOIResult_LegacyFormatStillWorks(t *testing.T) {
 		"areas_of_interest": [{
 			"file": "main.go",
 			"line": 42,
-			"category": "sql",
+			"category": "input-validation",
 			"snippet": "db.Query(s)",
 			"reasoning": "raw SQL",
 			"confidence": "high"
@@ -186,8 +186,8 @@ func TestParseAOIResult_LegacyFormatStillWorks(t *testing.T) {
 	}
 
 	aoi := results[0].AreasOfInterest[0]
-	if aoi.Category != "sql" {
-		t.Errorf("got Category %q, want %q", aoi.Category, "sql")
+	if aoi.Category != "input-validation" {
+		t.Errorf("got Category %q, want %q", aoi.Category, "input-validation")
 	}
 	if aoi.Snippet != "db.Query(s)" {
 		t.Errorf("got Snippet %q, want %q", aoi.Snippet, "db.Query(s)")

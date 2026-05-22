@@ -4,13 +4,14 @@ import (
 	"testing"
 
 	"github.com/andreujuanc/prr/internal/security"
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 func makeAOI(file string, line int, cat, subcat, urgency string) security.AreaOfInterest {
 	return security.AreaOfInterest{
 		File:        file,
 		Line:        line,
-		Category:    cat,
+		Category:    state.Category(cat),
 		Subcategory: subcat,
 		Urgency:     urgency,
 		Concern:     "test concern",

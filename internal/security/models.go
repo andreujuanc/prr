@@ -1,6 +1,11 @@
 package security
 
-import "github.com/andreujuanc/prr/internal/state"
+import (
+	"encoding/json"
+	"log"
+
+	"github.com/andreujuanc/prr/internal/state"
+)
 
 // AreaOfInterest represents a code location identified by the AOI scanner
 // that warrants deeper review. Each AOI is tagged with a category/subcategory
@@ -11,9 +16,9 @@ type AreaOfInterest struct {
 	Line    int    `json:"line"`
 	EndLine int    `json:"end_line,omitempty"` // optional: range end
 
-	// Category + Subcategory from the category taxonomy (e.g. "error-handling" / "swallowed-errors").
-	Category    string `json:"category"`
-	Subcategory string `json:"subcategory,omitempty"`
+	// Category + Subcategory from the loaded category set (e.g. "error-handling" / "swallowed-errors").
+	Category    state.Category `json:"category"`
+	Subcategory string         `json:"subcategory,omitempty"`
 
 	// Urgency controls Phase 3 routing:
 	//   "individual" — gets a dedicated deep review call
@@ -64,6 +69,37 @@ func (r *AOIScanResult) NormalizeAOIs() {
 		r.AreasOfInterest = r.Areas
 		r.Areas = nil
 	}
+}
+
+// UnmarshalJSON parses AOIs one at a time so a single off-list category
+// drops only that AOI instead of failing the whole file's batch.
+func (r *AOIScanResult) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		File            string            `json:"file"`
+		AreasOfInterest []json.RawMessage `json:"areas_of_interest"`
+		Areas           []json.RawMessage `json:"areas,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.File = raw.File
+	for _, msg := range raw.AreasOfInterest {
+		var aoi AreaOfInterest
+		if err := json.Unmarshal(msg, &aoi); err != nil {
+			log.Printf("aoi: dropping AOI in %s: %v", raw.File, err)
+			continue
+		}
+		r.AreasOfInterest = append(r.AreasOfInterest, aoi)
+	}
+	for _, msg := range raw.Areas {
+		var aoi AreaOfInterest
+		if err := json.Unmarshal(msg, &aoi); err != nil {
+			log.Printf("aoi: dropping AOI in %s: %v", raw.File, err)
+			continue
+		}
+		r.Areas = append(r.Areas, aoi)
+	}
+	return nil
 }
 
 // AOIReport is the complete result of scanning all changed files.

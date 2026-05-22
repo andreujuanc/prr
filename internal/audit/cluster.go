@@ -49,22 +49,22 @@ type SiblingClusterResult struct {
 // — the LLM only needs the AOI's category, concern, and context to
 // judge similarity.
 type clusterCandidate struct {
-	ID          string `json:"id"`
-	File        string `json:"file"`
-	Category    string `json:"category"`
-	Subcategory string `json:"subcategory,omitempty"`
-	Concern     string `json:"concern"`
-	Context     string `json:"context,omitempty"`
+	ID          string         `json:"id"`
+	File        string         `json:"file"`
+	Category    state.Category `json:"category"`
+	Subcategory string         `json:"subcategory,omitempty"`
+	Concern     string         `json:"concern"`
+	Context     string         `json:"context,omitempty"`
 }
 
 // clusterLLMResult mirrors the JSON shape the prompt asks the LLM to
 // produce.
 type clusterLLMResult struct {
-	Pattern          string   `json:"pattern"`
-	SiblingIDs       []string `json:"sibling_ids"`
-	DeviantIDs       []string `json:"deviant_ids"`
-	Category         string   `json:"category"`
-	DeviationConcern string   `json:"deviation_concern"`
+	Pattern          string         `json:"pattern"`
+	SiblingIDs       []string       `json:"sibling_ids"`
+	DeviantIDs       []string       `json:"deviant_ids"`
+	Category         state.Category `json:"category"`
+	DeviationConcern string         `json:"deviation_concern"`
 }
 
 // DiscoverSiblingOutliers runs Phase 2.5: it groups AOIs by shape via
@@ -274,9 +274,9 @@ func projectCandidates(aois []security.AreaOfInterest) []clusterCandidate {
 func groupByCategory(candidates []clusterCandidate) map[string][]clusterCandidate {
 	out := make(map[string][]clusterCandidate, 16)
 	for _, c := range candidates {
-		key := c.Category
+		key := c.Category.String()
 		if c.Subcategory != "" {
-			key = c.Category + "/" + c.Subcategory
+			key = c.Category.String() + "/" + c.Subcategory
 		}
 		out[key] = append(out[key], c)
 	}

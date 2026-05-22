@@ -5,10 +5,12 @@ package review
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/security"
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 // ReviewCall represents a single LLM call made during the deep-review
@@ -24,9 +26,15 @@ type ReviewCall struct {
 	// Type is "individual", "grouped", or "fallback-batch".
 	Type string
 
-	// Category and Subcategory identify the concern area.
-	Category    string
+	// Category and Subcategory identify the concern area for AOI-driven
+	// calls. Empty for fallback-batch (which carries Label instead).
+	Category    state.Category
 	Subcategory string
+
+	// Label is a free-form display label for fallback-batch calls,
+	// typically the directory name. Empty for AOI-driven calls (which
+	// derive their label from Category/Subcategory).
+	Label string
 
 	// AOIs contains the areas of interest for this call.
 	// For individual calls, this has exactly one element.
@@ -224,26 +232,33 @@ func (r *RouteResult) SkippedSubcategories(maxCalls int) []string {
 // aoiMatchesFocus returns true if the AOI's category is in the focus
 // set. One AOI = one category — see the AOI scan prompt.
 func aoiMatchesFocus(aoi security.AreaOfInterest, focusSet map[string]bool) bool {
-	if aoi.Category == "" {
-		// AOIs without a category: include rather than silently drop.
-		// validateAOIs already logs these for human attention.
+	if aoi.Category.IsZero() {
 		return true
 	}
-	return focusSet[aoi.Category]
+	return focusSet[aoi.Category.String()]
 }
 
-func subcategoryKey(category, subcategory string) string {
+func subcategoryKey(category state.Category, subcategory string) string {
 	if subcategory == "" {
-		return category
+		return category.String()
 	}
-	return category + "/" + subcategory
+	return category.String() + "/" + subcategory
 }
 
-func parseSubcategoryKey(key string) (category, subcategory string) {
+// parseSubcategoryKey reverses subcategoryKey. Keys originate from
+// already-validated AOIs, so a ParseCategory failure here means a
+// caller fed in an unknown slug — log it and return the zero Category.
+func parseSubcategoryKey(key string) (category state.Category, subcategory string) {
+	rawCat := key
 	if before, after, ok := strings.Cut(key, "/"); ok {
-		return before, after
+		rawCat = before
+		subcategory = after
 	}
-	return key, ""
+	c, err := state.ParseCategory(rawCat)
+	if err != nil {
+		log.Printf("router: parseSubcategoryKey rejected %q: %v", rawCat, err)
+	}
+	return c, subcategory
 }
 
 func uniqueFiles(aois []security.AreaOfInterest) []string {

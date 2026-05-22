@@ -28,7 +28,7 @@ import (
 func indivCall() ReviewCall {
 	return ReviewCall{
 		Type:        "individual",
-		Category:    "security",
+		Category:    "cryptography",
 		Subcategory: "auth",
 		AOIs:        []security.AreaOfInterest{{ID: "aoi-1", File: "x.go", Line: 1}},
 	}
@@ -41,7 +41,7 @@ const validFindingJSON = `{
   "file": "x.go",
   "lines": "10",
   "severity": "high",
-  "category": "security",
+  "category": "cryptography",
   "subcategory": "auth",
   "title": "Hardcoded credential",
   "description": "API key in source.",
@@ -75,7 +75,7 @@ func TestParseDeepReviewResult_RawOutputAlwaysMarshalable(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, _ := ParseDeepReviewResult(indivCall(), tc.raw)
+			result, _, _ := ParseDeepReviewResult(indivCall(), tc.raw)
 			if result == nil {
 				t.Fatal("ParseDeepReviewResult returned nil")
 			}
@@ -104,7 +104,7 @@ func TestParseDeepReviewResult_RawOutputAlwaysMarshalable(t *testing.T) {
 // the same code path Save uses (see internal/state/store.go:164).
 func TestParseDeepReviewResult_StateSaveRoundTrips(t *testing.T) {
 	fenced := "```json\n" + validFindingJSON + "\n```"
-	result, err := ParseDeepReviewResult(indivCall(), fenced)
+	result, _, err := ParseDeepReviewResult(indivCall(), fenced)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -145,7 +145,7 @@ const validDismissalJSON = `{
 }`
 
 func TestParseDeepReviewResult_DismissalCapturesFileAndConfidence(t *testing.T) {
-	result, err := ParseDeepReviewResult(indivCall(), validDismissalJSON)
+	result, _, err := ParseDeepReviewResult(indivCall(), validDismissalJSON)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -176,8 +176,8 @@ func TestParseDeepReviewResult_DismissalCapturesFileAndConfidence(t *testing.T) 
 // fails it means the parser regressed and findings are being dropped
 // before they reach state at all.
 func TestParseDeepReviewResult_FencedYieldsSameParsedFields(t *testing.T) {
-	clean, cleanErr := ParseDeepReviewResult(indivCall(), validFindingJSON)
-	fenced, fencedErr := ParseDeepReviewResult(indivCall(), "```json\n"+validFindingJSON+"\n```")
+	clean, _, cleanErr := ParseDeepReviewResult(indivCall(), validFindingJSON)
+	fenced, _, fencedErr := ParseDeepReviewResult(indivCall(), "```json\n"+validFindingJSON+"\n```")
 	if cleanErr != nil || fencedErr != nil {
 		t.Fatalf("parse: clean=%v fenced=%v", cleanErr, fencedErr)
 	}

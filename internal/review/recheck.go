@@ -445,7 +445,7 @@ func recheckBatchLabel(batch []state.DeepFinding) string {
 	}
 	cats := make(map[string]struct{}, 2)
 	for _, f := range batch {
-		c := f.Category
+		c := f.Category.String()
 		if c == "" {
 			c = "_uncategorized"
 		}
@@ -454,7 +454,7 @@ func recheckBatchLabel(batch []state.DeepFinding) string {
 			return "mixed"
 		}
 	}
-	cat := batch[0].Category
+	cat := batch[0].Category.String()
 	if cat == "" {
 		return "_uncategorized"
 	}
@@ -510,7 +510,7 @@ func splitFindingsByCategory(findings []state.DeepFinding, maxPerBatch int) [][]
 	byCat := make(map[string][]state.DeepFinding)
 	var order []string
 	for _, f := range findings {
-		key := f.Category
+		key := f.Category.String()
 		if key == "" {
 			key = "_uncategorized"
 		}
@@ -925,7 +925,7 @@ func splitFindingsByCategoryChunked(findings []state.DeepFinding, chunkSize int)
 	byCat := make(map[string][]state.DeepFinding)
 	var order []string
 	for _, f := range findings {
-		key := f.Category
+		key := f.Category.String()
 		if key == "" {
 			key = "_uncategorized"
 		}

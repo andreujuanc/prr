@@ -250,7 +250,7 @@ func runAOIOnFile(t *testing.T, spec aoiModelSpec, target, body string, expect [
 		if aoi.EndLine > 0 && aoi.EndLine != aoi.Line {
 			loc = fmt.Sprintf("L%d-%d", aoi.Line, aoi.EndLine)
 		}
-		cat := aoi.Category
+		cat := aoi.Category.String()
 		if aoi.Subcategory != "" {
 			cat += "/" + aoi.Subcategory
 		}

@@ -226,7 +226,7 @@ func TestParseDeepReviewResult_WrapsParseErrorsWithSentinel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseDeepReviewResult(buildIndivCall(), tc.raw)
+			_, _, err := ParseDeepReviewResult(buildIndivCall(), tc.raw)
 			if err == nil {
 				t.Fatal("expected parse error")
 			}
@@ -239,7 +239,7 @@ func TestParseDeepReviewResult_WrapsParseErrorsWithSentinel(t *testing.T) {
 
 func TestParseDeepReviewResult_NoErrorOnValidResponse(t *testing.T) {
 	// Sanity: a well-formed response returns nil error.
-	result, err := ParseDeepReviewResult(buildIndivCall(), validFindingResponse)
+	result, _, err := ParseDeepReviewResult(buildIndivCall(), validFindingResponse)
 	if err != nil {
 		t.Fatalf("valid response should not error; got: %v", err)
 	}

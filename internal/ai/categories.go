@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/andreujuanc/prr/internal/state"
 )
 
 // categoryFS embeds all category partial files. Each file defines a
@@ -52,6 +54,8 @@ func init() {
 	}
 
 	sort.Strings(categoryOrder)
+
+	state.SetCategoryValidator(CategoryExists)
 }
 
 // GetCategory returns the content of a single category by slug.

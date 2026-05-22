@@ -430,7 +430,7 @@ func matchAOI(aoi security.AreaOfInterest, gt groundTruthAOI) (fileMatch, lineMa
 		lineMatch = lineMatch || (aoi.EndLine >= gt.lineRange[0] && aoi.Line <= gt.lineRange[1])
 	}
 
-	categoryMatch = aoi.Category == gt.category
+	categoryMatch = aoi.Category.String() == gt.category
 	return
 }
 

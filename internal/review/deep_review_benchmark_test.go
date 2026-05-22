@@ -507,7 +507,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 		var filtered security.AOIScanResult
 		filtered.File = r.File
 		for _, aoi := range r.AreasOfInterest {
-			if strings.Contains(strings.ToLower(aoi.Category), strings.ToLower(focusCategory)) {
+			if strings.Contains(strings.ToLower(aoi.Category.String()), strings.ToLower(focusCategory)) {
 				filtered.AreasOfInterest = append(filtered.AreasOfInterest, aoi)
 			}
 		}

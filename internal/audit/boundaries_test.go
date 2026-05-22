@@ -159,7 +159,7 @@ func TestSynthesizeBoundaryAOIs_HTTPProducesThreeAOIs(t *testing.T) {
 	}
 	wantCategories := map[string]bool{"input-validation": false, "authorization": false, "error-handling": false}
 	for _, aoi := range got {
-		wantCategories[aoi.Category] = true
+		wantCategories[aoi.Category.String()] = true
 		if aoi.Subcategory != "boundary-coverage" {
 			t.Errorf("expected subcategory 'boundary-coverage', got %q", aoi.Subcategory)
 		}

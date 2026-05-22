@@ -41,29 +41,24 @@ var validSeverities = map[string]bool{
 	"critical": true, "high": true, "medium": true, "low": true, "nit": true,
 }
 
-// validCategories is the canonical category enum. Unknown values
-// normalise to "style".
-var validCategories = map[string]bool{
-	"bug": true, "security": true, "performance": true, "testing": true,
-	"style": true, "architecture": true, "docs": true,
-}
-
 // ValidateAndNormalize trims, normalises, and drops malformed findings
 // from a structured review so the TUI doesn't have to defend against
 // hallucinated file paths, blank titles, unknown severities, or line
 // numbers that miss the diff entirely.
 //
+// Category is not touched here — the state.Category type validates at
+// JSON unmarshal time. Anything that reaches this point is already a
+// known slug or the zero Category.
+//
 // Rules (in order):
 //   - Severity lowercased; unknown → "low" (warn, don't drop).
-//   - Category lowercased; unknown → "style" (warn, don't drop).
 //   - Title trimmed; empty → drop.
 //   - File trimmed of leading "./"; resolved against prFiles
 //     (case-sensitive). Not-in-PR → drop.
 //   - Line: when out of every hunk for that file, snap to the
 //     nearest hunk's start line (warn, don't drop). When no hunks
 //     are known for the file, leave Line as-is.
-//   - PR-level findings (File == "") are preserved — they're a
-//     valid shape, not a defect.
+//   - PR-level findings (File == "") are preserved.
 //
 // Returns the cleaned review (mutated in place) and a slice of
 // dropped-finding reports. When in is nil, returns (nil, nil).
@@ -86,7 +81,6 @@ func ValidateAndNormalize(
 
 	for _, f := range in.Findings {
 		f.Severity = normaliseSeverity(f.Severity)
-		f.Category = normaliseCategory(f.Category)
 		f.Title = strings.TrimSpace(f.Title)
 		f.Detail = strings.TrimSpace(f.Detail)
 		f.Suggestion = strings.TrimSpace(f.Suggestion)
@@ -127,14 +121,6 @@ func normaliseSeverity(s string) string {
 		return s
 	}
 	return "low"
-}
-
-func normaliseCategory(c string) string {
-	c = strings.ToLower(strings.TrimSpace(c))
-	if validCategories[c] {
-		return c
-	}
-	return "style"
 }
 
 // normaliseFilePath strips the leading "./" some models emit so paths
@@ -205,17 +191,16 @@ const (
 )
 
 // requiredDefensesCategories enumerates the finding categories where
-// `defenses_checked` is mandatory. The category names match the slugs
-// produced by Phase 2 AOI generation and Phase 3 review output.
+// `defenses_checked` is mandatory.
 //
 // `error-handling` is deliberately excluded — defense classes there
 // are inconsistent enough that requiring them adds more friction than
 // signal (per the audit-quality plan).
-var requiredDefensesCategories = map[string]bool{
-	"authorization":    true,
-	"concurrency":      true,
-	"input-validation": true,
-	"external-io":      true,
+var requiredDefensesCategories = map[state.Category]bool{
+	state.Category("authorization"):    true,
+	state.Category("concurrency"):      true,
+	state.Category("input-validation"): true,
+	state.Category("external-io"):      true,
 }
 
 // systemicMinSites is the minimum number of distinct files an
@@ -488,10 +473,9 @@ func ApplyConfidencePenalties(findings []state.DeepFinding) []state.DeepFinding 
 }
 
 // defensesRequired reports whether the defenses_checked field is
-// mandatory for a finding's category. The category name is
-// case-insensitive; whitespace is trimmed.
-func defensesRequired(category string) bool {
-	return requiredDefensesCategories[strings.ToLower(strings.TrimSpace(category))]
+// mandatory for a finding's category.
+func defensesRequired(category state.Category) bool {
+	return requiredDefensesCategories[category]
 }
 
 // traceRequired reports whether the 3-hop trace rule applies to a
