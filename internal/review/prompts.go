@@ -308,6 +308,16 @@ func formatAOI(aoi security.AreaOfInterest) string {
 		sb.WriteString(fmt.Sprintf("**Context:** %s\n", aoi.Context))
 	}
 
+	if len(aoi.Sources) > 0 || len(aoi.Sinks) > 0 || aoi.Sanitizers != nil {
+		sb.WriteString(fmt.Sprintf("**Sources → Sinks:** %s → %s\n",
+			strings.Join(aoi.Sources, ", "), strings.Join(aoi.Sinks, ", ")))
+		if len(aoi.Sanitizers) == 0 {
+			sb.WriteString("**Sanitizers:** none identified — confirm or report missing\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("**Sanitizers:** %s\n", strings.Join(aoi.Sanitizers, ", ")))
+		}
+	}
+
 	if aoi.Snippet != "" {
 		sb.WriteString(fmt.Sprintf("**Code:** `%s`\n", aoi.Snippet))
 	}

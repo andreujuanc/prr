@@ -36,6 +36,17 @@ type AreaOfInterest struct {
 	// Context provides additional information about why this location matters.
 	Context string `json:"context,omitempty"`
 
+	// Sources, Sinks, and Sanitizers describe the taint shape of the AOI for
+	// security-shaped categories (input-validation, external-io, authorization,
+	// authentication, cryptography, web-security). Each is a short list of
+	// identifier-shaped strings (variable / function / parameter names), not
+	// sentences. An empty Sanitizers slice on a security AOI is a critical
+	// signal — no defense layer was identified between source and sink.
+	// Non-security categories leave all three empty.
+	Sources    []string `json:"sources,omitempty"`
+	Sinks      []string `json:"sinks,omitempty"`
+	Sanitizers []string `json:"sanitizers,omitempty"`
+
 	// SiblingDeviation is set when this AOI was synthesized by Phase
 	// 2.5 sibling clustering — it identifies the AOI as a 1-of-N
 	// outlier and carries the conforming siblings so Phase 3 can
