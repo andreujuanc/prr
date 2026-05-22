@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -48,7 +49,25 @@ type ModelBenchmark struct {
 type BenchmarkResults struct {
 	Version   int              `json:"version"`   // schema version, currently 1
 	Timestamp time.Time        `json:"timestamp"` // when the benchmark was run
+	GitSHA    string           `json:"git_sha,omitempty"`
+	GitDirty  bool             `json:"git_dirty,omitempty"` // working tree had uncommitted changes
+	Tag       string           `json:"tag,omitempty"`       // free-form label from PRR_BENCH_TAG
 	Models    []ModelBenchmark `json:"models"`
+}
+
+// captureGitContext returns the short HEAD SHA and whether the working tree
+// has uncommitted changes. Best-effort: returns zero values if git is
+// unavailable or the cwd isn't a repo.
+func captureGitContext() (sha string, dirty bool) {
+	out, err := exec.Command("git", "rev-parse", "--short=12", "HEAD").Output()
+	if err != nil {
+		return "", false
+	}
+	sha = strings.TrimSpace(string(out))
+	if status, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
+		dirty = len(strings.TrimSpace(string(status))) > 0
+	}
+	return sha, dirty
 }
 
 // BenchmarkDir returns ~/.config/prr/benchmarks/ — the directory holding
@@ -83,6 +102,12 @@ func BenchmarkArchivePath(name string, t time.Time) (string, error) {
 // immutable snapshot of just that run's models; the merged "current state"
 // view is produced by LoadBenchmarkResults walking all archives latest-wins.
 func SaveBenchmarkResults(name string, results *BenchmarkResults) error {
+	if results.GitSHA == "" {
+		results.GitSHA, results.GitDirty = captureGitContext()
+	}
+	if results.Tag == "" {
+		results.Tag = os.Getenv("PRR_BENCH_TAG")
+	}
 	path, err := BenchmarkArchivePath(name, results.Timestamp)
 	if err != nil {
 		return err
