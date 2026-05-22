@@ -507,36 +507,20 @@ func countFiles(batches []aoiBatch) int {
 var errAOIParse = errors.New("aoi: parse failure")
 
 // validateAOIs surfaces semantic issues with parsed AOI results that
-// would silently propagate into Phase 3 routing:
-//
-//   - Empty or out-of-taxonomy `category` values. Phase 3 buckets AOIs
-//     by subcategory; a category like "shitposting" or "" would still
-//     be bucketed somewhere and pollute that bucket's review.
-//   - Category slugs not in the partial taxonomy. Used by --focus
-//     filtering; an unknown slug is silently dropped from filtering.
-//   - Duplicate IDs within a single file. IDs feed caching and
-//     cross-referencing; duplicates corrupt those.
-//
-// All issues are logged (no coercion). The model's output is left
-// intact so the user can see what the LLM emitted vs what we wanted.
-// Coercion would hide prompt-drift problems that need human attention.
+// would silently propagate into Phase 3 routing. Category validity is
+// not checked here — the state.Category type enforces it at parse
+// time. Only missing category and duplicate IDs are flagged.
 func validateAOIs(results []AOIScanResult) {
 	for _, r := range results {
 		seen := make(map[string]int, len(r.AreasOfInterest))
 		for _, aoi := range r.AreasOfInterest {
-			if aoi.Category == "" {
-				log.Printf("aoi: %s [id=%s] missing category (model output, not coerced)",
-					r.File, aoi.ID)
-			} else if !ai.CategoryExists(aoi.Category) {
-				log.Printf("aoi: %s [id=%s] uses out-of-taxonomy category %q (not coerced; Phase 3 routing may be off)",
-					r.File, aoi.ID, aoi.Category)
+			if aoi.Category.IsZero() {
+				log.Printf("aoi: %s [id=%s] missing category", r.File, aoi.ID)
 			}
 
 			if aoi.ID != "" {
 				seen[aoi.ID]++
 				if seen[aoi.ID] == 2 {
-					// Log the SECOND occurrence so we don't spam for triples,
-					// while still surfacing the collision.
 					log.Printf("aoi: %s has duplicate AOI id %q (caching and cross-referencing will collide)",
 						r.File, aoi.ID)
 				}
@@ -749,9 +733,9 @@ func formatDigest(report *AOIReport) string {
 	catCounts := make(map[string]int)
 	for _, r := range report.Files {
 		for _, aoi := range r.AreasOfInterest {
-			key := aoi.Category
+			key := aoi.Category.String()
 			if aoi.Subcategory != "" {
-				key = aoi.Category + "/" + aoi.Subcategory
+				key = aoi.Category.String() + "/" + aoi.Subcategory
 			}
 			catCounts[key]++
 		}
@@ -787,9 +771,9 @@ func formatDigest(report *AOIReport) string {
 			}
 
 			// Format depends on whether this is new-format (with subcategory) or legacy
-			cat := aoi.Category
+			cat := aoi.Category.String()
 			if aoi.Subcategory != "" {
-				cat = aoi.Category + "/" + aoi.Subcategory
+				cat = aoi.Category.String() + "/" + aoi.Subcategory
 			}
 
 			desc := aoi.Reasoning // legacy

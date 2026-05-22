@@ -630,7 +630,7 @@ func Run(
 	var phase3ToolHook func(callIndex int, toolName string, args string, status string, duration string)
 	if dbgw.Enabled() {
 		phase3DebugHook = func(index int, call review.ReviewCall, systemPrompt string, userMsg string, response string) {
-			label := call.Category
+			label := call.Category.String()
 			if call.Subcategory != "" {
 				label += "/" + call.Subcategory
 			}
@@ -1035,7 +1035,7 @@ func runPhase3(
 	// about. Audit only has AOI-driven calls (no general fallback
 	// batches), so kind=aoi-driven for all of them.
 	for i, call := range calls {
-		label := call.Category
+		label := call.Category.String()
 		if call.Subcategory != "" {
 			label += "/" + call.Subcategory
 		}

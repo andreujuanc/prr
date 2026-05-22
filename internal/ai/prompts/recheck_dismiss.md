@@ -78,6 +78,15 @@ patterns:
 - Finding is about test/mock code that never runs in production.
 - Trigger is "if an attacker controls X" but X isn't user-controlled
   in this codebase.
+- **Path is infeasible.** Walk the `trace` from `suspect` → `caller` →
+  `boundary`. If any hop requires inputs or state that cannot occur
+  under the entry-point classes in the Runtime Model — e.g., the
+  caller is reached only from an internal cron with a hard-coded
+  argument, or the boundary is fronted by a typed schema that
+  rejects the shape the bug needs — dismiss with rationale
+  `infeasible-path` and name the hop. Don't dismiss for "I can't
+  imagine a caller"; only dismiss when you can point at the trace
+  hop and the constraint that contradicts it.
 - Pattern flagged is the codebase's established convention.
 - Two findings on the same code contradict each other on whether a
   mitigation exists — the one citing the mitigation usually wins.

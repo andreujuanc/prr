@@ -974,7 +974,7 @@ func RunReviewCore(
 		}
 		reviewCalls = append(reviewCalls, ReviewCall{
 			Type:      "fallback-batch",
-			Category:  b.Label,
+			Label:     b.Label,
 			Files:     b.Files,
 			FileDiffs: fileDiffs,
 		})
@@ -987,7 +987,7 @@ func RunReviewCore(
 	batchInfos := make([]BatchInfo, 0, len(reviewCalls))
 	for _, call := range reviewCalls {
 		kind := BatchAOIDriven
-		label := call.Category
+		label := call.Category.String()
 		if call.Subcategory != "" {
 			label += "/" + call.Subcategory
 		}
@@ -996,6 +996,7 @@ func RunReviewCore(
 			label += " [critical]"
 		case "fallback-batch":
 			kind = BatchGeneral
+			label = call.Label
 		}
 		batchInfos = append(batchInfos, BatchInfo{
 			Label:    label,
@@ -1064,7 +1065,10 @@ func RunReviewCore(
 			execOpts.OnLLMCall = func(index int, call ReviewCall, systemPrompt string, userMsg string, response string) {
 				label := call.Subcategory
 				if label == "" {
-					label = call.Category
+					label = call.Category.String()
+				}
+				if label == "" {
+					label = call.Label
 				}
 				dbgw.Section(fmt.Sprintf("Review Call %d [%s]: %s (%v)", index+1, call.Type, label, call.Files))
 				dbgw.Prompt(systemPrompt, userMsg)

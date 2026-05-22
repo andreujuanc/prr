@@ -451,7 +451,7 @@ func defenseAOIsForBoundary(b state.Boundary) []security.AreaOfInterest {
 // kind expands into.
 type boundaryDefense struct {
 	slug     string
-	category string
+	category state.Category
 	subcat   string
 	concern  string
 }

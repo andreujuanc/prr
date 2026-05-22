@@ -102,7 +102,7 @@ func makeFinding(id, file, lines, category, title, severity string) state.DeepFi
 		FindingID: id,
 		File:      file,
 		Lines:     lines,
-		Category:  category,
+		Category:  state.Category(category),
 		Title:     title,
 		Severity:  severity,
 	}
@@ -192,10 +192,10 @@ func TestRecheckFindings_ConsolidatorRunsFirst(t *testing.T) {
 // dismiss.
 func TestRecheckFindings_ConsolidatedFindingsAlsoFlowThroughDismiss(t *testing.T) {
 	findings := []state.DeepFinding{
-		makeFinding("", "a.go", "10", "X", "pattern member", "low"),
-		makeFinding("", "b.go", "20", "X", "pattern member", "low"),
-		makeFinding("", "c.go", "30", "X", "pattern member", "low"),
-		makeFinding("", "d.go", "40", "X", "isolated", "high"),
+		makeFinding("", "a.go", "10", "correctness", "pattern member", "low"),
+		makeFinding("", "b.go", "20", "correctness", "pattern member", "low"),
+		makeFinding("", "c.go", "30", "correctness", "pattern member", "low"),
+		makeFinding("", "d.go", "40", "correctness", "isolated", "high"),
 	}
 
 	client := &promptRecordingClient{
@@ -212,7 +212,7 @@ func TestRecheckFindings_ConsolidatedFindingsAlsoFlowThroughDismiss(t *testing.T
 						"file":        "multiple",
 						"lines":       "",
 						"severity":    "high",
-						"category":    "X",
+						"category":    "correctness",
 						"subcategory": "x",
 						"title":       "Systemic: Pattern across files",
 						"description": "three files, same pattern",
@@ -279,8 +279,8 @@ func TestRecheckFindings_NoCrossFilePatternsDismissPassRunsNormally(t *testing.T
 	// keeps the test deterministic — parallel batches would race
 	// for the response queue.
 	findings := []state.DeepFinding{
-		makeFinding("", "a.go", "10", "X", "thing A", "high"),
-		makeFinding("", "b.go", "20", "X", "thing B", "medium"),
+		makeFinding("", "a.go", "10", "correctness", "thing A", "high"),
+		makeFinding("", "b.go", "20", "correctness", "thing B", "medium"),
 	}
 
 	client := &promptRecordingClient{
@@ -322,7 +322,7 @@ func TestRecheckFindings_NoCrossFilePatternsDismissPassRunsNormally(t *testing.T
 // still runs on the original set.
 func TestRecheckFindings_ConsolidatorFailureFallsBackGracefully(t *testing.T) {
 	findings := []state.DeepFinding{
-		makeFinding("", "a.go", "10", "X", "thing", "high"),
+		makeFinding("", "a.go", "10", "correctness", "thing", "high"),
 	}
 
 	client := &promptRecordingClient{
@@ -351,9 +351,9 @@ func TestRecheckFindings_ConsolidatorFailureFallsBackGracefully(t *testing.T) {
 // dismiss-pass error would defeat the whole change.
 func TestRecheckFindings_DismissPassFailureKeepsConsolidated(t *testing.T) {
 	findings := []state.DeepFinding{
-		makeFinding("", "a.go", "10", "X", "a", "low"),
-		makeFinding("", "b.go", "20", "X", "b", "low"),
-		makeFinding("", "c.go", "30", "X", "c", "low"),
+		makeFinding("", "a.go", "10", "correctness", "a", "low"),
+		makeFinding("", "b.go", "20", "correctness", "b", "low"),
+		makeFinding("", "c.go", "30", "correctness", "c", "low"),
 	}
 
 	client := &promptRecordingClient{
@@ -371,7 +371,7 @@ func TestRecheckFindings_DismissPassFailureKeepsConsolidated(t *testing.T) {
 						"file":        "multiple",
 						"lines":       "",
 						"severity":    "medium",
-						"category":    "X",
+						"category":    "correctness",
 						"subcategory": "y",
 						"title":       "Systemic: X happens everywhere",
 						"description": "...",
@@ -508,7 +508,7 @@ func TestParseRecheckResult_TagsConsolidatedFindingsSystemic(t *testing.T) {
 				"file": "auth.go",
 				"lines": "10-30",
 				"severity": "high",
-				"category": "x",
+				"category": "correctness",
 				"title": "Pattern across files",
 				"description": "...",
 				"trigger": "...",
@@ -565,8 +565,8 @@ func TestParseRecheckResult_DoesNotTagKeptOrModifiedSystemic(t *testing.T) {
 // concrete path (no heuristic on File="multiple").
 func TestRecheckConsolidateBatch_MergedFindingFlaggedSystemic(t *testing.T) {
 	findings := []state.DeepFinding{
-		makeFinding("", "a.go", "10", "X", "thing", "low"),
-		makeFinding("", "b.go", "20", "X", "thing", "low"),
+		makeFinding("", "a.go", "10", "correctness", "thing", "low"),
+		makeFinding("", "b.go", "20", "correctness", "thing", "low"),
 	}
 	AssignFindingIDs(findings)
 
@@ -580,7 +580,7 @@ func TestRecheckConsolidateBatch_MergedFindingFlaggedSystemic(t *testing.T) {
 						"file": "auth.go",
 						"lines": "10-30",
 						"severity": "medium",
-						"category": "X",
+						"category": "correctness",
 						"title": "Pattern across auth handlers",
 						"description": "...",
 						"trigger": "...",

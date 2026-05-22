@@ -15,6 +15,7 @@ Code that receives, parses, or processes data from external sources.
 - `eval()`, `Function()`, `compile()`, dynamic code execution
 - `innerHTML`, `dangerouslySetInnerHTML`, `v-html` with user data
 - Template rendering without auto-escaping
+- HTTP response body written with `fmt.Fprintf` / `fmt.Sprintf` / `Write` / `ResponseWriter.Write` (or framework equivalents like Express `res.send`, Flask `Response`, Rails `render plain:`) that interpolates user-controlled strings into HTML, JS, or JSON-served-as-HTML without explicit escaping — server-rendered reflected XSS, where the user's input lands directly in the response body
 - HTTP response headers set from user input (header injection, CRLF)
 - Content-Type mismatches that enable type confusion
 

@@ -20,7 +20,7 @@ func TestParseReviewOutput_ValidJSON(t *testing.T) {
 			},
 			{
 				"severity": "critical",
-				"category": "bug",
+				"category": "correctness",
 				"file": "main.go",
 				"line": 5,
 				"title": "Nil pointer dereference",
@@ -165,7 +165,7 @@ Now let me produce the final review:
 	"findings": [
 		{
 			"severity": "high",
-			"category": "bug",
+			"category": "correctness",
 			"file": "server.go",
 			"line": 88,
 			"title": "Race condition on shared map",
@@ -238,7 +238,7 @@ Now let me finalize the review based on verified findings.
   "findings": [
     {
       "severity": "high",
-      "category": "security",
+      "category": "cryptography",
       "file": "authorizer.zig",
       "line": 45,
       "title": "JSON injection via unescaped header",

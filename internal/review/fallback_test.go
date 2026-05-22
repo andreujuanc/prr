@@ -19,7 +19,7 @@ func pinBatchResponse(file string) string {
         "severity": "high",
         "confidence_score": 80,
         "confidence_reasoning": "clear missing check",
-        "category": "security",
+        "category": "cryptography",
         "title": "Missing input validation",
         "line": 42,
         "detail": "the handler does not validate the request body",
@@ -67,8 +67,8 @@ func TestConvertFallbackToDeepFindings(t *testing.T) {
 	if f.ConfidenceScore != 80 {
 		t.Errorf("ConfidenceScore = %d, want 80", f.ConfidenceScore)
 	}
-	if f.Category != "security" {
-		t.Errorf("Category = %q, want security", f.Category)
+	if f.Category != "cryptography" {
+		t.Errorf("Category = %q, want cryptography", f.Category)
 	}
 	// EvidenceSnippet is required by review_batch.md and must round-trip
 	// into DeepFinding so recheck can locate the suspect code.
@@ -84,7 +84,7 @@ func TestConvertFallbackToDeepFindings(t *testing.T) {
 func TestRunReviewCalls_FallbackBatchProducesDeepFindings(t *testing.T) {
 	call := ReviewCall{
 		Type:      "fallback-batch",
-		Category:  "internal/ui",
+		Label:     "internal/ui",
 		Files:     []string{"a.go"},
 		FileDiffs: map[string]string{"a.go": "@@ -1,1 +1,1 @@\n-old\n+new\n"},
 	}
@@ -116,8 +116,8 @@ func TestRunReviewCalls_FallbackBatchProducesDeepFindings(t *testing.T) {
 	}
 	// Category is what recheck and synthesis route on; without this
 	// the round-trip test passes even if the adapter drops it.
-	if res.Findings[0].Category != "security" {
-		t.Errorf("finding Category = %q, want security", res.Findings[0].Category)
+	if res.Findings[0].Category != "cryptography" {
+		t.Errorf("finding Category = %q, want cryptography", res.Findings[0].Category)
 	}
 }
 

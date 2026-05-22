@@ -48,13 +48,13 @@ func TestSerializeAOI(t *testing.T) {
 		File:        "handler.go",
 		Line:        10,
 		EndLine:     20,
-		Category:    "security",
+		Category:    "cryptography",
 		Subcategory: "sql-injection",
 		Concern:     "user input in query",
 		Context:     "HTTP handler",
 	}
 	got := serializeAOI(aoi)
-	want := "handler.go:10-20:security/sql-injection:user input in query:HTTP handler"
+	want := "handler.go:10-20:cryptography/sql-injection:user input in query:HTTP handler"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

@@ -314,7 +314,7 @@ func renderCoverage(b *strings.Builder, cov *state.ReviewCoverage, width int) {
 // with the continuation indented under the title.
 func renderFindingHeader(b *strings.Builder, f state.ReviewFinding, width int, isSelected, expanded bool) {
 	sevStyle := severityStyle(f.Severity)
-	catStyle := categoryStyle(f.Category)
+	catStyle := categoryStyle(f.Category.String())
 
 	// Resolved prefix
 	resolvedPrefix := ""

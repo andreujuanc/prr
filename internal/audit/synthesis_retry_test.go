@@ -49,7 +49,7 @@ const validSynthesisJSON = `{
 func mkFinding(id, cat, sev string) state.DeepFinding {
 	return state.DeepFinding{
 		FindingID:   id,
-		Category:    cat,
+		Category:    state.Category(cat),
 		Subcategory: "test",
 		Severity:    sev,
 		File:        "x.go",

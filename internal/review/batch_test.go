@@ -269,7 +269,7 @@ func TestAppendDeepFindings_EmitsFindingIDs(t *testing.T) {
 	ff := make(map[string]string)
 	findings := []state.DeepFinding{
 		{FindingID: "F-001", Severity: "high", Title: "Auth bypass", File: "auth.go", Lines: "42-50",
-			Category: "security", Subcategory: "auth", Description: "Missing check"},
+			Category: "cryptography", Subcategory: "auth", Description: "Missing check"},
 		{FindingID: "F-002", Severity: "medium", Title: "N+1 query", File: "repo.go", Lines: "88",
 			Category: "performance", Subcategory: "io", Description: "Queries inside loop"},
 	}

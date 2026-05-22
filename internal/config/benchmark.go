@@ -5,14 +5,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
-//go:embed benchmark.json
-var defaultBenchmarkData []byte
+//go:embed aoi-benchmark.json
+var defaultAOIBenchmarkData []byte
+
+// embeddedBenchmarkDefaults maps benchmark name → embedded fallback JSON.
+// Used by LoadBenchmarkResults when no on-disk archives exist for that name.
+// Benchmarks without an embedded default just fall back to an empty result.
+var embeddedBenchmarkDefaults = map[string][]byte{
+	"aoi": defaultAOIBenchmarkData,
+}
 
 // ModelBenchmark holds benchmark results for a single model configuration.
+// The schema is shared across benchmarks; deep-review-only metrics
+// (severity accuracy, tool calls) are tagged omitempty so AOI archives
+// don't carry empty fields.
 type ModelBenchmark struct {
 	ModelID        string  `json:"model_id"`
 	Provider       string  `json:"provider"`    // e.g. "gemini", "github-copilot"
@@ -23,96 +36,171 @@ type ModelBenchmark struct {
 	MustFindPct    float64 `json:"must_find_pct"` // must-find recall percentage (0-100)
 	LatencyMs      int     `json:"latency_ms"`    // scan latency in milliseconds
 	CostPerScan    float64 `json:"cost_per_scan"` // estimated USD per scan
-	TotalAOIs      int     `json:"total_aois"`    // AOIs found
+	TotalAOIs      int     `json:"total_aois"`    // AOI count (or finding count for deep review)
 	FalseAlarms    int     `json:"false_alarms"`  // false positives
+
+	// Deep review only.
+	SeverityCorrect int `json:"severity_correct,omitempty"`
+	SeverityTotal   int `json:"severity_total,omitempty"`
+	ToolCalls       int `json:"tool_calls,omitempty"`
 }
 
 // BenchmarkResults holds the full benchmark output file.
 type BenchmarkResults struct {
 	Version   int              `json:"version"`   // schema version, currently 1
 	Timestamp time.Time        `json:"timestamp"` // when the benchmark was run
+	GitSHA    string           `json:"git_sha,omitempty"`
+	GitDirty  bool             `json:"git_dirty,omitempty"` // working tree had uncommitted changes
+	Tag       string           `json:"tag,omitempty"`       // free-form label from PRR_BENCH_TAG
 	Models    []ModelBenchmark `json:"models"`
 }
 
-// BenchmarkPath returns ~/.config/prr/benchmark.json.
-func BenchmarkPath() (string, error) {
+// captureGitContext returns the short HEAD SHA and whether the working tree
+// has uncommitted changes. Best-effort: returns zero values if git is
+// unavailable or the cwd isn't a repo.
+func captureGitContext() (sha string, dirty bool) {
+	out, err := exec.Command("git", "rev-parse", "--short=12", "HEAD").Output()
+	if err != nil {
+		return "", false
+	}
+	sha = strings.TrimSpace(string(out))
+	if status, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
+		dirty = len(strings.TrimSpace(string(status))) > 0
+	}
+	return sha, dirty
+}
+
+// BenchmarkDir returns ~/.config/prr/benchmarks/ — the directory holding
+// benchmark archives. Kept as a subdirectory of the prr config dir so the
+// growing archive set doesn't clutter the main config folder.
+func BenchmarkDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return filepath.Join(home, ".config", "prr", "benchmark.json"), nil
+	return filepath.Join(home, ".config", "prr", "benchmarks"), nil
 }
 
-// SaveBenchmarkResults merges new benchmark results into ~/.config/prr/benchmark.json.
-// Existing entries are updated if they match on provider+model_id+config_name;
-// new entries are appended. The timestamp is always updated.
-func SaveBenchmarkResults(results *BenchmarkResults) error {
-	path, err := BenchmarkPath()
+// BenchmarkArchivePath returns the path of the benchmark archive for name +
+// time t, formatted as ~/.config/prr/benchmarks/<name>-benchmark-YYYY-MM-DDTHH-MM-SS.json
+// (UTC). Colons are replaced with dashes for filesystem portability.
+//
+// The name prefix lets different benchmarks (aoi, review, ...) coexist in
+// the same directory without colliding.
+func BenchmarkArchivePath(name string, t time.Time) (string, error) {
+	dir, err := BenchmarkDir()
+	if err != nil {
+		return "", err
+	}
+	file := fmt.Sprintf("%s-benchmark-%s.json", name, t.UTC().Format("2006-01-02T15-04-05"))
+	return filepath.Join(dir, file), nil
+}
+
+// SaveBenchmarkResults writes the run as a dated archive in
+// ~/.config/prr/benchmarks/. The name is the benchmark identifier (e.g.
+// "aoi" or "review"); it determines the filename prefix. Each run is an
+// immutable snapshot of just that run's models; the merged "current state"
+// view is produced by LoadBenchmarkResults walking all archives latest-wins.
+func SaveBenchmarkResults(name string, results *BenchmarkResults) error {
+	if results.GitSHA == "" {
+		results.GitSHA, results.GitDirty = captureGitContext()
+	}
+	if results.Tag == "" {
+		results.Tag = os.Getenv("PRR_BENCH_TAG")
+	}
+	path, err := BenchmarkArchivePath(name, results.Timestamp)
 	if err != nil {
 		return err
 	}
-
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-
-	// Load existing results to merge with.
-	var existing BenchmarkResults
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &existing) // ignore errors, start fresh if corrupt
-	}
-
-	// Build index of existing entries for fast lookup.
-	type key struct{ provider, modelID, configName string }
-	idx := make(map[key]int, len(existing.Models))
-	for i, m := range existing.Models {
-		idx[key{m.Provider, m.ModelID, m.ConfigName}] = i
-	}
-
-	// Merge new results: update existing or append.
-	for _, m := range results.Models {
-		k := key{m.Provider, m.ModelID, m.ConfigName}
-		if i, ok := idx[k]; ok {
-			existing.Models[i] = m // update
-		} else {
-			existing.Models = append(existing.Models, m)
-			idx[k] = len(existing.Models) - 1
-		}
-	}
-
-	existing.Version = results.Version
-	existing.Timestamp = results.Timestamp
-
-	data, err := json.MarshalIndent(&existing, "", "  ")
+	data, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal benchmark results: %w", err)
 	}
-
 	return os.WriteFile(path, data, 0o644)
 }
 
-// LoadBenchmarkResults reads benchmark results, preferring a user-local file
-// at ~/.config/prr/benchmark.json over the defaults embedded in the binary.
-// Always returns non-nil results (falls back to embedded defaults).
-func LoadBenchmarkResults() (*BenchmarkResults, error) {
-	// Try user-local file first (written by running the benchmark test).
-	path, err := BenchmarkPath()
+// LoadBenchmarkResults walks all dated archives for the given benchmark name
+// in ~/.config/prr/benchmarks/, merging them latest-wins by
+// provider+model_id+config_name. Falls back to embedded defaults if no
+// archives exist on disk and an embedded default is registered for that
+// name. Always returns non-nil results.
+func LoadBenchmarkResults(name string) (*BenchmarkResults, error) {
+	dir, err := BenchmarkDir()
 	if err == nil {
-		if data, err := os.ReadFile(path); err == nil {
-			var results BenchmarkResults
-			if err := json.Unmarshal(data, &results); err == nil {
-				return &results, nil
+		if archives := listBenchmarkArchives(dir, name); len(archives) > 0 {
+			if merged, ok := mergeBenchmarkArchives(archives); ok {
+				return merged, nil
 			}
 		}
 	}
 
-	// Fall back to embedded defaults.
-	var results BenchmarkResults
-	if err := json.Unmarshal(defaultBenchmarkData, &results); err != nil {
-		return nil, fmt.Errorf("parse embedded benchmark data: %w", err)
+	if data, ok := embeddedBenchmarkDefaults[name]; ok {
+		var results BenchmarkResults
+		if err := json.Unmarshal(data, &results); err != nil {
+			return nil, fmt.Errorf("parse embedded %s benchmark data: %w", name, err)
+		}
+		return &results, nil
 	}
 
-	return &results, nil
+	return &BenchmarkResults{Version: 1}, nil
+}
+
+// listBenchmarkArchives returns dated archive paths for the given benchmark
+// name, sorted chronologically (oldest first). The dated filename format sorts
+// correctly as text, so a plain string sort puts oldest first.
+func listBenchmarkArchives(dir, name string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	prefix := name + "-benchmark-"
+	var paths []string
+	for _, e := range entries {
+		fname := e.Name()
+		if strings.HasPrefix(fname, prefix) && strings.HasSuffix(fname, ".json") {
+			paths = append(paths, filepath.Join(dir, fname))
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// mergeBenchmarkArchives reads archives in order and merges them
+// latest-wins by (provider, model_id, config_name). The returned bool is
+// true if at least one archive parsed successfully.
+func mergeBenchmarkArchives(paths []string) (*BenchmarkResults, bool) {
+	type key struct{ provider, modelID, configName string }
+	idx := make(map[key]int)
+	var merged BenchmarkResults
+	loaded := false
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var r BenchmarkResults
+		if err := json.Unmarshal(data, &r); err != nil {
+			continue
+		}
+		loaded = true
+		if r.Timestamp.After(merged.Timestamp) {
+			merged.Timestamp = r.Timestamp
+			merged.Version = r.Version
+		}
+		for _, m := range r.Models {
+			k := key{m.Provider, m.ModelID, m.ConfigName}
+			if i, ok := idx[k]; ok {
+				merged.Models[i] = m
+			} else {
+				merged.Models = append(merged.Models, m)
+				idx[k] = len(merged.Models) - 1
+			}
+		}
+	}
+	return &merged, loaded
 }
 
 // GetModelBenchmark returns benchmark data for a specific model, or nil if not found.

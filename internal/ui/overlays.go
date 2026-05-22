@@ -113,7 +113,7 @@ type modelPickerItem struct {
 	price    string // formatted price tag (e.g. "$0.15/$0.60 per 1M tok")
 	speed    string // speed icon (e.g. "⚡", "●", "◐")
 
-	// Benchmark data (from ~/.config/prr/benchmark.json)
+	// Benchmark data (merged from ~/.config/prr/benchmarks/aoi-benchmark-*.json archives)
 	hasBenchmark bool
 	recallPct    float64 // overall recall %
 	latencyMs    int     // scan latency in ms
@@ -133,7 +133,7 @@ type pickerSection struct {
 
 // enrichWithBenchmark loads benchmark data and populates picker items.
 func enrichWithBenchmark(items []modelPickerItem) []modelPickerItem {
-	bench, err := config.LoadBenchmarkResults()
+	bench, err := config.LoadBenchmarkResults("aoi")
 	if err != nil || bench == nil {
 		return items
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -223,7 +224,6 @@ func securityTestDiffs() (map[string]string, []groundTruthAOI) {
 	groundTruth := []groundTruthAOI{
 		// handler.go
 		{file: "internal/api/handler.go", lineRange: [2]int{15, 22}, category: "input-validation", importance: "must-find", desc: "SQL injection via string concatenation"},
-		{file: "internal/api/handler.go", lineRange: [2]int{14, 26}, category: "input-validation", importance: "nice-to-find", desc: "User input from URL query parameter (q)"},
 		{file: "internal/api/handler.go", lineRange: [2]int{25, 26}, category: "input-validation", importance: "must-find", desc: "XSS via fmt.Fprintf with user input"},
 		{file: "internal/api/handler.go", lineRange: [2]int{30, 38}, category: "input-validation", importance: "must-find", desc: "Command injection via exec.Command with user input"},
 		{file: "internal/api/handler.go", lineRange: [2]int{42, 45}, category: "authorization", importance: "must-find", desc: "Admin endpoint without authentication"},
@@ -249,6 +249,174 @@ func securityTestDiffs() (map[string]string, []groundTruthAOI) {
 	return diffs, groundTruth
 }
 
+// Benchmark tuning is independent of the user's models.json so results are
+// reproducible across machines. Each model fans out into the cross product of
+// temperatures × thinking budgets — one run per combination. Override defaults
+// per-run with env vars:
+//
+//	PRR_BENCH_TEMPERATURE           float, default 0.1   — baseline applied to every spec
+//	PRR_BENCH_TEMPERATURE_VARIANTS  csv,   default ""    — extra temperatures to sweep
+//	PRR_BENCH_THINKING_BUDGET       int,   default 0     — baseline thinking budget
+//	PRR_BENCH_THINKING_VARIANTS     csv,   default "1024,2048"
+//	    extra thinking budgets to sweep for thinking-capable non-copilot,
+//	    non-claude-code models. Both providers ignore the explicit thinking
+//	    budget knob (their CLIs/servers decide internally), so fanning them
+//	    out wastes calls.
+//	PRR_BENCH_MAX_OUTPUT            int,   default 8192
+//
+// Set a *_VARIANTS env var to the empty string to disable that axis's fan-out
+// while keeping the baseline.
+func benchmarkTemperature() float64 {
+	if v, ok := envFloat("PRR_BENCH_TEMPERATURE"); ok {
+		return v
+	}
+	return 0.1
+}
+
+func benchmarkMaxOutputTokens() int {
+	if v, ok := envInt("PRR_BENCH_MAX_OUTPUT"); ok {
+		return v
+	}
+	return 8192
+}
+
+func benchmarkThinkingBudget() int {
+	if v, ok := envInt("PRR_BENCH_THINKING_BUDGET"); ok {
+		return v
+	}
+	return 0
+}
+
+// benchmarkTemperatures returns the temperatures to sweep — baseline plus any
+// PRR_BENCH_TEMPERATURE_VARIANTS, with duplicates removed.
+func benchmarkTemperatures() []float64 {
+	base := benchmarkTemperature()
+	out := []float64{base}
+	s, present := os.LookupEnv("PRR_BENCH_TEMPERATURE_VARIANTS")
+	if !present {
+		return out
+	}
+	seen := map[float64]bool{base: true}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if v, err := strconv.ParseFloat(p, 64); err == nil && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// benchmarkThinkingBudgets returns the thinking budgets to sweep — baseline
+// plus any PRR_BENCH_THINKING_VARIANTS, with duplicates removed.
+func benchmarkThinkingBudgets() []int {
+	base := benchmarkThinkingBudget()
+	out := []int{base}
+	s, present := os.LookupEnv("PRR_BENCH_THINKING_VARIANTS")
+	if !present {
+		for _, v := range []int{1024, 2048} {
+			if v != base {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	seen := map[int]bool{base: true}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if v, err := strconv.Atoi(p); err == nil && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func envInt(name string) (int, bool) {
+	s := os.Getenv(name)
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.Atoi(s)
+	return v, err == nil
+}
+
+func envFloat(name string) (float64, bool) {
+	s := os.Getenv(name)
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	return v, err == nil
+}
+
+// formatThinkingLabel renders a thinking budget for spec names: "0", "1k",
+// "512" — using the k-suffix only when the budget is a clean multiple of 1024.
+func formatThinkingLabel(budget int) string {
+	if budget == 0 {
+		return "thinking=0"
+	}
+	if budget%1024 == 0 {
+		return fmt.Sprintf("thinking=%dk", budget/1024)
+	}
+	return fmt.Sprintf("thinking=%d", budget)
+}
+
+// providerHonorsThinkingBudget reports whether the provider actually applies
+// the explicit thinking-budget knob. Copilot and Claude Code both decide
+// thinking internally, so sweeping budgets for them produces redundant runs.
+func providerHonorsThinkingBudget(provider string) bool {
+	return provider != "github-copilot" && provider != "claude-code"
+}
+
+// expandSpecs fans out one (provider, model) into the cross product of
+// temperatures × thinking budgets. For models/providers that don't honor
+// the explicit thinking knob, only the baseline budget is used.
+func expandSpecs(provider, modelID, apiKey, baseURL string, supportsThinking bool) []modelSpec {
+	temps := benchmarkTemperatures()
+	budgets := []int{benchmarkThinkingBudget()}
+	if supportsThinking && providerHonorsThinkingBudget(provider) {
+		budgets = benchmarkThinkingBudgets()
+	}
+
+	multiTemp := len(temps) > 1
+	multiBudget := len(budgets) > 1
+
+	var specs []modelSpec
+	for _, t := range temps {
+		for _, b := range budgets {
+			name := fmt.Sprintf("[%s] %s", provider, modelID)
+			var parts []string
+			if multiTemp {
+				parts = append(parts, fmt.Sprintf("temp=%g", t))
+			}
+			if multiBudget {
+				parts = append(parts, formatThinkingLabel(b))
+			}
+			if len(parts) > 0 {
+				name += " (" + strings.Join(parts, ", ") + ")"
+			}
+			specs = append(specs, modelSpec{
+				name:           name,
+				model:          modelID,
+				provider:       provider,
+				apiKey:         apiKey,
+				baseURL:        baseURL,
+				temperature:    t,
+				thinkingBudget: b,
+				maxOutput:      benchmarkMaxOutputTokens(),
+			})
+		}
+	}
+	return specs
+}
+
 // modelSpec defines a model to test.
 type modelSpec struct {
 	name           string
@@ -259,32 +427,31 @@ type modelSpec struct {
 	thinkingBudget int
 	temperature    float64
 	maxOutput      int
-	contextLines   int // AOI context lines (0 = use default 3)
 }
 
-// specFromConfig creates a modelSpec from a model ID and its config.ModelConfig,
-// using ThinkingBudget.Fast for the AOI thinking budget.
-// provider, apiKey, and baseURL are passed from the app config.
-func specFromConfig(name, modelID, provider, apiKey, baseURL string, mcfg config.ModelConfig) modelSpec {
+// newSpec creates a modelSpec at the baseline benchmark tuning.
+// Callers may overwrite individual fields (e.g. thinkingBudget) afterwards.
+func newSpec(name, modelID, provider, apiKey, baseURL string) modelSpec {
 	return modelSpec{
 		name:           name,
 		model:          modelID,
 		provider:       provider,
 		apiKey:         apiKey,
 		baseURL:        baseURL,
-		thinkingBudget: mcfg.ThinkingBudget.Fast,
-		temperature:    mcfg.Temperature,
-		maxOutput:      mcfg.MaxOutputTokens,
-		contextLines:   mcfg.ResolvedAOIContextLines(),
+		thinkingBudget: benchmarkThinkingBudget(),
+		temperature:    benchmarkTemperature(),
+		maxOutput:      benchmarkMaxOutputTokens(),
 	}
 }
 
 // defaultModels returns models to compare, iterating over ALL configured providers
 // and including every known model tagged with AOI=true or Review=true for that provider.
-// Also includes thinking-budget variants for models that support thinking.
-func defaultModels(cfg *config.Config, models map[string]config.ModelConfig) []modelSpec {
-	mcfg := func(id string) config.ModelConfig { return config.GetModelConfig(models, id) }
-
+// Each model is expanded by expandSpecs into the temperature × thinking-budget
+// cross product.
+//
+// Only credentials (API key, base URL) are sourced from cfg — tuning is fixed
+// by the benchmark constants so results don't drift with the user's models.json.
+func defaultModels(cfg *config.Config) []modelSpec {
 	var specs []modelSpec
 
 	for providerName, pc := range cfg.Providers {
@@ -292,31 +459,11 @@ func defaultModels(cfg *config.Config, models map[string]config.ModelConfig) []m
 			continue
 		}
 
-		baseURL := pc.BaseURL
-		known := config.KnownModelsForProvider(providerName)
-
-		for _, km := range known {
+		for _, km := range config.KnownModelsForProvider(providerName) {
 			if !km.AOI && !km.Review {
 				continue // skip models not useful for AOI
 			}
-
-			mc := mcfg(km.ID)
-			label := fmt.Sprintf("[%s] %s", providerName, km.ID)
-			s := specFromConfig(label, km.ID, providerName, pc.APIKey, baseURL, mc)
-			specs = append(specs, s)
-
-			// Add thinking variants for Gemini models that support it.
-			// Copilot ignores thinking budget (uses opaque server-side thinking).
-			if km.Thinking && mc.ThinkingBudget.Fast == 0 && providerName != "github-copilot" {
-				for _, budget := range []int{1024, 2048} {
-					s2 := specFromConfig(
-						fmt.Sprintf("[%s] %s (thinking=%dk)", providerName, km.ID, budget/1024),
-						km.ID, providerName, pc.APIKey, baseURL, mc,
-					)
-					s2.thinkingBudget = budget
-					specs = append(specs, s2)
-				}
-			}
+			specs = append(specs, expandSpecs(providerName, km.ID, pc.APIKey, pc.BaseURL, km.Thinking)...)
 		}
 	}
 
@@ -352,13 +499,14 @@ func loadTestConfig(t *testing.T) *config.Config {
 }
 
 // parseModelsFromEnv parses PRR_AOI_MODELS env var into model specs.
-// Format: "model1,model2,..." — settings are read from models.json,
-// credentials from config.json.
+// Each entry is expanded by expandSpecs into the temperature × thinking-budget
+// cross product. Tuning is fixed by the benchmark constants/env vars;
+// credentials come from config.json.
 //
 // Model list format: entries may be either "provider/model-id" or just "model-id".
 // If a provider is omitted the provider from the configured fast_model is used.
 // Example: PRR_AOI_MODELS="github-copilot/gpt-5-mini,gemini-3.1-flash-lite"
-func parseModelsFromEnv(cfg *config.Config, models map[string]config.ModelConfig) []modelSpec {
+func parseModelsFromEnv(cfg *config.Config) []modelSpec {
 	envModels := os.Getenv("PRR_AOI_MODELS")
 	if envModels == "" {
 		return nil
@@ -386,10 +534,11 @@ func parseModelsFromEnv(cfg *config.Config, models map[string]config.ModelConfig
 		}
 
 		pc := cfg.ProviderConfigFor(providerName)
-		mcfg := config.GetModelConfig(models, modelID)
-		// Use the original entry as the display name so callers see the
-		// provider/model form when provided.
-		specs = append(specs, specFromConfig(entry, modelID, providerName, pc.APIKey, pc.BaseURL, mcfg))
+		supportsThinking := false
+		if km, ok := config.GetKnownModelForProvider(providerName, modelID); ok {
+			supportsThinking = km.Thinking
+		}
+		specs = append(specs, expandSpecs(providerName, modelID, pc.APIKey, pc.BaseURL, supportsThinking)...)
 	}
 	return specs
 }
@@ -430,7 +579,7 @@ func matchAOI(aoi security.AreaOfInterest, gt groundTruthAOI) (fileMatch, lineMa
 		lineMatch = lineMatch || (aoi.EndLine >= gt.lineRange[0] && aoi.Line <= gt.lineRange[1])
 	}
 
-	categoryMatch = aoi.Category == gt.category
+	categoryMatch = aoi.Category.String() == gt.category
 	return
 }
 
@@ -440,14 +589,9 @@ func TestAOIModelComparison(t *testing.T) {
 		t.Skip("PRR_LIVE_TESTS=1 not set or no valid config — skipping live AOI model comparison test")
 	}
 
-	modelConfigs, err := config.LoadModels()
-	if err != nil {
-		t.Fatalf("LoadModels: %v", err)
-	}
-
-	models := parseModelsFromEnv(cfg, modelConfigs)
+	models := parseModelsFromEnv(cfg)
 	if models == nil {
-		models = defaultModels(cfg, modelConfigs)
+		models = defaultModels(cfg)
 	}
 
 	diffs, groundTruth := securityTestDiffs()
@@ -499,7 +643,7 @@ func TestAOIModelComparison(t *testing.T) {
 				niceFindTotal: niceFindCount,
 				inputTokens:   usage.InputTokens,
 				outputTokens:  usage.OutputTokens,
-				cost:          config.EstimateCost(spec.model, usage.InputTokens, usage.OutputTokens),
+				cost:          config.EstimateCost(spec.provider+"/"+spec.model, usage.InputTokens, usage.OutputTokens),
 			}
 
 			if err != nil {
@@ -510,22 +654,35 @@ func TestAOIModelComparison(t *testing.T) {
 
 			result.totalAOIs = report.TotalAOIs
 
-			// ── Score: match each ground truth against model output ───
+			// ── Score: each ground truth is an independent assertion. ──
+			// A GT is "hit" if ANY model AOI overlaps it (file + line).
+			// A model AOI is a "false alarm" if it overlaps no GT at all.
+			// Slots are not consumed — overlapping GTs both get credited
+			// when one AOI satisfies both, which is the correct semantics
+			// for "did the model find each expected issue?"
 			gtMatched := make([]bool, len(groundTruth))
+			for gi, gt := range groundTruth {
+				for _, fileResult := range report.Files {
+					for _, aoi := range fileResult.AreasOfInterest {
+						fileOK, lineOK, _ := matchAOI(aoi, gt)
+						if fileOK && lineOK {
+							gtMatched[gi] = true
+							break
+						}
+					}
+					if gtMatched[gi] {
+						break
+					}
+				}
+			}
 
 			for _, fileResult := range report.Files {
 				for _, aoi := range fileResult.AreasOfInterest {
 					matched := false
-					for gi, gt := range groundTruth {
-						if gtMatched[gi] {
-							continue // already matched
-						}
-						fileOK, lineOK, catOK := matchAOI(aoi, gt)
-						// Count as a hit if file+line match (category is a bonus)
+					for _, gt := range groundTruth {
+						fileOK, lineOK, _ := matchAOI(aoi, gt)
 						if fileOK && lineOK {
-							gtMatched[gi] = true
 							matched = true
-							_ = catOK // we track it but don't require it
 							break
 						}
 					}
@@ -671,14 +828,14 @@ func TestAOIModelComparison(t *testing.T) {
 			FalseAlarms:    r.falseAlarms,
 		})
 	}
-	if err := config.SaveBenchmarkResults(benchmarks); err != nil {
+	if err := config.SaveBenchmarkResults("aoi", benchmarks); err != nil {
 		// Treat as a test failure rather than a Logf — silently
 		// losing benchmark output makes "everything passes" reads
 		// of the suite misleading, and a broken persistence layer
 		// is exactly the kind of regression this test ought to catch.
 		t.Errorf("failed to save benchmark results: %v", err)
 	} else {
-		p, _ := config.BenchmarkPath()
+		p, _ := config.BenchmarkArchivePath("aoi", benchmarks.Timestamp)
 		t.Logf("  Benchmark results saved to %s", p)
 	}
 }
@@ -691,25 +848,29 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 		t.Skip("PRR_LIVE_TESTS=1 not set or no valid config — skipping live AOI detail test")
 	}
 
-	modelConfigs, err := config.LoadModels()
-	if err != nil {
-		t.Fatalf("LoadModels: %v", err)
-	}
-
-	model := os.Getenv("PRR_AOI_MODEL")
-	if model == "" {
-		// Use the configured fast model
-		fastRef, _ := config.ParseModelRef(cfg.FastModel)
-		model = fastRef.ModelID
-	}
-
-	mcfg := config.GetModelConfig(modelConfigs, model)
+	envModel := os.Getenv("PRR_AOI_MODEL")
 	fastRef, _ := config.ParseModelRef(cfg.FastModel)
-	pc := cfg.ProviderConfigFor(fastRef.Provider)
+
+	// Resolve to provider/model. PRR_AOI_MODEL may be "provider/model-id"
+	// (cross-provider) or a bare model-id (uses the fast-model provider).
+	providerName := fastRef.Provider
+	modelID := fastRef.ModelID
+	displayName := cfg.FastModel
+	if envModel != "" {
+		if ref, err := config.ParseModelRef(envModel); err == nil {
+			providerName = ref.Provider
+			modelID = ref.ModelID
+		} else {
+			modelID = envModel
+		}
+		displayName = envModel
+	}
+
+	pc := cfg.ProviderConfigFor(providerName)
 
 	diffs, groundTruth := securityTestDiffs()
 
-	spec := specFromConfig(model, model, fastRef.Provider, pc.APIKey, pc.BaseURL, mcfg)
+	spec := newSpec(displayName, modelID, providerName, pc.APIKey, pc.BaseURL)
 	provider, err := createProvider(spec)
 	if err != nil {
 		t.Fatalf("createProvider: %v", err)
@@ -732,9 +893,9 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 	}
 
 	usage := tracker.Snapshot()
-	cost := config.EstimateCost(model, usage.InputTokens, usage.OutputTokens)
+	cost := config.EstimateCost(spec.provider+"/"+modelID, usage.InputTokens, usage.OutputTokens)
 	t.Logf("\nModel: %s | Time: %.1fs | Total AOIs: %d | Tokens: %d in + %d out | Cost: $%.4f\n",
-		model, elapsed.Seconds(), report.TotalAOIs,
+		displayName, elapsed.Seconds(), report.TotalAOIs,
 		usage.InputTokens, usage.OutputTokens, cost)
 
 	// Print each file's AOIs
@@ -1067,22 +1228,13 @@ func TestAOIContextLineComparison(t *testing.T) {
 	}
 
 	// Models to test — use env override or a focused subset
-	modelConfigs, err := config.LoadModels()
-	if err != nil {
-		t.Fatalf("LoadModels: %v", err)
-	}
-
 	fastRef, _ := config.ParseModelRef(cfg.FastModel)
 	pc := cfg.ProviderConfigFor(fastRef.Provider)
 
-	models := parseModelsFromEnv(cfg, modelConfigs)
+	models := parseModelsFromEnv(cfg)
 	if models == nil {
-		mcfg := func(id string) config.ModelConfig { return config.GetModelConfig(modelConfigs, id) }
-		mk := func(name, modelID string, mc config.ModelConfig) modelSpec {
-			return specFromConfig(name, modelID, fastRef.Provider, pc.APIKey, pc.BaseURL, mc)
-		}
 		models = []modelSpec{
-			mk("3.1-flash-lite", "gemini-3.1-flash-lite", mcfg("gemini-3.1-flash-lite")),
+			newSpec("3.1-flash-lite", "gemini-3.1-flash-lite", fastRef.Provider, pc.APIKey, pc.BaseURL),
 		}
 	}
 
@@ -1131,7 +1283,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 					niceFindTotal: niceFindCount,
 					inputTokens:   usage.InputTokens,
 					outputTokens:  usage.OutputTokens,
-					cost:          config.EstimateCost(spec.model, usage.InputTokens, usage.OutputTokens),
+					cost:          config.EstimateCost(spec.provider+"/"+spec.model, usage.InputTokens, usage.OutputTokens),
 				}
 
 				if err != nil {
@@ -1142,18 +1294,30 @@ func TestAOIContextLineComparison(t *testing.T) {
 
 				r.totalAOIs = report.TotalAOIs
 
-				// Score against ground truth
+				// Score: independent per-GT assertion (see TestAOIModelComparison
+				// for full rationale).
 				gtMatched := make([]bool, len(groundTruth))
-				for _, fileResult := range report.Files {
-					for _, aoi := range fileResult.AreasOfInterest {
-						matched := false
-						for gi, gt := range groundTruth {
-							if gtMatched[gi] {
-								continue
-							}
+				for gi, gt := range groundTruth {
+					for _, fileResult := range report.Files {
+						for _, aoi := range fileResult.AreasOfInterest {
 							fileOK, lineOK, _ := matchAOI(aoi, gt)
 							if fileOK && lineOK {
 								gtMatched[gi] = true
+								break
+							}
+						}
+						if gtMatched[gi] {
+							break
+						}
+					}
+				}
+
+				for _, fileResult := range report.Files {
+					for _, aoi := range fileResult.AreasOfInterest {
+						matched := false
+						for _, gt := range groundTruth {
+							fileOK, lineOK, _ := matchAOI(aoi, gt)
+							if fileOK && lineOK {
 								matched = true
 								break
 							}

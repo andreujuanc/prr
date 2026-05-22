@@ -42,7 +42,8 @@ func ParseModelRef(s string) (ModelRef, error) {
 const DefaultStrongModel = "github-copilot/claude-opus-4.6"
 
 // DefaultFastModel is the default fast model reference.
-// Flash Lite via Gemini: 92.9% AOI recall, 0 FP, 5.1s, $0.0004 per scan.
+// Flash Lite via Gemini: 100% must-find recall, 1-2 FP, ~4.5s, $0.007 per scan
+// (3 reps at thinking_budget=0, with the corrected matcher).
 const DefaultFastModel = "gemini/gemini-3.1-flash-lite"
 
 // Config holds the application configuration.

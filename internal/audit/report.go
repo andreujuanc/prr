@@ -121,7 +121,7 @@ func ExportMarkdown(result *Result, synthesis *SynthesisResult, path string) err
 					loc += ":" + f.Lines
 				}
 				fmt.Fprintf(&b, "#### %s [%s] %s\n", f.FindingID, loc, f.Title)
-				cat := f.Category
+				cat := f.Category.String()
 				if f.Subcategory != "" {
 					cat += " / " + f.Subcategory
 				}

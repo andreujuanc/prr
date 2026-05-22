@@ -706,7 +706,7 @@ func executePipe(target pipe.Target, f state.ReviewFinding, repoRoot string) tea
 			File:       f.File,
 			Line:       f.Line,
 			Severity:   f.Severity,
-			Category:   f.Category,
+			Category:   f.Category.String(),
 			Title:      f.Title,
 			Detail:     f.Detail,
 			Suggestion: f.Suggestion,

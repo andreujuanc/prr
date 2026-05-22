@@ -205,7 +205,7 @@ func TestScanAreasOfInterest_EmptyDiffs(t *testing.T) {
 func TestScanAreasOfInterest_WithMockClient(t *testing.T) {
 	ctx := context.Background()
 	// Return valid AOI JSON
-	response := `[{"file":"handler.go","risk_level":"high","risk_summary":"SQL injection risk","areas_of_interest":[{"file":"handler.go","line":10,"end_line":12,"category":"sql","snippet":"db.Query(userInput)","reasoning":"unsanitized input","confidence":"high"}]}]`
+	response := `[{"file":"handler.go","risk_level":"high","risk_summary":"SQL injection risk","areas_of_interest":[{"file":"handler.go","line":10,"end_line":12,"category":"input-validation","snippet":"db.Query(userInput)","reasoning":"unsanitized input","confidence":"high"}]}]`
 	client := &mockClient{response: response}
 
 	rawDiffs := map[string]string{

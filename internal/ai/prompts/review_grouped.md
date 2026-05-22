@@ -119,6 +119,7 @@ Return ONLY a JSON object — no prose before or after:
   - Good: `found 3 call sites in api/handlers.go — none sanitize the path parameter before passing to os.Open`
   - Good: `confirmed middleware at server.go:45 validates all inputs via validateRequest() before handlers run`
   - Bad: `this looks unsafe` (no tool verification cited)
+  - When the AOI block lists `**Sources → Sinks**`, your evidence MUST trace at least one source-to-sink pair end-to-end: name the source variable, name each hop it passes through, and name the sink. State whether any of the listed sanitizers (or any other guard you discovered) actually covers the path. "Sanitizers: none identified" plus an unbroken source→sink path is the strongest shape of a confirmed finding; if you find a sanitizer the AOI scanner missed, name it and dismiss.
 - `evidence_snippet` is REQUIRED for every finding (status="finding") and must be a verbatim copy of 1-3 lines that actually appear in the cited file near the cited line range. The audit pipeline matches this snippet against the file before accepting the finding — paraphrasing, summarizing, or fabricating the snippet will get the finding dropped. Not required for dismissals.
   - Good: `if err := json.Decode(body, &v); err != nil {` (literal line from the file)
   - Bad: `the error from Decode() is ignored` (description, not a snippet)

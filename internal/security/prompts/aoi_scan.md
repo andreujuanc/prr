@@ -46,6 +46,10 @@ In addition, for every scan:
 - Do NOT self-censor on security-sensitive or offensive-looking patterns. The entire purpose of this pass is to surface issues; skipping analysis defeats it.
 - Each AOI `id` must be unique within the file and match `[a-z0-9-]+` (lowercase letters, digits, and hyphens only), max ~80 chars. Use the pattern `filename-slug-concern-slug` (e.g., `charge-go-float-currency`, `handler-go-missing-auth`). Do not include path separators, dots, underscores, or uppercase.
 - **One AOI per `(file, line, category)`** — if two or more AOIs are found at the same `file:line` with the same category, pick the most urgent concern and emit one. Multiple AOIs at the same `file:line` are acceptable as long as they belong to different categories. Do not change the category just to fit in the extra AOI.
+- **Emit `sources`, `sinks`, `sanitizers` for security-shaped categories only** (`input-validation`, `external-io`, `authorization`, `authentication`, `cryptography`, `web-security`). Each is a short list of identifier-shaped strings — variable names, parameter names, function names, or method calls as they appear in the code. NOT sentences, NOT paraphrases. Keep each list to ≤3 entries; pick the most direct ones. Leave the fields empty (or omit them) for all other categories.
+  - `sources` — where the suspect value enters this AOI (`req.body.path`, `userInput`, `os.Getenv("X")`, `flag.Arg(0)`).
+  - `sinks` — where the value lands and damage happens (`db.Exec`, `os.Open`, `exec.Command`, `template.HTML`, `http.Redirect`).
+  - `sanitizers` — guards or transforms that defuse the source before it hits the sink (`validatePath`, `html.EscapeString`, `prepared statement`, `allowList[x]`). An **empty `sanitizers` list is the signal of a real bug** — emit it as `[]` explicitly rather than omitting the field.
 
 ## Surface-area Rules (always apply on top of categories)
 
@@ -231,7 +235,10 @@ with no AOIs (empty areas array).
         "subcategory": "subcategory-slug",
         "urgency": "individual | grouped",
         "concern": "brief description of the potential issue",
-        "context": "why this location matters, what data flows through it"
+        "context": "why this location matters, what data flows through it",
+        "sources": ["req.body.query"],
+        "sinks": ["db.Exec"],
+        "sanitizers": []
       }
     ]
   }

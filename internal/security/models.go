@@ -1,6 +1,11 @@
 package security
 
-import "github.com/andreujuanc/prr/internal/state"
+import (
+	"encoding/json"
+	"log"
+
+	"github.com/andreujuanc/prr/internal/state"
+)
 
 // AreaOfInterest represents a code location identified by the AOI scanner
 // that warrants deeper review. Each AOI is tagged with a category/subcategory
@@ -11,9 +16,9 @@ type AreaOfInterest struct {
 	Line    int    `json:"line"`
 	EndLine int    `json:"end_line,omitempty"` // optional: range end
 
-	// Category + Subcategory from the category taxonomy (e.g. "error-handling" / "swallowed-errors").
-	Category    string `json:"category"`
-	Subcategory string `json:"subcategory,omitempty"`
+	// Category + Subcategory from the loaded category set (e.g. "error-handling" / "swallowed-errors").
+	Category    state.Category `json:"category"`
+	Subcategory string         `json:"subcategory,omitempty"`
 
 	// Urgency controls Phase 3 routing:
 	//   "individual" — gets a dedicated deep review call
@@ -30,6 +35,17 @@ type AreaOfInterest struct {
 
 	// Context provides additional information about why this location matters.
 	Context string `json:"context,omitempty"`
+
+	// Sources, Sinks, and Sanitizers describe the taint shape of the AOI for
+	// security-shaped categories (input-validation, external-io, authorization,
+	// authentication, cryptography, web-security). Each is a short list of
+	// identifier-shaped strings (variable / function / parameter names), not
+	// sentences. An empty Sanitizers slice on a security AOI is a critical
+	// signal — no defense layer was identified between source and sink.
+	// Non-security categories leave all three empty.
+	Sources    []string `json:"sources,omitempty"`
+	Sinks      []string `json:"sinks,omitempty"`
+	Sanitizers []string `json:"sanitizers,omitempty"`
 
 	// SiblingDeviation is set when this AOI was synthesized by Phase
 	// 2.5 sibling clustering — it identifies the AOI as a 1-of-N
@@ -64,6 +80,37 @@ func (r *AOIScanResult) NormalizeAOIs() {
 		r.AreasOfInterest = r.Areas
 		r.Areas = nil
 	}
+}
+
+// UnmarshalJSON parses AOIs one at a time so a single off-list category
+// drops only that AOI instead of failing the whole file's batch.
+func (r *AOIScanResult) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		File            string            `json:"file"`
+		AreasOfInterest []json.RawMessage `json:"areas_of_interest"`
+		Areas           []json.RawMessage `json:"areas,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.File = raw.File
+	for _, msg := range raw.AreasOfInterest {
+		var aoi AreaOfInterest
+		if err := json.Unmarshal(msg, &aoi); err != nil {
+			log.Printf("aoi: dropping AOI in %s: %v", raw.File, err)
+			continue
+		}
+		r.AreasOfInterest = append(r.AreasOfInterest, aoi)
+	}
+	for _, msg := range raw.Areas {
+		var aoi AreaOfInterest
+		if err := json.Unmarshal(msg, &aoi); err != nil {
+			log.Printf("aoi: dropping AOI in %s: %v", raw.File, err)
+			continue
+		}
+		r.Areas = append(r.Areas, aoi)
+	}
+	return nil
 }
 
 // AOIReport is the complete result of scanning all changed files.

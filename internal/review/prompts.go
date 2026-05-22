@@ -2,7 +2,6 @@ package review
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/andreujuanc/prr/internal/ai"
@@ -142,9 +141,9 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 	// with each AOI so the model sees the code right next to the
 	// concern. In PR mode, render the file diffs once as a separate
 	// section below (one diff per file in the group, not per AOI).
-	subcatLabel := call.Category
+	subcatLabel := call.Category.String()
 	if call.Subcategory != "" {
-		subcatLabel = call.Category + "/" + call.Subcategory
+		subcatLabel = call.Category.String() + "/" + call.Subcategory
 	}
 	sb.WriteString(fmt.Sprintf("\n\n## Areas of Interest (%s)\n\n", subcatLabel))
 	for i, aoi := range call.AOIs {
@@ -284,8 +283,8 @@ func formatAOI(aoi security.AreaOfInterest) string {
 		sb.WriteString(fmt.Sprintf("**Line:** %d\n", aoi.Line))
 	}
 
-	if aoi.Category != "" {
-		cat := aoi.Category
+	if !aoi.Category.IsZero() {
+		cat := aoi.Category.String()
 		if aoi.Subcategory != "" {
 			cat += " / " + aoi.Subcategory
 		}
@@ -307,6 +306,16 @@ func formatAOI(aoi security.AreaOfInterest) string {
 
 	if aoi.Context != "" {
 		sb.WriteString(fmt.Sprintf("**Context:** %s\n", aoi.Context))
+	}
+
+	if len(aoi.Sources) > 0 || len(aoi.Sinks) > 0 || aoi.Sanitizers != nil {
+		sb.WriteString(fmt.Sprintf("**Sources → Sinks:** %s → %s\n",
+			strings.Join(aoi.Sources, ", "), strings.Join(aoi.Sinks, ", ")))
+		if len(aoi.Sanitizers) == 0 {
+			sb.WriteString("**Sanitizers:** none identified — confirm or report missing\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("**Sanitizers:** %s\n", strings.Join(aoi.Sanitizers, ", ")))
+		}
 	}
 
 	if aoi.Snippet != "" {
@@ -344,12 +353,8 @@ func formatAOI(aoi security.AreaOfInterest) string {
 // renamed or removed in the taxonomy land here at prompt-build time
 // without re-validation — the log below surfaces that case.
 func relevantCategories(aoi security.AreaOfInterest) []string {
-	if ai.CategoryExists(aoi.Category) {
-		return []string{aoi.Category}
-	}
-	if aoi.Category != "" {
-		log.Printf("relevantCategories: AOI %s [id=%s] category %q not in taxonomy — prompt omits criteria section",
-			aoi.File, aoi.ID, aoi.Category)
+	if !aoi.Category.IsZero() {
+		return []string{aoi.Category.String()}
 	}
 	return nil
 }

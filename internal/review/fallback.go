@@ -67,8 +67,11 @@ func doFallbackBatchCall(
 // matches the original BuildBatches behaviour (label = dir, "root"
 // when at repo root). Used in error messages and downstream logs.
 func fallbackLabelFromCall(call ReviewCall) string {
-	if call.Category != "" {
-		return call.Category
+	if call.Label != "" {
+		return call.Label
+	}
+	if !call.Category.IsZero() {
+		return call.Category.String()
 	}
 	if len(call.Files) > 0 {
 		if i := strings.LastIndex(call.Files[0], "/"); i > 0 {

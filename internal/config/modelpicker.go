@@ -94,7 +94,7 @@ func (c *Config) selectModels() (*ModelSelection, error) {
 // cfg.StrongModel / cfg.FastModel as defaults when they're in the
 // candidate list.
 func (c *Config) promptModels() (*ModelSelection, error) {
-	bench, _ := LoadBenchmarkResults()
+	bench, _ := LoadBenchmarkResults("aoi")
 	providers := c.ConfiguredProviders()
 
 	reviewModels := ReviewModels(providers...)

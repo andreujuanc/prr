@@ -30,8 +30,9 @@ type ThinkingBudgets struct {
 }
 
 // LoadModels returns model configs by merging embedded defaults with
-// user overrides from ~/.config/prr/models.json. If the user file
-// doesn't exist, it is created with the embedded defaults.
+// user overrides from ~/.config/prr/models.json. The user file is
+// optional and is never created automatically — users opt in by
+// creating it themselves when they want to override defaults.
 func LoadModels() (map[string]ModelConfig, error) {
 	// Parse embedded defaults
 	defaults := make(map[string]ModelConfig)
@@ -47,14 +48,7 @@ func LoadModels() (map[string]ModelConfig, error) {
 
 	data, err := os.ReadFile(userPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Create the file from defaults so the user can customize it
-			if writeErr := writeModelsFile(userPath, defaults); writeErr != nil {
-				log.Printf("Warning: could not write default models.json: %v", writeErr)
-			}
-			return defaults, nil
-		}
-		return defaults, nil // unreadable file, use defaults
+		return defaults, nil // missing or unreadable, use defaults
 	}
 
 	// Parse user overrides and merge — user values win
@@ -97,15 +91,4 @@ func modelsConfigPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".config", "prr", "models.json"), nil
-}
-
-func writeModelsFile(path string, models map[string]ModelConfig) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(models, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0644)
 }

@@ -445,7 +445,7 @@ func recheckBatchLabel(batch []state.DeepFinding) string {
 	}
 	cats := make(map[string]struct{}, 2)
 	for _, f := range batch {
-		c := f.Category
+		c := f.Category.String()
 		if c == "" {
 			c = "_uncategorized"
 		}
@@ -454,7 +454,7 @@ func recheckBatchLabel(batch []state.DeepFinding) string {
 			return "mixed"
 		}
 	}
-	cat := batch[0].Category
+	cat := batch[0].Category.String()
 	if cat == "" {
 		return "_uncategorized"
 	}
@@ -507,17 +507,13 @@ func withIndexOffset(opts RecheckOptions, offset int) RecheckOptions {
 // category batches give the LLM the right neighborhood to spot
 // them while keeping each call's token budget bounded.
 func splitFindingsByCategory(findings []state.DeepFinding, maxPerBatch int) [][]state.DeepFinding {
-	byCat := make(map[string][]state.DeepFinding)
-	var order []string
+	byCat := make(map[state.Category][]state.DeepFinding)
+	var order []state.Category
 	for _, f := range findings {
-		key := f.Category
-		if key == "" {
-			key = "_uncategorized"
+		if _, seen := byCat[f.Category]; !seen {
+			order = append(order, f.Category)
 		}
-		if _, seen := byCat[key]; !seen {
-			order = append(order, key)
-		}
-		byCat[key] = append(byCat[key], f)
+		byCat[f.Category] = append(byCat[f.Category], f)
 	}
 
 	var batches [][]state.DeepFinding
@@ -922,17 +918,13 @@ func splitFindingsByCategoryChunked(findings []state.DeepFinding, chunkSize int)
 	if chunkSize <= 0 {
 		chunkSize = 1
 	}
-	byCat := make(map[string][]state.DeepFinding)
-	var order []string
+	byCat := make(map[state.Category][]state.DeepFinding)
+	var order []state.Category
 	for _, f := range findings {
-		key := f.Category
-		if key == "" {
-			key = "_uncategorized"
+		if _, seen := byCat[f.Category]; !seen {
+			order = append(order, f.Category)
 		}
-		if _, seen := byCat[key]; !seen {
-			order = append(order, key)
-		}
-		byCat[key] = append(byCat[key], f)
+		byCat[f.Category] = append(byCat[f.Category], f)
 	}
 
 	var batches [][]state.DeepFinding

@@ -7,13 +7,13 @@ import (
 
 func TestCategoriesLoaded(t *testing.T) {
 	slugs := AllCategorySlugs()
-	const expected = 22
+	const expected = 23
 	if len(slugs) != expected {
 		t.Errorf("expected %d categories, got %d: %v", expected, len(slugs), slugs)
 	}
 
 	// Spot-check a few — including the newer observability and web-security categories
-	for _, slug := range []string{"authentication", "correctness", "design", "performance", "testing", "cross-cutting", "observability", "web-security"} {
+	for _, slug := range []string{"authentication", "correctness", "design", "performance", "testing", "cross-cutting", "observability", "web-security", "ai-slop"} {
 		if !CategoryExists(slug) {
 			t.Errorf("category %q not found", slug)
 		}

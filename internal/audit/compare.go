@@ -51,7 +51,7 @@ func CompareFindings(current, previous []state.DeepFinding) CompareResult {
 
 // findingKey returns the identity key for matching findings across runs.
 func findingKey(f state.DeepFinding) string {
-	return strings.Join([]string{f.File, f.Category, f.Subcategory, f.Title}, "\x00")
+	return strings.Join([]string{f.File, f.Category.String(), f.Subcategory, f.Title}, "\x00")
 }
 
 // FormatComparison returns a human-readable summary like:

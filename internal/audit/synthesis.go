@@ -278,7 +278,7 @@ func synthesizeHierarchical(
 	// Group findings by category.
 	byCategory := make(map[string][]state.DeepFinding)
 	for _, f := range findings {
-		cat := f.Category
+		cat := f.Category.String()
 		if cat == "" {
 			cat = "uncategorized"
 		}
