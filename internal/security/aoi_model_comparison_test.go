@@ -39,9 +39,13 @@ type groundTruthAOI struct {
 	desc       string // human description for the report
 }
 
-// securityTestDiffs returns realistic diffs with known security issues.
-// Each issue is documented in the groundTruth slice.
-func securityTestDiffs() (map[string]string, []groundTruthAOI) {
+// securityTestDiffs returns realistic diffs covering the AOI categories the
+// benchmark exercises: security vulnerabilities, dep-file edits, correctness
+// bugs, unit mismatches, trojan-source patterns, and API-confusion. Each
+// item is documented in the groundTruth slice. declaredClean lists
+// per-file [start,end] ranges that should not host any AOI — anything
+// emitted in those ranges is treated as a hallucination.
+func securityTestDiffs() (map[string]string, []groundTruthAOI, map[string][][2]int) {
 	diffs := map[string]string{
 		"internal/api/handler.go": `@@ -0,0 +1,62 @@
 +package api
@@ -222,31 +226,209 @@ func securityTestDiffs() (map[string]string, []groundTruthAOI) {
 	}
 
 	groundTruth := []groundTruthAOI{
-		// handler.go
-		{file: "internal/api/handler.go", lineRange: [2]int{15, 22}, category: "input-validation", importance: "must-find", desc: "SQL injection via string concatenation"},
-		{file: "internal/api/handler.go", lineRange: [2]int{25, 26}, category: "input-validation", importance: "must-find", desc: "XSS via fmt.Fprintf with user input"},
-		{file: "internal/api/handler.go", lineRange: [2]int{30, 38}, category: "input-validation", importance: "must-find", desc: "Command injection via exec.Command with user input"},
-		{file: "internal/api/handler.go", lineRange: [2]int{42, 45}, category: "authorization", importance: "must-find", desc: "Admin endpoint without authentication"},
-		{file: "internal/api/handler.go", lineRange: [2]int{49, 57}, category: "input-validation", importance: "nice-to-find", desc: "Server-side template injection"},
+		// handler.go — every GT below points at the SINGLE line where the
+		// bug actually executes (the sink), not the surrounding scaffold.
+		// Models emitting AOIs at the comment one line up or at the
+		// closing brace below are imprecise; they fall to "aligned",
+		// not "covered". See user feedback: GT must mark "where the
+		// problem is" so deep review can assert correctly.
+		{file: "internal/api/handler.go", lineRange: [2]int{18, 18}, category: "input-validation", importance: "must-find", desc: "SQL injection: db.Query with string-concatenated user input"},
+		{file: "internal/api/handler.go", lineRange: [2]int{26, 26}, category: "input-validation", importance: "must-find", desc: "XSS: fmt.Fprintf reflecting user query into HTML response"},
+		{file: "internal/api/handler.go", lineRange: [2]int{34, 34}, category: "input-validation", importance: "must-find", desc: "Command injection: exec.Command(\"sh\", \"-c\", cmd) with user-supplied cmd"},
+		// Admin no-auth: the bug is the *missing* check spanning the
+		// function body — the deep reviewer must see the function to
+		// recommend adding auth, so the range stays multi-line over
+		// L43-45 (declaration through the unprotected write). L42 is a
+		// standalone comment and is excluded.
+		{file: "internal/api/handler.go", lineRange: [2]int{43, 45}, category: "authorization", importance: "must-find", desc: "AdminHandler has no auth check — entire function body lacks authorization"},
+		{file: "internal/api/handler.go", lineRange: [2]int{53, 53}, category: "input-validation", importance: "nice-to-find", desc: "Server-side template injection: template.New(...).Parse(tmplStr) on user input"},
 
 		// redirect.go
-		{file: "internal/api/redirect.go", lineRange: [2]int{11, 14}, category: "input-validation", importance: "must-find", desc: "Open redirect with user-controlled URL"},
-		{file: "internal/api/redirect.go", lineRange: [2]int{18, 28}, category: "input-validation", importance: "must-find", desc: "Path traversal via user-controlled file path"},
+		{file: "internal/api/redirect.go", lineRange: [2]int{14, 14}, category: "input-validation", importance: "must-find", desc: "Open redirect: http.Redirect to user-controlled URL"},
+		{file: "internal/api/redirect.go", lineRange: [2]int{22, 22}, category: "input-validation", importance: "must-find", desc: "Path traversal: os.Open on filepath.Join(\"/data\", user-input)"},
 
 		// token.go
-		{file: "internal/auth/token.go", lineRange: [2]int{11, 11}, category: "configuration", importance: "must-find", desc: "Hardcoded secret key in source"},
-		{file: "internal/auth/token.go", lineRange: [2]int{15, 17}, category: "cryptography", importance: "must-find", desc: "MD5 used for password hashing"},
-		{file: "internal/auth/token.go", lineRange: [2]int{22, 24}, category: "cryptography", importance: "nice-to-find", desc: "Predictable token generation (no crypto/rand)"},
-		{file: "internal/auth/token.go", lineRange: [2]int{29, 30}, category: "data-integrity", importance: "must-find", desc: "Token logged in plaintext"},
-		{file: "internal/auth/token.go", lineRange: [2]int{32, 33}, category: "cryptography", importance: "nice-to-find", desc: "Non-constant-time string comparison for secrets"},
+		{file: "internal/auth/token.go", lineRange: [2]int{11, 11}, category: "configuration", importance: "must-find", desc: "Hardcoded secret key"},
+		{file: "internal/auth/token.go", lineRange: [2]int{16, 16}, category: "cryptography", importance: "must-find", desc: "MD5 used for password hashing"},
+		{file: "internal/auth/token.go", lineRange: [2]int{23, 23}, category: "cryptography", importance: "nice-to-find", desc: "Predictable token: timestamp-derived, not crypto/rand"},
+		{file: "internal/auth/token.go", lineRange: [2]int{30, 30}, category: "data-integrity", importance: "must-find", desc: "log.Printf leaks token in plaintext"},
+		{file: "internal/auth/token.go", lineRange: [2]int{34, 34}, category: "cryptography", importance: "nice-to-find", desc: "Non-constant-time comparison: token == expected"},
 
 		// settings.go
-		{file: "internal/config/settings.go", lineRange: [2]int{9, 11}, category: "external-io", importance: "must-find", desc: "SSRF via http.Get with user-controlled URL"},
+		{file: "internal/config/settings.go", lineRange: [2]int{11, 11}, category: "external-io", importance: "must-find", desc: "SSRF: http.Get on user-controlled URL"},
+		{file: "internal/config/settings.go", lineRange: [2]int{18, 18}, category: "error-handling", importance: "nice-to-find", desc: "json.Decode error ignored — malformed responses silently yield empty config"},
 
-		// helpers.go — SHOULD have no findings (clean file)
+		// handler.go — t.Execute return value ignored in TemplateHandler.
+		// Render / write failures pass silently to the client.
+		{file: "internal/api/handler.go", lineRange: [2]int{58, 58}, category: "error-handling", importance: "nice-to-find", desc: "t.Execute return ignored — render/write failures silently dropped"},
+
+		// helpers.go — `s[:1]` slices bytes; breaks for any multi-byte
+		// first rune (é, 你, 🔥). A recall-biased AOI scanner should flag
+		// the correctness bug here.
+		{file: "internal/util/helpers.go", lineRange: [2]int{10, 10}, category: "correctness", importance: "must-find", desc: "Capitalize uses s[:1] — slices bytes, breaks on multi-byte first rune"},
+
+		// go.mod — surface-area rule: every dependency-file edit gets an
+		// AOI per `aoi_scan.md:162-178`, regardless of how routine the
+		// change looks. L5 is the newly-introduced require entry, the
+		// precise change to flag.
+		{file: "go.mod", lineRange: [2]int{5, 5}, category: "malicious-code", importance: "must-find", desc: "new require entry: github.com/some/dep — confirm provenance"},
 	}
 
-	return diffs, groundTruth
+	declaredClean := map[string][][2]int{
+		// helpers.go line 1 is just `package util` — any AOI on the
+		// package declaration is hallucinated.
+		"internal/util/helpers.go": {{1, 1}},
+	}
+
+	// Merge extra fixtures covering categories not exercised by the
+	// security-focused base set above.
+	extraDiffs, extraGT, extraClean := extraTestDiffs()
+	for file, diff := range extraDiffs {
+		diffs[file] = diff
+	}
+	groundTruth = append(groundTruth, extraGT...)
+	for file, ranges := range extraClean {
+		declaredClean[file] = append(declaredClean[file], ranges...)
+	}
+
+	return diffs, groundTruth, declaredClean
+}
+
+// extraTestDiffs covers categories the base security fixtures don't
+// reach: data-integrity/unit-mismatch, malicious-code/obfuscation,
+// malicious-code/suspicious-dependencies (lockfile mismatch), and
+// design/api-confusion. Each fixture is small (≤25 lines) so the live
+// benchmark wall-clock stays comparable to the previous suite.
+func extraTestDiffs() (map[string]string, []groundTruthAOI, map[string][][2]int) {
+	diffs := map[string]string{
+		"internal/billing/charge.go": `@@ -0,0 +1,16 @@
++package billing
++
++func ChargeAmountCents(userID string) int64 {
++	return lookupCents(userID)
++}
++
++// ApplyDiscount discounts a USD dollar amount.
++func ApplyDiscount(amountDollars float64, pct float64) float64 {
++	return amountDollars * (1 - pct/100)
++}
++
++// FinalizeBill computes the final user bill.
++func FinalizeBill(userID string, pct float64) float64 {
++	raw := ChargeAmountCents(userID)
++	return ApplyDiscount(float64(raw), pct)
++}`,
+
+		// Embeds an actual U+202E RIGHT-TO-LEFT OVERRIDE codepoint in the
+		// string literal — the AOI scanner should flag bidi/zero-width
+		// characters per `aoi_scan.md:140-159`. The Go compiler turns
+		// "‮" in the test source into the real character at compile
+		// time, so the diff text the scanner receives contains the
+		// actual codepoint.
+		"internal/admin/marker.go": "@@ -0,0 +1,7 @@\n" +
+			"+package admin\n" +
+			"+\n" +
+			"+const adminMarker = \"‮ADMIN\"\n" +
+			"+\n" +
+			"+func isPrivileged(role string) bool {\n" +
+			"+\treturn role == adminMarker\n" +
+			"+}",
+
+		// Lockfile-mismatch: package-lock.json bumps a dep version, but
+		// package.json sees an unrelated change. The "lockfile changes
+		// that don't match the source-side changes in the same PR are
+		// extra-suspicious" clause from aoi_scan.md:175-177.
+		"package.json": `@@ -1,5 +1,5 @@
+ {
+   "name": "demo",
+-  "description": "old description",
++  "description": "new description",
+   "version": "1.0.0"
+ }`,
+		"package-lock.json": `@@ -40,7 +40,7 @@
+     "node_modules/lodash": {
+-      "version": "4.17.21",
++      "version": "4.17.22-evil-xyz",
+       "resolved": "https://registry.npmjs.org/lodash/-/lodash.tgz",
+       "integrity": "sha512-abcdefghijklmnop==",
+       "license": "MIT",
+       "engines": { "node": ">=8" }
+     }`,
+
+		"internal/ledger/transfers.go": `@@ -0,0 +1,18 @@
++package ledger
++
++// transfer sends amount from one account to another.
++// Argument order: (from, to, amount).
++func transfer(from, to string, amount int64) error {
++	return move(from, to, amount)
++}
++
++// refund returns amount to the customer. NOTE: argument order is
++// REVERSED from transfer — the recipient (customer) comes first.
++func refund(customerAcct, merchantAcct string, amount int64) error {
++	return move(merchantAcct, customerAcct, amount)
++}
++
++// chargeback refunds the customer from the merchant's account.
++func chargeback(customer, merchant string, cents int64) error {
++	return refund(merchant, customer, cents)
++}`,
+	}
+
+	gt := []groundTruthAOI{
+		// charge.go — cents (int64) flows into ApplyDiscount expecting USD
+		// dollars (float64). The bare float64() conversion at line 15
+		// preserves the cents magnitude, so the discount applies to a
+		// number that is 100× too large.
+		{file: "internal/billing/charge.go", lineRange: [2]int{15, 15}, category: "data-integrity", importance: "must-find", desc: "cents value flows into a USD-dollar consumer (unit mismatch on the ApplyDiscount call)"},
+
+		// charge.go — independent concern: monetary discount is computed
+		// in float64. Floating-point arithmetic on money causes rounding
+		// drift and precision loss; standard advice is integer cents or
+		// decimal types.
+		{file: "internal/billing/charge.go", lineRange: [2]int{9, 9}, category: "data-integrity", importance: "must-find", desc: "monetary discount computed in float64 — rounding / precision loss"},
+
+		// marker.go — bidi override in a string literal that controls
+		// privilege checks. The deep reviewer should see this.
+		{file: "internal/admin/marker.go", lineRange: [2]int{3, 3}, category: "malicious-code", importance: "must-find", desc: "U+202E bidi override in a privilege-control string literal"},
+
+		// marker.go — direct consequence of the bidi: a comparison against
+		// the obfuscated constant means a legitimate "ADMIN" input never
+		// matches. Separate AOI from the bidi itself, but caused by it.
+		{file: "internal/admin/marker.go", lineRange: [2]int{6, 6}, category: "authorization", importance: "must-find", desc: "privilege check compares user role to obfuscated constant — legitimate ADMIN input never matches"},
+
+		// package-lock.json — version bump on lodash without matching
+		// package.json change. L41 is the precise version line.
+		{file: "package-lock.json", lineRange: [2]int{41, 41}, category: "malicious-code", importance: "must-find", desc: "lockfile lodash version bump to suspicious tag, no matching package.json change"},
+
+		// package.json — touching any dependency file is itself an AOI
+		// per the surface-area rule, even when the change looks routine.
+		// L3 is the line that actually changed.
+		{file: "package.json", lineRange: [2]int{3, 3}, category: "malicious-code", importance: "nice-to-find", desc: "package.json description modified — provenance check on dependency manifest"},
+
+		// transfers.go — chargeback calls refund(merchant, customer) but
+		// refund's signature puts the customer first (customerAcct,
+		// merchantAcct). The call at L17 refunds the MERCHANT instead
+		// of the customer.
+		{file: "internal/ledger/transfers.go", lineRange: [2]int{17, 17}, category: "design", importance: "must-find", desc: "chargeback passes (merchant, customer) to refund(customer, merchant) — refunds the wrong party"},
+
+		// transfers.go — root cause of the chargeback bug above:
+		// declaring refund with arguments reversed vs transfer is an API
+		// design choice that invites caller mistakes. Flagging the
+		// signature itself (not just the buggy call site) is what lets
+		// the deep reviewer recommend a structural fix.
+		{file: "internal/ledger/transfers.go", lineRange: [2]int{11, 11}, category: "design", importance: "nice-to-find", desc: "refund declared with reversed argument order vs transfer — API shape invites caller mistakes"},
+	}
+
+	declaredClean := map[string][][2]int{
+		// Package declaration line — never a real AOI in these fixtures.
+		"internal/billing/charge.go":   {{1, 1}},
+		"internal/admin/marker.go":     {{1, 1}},
+		"internal/ledger/transfers.go": {{1, 1}},
+	}
+
+	return diffs, gt, declaredClean
 }
 
 // Benchmark tuning is independent of the user's models.json so results are
@@ -266,11 +448,18 @@ func securityTestDiffs() (map[string]string, []groundTruthAOI) {
 //
 // Set a *_VARIANTS env var to the empty string to disable that axis's fan-out
 // while keeping the baseline.
+// benchmarkTemperature returns the baseline temperature applied to every
+// spec. 0.3 is the empirically-tuned sweet spot from the temperature
+// sweep on gemini-3.1-flash-lite: temp ∈ [0.05, 0.5] consistently kept
+// flash-lite in the 52-56% coverage band, while temp=0 fell into a 40%
+// low mode about 40% of the time. 0.3 sits in the middle of the
+// winning band and is reasonable across providers — purely greedy
+// (temp=0) made flash-lite stick in a local minimum.
 func benchmarkTemperature() float64 {
 	if v, ok := envFloat("PRR_BENCH_TEMPERATURE"); ok {
 		return v
 	}
-	return 0.1
+	return 0.3
 }
 
 func benchmarkMaxOutputTokens() int {
@@ -471,14 +660,23 @@ func defaultModels(cfg *config.Config) []modelSpec {
 }
 
 // createProvider creates an ai.Provider from a modelSpec using the provider factory.
+//
+// Bypasses ai.TempPtr (which treats <=0 as "unset / use provider default") so
+// the benchmark can send literal 0 = greedy decoding when configured. Negative
+// temperatures still fall through to provider default.
 func createProvider(spec modelSpec) (ai.Provider, error) {
+	var temp *float64
+	if spec.temperature >= 0 {
+		t := spec.temperature
+		temp = &t
+	}
 	return ai.NewProvider(ai.ProviderConfig{
 		ProviderName:    spec.provider,
 		ModelID:         spec.model,
 		APIKey:          spec.apiKey,
 		BaseURL:         spec.baseURL,
 		MaxOutputTokens: spec.maxOutput,
-		Temperature:     ai.TempPtr(spec.temperature),
+		Temperature:     temp,
 		ThinkingBudget:  spec.thinkingBudget,
 	})
 }
@@ -550,13 +748,28 @@ type modelResult struct {
 	duration time.Duration
 	err      error
 
-	// Scoring
-	mustFindTotal int
-	mustFindHits  int
-	niceFindTotal int
-	niceFindHits  int
-	falseAlarms   int // AOIs that don't match any ground truth
-	totalAOIs     int
+	// Scoring — AOIs are a recall-biased pre-filter, so "unmatched"
+	// is not penalized. See classifyAOI for the contract.
+	mustFindTotal  int
+	mustFindHits   int
+	niceFindTotal  int
+	niceFindHits   int
+	covered        int     // AOIs that overlap a ground-truth entry
+	aligned        int     // AOIs not in GT but on real diff lines (acceptable)
+	hallucinations int     // AOIs that fail structural checks
+	totalAOIs      int     // count of AOIs the model emitted
+	coveragePct    float64 // % of ground truth surfaced
+	aoiDensity     float64 // AOIs per 100 scanned LoC
+
+	// Line-offset precision: for each non-hallucinated AOI on a file
+	// that has any GT, the offset is the distance (in lines) to the
+	// nearest GT range — 0 if the AOI overlaps a GT. avgLineOffset is
+	// the sum / count over all those samples. Lower is better; tells
+	// you whether aligned AOIs are near-misses (off by 1-2 lines) or
+	// far from any real bug.
+	offsetSum     int     // sum of per-AOI offsets
+	offsetSamples int     // count of AOIs that contributed an offset
+	avgLineOffset float64 // offsetSum / offsetSamples
 
 	// Token usage & cost
 	inputTokens  int
@@ -583,6 +796,355 @@ func matchAOI(aoi security.AreaOfInterest, gt groundTruthAOI) (fileMatch, lineMa
 	return
 }
 
+// aoiClassification labels each emitted AOI for scoring.
+//
+//   - aoiCovered — overlaps a ground-truth entry (file + line range).
+//   - aoiAligned — doesn't match GT but isn't hallucinated. AOIs are a
+//     recall-biased pre-filter (see internal/security/prompts/aoi_scan.md);
+//     "aligned noise" is acceptable by design and not penalized.
+//   - aoiHallucinated — fails a structural check: wrong file, line outside
+//     the diff hunks, declared-clean overlap, or (for security-shaped
+//     categories) cites sources/sinks that don't appear within ±3 lines
+//     of the reported location.
+type aoiClassification int
+
+const (
+	aoiCovered aoiClassification = iota
+	aoiAligned
+	aoiHallucinated
+)
+
+// fixtureMeta carries per-file diff metadata used by classifyAOI.
+type fixtureMeta struct {
+	// validLines is the set of new-side line numbers present in the diff
+	// (added "+" lines and context " " lines). AOIs on any other line
+	// number for this file are hallucinations.
+	validLines map[int]bool
+	// lineText maps new-side line number → that line's content (without
+	// the leading +/space marker). Used to verify identifier proximity
+	// for security-shaped AOIs.
+	lineText map[int]string
+	// declaredClean lists [start, end] line ranges that should not host
+	// any AOI in this file. Any AOI overlapping a declared-clean range
+	// is hallucinated by fiat. Empty in commit 1; fixtures populate
+	// these as they grow.
+	declaredClean [][2]int
+}
+
+// buildFixtureMeta parses unified-diff snippets in diffs into per-file
+// metadata. The benchmark fixtures begin with one or more hunk headers
+// like "@@ -0,0 +1,62 @@" followed by added/context lines.
+func buildFixtureMeta(diffs map[string]string, declaredClean map[string][][2]int) map[string]fixtureMeta {
+	out := make(map[string]fixtureMeta, len(diffs))
+	for file, diff := range diffs {
+		meta := fixtureMeta{
+			validLines:    make(map[int]bool),
+			lineText:      make(map[int]string),
+			declaredClean: declaredClean[file],
+		}
+		curLine := 0
+		for _, line := range strings.Split(diff, "\n") {
+			if strings.HasPrefix(line, "@@") {
+				curLine = parseHunkStart(line)
+				continue
+			}
+			if curLine == 0 {
+				continue
+			}
+			if strings.HasPrefix(line, "-") {
+				continue // removed line, no new-side line number
+			}
+			content := ""
+			if len(line) > 0 {
+				content = line[1:]
+			}
+			meta.validLines[curLine] = true
+			meta.lineText[curLine] = content
+			curLine++
+		}
+		out[file] = meta
+	}
+	return out
+}
+
+// parseHunkStart returns the new-side starting line of a unified-diff
+// hunk header. "@@ -0,0 +1,62 @@" → 1. Returns 0 if not parseable.
+func parseHunkStart(hunk string) int {
+	idx := strings.Index(hunk, "+")
+	if idx < 0 {
+		return 0
+	}
+	rest := hunk[idx+1:]
+	end := strings.IndexAny(rest, ", \t@")
+	if end <= 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// aoiLineOffset returns the smallest line distance between this AOI's
+// range and any GT range on the same file. 0 means the AOI overlaps a
+// GT (covered). A positive number is the "off by N lines" precision
+// metric — an aligned AOI 1 line above the real bug returns 1.
+// Returns -1 when the file has no GT entries at all; callers should
+// skip those from the average.
+func aoiLineOffset(aoi security.AreaOfInterest, gt []groundTruthAOI) int {
+	aoiStart, aoiEnd := aoi.Line, aoi.EndLine
+	if aoiEnd <= 0 {
+		aoiEnd = aoiStart
+	}
+	minDist := -1
+	for _, g := range gt {
+		if g.file != aoi.File {
+			continue
+		}
+		var d int
+		switch {
+		case aoiEnd < g.lineRange[0]:
+			d = g.lineRange[0] - aoiEnd
+		case g.lineRange[1] < aoiStart:
+			d = aoiStart - g.lineRange[1]
+		default:
+			d = 0 // overlap
+		}
+		if minDist < 0 || d < minDist {
+			minDist = d
+		}
+	}
+	return minDist
+}
+
+// classifyAOI labels one AOI against the fixture's ground truth and
+// per-file metadata. See aoiClassification for the rule set.
+func classifyAOI(aoi security.AreaOfInterest, gt []groundTruthAOI, meta map[string]fixtureMeta) aoiClassification {
+	fm, ok := meta[aoi.File]
+	if !ok {
+		return aoiHallucinated
+	}
+	if !fm.validLines[aoi.Line] {
+		return aoiHallucinated
+	}
+	for _, r := range fm.declaredClean {
+		if aoi.Line >= r[0] && aoi.Line <= r[1] {
+			return aoiHallucinated
+		}
+	}
+	if isSecurityCategory(aoi.Category.String()) && !securityIdentifiersPresent(aoi, fm) {
+		return aoiHallucinated
+	}
+	for _, g := range gt {
+		if fileOK, lineOK, _ := matchAOI(aoi, g); fileOK && lineOK {
+			return aoiCovered
+		}
+	}
+	return aoiAligned
+}
+
+// isSecurityCategory mirrors the security-shaped category list in
+// internal/security/prompts/aoi_scan.md — the set of categories the
+// prompt requires to carry sources/sinks/sanitizers.
+func isSecurityCategory(cat string) bool {
+	switch cat {
+	case "input-validation", "external-io", "authorization",
+		"authentication", "cryptography", "web-security":
+		return true
+	}
+	return false
+}
+
+// securityIdentifiersPresent verifies the AOI's sources/sinks reference
+// identifiers that appear within ±3 lines of the reported location.
+// An empty sources+sinks list is treated as present — the "no
+// sanitizers" signal lives separately and isn't a hallucination by
+// itself. Returns true if at least one identifier is found nearby.
+func securityIdentifiersPresent(aoi security.AreaOfInterest, fm fixtureMeta) bool {
+	idents := append([]string(nil), aoi.Sources...)
+	idents = append(idents, aoi.Sinks...)
+	if len(idents) == 0 {
+		return true
+	}
+	const window = 3
+	start := aoi.Line - window
+	end := aoi.Line + window
+	if aoi.EndLine > 0 && aoi.EndLine+window > end {
+		end = aoi.EndLine + window
+	}
+	for ln := start; ln <= end; ln++ {
+		text, ok := fm.lineText[ln]
+		if !ok {
+			continue
+		}
+		for _, id := range idents {
+			id = strings.TrimSpace(id)
+			if len(id) < 2 {
+				continue
+			}
+			if strings.Contains(text, id) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// benchmarkScanTimeout returns the per-model AOI scan deadline. Default
+// 120s is enough for paid models; slow free-tier models throttle and
+// need a longer ceiling — override via PRR_BENCH_SCAN_TIMEOUT_SEC.
+func benchmarkScanTimeout() time.Duration {
+	if v, ok := envInt("PRR_BENCH_SCAN_TIMEOUT_SEC"); ok && v > 0 {
+		return time.Duration(v) * time.Second
+	}
+	return 120 * time.Second
+}
+
+// resolveCost prefers a provider-reported cost (e.g., opencode emits
+// per-call cost in its step_finish event) over the per-1M-token estimate
+// from known_models.go. Returns the reported number when it's non-zero,
+// otherwise falls back to EstimateCost. The two never co-exist for the
+// same call — providers either report cost or they don't.
+//
+// Takes the fields by value (not a UsageTracker pointer) so the call
+// sites can stay one-liners; passing the tracker by value tripped
+// `go vet`'s sync.Mutex-copy warning.
+func resolveCost(reported float64, inputTokens, outputTokens int, provider, modelID string) float64 {
+	if reported > 0 {
+		return reported
+	}
+	return config.EstimateCost(provider+"/"+modelID, inputTokens, outputTokens)
+}
+
+// totalDiffLines sums validLines counts across the fixture — the
+// denominator for AOI density.
+func totalDiffLines(meta map[string]fixtureMeta) int {
+	n := 0
+	for _, fm := range meta {
+		n += len(fm.validLines)
+	}
+	return n
+}
+
+// TestAOIBenchmarkFixturesValid verifies every ground-truth entry and
+// declaredClean range references a real new-side line in its fixture's
+// diff. Without this, GT entries can silently drift off the actual bug
+// location (e.g. a [32,33] range when the bug is on line 34), making
+// the benchmark score wrong without anyone noticing.
+//
+// Runs without PRR_LIVE_TESTS — pure local check, suitable for CI.
+func TestAOIBenchmarkFixturesValid(t *testing.T) {
+	check := func(name string, diffs map[string]string, gt []groundTruthAOI, declaredClean map[string][][2]int) {
+		t.Helper()
+		meta := buildFixtureMeta(diffs, declaredClean)
+
+		for _, g := range gt {
+			fm, ok := meta[g.file]
+			if !ok {
+				t.Errorf("[%s] GT references file not in diffs: %s (%s)", name, g.file, g.desc)
+				continue
+			}
+			if len(fm.validLines) == 0 {
+				t.Errorf("[%s] GT file %s has no parsed lines — bad hunk header? (%s)", name, g.file, g.desc)
+				continue
+			}
+			minLine, maxLine := 1<<31, 0
+			for ln := range fm.validLines {
+				if ln < minLine {
+					minLine = ln
+				}
+				if ln > maxLine {
+					maxLine = ln
+				}
+			}
+			if g.lineRange[0] < 1 || g.lineRange[1] < g.lineRange[0] {
+				t.Errorf("[%s] GT range %s:[%d,%d] is malformed — %s", name, g.file, g.lineRange[0], g.lineRange[1], g.desc)
+				continue
+			}
+			// Multi-context fixtures (contextLineDiffs) widen ranges
+			// intentionally to match across U3/U5/U10 hunk shifts. For
+			// those we only require overlap with validLines — extending
+			// above maxLine or below minLine is harmless because no AOI
+			// can be emitted at a non-existent line anyway.
+			multiContext := strings.HasPrefix(name, "contextLineDiffs/")
+			if multiContext {
+				overlap := false
+				for ln := g.lineRange[0]; ln <= g.lineRange[1]; ln++ {
+					if fm.validLines[ln] {
+						overlap = true
+						break
+					}
+				}
+				if !overlap {
+					t.Errorf("[%s] GT range %s:[%d,%d] overlaps no diff line (lines %d-%d) — %s",
+						name, g.file, g.lineRange[0], g.lineRange[1], minLine, maxLine, g.desc)
+				}
+				continue
+			}
+			// Single-context: every line in [start, end] must be a real
+			// diff line. A range that extends past the diff means either
+			// the hunk header is wrong or the GT is sloppy — both bugs
+			// the benchmark author needs to know about.
+			for ln := g.lineRange[0]; ln <= g.lineRange[1]; ln++ {
+				if !fm.validLines[ln] {
+					t.Errorf("[%s] GT range %s:[%d,%d] includes line %d which is not in the diff (max line %d) — %s",
+						name, g.file, g.lineRange[0], g.lineRange[1], ln, maxLine, g.desc)
+					break
+				}
+			}
+		}
+
+		for file, ranges := range declaredClean {
+			fm, ok := meta[file]
+			if !ok {
+				t.Errorf("[%s] declaredClean references file not in diffs: %s", name, file)
+				continue
+			}
+			for _, r := range ranges {
+				hit := false
+				for ln := r[0]; ln <= r[1]; ln++ {
+					if fm.validLines[ln] {
+						hit = true
+						break
+					}
+				}
+				if !hit {
+					t.Errorf("[%s] declaredClean %s:[%d,%d] overlaps no diff line", name, file, r[0], r[1])
+				}
+			}
+		}
+	}
+
+	diffs, gt, declared := securityTestDiffs()
+	check("securityTestDiffs", diffs, gt, declared)
+
+	// Audit dump: for every GT entry, show the diff lines it covers so we
+	// can eyeball that the GT actually points at the bug. Set
+	// PRR_AOI_AUDIT=1 to enable.
+	if os.Getenv("PRR_AOI_AUDIT") == "1" {
+		dbgMeta := buildFixtureMeta(diffs, declared)
+		for _, g := range gt {
+			fm := dbgMeta[g.file]
+			t.Logf("── GT %s [%d,%d] %s/%s — %s",
+				g.file, g.lineRange[0], g.lineRange[1], g.category, g.importance, g.desc)
+			for ln := g.lineRange[0]; ln <= g.lineRange[1]; ln++ {
+				if text, ok := fm.lineText[ln]; ok {
+					t.Logf("    L%d: %q", ln, text)
+				} else {
+					t.Logf("    L%d: <not in diff>", ln)
+				}
+			}
+		}
+	}
+
+	u3, u5, u10, ctxGT := contextLineDiffs()
+	empty := map[string][][2]int{}
+	check("contextLineDiffs/U3", u3, ctxGT, empty)
+	check("contextLineDiffs/U5", u5, ctxGT, empty)
+	check("contextLineDiffs/U10", u10, ctxGT, empty)
+}
+
 func TestAOIModelComparison(t *testing.T) {
 	cfg := loadTestConfig(t)
 	if cfg == nil {
@@ -594,7 +1156,7 @@ func TestAOIModelComparison(t *testing.T) {
 		models = defaultModels(cfg)
 	}
 
-	diffs, groundTruth := securityTestDiffs()
+	diffs, groundTruth, declaredClean := securityTestDiffs()
 
 	mustFindCount := 0
 	niceFindCount := 0
@@ -606,8 +1168,11 @@ func TestAOIModelComparison(t *testing.T) {
 		}
 	}
 
-	t.Logf("Ground truth: %d must-find + %d nice-to-find = %d total AOIs across %d files",
-		mustFindCount, niceFindCount, len(groundTruth), len(diffs))
+	meta := buildFixtureMeta(diffs, declaredClean)
+	totalLoC := totalDiffLines(meta)
+
+	t.Logf("Ground truth: %d must-find + %d nice-to-find = %d total AOIs across %d files (%d scanned LoC)",
+		mustFindCount, niceFindCount, len(groundTruth), len(diffs), totalLoC)
 	t.Logf("Testing %d model configurations\n", len(models))
 
 	// ── Run each model ────────────────────────────────────────────────
@@ -624,7 +1189,7 @@ func TestAOIModelComparison(t *testing.T) {
 			// Enable verbose debug logging for this detailed run to capture HTTP/debug info.
 			client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker), ai.WithDebugLogger(os.Stderr))
 
-			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), benchmarkScanTimeout())
 			defer cancel()
 
 			start := time.Now()
@@ -643,7 +1208,7 @@ func TestAOIModelComparison(t *testing.T) {
 				niceFindTotal: niceFindCount,
 				inputTokens:   usage.InputTokens,
 				outputTokens:  usage.OutputTokens,
-				cost:          config.EstimateCost(spec.provider+"/"+spec.model, usage.InputTokens, usage.OutputTokens),
+				cost:          resolveCost(usage.ReportedCostUSD, usage.InputTokens, usage.OutputTokens, spec.provider, spec.model),
 			}
 
 			if err != nil {
@@ -654,40 +1219,36 @@ func TestAOIModelComparison(t *testing.T) {
 
 			result.totalAOIs = report.TotalAOIs
 
-			// ── Score: each ground truth is an independent assertion. ──
-			// A GT is "hit" if ANY model AOI overlaps it (file + line).
-			// A model AOI is a "false alarm" if it overlaps no GT at all.
-			// Slots are not consumed — overlapping GTs both get credited
-			// when one AOI satisfies both, which is the correct semantics
-			// for "did the model find each expected issue?"
+			// ── Score: classify each AOI as covered/aligned/hallucinated ──
+			// Coverage tracks "did ANY AOI overlap this ground truth?"; an
+			// AOI's classification is independent (see classifyAOI). Aligned
+			// AOIs are accepted as recall-biased noise.
 			gtMatched := make([]bool, len(groundTruth))
-			for gi, gt := range groundTruth {
-				for _, fileResult := range report.Files {
-					for _, aoi := range fileResult.AreasOfInterest {
-						fileOK, lineOK, _ := matchAOI(aoi, gt)
-						if fileOK && lineOK {
-							gtMatched[gi] = true
-							break
-						}
-					}
-					if gtMatched[gi] {
-						break
-					}
-				}
-			}
-
 			for _, fileResult := range report.Files {
 				for _, aoi := range fileResult.AreasOfInterest {
-					matched := false
-					for _, gt := range groundTruth {
-						fileOK, lineOK, _ := matchAOI(aoi, gt)
-						if fileOK && lineOK {
-							matched = true
-							break
+					cls := classifyAOI(aoi, groundTruth, meta)
+					switch cls {
+					case aoiCovered:
+						result.covered++
+						for gi, gt := range groundTruth {
+							if fileOK, lineOK, _ := matchAOI(aoi, gt); fileOK && lineOK {
+								gtMatched[gi] = true
+							}
 						}
+					case aoiAligned:
+						result.aligned++
+					case aoiHallucinated:
+						result.hallucinations++
 					}
-					if !matched {
-						result.falseAlarms++
+					// Skip hallucinated AOIs from offset stats — they
+					// point at nonexistent lines so "distance to GT" is
+					// not meaningful. Skip when file has no GT at all
+					// (offset = -1) for the same reason.
+					if cls != aoiHallucinated {
+						if d := aoiLineOffset(aoi, groundTruth); d >= 0 {
+							result.offsetSum += d
+							result.offsetSamples++
+						}
 					}
 				}
 			}
@@ -702,12 +1263,24 @@ func TestAOIModelComparison(t *testing.T) {
 				}
 			}
 
+			totalGT := result.mustFindTotal + result.niceFindTotal
+			if totalGT > 0 {
+				result.coveragePct = float64(result.mustFindHits+result.niceFindHits) / float64(totalGT) * 100
+			}
+			if result.offsetSamples > 0 {
+				result.avgLineOffset = float64(result.offsetSum) / float64(result.offsetSamples)
+			}
+			if totalLoC > 0 {
+				result.aoiDensity = float64(result.totalAOIs) / float64(totalLoC) * 100
+			}
+
 			results[i] = result
 
-			t.Logf("  Must-find: %d/%d | Nice-to-find: %d/%d | False alarms: %d | Total AOIs: %d | Tokens: %d in + %d out | Cost: $%.4f | Time: %.1fs",
+			t.Logf("  Must: %d/%d | Nice: %d/%d | Aligned: %d | Halluc: %d | AOIs: %d | Coverage: %.1f%% | Density: %.1f/100LoC | AvgOffset: %.2f lines | Tokens: %d in + %d out | Cost: $%.4f | Time: %.1fs",
 				result.mustFindHits, result.mustFindTotal,
 				result.niceFindHits, result.niceFindTotal,
-				result.falseAlarms, result.totalAOIs,
+				result.aligned, result.hallucinations, result.totalAOIs,
+				result.coveragePct, result.aoiDensity, result.avgLineOffset,
 				result.inputTokens, result.outputTokens,
 				result.cost,
 				elapsed.Seconds())
@@ -728,10 +1301,10 @@ func TestAOIModelComparison(t *testing.T) {
 	t.Log("  AOI MODEL COMPARISON RESULTS")
 	t.Log("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════")
 	t.Log("")
-	t.Logf("  %-40s %7s %7s %5s %5s %7s %7s %7s %9s %7s",
-		"Model", "Must", "Nice", "FP", "AOIs", "Recall", "In Tok", "Out Tok", "Cost", "Time")
-	t.Logf("  %-40s %7s %7s %5s %5s %7s %7s %7s %9s %7s",
-		strings.Repeat("─", 40), "───────", "───────", "─────", "─────", "───────", "───────", "───────", "─────────", "───────")
+	t.Logf("  %-40s %7s %7s %6s %5s %8s %7s %7s %7s %7s %9s %7s",
+		"Model", "Must", "Nice", "Halluc", "AOIs", "Coverage", "Densty", "Offset", "In Tok", "Out Tok", "Cost", "Time")
+	t.Logf("  %-40s %7s %7s %6s %5s %8s %7s %7s %7s %7s %9s %7s",
+		strings.Repeat("─", 40), "───────", "───────", "──────", "─────", "────────", "───────", "───────", "───────", "───────", "─────────", "───────")
 
 	for _, r := range results {
 		if r.err != nil {
@@ -739,43 +1312,53 @@ func TestAOIModelComparison(t *testing.T) {
 			continue
 		}
 
-		recall := float64(0)
-		totalGT := r.mustFindTotal + r.niceFindTotal
-		if totalGT > 0 {
-			recall = float64(r.mustFindHits+r.niceFindHits) / float64(totalGT) * 100
-		}
-
-		t.Logf("  %-40s %3d/%-3d %3d/%-3d %5d %5d  %5.1f%% %6dk %6dk  $%.4f %6.1fs",
+		t.Logf("  %-40s %3d/%-3d %3d/%-3d %6d %5d   %5.1f%% %6.1f %6.2f %6dk %6dk  $%.4f %6.1fs",
 			r.spec.name,
 			r.mustFindHits, r.mustFindTotal,
 			r.niceFindHits, r.niceFindTotal,
-			r.falseAlarms,
+			r.hallucinations,
 			r.totalAOIs,
-			recall,
+			r.coveragePct,
+			r.aoiDensity,
+			r.avgLineOffset,
 			r.inputTokens/1000, r.outputTokens/1000,
 			r.cost,
 			r.duration.Seconds())
 	}
 
 	t.Log("")
-	t.Log("  Must   = must-find hits / total must-finds")
-	t.Log("  Nice   = nice-to-find hits / total nice-to-finds")
-	t.Log("  FP     = false alarms (AOIs not matching any ground truth)")
-	t.Log("  AOIs   = total AOIs reported by the model")
-	t.Log("  Recall = (must+nice hits) / total ground truth")
-	t.Log("  In/Out = input/output tokens (thousands)")
-	t.Log("  Cost   = estimated USD (standard tier pricing)")
+	t.Log("  Must     = must-find ground truth surfaced")
+	t.Log("  Nice     = nice-to-find ground truth surfaced")
+	t.Log("  Halluc   = AOIs at nonexistent lines / declared-clean ranges / fabricated identifiers")
+	t.Log("  AOIs     = total AOIs emitted by the model")
+	t.Log("  Coverage = (must+nice hits) / total ground truth")
+	t.Log("  Densty   = AOIs per 100 scanned LoC (informational; not penalized)")
+	t.Log("  Offset   = avg line distance from each non-hallucinated AOI to the nearest GT")
+	t.Log("             (0 = on the exact bug line; higher = AOIs land off-target)")
+	t.Log("  In/Out   = input/output tokens (thousands)")
+	t.Log("  Cost     = estimated USD (metered API rate; for subscription")
+	t.Log("             providers like Claude Code this is shadow pricing —")
+	t.Log("             what this run would cost on the equivalent metered API)")
+	t.Log("")
+	t.Log("  Note: AOIs are a recall-biased pre-filter. Aligned-but-unmatched")
+	t.Log("  AOIs are acceptable by design and not penalized in the score.")
 	t.Log("")
 
 	// ── Determine winner ─────────────────────────────────────────────
+	// Score = coverage_pct - hallucination_pct * 0.5. Hallucinations
+	// are normalized against the model's own AOI count so a model that
+	// emits many aligned AOIs isn't penalized just for being verbose.
 	bestIdx := -1
-	bestScore := -1.0
+	bestScore := -1e9
 	for i, r := range results {
 		if r.err != nil {
 			continue
 		}
-		// Score: must-find recall * 2 + nice-find recall - FP penalty
-		score := float64(r.mustFindHits)*2.0 + float64(r.niceFindHits) - float64(r.falseAlarms)*0.3
+		hallucPct := float64(0)
+		if r.totalAOIs > 0 {
+			hallucPct = float64(r.hallucinations) / float64(r.totalAOIs) * 100
+		}
+		score := r.coveragePct - hallucPct*0.5
 		if score > bestScore {
 			bestScore = score
 			bestIdx = i
@@ -825,7 +1408,10 @@ func TestAOIModelComparison(t *testing.T) {
 			LatencyMs:      int(r.duration.Milliseconds()),
 			CostPerScan:    r.cost,
 			TotalAOIs:      r.totalAOIs,
-			FalseAlarms:    r.falseAlarms,
+			Hallucinations: r.hallucinations,
+			CoveragePct:    r.coveragePct,
+			AOIDensity:     r.aoiDensity,
+			AvgLineOffset:  r.avgLineOffset,
 		})
 	}
 	if err := config.SaveBenchmarkResults("aoi", benchmarks); err != nil {
@@ -868,7 +1454,7 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 
 	pc := cfg.ProviderConfigFor(providerName)
 
-	diffs, groundTruth := securityTestDiffs()
+	diffs, groundTruth, _ := securityTestDiffs()
 
 	spec := newSpec(displayName, modelID, providerName, pc.APIKey, pc.BaseURL)
 	provider, err := createProvider(spec)
@@ -879,7 +1465,7 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 	tracker := &ai.UsageTracker{}
 	client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), benchmarkScanTimeout())
 	defer cancel()
 
 	start := time.Now()
@@ -893,7 +1479,7 @@ func TestAOIModelComparison_DetailedOutput(t *testing.T) {
 	}
 
 	usage := tracker.Snapshot()
-	cost := config.EstimateCost(spec.provider+"/"+modelID, usage.InputTokens, usage.OutputTokens)
+	cost := resolveCost(usage.ReportedCostUSD, usage.InputTokens, usage.OutputTokens, spec.provider, modelID)
 	t.Logf("\nModel: %s | Time: %.1fs | Total AOIs: %d | Tokens: %d in + %d out | Cost: $%.4f\n",
 		displayName, elapsed.Seconds(), report.TotalAOIs,
 		usage.InputTokens, usage.OutputTokens, cost)
@@ -1201,6 +1787,14 @@ func contextLineDiffs() (u3 map[string]string, u5 map[string]string, u10 map[str
 		{file: "internal/auth/token.go", lineRange: [2]int{14, 22}, category: "crypto", importance: "must-find", desc: "MD5 used for password hashing (visible in both U3 and U10)"},
 		// settings.go — SSRF: with U3 it's less clear configURL is user-controlled
 		{file: "internal/config/settings.go", lineRange: [2]int{5, 12}, category: "network", importance: "must-find", desc: "SSRF via http.Get with user-controlled URL"},
+
+		// handler.go — actionable TODO comment ("switch back to allowlist
+		// after testing") sits next to the exec sink. The aoi_scan.md
+		// surface-area rule mandates an AOI for actionable TODO/FIXME.
+		// Line numbers across U3/U5/U10: TODO appears at line 43 (U3),
+		// line 46 (U5), line 42 (U10) — the widened range covers all
+		// three.
+		{file: "internal/api/handler.go", lineRange: [2]int{40, 50}, category: "correctness", importance: "must-find", desc: "actionable TODO admits known gap next to exec sink"},
 	}
 
 	return u3, u5, u10, gt
@@ -1264,7 +1858,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 				tracker := &ai.UsageTracker{}
 				client := ai.NewAgent(provider, nil, ai.WithUsageTracker(tracker))
 
-				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), benchmarkScanTimeout())
 				defer cancel()
 
 				start := time.Now()
@@ -1283,7 +1877,7 @@ func TestAOIContextLineComparison(t *testing.T) {
 					niceFindTotal: niceFindCount,
 					inputTokens:   usage.InputTokens,
 					outputTokens:  usage.OutputTokens,
-					cost:          config.EstimateCost(spec.provider+"/"+spec.model, usage.InputTokens, usage.OutputTokens),
+					cost:          resolveCost(usage.ReportedCostUSD, usage.InputTokens, usage.OutputTokens, spec.provider, spec.model),
 				}
 
 				if err != nil {
@@ -1294,36 +1888,33 @@ func TestAOIContextLineComparison(t *testing.T) {
 
 				r.totalAOIs = report.TotalAOIs
 
-				// Score: independent per-GT assertion (see TestAOIModelComparison
-				// for full rationale).
-				gtMatched := make([]bool, len(groundTruth))
-				for gi, gt := range groundTruth {
-					for _, fileResult := range report.Files {
-						for _, aoi := range fileResult.AreasOfInterest {
-							fileOK, lineOK, _ := matchAOI(aoi, gt)
-							if fileOK && lineOK {
-								gtMatched[gi] = true
-								break
-							}
-						}
-						if gtMatched[gi] {
-							break
-						}
-					}
-				}
+				// Fixture meta is per-context-tier — U3/U5/U10 each have
+				// different diff hunks, so each has its own valid-line set.
+				meta := buildFixtureMeta(tc.diffs, map[string][][2]int{})
+				totalLoC := totalDiffLines(meta)
 
+				gtMatched := make([]bool, len(groundTruth))
 				for _, fileResult := range report.Files {
 					for _, aoi := range fileResult.AreasOfInterest {
-						matched := false
-						for _, gt := range groundTruth {
-							fileOK, lineOK, _ := matchAOI(aoi, gt)
-							if fileOK && lineOK {
-								matched = true
-								break
+						cls := classifyAOI(aoi, groundTruth, meta)
+						switch cls {
+						case aoiCovered:
+							r.covered++
+							for gi, gt := range groundTruth {
+								if fileOK, lineOK, _ := matchAOI(aoi, gt); fileOK && lineOK {
+									gtMatched[gi] = true
+								}
 							}
+						case aoiAligned:
+							r.aligned++
+						case aoiHallucinated:
+							r.hallucinations++
 						}
-						if !matched {
-							r.falseAlarms++
+						if cls != aoiHallucinated {
+							if d := aoiLineOffset(aoi, groundTruth); d >= 0 {
+								r.offsetSum += d
+								r.offsetSamples++
+							}
 						}
 					}
 				}
@@ -1338,12 +1929,24 @@ func TestAOIContextLineComparison(t *testing.T) {
 					}
 				}
 
+				totalGT := r.mustFindTotal + r.niceFindTotal
+				if totalGT > 0 {
+					r.coveragePct = float64(r.mustFindHits+r.niceFindHits) / float64(totalGT) * 100
+				}
+				if totalLoC > 0 {
+					r.aoiDensity = float64(r.totalAOIs) / float64(totalLoC) * 100
+				}
+				if r.offsetSamples > 0 {
+					r.avgLineOffset = float64(r.offsetSum) / float64(r.offsetSamples)
+				}
+
 				allResults = append(allResults, contextResult{spec.name, tc.label, r})
 
-				t.Logf("  Must: %d/%d | Nice: %d/%d | FP: %d | Cost: $%.4f | Time: %.1fs",
+				t.Logf("  Must: %d/%d | Nice: %d/%d | Aligned: %d | Halluc: %d | Coverage: %.1f%% | Cost: $%.4f | Time: %.1fs",
 					r.mustFindHits, r.mustFindTotal,
 					r.niceFindHits, r.niceFindTotal,
-					r.falseAlarms, r.cost, elapsed.Seconds())
+					r.aligned, r.hallucinations,
+					r.coveragePct, r.cost, elapsed.Seconds())
 
 				// Log missed must-finds
 				for gi, gt := range groundTruth {
@@ -1362,10 +1965,10 @@ func TestAOIContextLineComparison(t *testing.T) {
 	t.Log("  CONTEXT LINE COMPARISON: U3 (default git) vs U5 vs U10 (extra context)")
 	t.Log("══════════════════════════════════════════════════════════════════════════════════════════════")
 	t.Log("")
-	t.Logf("  %-30s %4s %7s %7s %5s %5s %9s %7s",
-		"Model", "Ctx", "Must", "Nice", "FP", "AOIs", "Cost", "Time")
-	t.Logf("  %-30s %4s %7s %7s %5s %5s %9s %7s",
-		strings.Repeat("─", 30), "────", "───────", "───────", "─────", "─────", "─────────", "───────")
+	t.Logf("  %-30s %4s %7s %7s %6s %5s %8s %9s %7s",
+		"Model", "Ctx", "Must", "Nice", "Halluc", "AOIs", "Coverage", "Cost", "Time")
+	t.Logf("  %-30s %4s %7s %7s %6s %5s %8s %9s %7s",
+		strings.Repeat("─", 30), "────", "───────", "───────", "──────", "─────", "────────", "─────────", "───────")
 
 	for _, cr := range allResults {
 		r := cr.result
@@ -1373,12 +1976,12 @@ func TestAOIContextLineComparison(t *testing.T) {
 			t.Logf("  %-30s %4s   ERROR: %v", cr.modelName, cr.context, r.err)
 			continue
 		}
-		t.Logf("  %-30s %4s %3d/%-3d %3d/%-3d %5d %5d  $%.4f %6.1fs",
+		t.Logf("  %-30s %4s %3d/%-3d %3d/%-3d %6d %5d   %5.1f%%  $%.4f %6.1fs",
 			cr.modelName, cr.context,
 			r.mustFindHits, r.mustFindTotal,
 			r.niceFindHits, r.niceFindTotal,
-			r.falseAlarms, r.totalAOIs,
-			r.cost, r.duration.Seconds())
+			r.hallucinations, r.totalAOIs,
+			r.coveragePct, r.cost, r.duration.Seconds())
 	}
 
 	t.Log("")

@@ -580,10 +580,12 @@ func TestClaudeCodeProvider_EffortDefaults(t *testing.T) {
 		{"sonnet default → low", "claude-sonnet-4-6", "", "low"},
 		{"sonnet alias → low", "sonnet", "", "low"},
 		{"sonnet uppercase still triggers default", "Claude-Sonnet-4-6", "", "low"},
-		{"opus → no default effort", "claude-opus-4-7", "", ""},
+		{"opus default → xhigh", "claude-opus-4-7", "", "xhigh"},
+		{"opus alias → xhigh", "opus", "", "xhigh"},
+		{"opus uppercase still triggers default", "Claude-Opus-4-7", "", "xhigh"},
 		{"haiku → no default effort", "claude-haiku-4-5", "", ""},
 		{"env override beats sonnet default", "claude-sonnet-4-6", "high", "high"},
-		{"env override sets opus", "claude-opus-4-7", "max", "max"},
+		{"env override beats opus default", "claude-opus-4-7", "max", "max"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

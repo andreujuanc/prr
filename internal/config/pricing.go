@@ -13,10 +13,17 @@ package config
 const cachedInputDiscount = 0.10
 
 // EstimateCost returns the estimated USD cost for a request given input
-// and output token counts. Looks pricing up against the known-models table
-// via GetKnownModel. Returns 0 when the model ID is unknown or has no
-// pricing recorded (e.g., GitHub Copilot / Claude Code, where the cost is
-// borne by a separate subscription).
+// and output token counts. Looks pricing up against the known-models
+// table via GetKnownModel. Returns 0 when the model ID is unknown or has
+// no pricing recorded.
+//
+// Subscription-billed providers (GitHub Copilot, Claude Code) carry
+// *shadow* prices — the per-token rate from the equivalent metered API
+// (Anthropic direct, OpenAI direct). The user's actual bill is a flat
+// subscription, but the shadow rate gives a fair cross-provider cost
+// comparison since the same model and the same bytes are involved.
+// Copilot entries are still 0 because we don't have a stable per-token
+// rate for the bundled GH Copilot models.
 //
 // Optional cachedInputTokens (variadic; pass one value) breaks the input
 // total into two priced segments: (inputTokens - cachedInputTokens) at
