@@ -20,9 +20,13 @@ func TestLoadModels_EmbeddedDefaults(t *testing.T) {
 		reviewBudget    int
 		chatBudget      int
 		fastBudget      int
+		temperature     float64
 	}{
-		{"gemini-3.1-pro-preview", 65536, 32768, 2048, 1024},
-		{"gemini-3.1-flash-lite", 65536, 8192, 2048, 0},
+		{"gemini-3.1-pro-preview", 65536, 32768, 2048, 1024, 0.1},
+		// flash-lite uses 0.3: the AOI benchmark sweep showed temp=0
+		// fell into a low-coverage attractor; 0.3 stayed in the high
+		// band consistently. See docs/articles/evaluating-aoi-pre-filters.md.
+		{"gemini-3.1-flash-lite", 65536, 8192, 2048, 0, 0.3},
 	}
 
 	for _, tt := range tests {
@@ -43,8 +47,8 @@ func TestLoadModels_EmbeddedDefaults(t *testing.T) {
 			if cfg.ThinkingBudget.Fast != tt.fastBudget {
 				t.Errorf("ThinkingBudget.Fast = %d, want %d", cfg.ThinkingBudget.Fast, tt.fastBudget)
 			}
-			if cfg.Temperature != 0.1 {
-				t.Errorf("Temperature = %f, want 0.1", cfg.Temperature)
+			if cfg.Temperature != tt.temperature {
+				t.Errorf("Temperature = %f, want %f", cfg.Temperature, tt.temperature)
 			}
 		})
 	}

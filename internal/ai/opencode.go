@@ -257,24 +257,24 @@ func (c *OpenCodeProvider) StreamChat(ctx context.Context, req ChatRequest) (<-c
 // openCodeEvent is the union of event types emitted by `opencode run
 // --format json`. We decode only the fields we use.
 type openCodeEvent struct {
-	Type string          `json:"type"`
+	Type string            `json:"type"`
 	Part openCodeEventPart `json:"part"`
 }
 
 type openCodeEventPart struct {
-	Type   string                `json:"type"`
-	Text   string                `json:"text,omitempty"`
-	Reason string                `json:"reason,omitempty"`
-	Tokens *openCodeEventTokens  `json:"tokens,omitempty"`
-	Cost   *float64              `json:"cost,omitempty"`
-	Error  string                `json:"error,omitempty"`
+	Type   string               `json:"type"`
+	Text   string               `json:"text,omitempty"`
+	Reason string               `json:"reason,omitempty"`
+	Tokens *openCodeEventTokens `json:"tokens,omitempty"`
+	Cost   *float64             `json:"cost,omitempty"`
+	Error  string               `json:"error,omitempty"`
 }
 
 type openCodeEventTokens struct {
-	Total     int               `json:"total"`
-	Input     int               `json:"input"`
-	Output    int               `json:"output"`
-	Reasoning int               `json:"reasoning"`
+	Total     int                `json:"total"`
+	Input     int                `json:"input"`
+	Output    int                `json:"output"`
+	Reasoning int                `json:"reasoning"`
 	Cache     openCodeEventCache `json:"cache"`
 }
 
