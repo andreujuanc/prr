@@ -81,12 +81,48 @@ var knownModels = []KnownModel{
 	// time. If a future CLI release tightens model-ID resolution, prr
 	// requests will fail and these entries need to be updated to the
 	// full date-stamped form.
-	{ID: "claude-opus-4-7", Label: "Claude Opus 4.7 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true,
-		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "slow"},
+	//
+	// Pricing here is *shadow* pricing — the user pays a flat Claude
+	// subscription, not per token, but for cross-model comparison the
+	// per-token rate from Anthropic's direct API is the fair number
+	// (same compute, same model). Treat the reported cost as
+	// "API-equivalent cost" — what this run would cost if billed at
+	// public Anthropic rates. Keep these in sync with the anthropic/
+	// entries above. Haiku has no anthropic/ entry yet; rate sourced
+	// from anthropic.com/pricing.
+	{ID: "claude-opus-4-7", Label: "Claude Opus 4.7 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 5.00, OutputPricePer1M: 25.00, Speed: "slow"},
 	{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true, AOI: true,
-		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "medium"},
+		InputPricePer1M: 3.00, OutputPricePer1M: 15.00, Speed: "medium"},
 	{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5 (Claude Code)", Provider: "claude-code", Thinking: true, AOI: true,
-		InputPricePer1M: 0, OutputPricePer1M: 0, Speed: "fast"},
+		InputPricePer1M: 1.00, OutputPricePer1M: 5.00, Speed: "fast"},
+
+	// ── OpenCode (local CLI; auth managed by `opencode providers`) ─────
+	// Model IDs include a sub-provider slash (e.g. "github-copilot/
+	// claude-opus-4.6") because opencode's --model flag wants the full
+	// provider/model form. PRR's ParseModelRef splits on the first slash
+	// only, so PRR_AOI_MODELS="opencode/github-copilot/claude-opus-4.6"
+	// parses as Provider=opencode, ModelID=github-copilot/claude-opus-4.6
+	// — exactly what we forward to opencode.
+	//
+	// Pricing is 0 because opencode reports per-call cost natively in
+	// each step_finish event; callers prefer the reported cost over the
+	// per-1M table for opencode-routed models.
+	{ID: "opencode/big-pickle", Label: "Big Pickle (free, via opencode)", Provider: "opencode", AOI: true, Review: true, Speed: "medium"},
+	{ID: "opencode/deepseek-v4-flash-free", Label: "DeepSeek v4 Flash (free, via opencode)", Provider: "opencode", AOI: true, Review: true, Speed: "fast"},
+	{ID: "opencode/nemotron-3-super-free", Label: "Nemotron 3 Super (free, via opencode)", Provider: "opencode", AOI: true, Review: true, Speed: "medium"},
+
+	// Re-exposes the github-copilot bundle through opencode's auth —
+	// useful when direct copilot auth is broken on this machine but
+	// opencode has working copilot credentials.
+	{ID: "github-copilot/claude-opus-4.6", Label: "Claude Opus 4.6 (via opencode/copilot)", Provider: "opencode", Thinking: true, Review: true, Speed: "slow"},
+	{ID: "github-copilot/claude-sonnet-4.6", Label: "Claude Sonnet 4.6 (via opencode/copilot)", Provider: "opencode", Thinking: true, Review: true, AOI: true, Speed: "medium"},
+	{ID: "github-copilot/gemini-3.1-pro-preview", Label: "Gemini 3.1 Pro (via opencode/copilot)", Provider: "opencode", Thinking: true, Review: true, Speed: "slow"},
+	{ID: "github-copilot/gpt-5.4", Label: "GPT-5.4 (via opencode/copilot)", Provider: "opencode", Thinking: true, Review: true, Speed: "medium"},
+	{ID: "github-copilot/gpt-5-mini", Label: "GPT-5 Mini (via opencode/copilot)", Provider: "opencode", Thinking: true, Review: true, AOI: true, Speed: "fast"},
+	{ID: "github-copilot/gpt-4.1", Label: "GPT-4.1 (via opencode/copilot)", Provider: "opencode", Review: true, AOI: true, Speed: "fast"},
+	{ID: "github-copilot/gpt-5.3-codex", Label: "GPT-5.3 Codex (via opencode/copilot)", Provider: "opencode", Thinking: true, Review: true, Speed: "medium"},
+	{ID: "github-copilot/gpt-5.5", Label: "GPT-5.5 (via opencode/copilot)", Provider: "opencode", Thinking: true, Review: true, AOI: true, Speed: "slow"},
 }
 
 // knownModelByProvider is keyed by "provider/model-id" for exact lookups.
@@ -203,14 +239,15 @@ func providerSet(providers []string) map[string]bool {
 // validation) recognise it; whether it is actually usable on the current
 // machine is decided by ai.DetectClaudeCode at runtime.
 func KnownProviders() []string {
-	return []string{"gemini", "openai", "github-copilot", "claude-code"}
+	return []string{"gemini", "openai", "github-copilot", "claude-code", "opencode"}
 }
 
 // IsKeylessProvider reports whether a provider is usable without an API key
 // in the prr config. claude-code authenticates via the Claude Code CLI's
-// own keychain/subscription/OAuth, so prr does not need a key for it.
+// own keychain/subscription/OAuth; opencode manages its own credentials via
+// `opencode providers`. prr does not need a key for either.
 func IsKeylessProvider(provider string) bool {
-	return provider == "claude-code"
+	return provider == "claude-code" || provider == "opencode"
 }
 
 // PriceTag returns a short human-readable price string like "$0.15/1M in".

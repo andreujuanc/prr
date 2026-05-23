@@ -98,11 +98,12 @@ func WithToolFilter(names []string) AgentOption {
 // UsageTracker accumulates token usage across multiple API calls.
 // It is safe for concurrent use.
 type UsageTracker struct {
-	mu           sync.Mutex
-	InputTokens  int
-	OutputTokens int
-	CacheHits    int
-	Calls        int // number of API calls
+	mu              sync.Mutex
+	InputTokens     int
+	OutputTokens    int
+	CacheHits       int
+	ReportedCostUSD float64 // sum of per-call ReportedCostUSD (0 if no provider reports cost)
+	Calls           int     // number of API calls
 }
 
 // Add records usage from a single API call.
@@ -112,6 +113,7 @@ func (t *UsageTracker) Add(u TokenUsage) {
 	t.InputTokens += u.InputTokens
 	t.OutputTokens += u.OutputTokens
 	t.CacheHits += u.CacheHits
+	t.ReportedCostUSD += u.ReportedCostUSD
 	t.Calls++
 }
 
@@ -120,10 +122,11 @@ func (t *UsageTracker) Snapshot() UsageTracker {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return UsageTracker{
-		InputTokens:  t.InputTokens,
-		OutputTokens: t.OutputTokens,
-		CacheHits:    t.CacheHits,
-		Calls:        t.Calls,
+		InputTokens:     t.InputTokens,
+		OutputTokens:    t.OutputTokens,
+		CacheHits:       t.CacheHits,
+		ReportedCostUSD: t.ReportedCostUSD,
+		Calls:           t.Calls,
 	}
 }
 
@@ -134,6 +137,7 @@ func (t *UsageTracker) Reset() {
 	t.InputTokens = 0
 	t.OutputTokens = 0
 	t.CacheHits = 0
+	t.ReportedCostUSD = 0
 	t.Calls = 0
 }
 
@@ -169,9 +173,10 @@ func NewAgent(provider Provider, toolExec *ToolExecutor, opts ...AgentOption) *A
 func (a *Agent) Usage() TokenUsage {
 	s := a.usageTracker.Snapshot()
 	return TokenUsage{
-		InputTokens:  s.InputTokens,
-		OutputTokens: s.OutputTokens,
-		CacheHits:    s.CacheHits,
+		InputTokens:     s.InputTokens,
+		OutputTokens:    s.OutputTokens,
+		CacheHits:       s.CacheHits,
+		ReportedCostUSD: s.ReportedCostUSD,
 	}
 }
 

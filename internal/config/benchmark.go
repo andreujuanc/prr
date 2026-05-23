@@ -23,9 +23,18 @@ var embeddedBenchmarkDefaults = map[string][]byte{
 }
 
 // ModelBenchmark holds benchmark results for a single model configuration.
-// The schema is shared across benchmarks; deep-review-only metrics
-// (severity accuracy, tool calls) are tagged omitempty so AOI archives
-// don't carry empty fields.
+// The schema is shared across benchmarks; per-benchmark fields are tagged
+// omitempty so AOI and deep-review archives only carry the metrics that
+// apply to them.
+//
+// Conceptual split:
+//   - AOI benchmark writes Hallucinations, CoveragePct, AOIDensity. AOIs
+//     are a recall-biased pre-filter, so "unmatched but plausible" output
+//     is not penalized; only AOIs that point at nonexistent lines, fall
+//     in declared-clean ranges, or fabricate sources/sinks count.
+//   - Deep-review benchmark writes FalseAlarms (Phase 3 emits verdicts,
+//     so unmatched verdicts are legitimately false positives), plus the
+//     severity and tool-call fields.
 type ModelBenchmark struct {
 	ModelID        string  `json:"model_id"`
 	Provider       string  `json:"provider"`    // e.g. "gemini", "github-copilot"
@@ -37,9 +46,15 @@ type ModelBenchmark struct {
 	LatencyMs      int     `json:"latency_ms"`    // scan latency in milliseconds
 	CostPerScan    float64 `json:"cost_per_scan"` // estimated USD per scan
 	TotalAOIs      int     `json:"total_aois"`    // AOI count (or finding count for deep review)
-	FalseAlarms    int     `json:"false_alarms"`  // false positives
+
+	// AOI benchmark only.
+	Hallucinations int     `json:"hallucinations,omitempty"`  // AOIs at nonexistent lines, declared-clean ranges, or with fabricated identifiers
+	CoveragePct    float64 `json:"coverage_pct,omitempty"`    // % of ground-truth locations with ≥1 overlapping AOI (0-100)
+	AOIDensity     float64 `json:"aoi_density,omitempty"`     // AOIs per 100 scanned LoC — informational
+	AvgLineOffset  float64 `json:"avg_line_offset,omitempty"` // avg line distance from each non-hallucinated AOI to nearest GT (0 = on bug line)
 
 	// Deep review only.
+	FalseAlarms     int `json:"false_alarms,omitempty"` // Phase 3 findings that match no ground truth
 	SeverityCorrect int `json:"severity_correct,omitempty"`
 	SeverityTotal   int `json:"severity_total,omitempty"`
 	ToolCalls       int `json:"tool_calls,omitempty"`

@@ -113,7 +113,15 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		}
 		return &ClaudeCodeProvider{Model: cfg.ModelID}, nil
 
+	case "opencode":
+		if !DetectOpenCode() {
+			return nil, fmt.Errorf("opencode: %q binary not found on PATH or at %s — install opencode to use this provider", openCodeBinaryName, openCodeStandardInstallPath)
+		}
+		// opencode requires the full "provider/model-id" form on --model.
+		// Callers that omit the prefix get a clear error from OpenCodeProvider.resolveModel.
+		return &OpenCodeProvider{Model: cfg.ModelID}, nil
+
 	default:
-		return nil, fmt.Errorf("unsupported AI provider: %q (supported: gemini, openai, github-copilot, claude-code)", cfg.ProviderName)
+		return nil, fmt.Errorf("unsupported AI provider: %q (supported: gemini, openai, github-copilot, claude-code, opencode)", cfg.ProviderName)
 	}
 }

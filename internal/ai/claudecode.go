@@ -202,15 +202,31 @@ func (c *ClaudeCodeProvider) buildArgs() []string {
 	}
 	// Claude Code's --effort flag (low | medium | high | xhigh | max)
 	// controls reasoning depth. PRR_CLAUDE_EFFORT overrides everything;
-	// when unset, sonnet defaults to `low`. The benchmark showed sonnet
-	// `low` matching its higher-effort runs on recall and producing
-	// strictly better severity-accuracy + cost + wall-clock — counter-
-	// intuitively, more thinking made severity worse. Opus and other
-	// Claude Code models keep the CLI's own default until we have data
-	// to choose differently.
+	// when unset:
+	//
+	//   * Sonnet defaults to "low". The earlier benchmark showed sonnet
+	//     `low` matching higher-effort runs on recall and producing
+	//     strictly better severity-accuracy + cost + wall-clock —
+	//     counter-intuitively, more thinking made severity worse.
+	//
+	//   * Opus defaults to "xhigh". The AOI benchmark 3-rep sweep
+	//     across low/medium/high/xhigh/max found xhigh produces the
+	//     tightest distribution (88-92%, 4-point range, 91% avg) and
+	//     the highest mean coverage. `max` is worse (87% avg, 16-point
+	//     range, 3× wall-clock); `high` gives ~81% avg. xhigh sits at
+	//     the inflection of "more thinking still helps."
+	//
+	//   * Haiku and other Claude Code models keep the CLI default until
+	//     we have data to choose differently.
 	effort := os.Getenv("PRR_CLAUDE_EFFORT")
-	if effort == "" && strings.Contains(strings.ToLower(c.Model), "sonnet") {
-		effort = "low"
+	if effort == "" {
+		modelLower := strings.ToLower(c.Model)
+		switch {
+		case strings.Contains(modelLower, "sonnet"):
+			effort = "low"
+		case strings.Contains(modelLower, "opus"):
+			effort = "xhigh"
+		}
 	}
 	if effort != "" {
 		args = append(args, "--effort", effort)

@@ -124,10 +124,17 @@ type Capabilities struct {
 // ── Token usage ─────────────────────────────────────────────────────────
 
 // TokenUsage reports token consumption for a single request.
+//
+// ReportedCostUSD is the provider-reported cost in USD for this single
+// request, when the provider reports cost natively (e.g., OpenCode, which
+// emits "cost" in its step_finish event). Providers without native cost
+// reporting leave it at 0 and callers fall back to config.EstimateCost
+// using the per-1M token prices in known_models.go.
 type TokenUsage struct {
-	InputTokens  int
-	OutputTokens int
-	CacheHits    int // tokens served from cache (if supported)
+	InputTokens     int
+	OutputTokens    int
+	CacheHits       int     // tokens served from cache (if supported)
+	ReportedCostUSD float64 // provider-reported cost for this request; 0 if unreported
 }
 
 // ── JSON Schema ─────────────────────────────────────────────────────────
