@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.11.0](https://github.com/andreujuanc/prr/compare/v1.10.0...v1.11.0) (2026-05-23)
+
+
+### Features
+
+* **aoi-benchmark:** rework scoring around coverage and hallucination ([4e91b34](https://github.com/andreujuanc/prr/commit/4e91b346a9ceba6e6dc8020edaf21aa81a7cfb1f))
+
+
+### Bug Fixes
+
+* **aoi-benchmark:** gofmt opencode.go and update flash-lite temp expectation ([2a6c327](https://github.com/andreujuanc/prr/commit/2a6c3270b3157f1e933280ce6c2534ace43c03ab))
+
 ## [1.10.0](https://github.com/andreujuanc/prr/compare/v1.9.0...v1.10.0) (2026-05-22)
 
 
