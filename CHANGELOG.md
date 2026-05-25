@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/andreujuanc/prr/compare/v1.11.0...v1.12.0) (2026-05-25)
+
+
+### Features
+
+* **review:** --post flag for headless GitHub review submission ([#36](https://github.com/andreujuanc/prr/issues/36)) ([216dd92](https://github.com/andreujuanc/prr/commit/216dd92df4db9935e526cfc8cc84e0f6f8d4c317))
+
 ## [1.11.0](https://github.com/andreujuanc/prr/compare/v1.10.0...v1.11.0) (2026-05-23)
 
 
