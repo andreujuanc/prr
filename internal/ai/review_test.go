@@ -315,6 +315,12 @@ func TestParseReviewOutput_WrapperOnly(t *testing.T) {
 	if len(result.Findings) != 0 {
 		t.Errorf("expected 0 findings (downstream fills them), got %d", len(result.Findings))
 	}
+	if len(result.MissingTests) != 1 || result.MissingTests[0] != "edge case for empty input" {
+		t.Errorf("missing_tests: got %v", result.MissingTests)
+	}
+	if len(result.QuestionsForAuthor) != 1 || result.QuestionsForAuthor[0] != "Is the new flag intended for CI use?" {
+		t.Errorf("questions_for_author: got %v", result.QuestionsForAuthor)
+	}
 }
 
 func TestParseReviewOutput_NilArraysNormalized(t *testing.T) {

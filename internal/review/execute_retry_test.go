@@ -146,24 +146,53 @@ func TestRunReviewCallWithRetry_RetriesTransient(t *testing.T) {
 	}
 }
 
-func TestRunReviewCallWithRetry_DoesNotRetryParseErrors(t *testing.T) {
-	// Parse failure (model emits prose instead of JSON). Retrying
-	// the same prompt won't fix the model's behavior — just doubles
-	// the (very expensive) deep-review token spend.
+func TestRunReviewCallWithRetry_RetriesParseErrors(t *testing.T) {
+	// Parse failure (model emits prose instead of JSON) gets one
+	// retry. LLM sampling variance is enough that a second attempt
+	// with the same prompt often produces valid JSON, and losing a
+	// 45s deep-review call to a one-off prose response is expensive
+	// enough to justify the extra attempt.
 	client := &stubClient{
-		responses: []string{"I cannot provide that review."},
+		responses: []string{
+			"I cannot provide that review.",
+			"I cannot provide that review.",
+		},
 	}
 	opts := ExecuteOptions{Mode: ModeAudit}
 
 	_, err := runReviewCallWithRetry(context.Background(), client, buildIndivCall(), opts, 0)
 	if err == nil {
-		t.Fatal("expected parse error")
+		t.Fatal("expected parse error after both attempts")
 	}
 	if !errors.Is(err, errReviewParse) {
 		t.Errorf("expected errReviewParse sentinel; got: %v", err)
 	}
-	if client.CallCount() != 1 {
-		t.Errorf("parse errors must NOT retry; got %d calls", client.CallCount())
+	if client.CallCount() != 2 {
+		t.Errorf("parse errors must retry once; got %d calls", client.CallCount())
+	}
+}
+
+func TestRunReviewCallWithRetry_ParseErrorRecoversOnRetry(t *testing.T) {
+	// First attempt returns prose, second returns valid JSON — the
+	// happy case for parse-failure retry. Result must come from the
+	// successful retry.
+	client := &stubClient{
+		responses: []string{
+			"I cannot provide that review.",
+			validFindingResponse,
+		},
+	}
+	opts := ExecuteOptions{Mode: ModeAudit}
+
+	result, err := runReviewCallWithRetry(context.Background(), client, buildIndivCall(), opts, 0)
+	if err != nil {
+		t.Fatalf("retry should have recovered; got: %v", err)
+	}
+	if result == nil || len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding after retry; got %+v", result)
+	}
+	if client.CallCount() != 2 {
+		t.Errorf("expected 2 calls (one failed parse + one retry); got %d", client.CallCount())
 	}
 }
 

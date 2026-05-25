@@ -350,10 +350,13 @@ func shouldAggregateFailReview(failed, total int) bool {
 const reviewRetryBackoff = 1500 * time.Millisecond
 
 // runReviewCallWithRetry executes one deep review call and retries once
-// on transient errors after reviewRetryBackoff. Parse-shape failures
-// (errReviewParse) and context cancellation short-circuit immediately —
-// retrying the same prompt won't fix prose-in-response, and a cancelled
-// context can't carry the retry anyway.
+// on any non-cancellation error after reviewRetryBackoff. That covers
+// both transient API errors (5xx, network blips) and parse-shape
+// failures (errReviewParse: prose-only response, off-list category that
+// failed json.Unmarshal). Sampling variance is enough that a second
+// attempt often produces parseable JSON even with the same prompt.
+// Context cancellation still short-circuits — a cancelled context
+// can't carry the retry anyway.
 //
 // Why retry deep reviews at all? They're the most expensive LLM calls
 // in the pipeline; losing one to a 503 after 45s of work also loses
@@ -378,9 +381,6 @@ func runReviewCallWithRetry(
 			time.Since(start).Round(time.Millisecond))
 		return result, nil
 	}
-	if errors.Is(err, errReviewParse) {
-		return nil, err
-	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil, err
 	}
@@ -390,8 +390,12 @@ func runReviewCallWithRetry(
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	log.Printf("review: retrying call %d (%s %s/%s) after transient error: %v",
-		callIndex+1, call.Type, call.Category, call.Subcategory, err)
+	reason := "transient error"
+	if errors.Is(err, errReviewParse) {
+		reason = "parse failure"
+	}
+	log.Printf("review: retrying call %d (%s %s/%s) after %s: %v",
+		callIndex+1, call.Type, call.Category, call.Subcategory, reason, err)
 	result, err = doReviewCall(ctx, client, call, opts, callIndex)
 	if err == nil {
 		log.Printf("review: call %d (%s %s/%s) completed in %v (retry succeeded)",
