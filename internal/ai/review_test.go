@@ -263,6 +263,66 @@ Now let me finalize the review based on verified findings.
 	}
 }
 
+func TestParseReviewOutput_RejectsInvalidVerdict(t *testing.T) {
+	// After the synthesis prompt was trimmed to a 4-field wrapper,
+	// off-list verdicts must be rejected at the parse boundary so
+	// RunSynthesis's retry path engages.
+	tests := []string{
+		`{"summary":"x","verdict":"looks good"}`,
+		`{"summary":"x","verdict":"lgtm"}`,
+		`{"summary":"x","verdict":""}`,
+		`{"summary":"x","verdict":"ship it"}`,
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if result := ParseReviewOutput(raw); result != nil {
+				t.Errorf("expected nil for off-list verdict, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestParseReviewOutput_RejectsEmptySummary(t *testing.T) {
+	tests := []string{
+		`{"summary":"","verdict":"approve"}`,
+		`{"summary":"   ","verdict":"approve"}`,
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if result := ParseReviewOutput(raw); result != nil {
+				t.Errorf("expected nil for empty summary, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestParseReviewOutput_WrapperOnly(t *testing.T) {
+	// The trimmed synthesis prompt asks the LLM for only these four
+	// fields — no findings array. Parser must accept that shape.
+	raw := `{
+		"summary": "Solid PR.",
+		"verdict": "comment",
+		"missing_tests": ["edge case for empty input"],
+		"questions_for_author": ["Is the new flag intended for CI use?"]
+	}`
+	result := ParseReviewOutput(raw)
+	if result == nil {
+		t.Fatal("expected non-nil result for wrapper-only JSON")
+	}
+	if result.Verdict != "comment" || result.Summary != "Solid PR." {
+		t.Errorf("verdict/summary: %q / %q", result.Verdict, result.Summary)
+	}
+	if len(result.Findings) != 0 {
+		t.Errorf("expected 0 findings (downstream fills them), got %d", len(result.Findings))
+	}
+	if len(result.MissingTests) != 1 || result.MissingTests[0] != "edge case for empty input" {
+		t.Errorf("missing_tests: got %v", result.MissingTests)
+	}
+	if len(result.QuestionsForAuthor) != 1 || result.QuestionsForAuthor[0] != "Is the new flag intended for CI use?" {
+		t.Errorf("questions_for_author: got %v", result.QuestionsForAuthor)
+	}
+}
+
 func TestParseReviewOutput_NilArraysNormalized(t *testing.T) {
 	raw := `{"summary":"test","verdict":"approve"}`
 	result := ParseReviewOutput(raw)

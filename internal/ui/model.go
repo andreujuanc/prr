@@ -673,10 +673,13 @@ func publishFindingAsComment(prNumber, commitSHA string, f state.ReviewFinding) 
 	}
 }
 
-func publishBatchReview(prNumber, commitSHA string, findings []state.ReviewFinding) tea.Cmd {
+func publishBatchReview(prNumber, commitSHA string, sr *state.ReviewOutput) tea.Cmd {
 	return func() tea.Msg {
-		comments := make([]git.ReviewFindingComment, 0, len(findings))
-		for _, f := range findings {
+		if sr == nil {
+			return FindingsBatchPublishedMsg{Err: fmt.Errorf("nil ReviewOutput")}
+		}
+		comments := make([]git.ReviewFindingComment, 0, len(sr.Findings))
+		for _, f := range sr.Findings {
 			if f.File != "" && f.Line > 0 {
 				comments = append(comments, git.ReviewFindingComment{
 					Path: f.File,
@@ -686,7 +689,7 @@ func publishBatchReview(prNumber, commitSHA string, findings []state.ReviewFindi
 				})
 			}
 		}
-		body := formatBatchReviewBody(findings)
+		body := formatBatchReviewBody(sr)
 		err := git.SubmitReviewWithFindings(prNumber, commitSHA, body, comments)
 		return FindingsBatchPublishedMsg{Count: len(comments), Err: err}
 	}
@@ -3332,8 +3335,8 @@ func (m *Model) executeConfirmAction() tea.Cmd {
 			return publishFindingAsComment(m.prNumber, m.pr.HeadRefOid, *modal.finding)
 		}
 	case confirmBatchReview:
-		if len(modal.findings) > 0 {
-			return publishBatchReview(m.prNumber, m.pr.HeadRefOid, modal.findings)
+		if len(modal.findings) > 0 && m.reviewState != nil && m.reviewState.Review != nil && m.reviewState.Review.Structured != nil {
+			return publishBatchReview(m.prNumber, m.pr.HeadRefOid, m.reviewState.Review.Structured)
 		}
 	case confirmPRComment:
 		if modal.finding != nil {

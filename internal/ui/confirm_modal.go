@@ -301,12 +301,28 @@ func formatFindingAsMarkdown(f state.ReviewFinding) string {
 }
 
 // formatBatchReviewBody formats the summary body for a batch review submission.
-func formatBatchReviewBody(findings []state.ReviewFinding) string {
+func formatBatchReviewBody(sr *state.ReviewOutput) string {
 	var b strings.Builder
 	b.WriteString("## AI Review Summary\n\n")
-	counts := severityCounts(findings)
-	files := uniqueFiles(findings)
-	b.WriteString(fmt.Sprintf("**%d findings** across %d files: %s\n\n", len(findings), len(files), counts))
-	b.WriteString("---\n_Posted by [prr](https://github.com/andreujuanc/prr) AI review_")
+	if sr.Summary != "" {
+		b.WriteString(sr.Summary)
+		b.WriteString("\n\n")
+	}
+	counts := severityCounts(sr.Findings)
+	files := uniqueFiles(sr.Findings)
+	b.WriteString(fmt.Sprintf("**%d findings** across %d files: %s\n", len(sr.Findings), len(files), counts))
+	if len(sr.MissingTests) > 0 {
+		b.WriteString("\n### Missing tests\n")
+		for _, t := range sr.MissingTests {
+			fmt.Fprintf(&b, "- %s\n", t)
+		}
+	}
+	if len(sr.QuestionsForAuthor) > 0 {
+		b.WriteString("\n### Questions for the author\n")
+		for _, q := range sr.QuestionsForAuthor {
+			fmt.Fprintf(&b, "- %s\n", q)
+		}
+	}
+	b.WriteString("\n---\n_Posted by [prr](https://github.com/andreujuanc/prr) AI review_")
 	return b.String()
 }

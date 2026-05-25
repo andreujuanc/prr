@@ -473,6 +473,8 @@ func runReview(debug bool, args []string) {
 	quiet := false
 	reviewDebug := debug
 	bugPriors := false
+	post := false
+	postYes := false
 	var reviewModeStr string
 
 	// Parse flags and find the PR number
@@ -490,6 +492,10 @@ func runReview(debug bool, args []string) {
 			reviewDebug = true
 		} else if arg == "--bug-priors" {
 			bugPriors = true
+		} else if arg == "--post" {
+			post = true
+		} else if arg == "--yes" || arg == "-y" {
+			postYes = true
 		} else if after, ok := strings.CutPrefix(arg, "--review-mode="); ok {
 			reviewModeStr = after
 		} else if arg == "--help" || arg == "-h" {
@@ -735,6 +741,98 @@ func runReview(debug bool, args []string) {
 			fmt.Fprintf(os.Stderr, "  Report saved to %s\n\n", cliInfo.Render(outputPath))
 		}
 	}
+
+	// Post findings to GitHub as a single batch review (event=COMMENT)
+	// when --post is set. Mirrors the TUI's Ctrl+S batch-submit path.
+	if post {
+		if result.StructuredReview == nil || len(result.StructuredReview.Findings) == 0 {
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "  %s no findings to post\n\n", cliDim.Render("--post:"))
+			}
+		} else if result.PR == nil || result.PR.HeadRefOid == "" {
+			printError(fmt.Errorf("--post: missing PR head SHA; cannot anchor inline comments"))
+			os.Exit(1)
+		} else {
+			ok, err := confirmPost(prNumber, result.StructuredReview.Findings, postYes)
+			if err != nil {
+				printError(err)
+				os.Exit(1)
+			}
+			if !ok {
+				fmt.Fprintf(os.Stderr, "  %s post cancelled\n\n", cliDim.Render("--post:"))
+			} else {
+				n, err := review.PostStructuredReview(prNumber, result.PR.HeadRefOid, result.StructuredReview)
+				if err != nil {
+					printError(fmt.Errorf("posting review: %w", err))
+					os.Exit(1)
+				}
+				if !quiet {
+					fmt.Fprintf(os.Stderr, "  Posted review with %s inline comment(s) to PR #%s\n\n",
+						cliInfo.Render(fmt.Sprintf("%d", n)), prNumber)
+				}
+			}
+		}
+	}
+}
+
+// confirmPost prompts the user to confirm posting findings to GitHub.
+// When yes=true the prompt is skipped. In a non-interactive context
+// (stdin is not a TTY) the call fails loudly so a CI job without --yes
+// errors immediately instead of blocking forever on a stdin read.
+func confirmPost(prNumber string, findings []state.ReviewFinding, yes bool) (bool, error) {
+	inline := 0
+	for _, f := range findings {
+		if f.File != "" && f.Line > 0 {
+			inline++
+		}
+	}
+	summary := fmt.Sprintf("%d finding(s), %d inline, severity: %s",
+		len(findings), inline, summarizeSeverities(findings))
+
+	if yes {
+		fmt.Fprintf(os.Stderr, "  %s %s — posting (--yes)\n\n",
+			cliHeader.Render("Review:"), cliInfo.Render(summary))
+		return true, nil
+	}
+
+	stat, err := os.Stdin.Stat()
+	if err != nil || (stat.Mode()&os.ModeCharDevice) == 0 {
+		return false, fmt.Errorf("--post requires confirmation; stdin is not a TTY. Re-run with --yes to confirm non-interactively")
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  %s %s\n", cliHeader.Render("Review:"), cliInfo.Render(summary))
+	fmt.Fprintf(os.Stderr, "  Post to PR #%s? [y/N] ", prNumber)
+
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return false, fmt.Errorf("reading confirmation: %w", err)
+	}
+	ans := strings.ToLower(strings.TrimSpace(line))
+	return ans == "y" || ans == "yes", nil
+}
+
+// summarizeSeverities returns a compact "2 critical · 3 high · 1 med"
+// breakdown for the confirmation prompt.
+func summarizeSeverities(findings []state.ReviewFinding) string {
+	counts := map[string]int{}
+	for _, f := range findings {
+		counts[f.Severity]++
+	}
+	var parts []string
+	for _, sev := range []string{"critical", "high", "medium", "low", "nit"} {
+		if n, ok := counts[sev]; ok {
+			label := sev
+			if sev == "medium" {
+				label = "med"
+			}
+			parts = append(parts, fmt.Sprintf("%d %s", n, label))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " · ")
 }
 
 // marshalReviewResult builds the JSON byte payload for a review run.
@@ -773,7 +871,9 @@ func printReviewUsage() {
 	fmt.Fprintf(os.Stderr, "    --debug              Print LLM tool calls, user messages, and responses\n")
 	fmt.Fprintf(os.Stderr, "                         (compact by default; PRR_DEBUG_VERBOSE=1 for full prompts)\n")
 	fmt.Fprintf(os.Stderr, "    --bug-priors         Inject recent fix-shaped commits as known-failure priors\n")
-	fmt.Fprintf(os.Stderr, "    --review-mode=<mode> full (default) reviews every file; aoi-only skips files without AOIs\n\n")
+	fmt.Fprintf(os.Stderr, "    --review-mode=<mode> full (default) reviews every file; aoi-only skips files without AOIs\n")
+	fmt.Fprintf(os.Stderr, "    --post               Post findings to GitHub as a batch review (event=COMMENT)\n")
+	fmt.Fprintf(os.Stderr, "    --yes, -y            Skip the confirmation prompt for --post (required in non-TTY contexts)\n\n")
 }
 
 func createAIClient(cfg *config.Config) ai.Client {
