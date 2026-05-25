@@ -761,7 +761,7 @@ func runReview(debug bool, args []string) {
 			if !ok {
 				fmt.Fprintf(os.Stderr, "  %s post cancelled\n\n", cliDim.Render("--post:"))
 			} else {
-				n, err := review.PostStructuredReview(prNumber, result.PR.HeadRefOid, result.StructuredReview.Findings)
+				n, err := review.PostStructuredReview(prNumber, result.PR.HeadRefOid, result.StructuredReview)
 				if err != nil {
 					printError(fmt.Errorf("posting review: %w", err))
 					os.Exit(1)

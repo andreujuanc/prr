@@ -8,16 +8,20 @@ import (
 	"github.com/andreujuanc/prr/internal/state"
 )
 
-// PostStructuredReview submits the synthesized findings as a single
+// PostStructuredReview submits the synthesized review as a single
 // GitHub PR review (event=COMMENT) with one inline comment per finding
-// that has a valid file and line. Findings without a target line are
-// summarized in the review body.
+// that has a valid file and line. The review body carries the summary
+// paragraph, severity counts, missing tests, and questions for the
+// author — the narrative context that doesn't anchor to a line.
 //
 // Mirrors the TUI's batch-submit path (publishBatchReview) so headless
 // and interactive runs produce equivalent reviews on GitHub.
-func PostStructuredReview(prNumber, commitSHA string, findings []state.ReviewFinding) (posted int, err error) {
-	comments := make([]git.ReviewFindingComment, 0, len(findings))
-	for _, f := range findings {
+func PostStructuredReview(prNumber, commitSHA string, sr *state.ReviewOutput) (posted int, err error) {
+	if sr == nil {
+		return 0, fmt.Errorf("nil ReviewOutput")
+	}
+	comments := make([]git.ReviewFindingComment, 0, len(sr.Findings))
+	for _, f := range sr.Findings {
 		if f.File != "" && f.Line > 0 {
 			comments = append(comments, git.ReviewFindingComment{
 				Path: f.File,
@@ -27,7 +31,7 @@ func PostStructuredReview(prNumber, commitSHA string, findings []state.ReviewFin
 			})
 		}
 	}
-	body := formatBatchBody(findings)
+	body := formatBatchBody(sr)
 	if err := git.SubmitReviewWithFindings(prNumber, commitSHA, body, comments); err != nil {
 		return 0, err
 	}
@@ -45,13 +49,29 @@ func formatFindingMarkdown(f state.ReviewFinding) string {
 	return b.String()
 }
 
-func formatBatchBody(findings []state.ReviewFinding) string {
-	counts := severityCounts(findings)
-	files := uniqueFindingFiles(findings)
+func formatBatchBody(sr *state.ReviewOutput) string {
+	counts := severityCounts(sr.Findings)
+	files := uniqueFindingFiles(sr.Findings)
 	var b strings.Builder
 	b.WriteString("## AI Review Summary\n\n")
-	fmt.Fprintf(&b, "**%d findings** across %d files: %s\n\n", len(findings), len(files), counts)
-	b.WriteString("---\n_Posted by [prr](https://github.com/andreujuanc/prr) AI review_")
+	if sr.Summary != "" {
+		b.WriteString(sr.Summary)
+		b.WriteString("\n\n")
+	}
+	fmt.Fprintf(&b, "**%d findings** across %d files: %s\n", len(sr.Findings), len(files), counts)
+	if len(sr.MissingTests) > 0 {
+		b.WriteString("\n### Missing tests\n")
+		for _, t := range sr.MissingTests {
+			fmt.Fprintf(&b, "- %s\n", t)
+		}
+	}
+	if len(sr.QuestionsForAuthor) > 0 {
+		b.WriteString("\n### Questions for the author\n")
+		for _, q := range sr.QuestionsForAuthor {
+			fmt.Fprintf(&b, "- %s\n", q)
+		}
+	}
+	b.WriteString("\n---\n_Posted by [prr](https://github.com/andreujuanc/prr) AI review_")
 	return b.String()
 }
 
