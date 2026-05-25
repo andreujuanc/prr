@@ -671,7 +671,17 @@ type SynthesisResult struct {
 	Structured *state.ReviewOutput
 }
 
-// RunSynthesis runs Phase 2: synthesize all findings into a final review.
+// RunSynthesis runs Phase 2: produce the narrative wrapper around the
+// already-final findings list.
+//
+// The LLM is asked for only four fields — summary, verdict, missing_tests,
+// questions_for_author. The findings array is built deterministically
+// from deepFindings via BuildFindingsFromDeep, so even a totally
+// malformed LLM response cannot drop or invalidate findings.
+//
+// deepFindings is the post-recheck source of truth. Pass an empty
+// slice from legacy non-AOI paths — the returned Structured will then
+// have an empty Findings list.
 func RunSynthesis(
 	ctx context.Context,
 	client ai.Client,
@@ -680,6 +690,7 @@ func RunSynthesis(
 	customInstructions string,
 	allFindings string,
 	fileFindings map[string]string,
+	deepFindings []state.DeepFinding,
 	rr Reporter,
 ) (*SynthesisResult, error) {
 	if ctx.Err() != nil {
@@ -713,7 +724,7 @@ func RunSynthesis(
 	}
 
 	synthesisMessages := []ai.Message{
-		{Role: "user", Content: "Synthesize the per-file findings into a final PR review. Use tools to verify any findings you are uncertain about. Return ONLY the JSON review object."},
+		{Role: "user", Content: "Produce the narrative wrapper (summary, verdict, missing_tests, questions_for_author) for this PR review. The findings array is built downstream; do not emit it. Return ONLY the JSON object."},
 	}
 
 	onToken := func(string) {}
@@ -740,18 +751,20 @@ func RunSynthesis(
 		// Retry with correction
 		log.Printf("Synthesis: initial JSON parse failed, retrying with correction prompt")
 
-		// Detect whether the response looks like truncated JSON.
+		// Detect whether the response looks like truncated JSON. The
+		// 4-field wrapper is small, but a long summary can still get
+		// cut off; the heuristic checks for an opened-but-unclosed
+		// object containing the summary key.
 		trimmed := strings.TrimSpace(summary)
-		isTruncated := (strings.Contains(trimmed, `"summary"`) || strings.Contains(trimmed, `"findings"`)) &&
-			!strings.HasSuffix(trimmed, "}")
+		isTruncated := strings.Contains(trimmed, `"summary"`) && !strings.HasSuffix(trimmed, "}")
 
-		correctionHint := "Your response was not valid JSON. Please return ONLY a valid JSON object matching the schema specified in the system prompt. No markdown, no prose — just the raw JSON object starting with { and ending with }."
+		correctionHint := "Your response was not a valid wrapper. Return ONLY a JSON object with these four fields: summary (non-empty string), verdict (one of: approve | request_changes | comment), missing_tests (array of strings), questions_for_author (array of strings). No markdown, no prose, no findings field."
 		if isTruncated {
-			correctionHint = "Your response was truncated — it appears the output was cut off before the JSON was complete. Please return the SAME review but be MORE CONCISE in your detail/suggestion fields so the full JSON fits. Return ONLY the JSON object, no markdown fences, no prose."
+			correctionHint = "Your response was truncated — the JSON was cut off before completion. Return the SAME wrapper but make the summary MORE CONCISE so the full JSON fits. Required fields: summary, verdict (approve|request_changes|comment), missing_tests, questions_for_author. No markdown, no prose, no findings."
 		}
 
 		correctionMessages := []ai.Message{
-			{Role: "user", Content: "Synthesize the per-file findings into a final PR review. Return ONLY the JSON review object."},
+			{Role: "user", Content: "Produce the narrative wrapper (summary, verdict, missing_tests, questions_for_author) for this PR review. Return ONLY the JSON object."},
 			{Role: "assistant", Content: summary},
 			{Role: "user", Content: correctionHint},
 		}
@@ -765,6 +778,32 @@ func RunSynthesis(
 		}
 	}
 
+	// Attach the deterministic findings list and ensure a non-nil
+	// structured result even when the LLM produced unparseable JSON.
+	// The fallback verdict is derived from severity counts so consumers
+	// always get a usable ReviewOutput.
+	findings := BuildFindingsFromDeep(deepFindings)
+	if structured == nil {
+		structured = &state.ReviewOutput{
+			Summary:            "",
+			Verdict:            deriveVerdict(findings),
+			Findings:           findings,
+			MissingTests:       []string{},
+			QuestionsForAuthor: []string{},
+		}
+	} else {
+		structured.Findings = findings
+		if structured.Verdict == "" {
+			structured.Verdict = deriveVerdict(findings)
+		}
+		if structured.MissingTests == nil {
+			structured.MissingTests = []string{}
+		}
+		if structured.QuestionsForAuthor == nil {
+			structured.QuestionsForAuthor = []string{}
+		}
+	}
+
 	return &SynthesisResult{
 		Review: &state.AIReview{
 			Summary:  summary,
@@ -772,6 +811,21 @@ func RunSynthesis(
 		},
 		Structured: structured,
 	}, nil
+}
+
+// deriveVerdict picks an approve/comment/request_changes verdict from
+// the finding severities. Used as the fallback when the LLM didn't
+// supply one (or failed to produce valid JSON entirely).
+func deriveVerdict(findings []state.ReviewFinding) string {
+	if len(findings) == 0 {
+		return "approve"
+	}
+	for _, f := range findings {
+		if f.Severity == "critical" || f.Severity == "high" {
+			return "request_changes"
+		}
+	}
+	return "comment"
 }
 
 // ── Fallback batch runner ───────────────────────────────────────────────

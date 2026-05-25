@@ -1187,7 +1187,7 @@ func RunReviewCore(
 	}
 
 	synthResult, synthErr := RunSynthesis(ctx, reviewClient, opts.PRMeta, opts.RawDiffs,
-		enhancedInstructions, allFindings.String(), allFileFindings, rr)
+		enhancedInstructions, allFindings.String(), allFileFindings, deepFindings, rr)
 	if synthErr != nil {
 		return nil, synthErr
 	}

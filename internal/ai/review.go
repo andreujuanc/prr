@@ -32,13 +32,20 @@ func ParseReviewOutput(raw string) *state.ReviewOutput {
 		return nil
 	}
 
-	// Validate minimum structure
-	if out.Summary == "" && out.Verdict == "" {
+	// Wrapper-shape validation. The 4-field synthesis schema requires a
+	// non-empty summary and a verdict in the allowed set. Empty/off-list
+	// values surface here as nil so RunSynthesis's retry path engages
+	// (and so the deterministic fallback can stamp deriveVerdict).
+	out.Summary = strings.TrimSpace(out.Summary)
+	if out.Summary == "" {
+		log.Printf("ParseReviewOutput: rejecting — summary is empty")
 		return nil
 	}
-
-	// Normalize verdict
 	out.Verdict = normalizeVerdict(out.Verdict)
+	if !isValidVerdict(out.Verdict) {
+		log.Printf("ParseReviewOutput: rejecting — verdict %q not in {approve, request_changes, comment}", out.Verdict)
+		return nil
+	}
 
 	// Sort findings by severity
 	sort.Slice(out.Findings, func(i, j int) bool {
@@ -191,6 +198,8 @@ func findAllJSONObjects(s string) []string {
 }
 
 // normalizeVerdict normalizes verdict strings to canonical values.
+// Returns the raw (lowercased, trimmed) input when no pattern matches —
+// the caller (isValidVerdict) then rejects it.
 func normalizeVerdict(v string) string {
 	v = strings.TrimSpace(strings.ToLower(v))
 	switch {
@@ -203,4 +212,14 @@ func normalizeVerdict(v string) string {
 	default:
 		return v
 	}
+}
+
+// isValidVerdict reports whether v is one of the three allowed verdicts.
+// Called after normalizeVerdict at the parse boundary.
+func isValidVerdict(v string) bool {
+	switch v {
+	case "approve", "request_changes", "comment":
+		return true
+	}
+	return false
 }

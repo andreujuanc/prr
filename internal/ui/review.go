@@ -512,7 +512,7 @@ func runSynthesis(
 ) tea.Msg {
 	adapter := &reviewReporterAdapter{rr: rr}
 
-	synthResult, err := review.RunSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings, fileFindings, adapter)
+	synthResult, err := review.RunSynthesis(ctx, client, prMeta, rawDiffs, customInstructions, allFindings, fileFindings, nil, adapter)
 	if err != nil {
 		return AIChatDoneMsg{Err: err}
 	}
