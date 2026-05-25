@@ -38,7 +38,7 @@ var knownModels = []KnownModel{
 		InputPricePer1M: 0.25, OutputPricePer1M: 1.50, Speed: "fast"},
 
 	// ── Anthropic (direct API) ─────────────────────────────────────────
-	{ID: "claude-opus-4-7", Label: "Claude Opus 4.7", Provider: "anthropic", Thinking: true, Review: true,
+	{ID: "claude-opus-4-7", Label: "Claude Opus 4.7", Provider: "anthropic", Thinking: true, Review: true, AOI: true,
 		InputPricePer1M: 5.00, OutputPricePer1M: 25.00, Speed: "slow"},
 	{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6", Provider: "anthropic", Thinking: true, Review: true, AOI: true,
 		InputPricePer1M: 3.00, OutputPricePer1M: 15.00, Speed: "medium"},
