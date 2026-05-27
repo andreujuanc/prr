@@ -58,6 +58,11 @@ type PRReviewOptions struct {
 	// constants for available modes. Empty string uses the package
 	// default (currently ReviewModeFull).
 	ReviewMode ReviewMode
+
+	// MinFindingLevel drops deep-review findings below this severity
+	// before recheck and all later phases run. One of "critical",
+	// "high", "medium", "low", "nit". Empty = no filtering.
+	MinFindingLevel string
 }
 
 // PRReviewResult holds the output of a headless PR review.
@@ -208,6 +213,7 @@ func RunPRReview(
 		Debug:              opts.Debug,
 		BugPriors:          opts.BugPriors,
 		ReviewMode:         opts.ReviewMode,
+		MinFindingLevel:    opts.MinFindingLevel,
 	}, rr)
 	if err != nil {
 		return nil, err
@@ -673,6 +679,11 @@ type CoreOptions struct {
 	// reviews them through the fallback diff batches. Empty string
 	// uses the package default.
 	ReviewMode ReviewMode
+
+	// MinFindingLevel drops deep-review findings below this severity
+	// before recheck and synthesis run. One of "critical", "high",
+	// "medium", "low", "nit". Empty = no filtering.
+	MinFindingLevel string
 }
 
 // CoreResult holds the output of the shared review pipeline core.
@@ -1099,6 +1110,17 @@ func RunReviewCore(
 		deepFindings = execResult.Findings
 		deepDismissals = execResult.Dismissals
 		failedAOIIDs = execResult.FailedAOIIDs
+
+		// Drop findings below the requested minimum severity before
+		// recheck, synthesis, and persistence, so the user pays no
+		// downstream cost for findings they've chosen to ignore.
+		if opts.MinFindingLevel != "" {
+			if filtered, dropped := FilterByMinFindingLevel(deepFindings, opts.MinFindingLevel); dropped > 0 {
+				deepFindings = filtered
+				log.Printf("Filtered out %d finding(s) below severity %q", dropped, opts.MinFindingLevel)
+			}
+		}
+
 		AppendDeepFindings(&allFindings, allFileFindings, deepFindings)
 
 		// Persist the deep findings to state immediately so a crash,

@@ -1082,3 +1082,42 @@ func severityRank(s string) int {
 		return 4
 	}
 }
+
+// MinFindingLevels lists the valid values for the --min-finding-level flag,
+// ordered most-to-least severe.
+var MinFindingLevels = []string{"critical", "high", "medium", "low", "nit"}
+
+// ParseMinFindingLevel normalizes and validates a --min-finding-level value.
+// An empty string means "no filtering" and returns "" with no error.
+func ParseMinFindingLevel(s string) (string, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return "", nil
+	}
+	switch s {
+	case "critical", "high", "medium", "low", "nit":
+		return s, nil
+	default:
+		return "", fmt.Errorf("invalid finding level %q (valid: %s)", s, strings.Join(MinFindingLevels, ", "))
+	}
+}
+
+// FilterByMinFindingLevel drops findings whose severity is below min. An
+// empty min returns the input unchanged. Returns the kept findings and the
+// number dropped. A finding with an unrecognized or empty severity ranks as
+// the lowest level ("nit"), matching severityRank.
+func FilterByMinFindingLevel(findings []state.DeepFinding, min string) (kept []state.DeepFinding, dropped int) {
+	if min == "" {
+		return findings, 0
+	}
+	threshold := severityRank(min)
+	kept = make([]state.DeepFinding, 0, len(findings))
+	for _, f := range findings {
+		if severityRank(f.Severity) <= threshold {
+			kept = append(kept, f)
+		} else {
+			dropped++
+		}
+	}
+	return kept, dropped
+}

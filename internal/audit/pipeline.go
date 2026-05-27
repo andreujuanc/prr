@@ -86,6 +86,11 @@ type Options struct {
 	// into every Phase 3 deep-review prompt and recheck pass. Off by
 	// default — opt in via the --bug-priors CLI flag.
 	BugPriors bool
+
+	// MinFindingLevel drops Phase 3 deep-review findings below this
+	// severity before recheck and all later phases run. One of
+	// "critical", "high", "medium", "low", "nit". Empty = no filtering.
+	MinFindingLevel string
 }
 
 // ConcurrencyConfig holds per-phase concurrency caps. Each field is the
@@ -665,6 +670,17 @@ func Run(
 	reviewUsage := ai.SnapshotUsage(reviewClient)
 	log.Printf("Phase 3 complete: %d call(s) (%d failed), %d findings, %d dismissals in %v",
 		len(calls), failed, len(findings), dismissals, time.Since(phase3Start).Round(time.Second))
+
+	// Drop findings below the requested minimum severity before recheck
+	// and every later phase, so the user pays no recheck/synthesis cost
+	// for findings they've chosen to ignore.
+	if opts.MinFindingLevel != "" {
+		var dropped int
+		findings, dropped = review.FilterByMinFindingLevel(findings, opts.MinFindingLevel)
+		if dropped > 0 {
+			log.Printf("Filtered out %d finding(s) below severity %q", dropped, opts.MinFindingLevel)
+		}
+	}
 
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbgw.Phase("PHASE 3b: Recheck")
