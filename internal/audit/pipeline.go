@@ -87,10 +87,10 @@ type Options struct {
 	// default — opt in via the --bug-priors CLI flag.
 	BugPriors bool
 
-	// MinFindingLevel drops Phase 3 deep-review findings below this
+	// MinSeverity drops Phase 3 deep-review findings below this
 	// severity before recheck and all later phases run. One of
 	// "critical", "high", "medium", "low", "nit". Empty = no filtering.
-	MinFindingLevel string
+	MinSeverity string
 }
 
 // ConcurrencyConfig holds per-phase concurrency caps. Each field is the
@@ -674,11 +674,11 @@ func Run(
 	// Drop findings below the requested minimum severity before recheck
 	// and every later phase, so the user pays no recheck/synthesis cost
 	// for findings they've chosen to ignore.
-	if opts.MinFindingLevel != "" {
+	if opts.MinSeverity != "" {
 		var dropped int
-		findings, dropped = review.FilterByMinFindingLevel(findings, opts.MinFindingLevel)
+		findings, dropped = review.FilterByMinSeverity(findings, opts.MinSeverity)
 		if dropped > 0 {
-			log.Printf("Filtered out %d finding(s) below severity %q", dropped, opts.MinFindingLevel)
+			log.Printf("Filtered out %d finding(s) below severity %q", dropped, opts.MinSeverity)
 		}
 	}
 

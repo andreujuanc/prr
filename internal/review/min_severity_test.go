@@ -6,7 +6,7 @@ import (
 	"github.com/andreujuanc/prr/internal/state"
 )
 
-func TestParseMinFindingLevel(t *testing.T) {
+func TestParseMinSeverity(t *testing.T) {
 	cases := []struct {
 		in      string
 		want    string
@@ -21,23 +21,23 @@ func TestParseMinFindingLevel(t *testing.T) {
 		{"warning", "", true},
 	}
 	for _, c := range cases {
-		got, err := ParseMinFindingLevel(c.in)
+		got, err := ParseMinSeverity(c.in)
 		if c.wantErr {
 			if err == nil {
-				t.Errorf("ParseMinFindingLevel(%q): expected error, got nil", c.in)
+				t.Errorf("ParseMinSeverity(%q): expected error, got nil", c.in)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("ParseMinFindingLevel(%q): unexpected error %v", c.in, err)
+			t.Errorf("ParseMinSeverity(%q): unexpected error %v", c.in, err)
 		}
 		if got != c.want {
-			t.Errorf("ParseMinFindingLevel(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("ParseMinSeverity(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
 
-func TestFilterByMinFindingLevel(t *testing.T) {
+func TestFilterByMinSeverity(t *testing.T) {
 	findings := []state.DeepFinding{
 		{FindingID: "F-1", Severity: "critical"},
 		{FindingID: "F-2", Severity: "high"},
@@ -48,14 +48,14 @@ func TestFilterByMinFindingLevel(t *testing.T) {
 	}
 
 	t.Run("empty min keeps all", func(t *testing.T) {
-		kept, dropped := FilterByMinFindingLevel(findings, "")
+		kept, dropped := FilterByMinSeverity(findings, "")
 		if dropped != 0 || len(kept) != len(findings) {
 			t.Fatalf("empty min: kept %d dropped %d, want kept %d dropped 0", len(kept), dropped, len(findings))
 		}
 	})
 
-	t.Run("high keeps critical+high", func(t *testing.T) {
-		kept, dropped := FilterByMinFindingLevel(findings, "high")
+	t.Run("high keeps critical and high", func(t *testing.T) {
+		kept, dropped := FilterByMinSeverity(findings, "high")
 		if len(kept) != 2 || dropped != 4 {
 			t.Fatalf("min high: kept %d dropped %d, want kept 2 dropped 4", len(kept), dropped)
 		}
@@ -66,8 +66,8 @@ func TestFilterByMinFindingLevel(t *testing.T) {
 		}
 	})
 
-	t.Run("low keeps everything except nothing-below-low except empty/nit", func(t *testing.T) {
-		kept, dropped := FilterByMinFindingLevel(findings, "low")
+	t.Run("low drops nit and empty", func(t *testing.T) {
+		kept, dropped := FilterByMinSeverity(findings, "low")
 		// critical, high, medium, low kept; nit and "" dropped.
 		if len(kept) != 4 || dropped != 2 {
 			t.Fatalf("min low: kept %d dropped %d, want kept 4 dropped 2", len(kept), dropped)
@@ -75,14 +75,14 @@ func TestFilterByMinFindingLevel(t *testing.T) {
 	})
 
 	t.Run("nit keeps all including empty severity", func(t *testing.T) {
-		kept, dropped := FilterByMinFindingLevel(findings, "nit")
+		kept, dropped := FilterByMinSeverity(findings, "nit")
 		if len(kept) != len(findings) || dropped != 0 {
 			t.Fatalf("min nit: kept %d dropped %d, want kept %d dropped 0", len(kept), dropped, len(findings))
 		}
 	})
 
 	t.Run("critical keeps only critical", func(t *testing.T) {
-		kept, dropped := FilterByMinFindingLevel(findings, "critical")
+		kept, dropped := FilterByMinSeverity(findings, "critical")
 		if len(kept) != 1 || dropped != 5 || kept[0].Severity != "critical" {
 			t.Fatalf("min critical: kept %d dropped %d, want kept 1 dropped 5", len(kept), dropped)
 		}

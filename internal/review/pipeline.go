@@ -59,10 +59,10 @@ type PRReviewOptions struct {
 	// default (currently ReviewModeFull).
 	ReviewMode ReviewMode
 
-	// MinFindingLevel drops deep-review findings below this severity
+	// MinSeverity drops deep-review findings below this severity
 	// before recheck and all later phases run. One of "critical",
 	// "high", "medium", "low", "nit". Empty = no filtering.
-	MinFindingLevel string
+	MinSeverity string
 }
 
 // PRReviewResult holds the output of a headless PR review.
@@ -213,7 +213,7 @@ func RunPRReview(
 		Debug:              opts.Debug,
 		BugPriors:          opts.BugPriors,
 		ReviewMode:         opts.ReviewMode,
-		MinFindingLevel:    opts.MinFindingLevel,
+		MinSeverity:        opts.MinSeverity,
 	}, rr)
 	if err != nil {
 		return nil, err
@@ -680,10 +680,10 @@ type CoreOptions struct {
 	// uses the package default.
 	ReviewMode ReviewMode
 
-	// MinFindingLevel drops deep-review findings below this severity
+	// MinSeverity drops deep-review findings below this severity
 	// before recheck and synthesis run. One of "critical", "high",
 	// "medium", "low", "nit". Empty = no filtering.
-	MinFindingLevel string
+	MinSeverity string
 }
 
 // CoreResult holds the output of the shared review pipeline core.
@@ -1114,10 +1114,10 @@ func RunReviewCore(
 		// Drop findings below the requested minimum severity before
 		// recheck, synthesis, and persistence, so the user pays no
 		// downstream cost for findings they've chosen to ignore.
-		if opts.MinFindingLevel != "" {
-			if filtered, dropped := FilterByMinFindingLevel(deepFindings, opts.MinFindingLevel); dropped > 0 {
+		if opts.MinSeverity != "" {
+			if filtered, dropped := FilterByMinSeverity(deepFindings, opts.MinSeverity); dropped > 0 {
 				deepFindings = filtered
-				log.Printf("Filtered out %d finding(s) below severity %q", dropped, opts.MinFindingLevel)
+				log.Printf("Filtered out %d finding(s) below severity %q", dropped, opts.MinSeverity)
 			}
 		}
 
