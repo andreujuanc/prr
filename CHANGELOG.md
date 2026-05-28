@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/andreujuanc/prr/compare/v1.12.0...v1.13.0) (2026-05-28)
+
+
+### Features
+
+* **prr:** add --min-severity flag to audit and review ([#38](https://github.com/andreujuanc/prr/issues/38)) ([03e6ac2](https://github.com/andreujuanc/prr/commit/03e6ac2211ac78c1c3d5c5dc41cf225d5123b2f7))
+
 ## [1.12.0](https://github.com/andreujuanc/prr/compare/v1.11.0...v1.12.0) (2026-05-25)
 
 
