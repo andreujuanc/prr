@@ -73,9 +73,12 @@ func firstInt(s string) int {
 // collapsed (header only). Resolved findings are always single-line
 // regardless of the expansion map.
 // stale indicates the review was generated against a different set of diffs.
+// minSeverity, when non-empty, is the --min-severity threshold this run
+// was filtered at — surfaced as a "PARTIAL" banner so the user knows
+// findings below the threshold were dropped before recheck.
 // Returns the rendered string and a flat ordered list of findings matching
 // the render order (for navigable finding selection).
-func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, expanded map[int]bool, stale bool) (string, []state.ReviewFinding) {
+func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, expanded map[int]bool, stale bool, minSeverity string) (string, []state.ReviewFinding) {
 	if review == nil {
 		return "", nil
 	}
@@ -91,6 +94,19 @@ func renderStructuredReview(review *state.ReviewOutput, width int, cursor int, e
 	if stale {
 		banner := styleStaleReview.Render("STALE — diffs have changed since this review was generated")
 		hint := styleTextMuted.Render("  press a to re-review, or A to force re-review (no cache)")
+		b.WriteString(banner)
+		b.WriteString("\n")
+		b.WriteString(hint)
+		b.WriteString("\n\n")
+	}
+
+	// ── Partial-run banner ──────────────────────────────────
+	// Surfaced when the run was filtered via --min-severity so the user
+	// knows the finding list is a subset, not the full picture. Mirrors
+	// the stale banner's visual vocabulary.
+	if minSeverity != "" {
+		banner := styleStaleReview.Render(fmt.Sprintf("PARTIAL — filtered to severity ≥ %s; findings below were dropped", minSeverity))
+		hint := styleTextMuted.Render("  press A to force a fresh run without --min-severity")
 		b.WriteString(banner)
 		b.WriteString("\n")
 		b.WriteString(hint)

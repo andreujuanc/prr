@@ -4150,6 +4150,18 @@ func (m *Model) renderCleanReviewPlaceholder() {
 	b.WriteString(styleAccentGreen.Render("  ✓ No findings — PR looks clean."))
 	b.WriteString("\n\n")
 
+	// Partial-run banner: when the clean verdict came out of a run that
+	// was filtered via --min-severity, "clean" is misleading — findings
+	// below the threshold were dropped, not absent. Surface that so the
+	// user can re-run without the filter.
+	if lr != nil && lr.MinSeverity != "" {
+		b.WriteString(styleStaleReview.Render(
+			fmt.Sprintf("  PARTIAL — filtered to severity ≥ %s; findings below were dropped", lr.MinSeverity)))
+		b.WriteString("\n")
+		b.WriteString(styleTextMuted.Render("  press A to force a fresh run without --min-severity"))
+		b.WriteString("\n\n")
+	}
+
 	if lr != nil {
 		when := lr.CompletedAt.Format("2006-01-02 15:04")
 		verdict := lr.Verdict
@@ -4242,8 +4254,12 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 		m.validateReviewForTUI(synthetic)
 		stale := m.reviewState.IsReviewStale()
 		expanded := m.findingsExpanded
+		minSeverity := ""
+		if m.reviewState.LastReview != nil {
+			minSeverity = m.reviewState.LastReview.MinSeverity
+		}
 		return func() tea.Msg {
-			rendered, findings := renderStructuredReview(synthetic, width, cursor, expanded, stale)
+			rendered, findings := renderStructuredReview(synthetic, width, cursor, expanded, stale, minSeverity)
 			return ReviewRenderedMsg{Content: rendered, Findings: findings}
 		}
 	}
@@ -4260,8 +4276,12 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 		m.validateReviewForTUI(review.Structured)
 		structured := review.Structured
 		stale := m.reviewState.IsReviewStale()
+		minSeverity := ""
+		if m.reviewState.LastReview != nil {
+			minSeverity = m.reviewState.LastReview.MinSeverity
+		}
 		return func() tea.Msg {
-			rendered, findings := renderStructuredReview(structured, width, cursor, expanded, stale)
+			rendered, findings := renderStructuredReview(structured, width, cursor, expanded, stale, minSeverity)
 			return ReviewRenderedMsg{Content: rendered, Findings: findings}
 		}
 	}
@@ -4279,8 +4299,12 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 		}
 		structured := parsed
 		stale := m.reviewState.IsReviewStale()
+		minSeverity := ""
+		if m.reviewState.LastReview != nil {
+			minSeverity = m.reviewState.LastReview.MinSeverity
+		}
 		return func() tea.Msg {
-			rendered, findings := renderStructuredReview(structured, width, cursor, expanded, stale)
+			rendered, findings := renderStructuredReview(structured, width, cursor, expanded, stale, minSeverity)
 			return ReviewRenderedMsg{Content: rendered, Findings: findings}
 		}
 	}
@@ -4321,7 +4345,11 @@ func (m *Model) rerenderReviewWithCursor() tea.Cmd {
 
 	width := m.reviewViewport.Width - 2
 	stale := m.reviewState.IsReviewStale()
-	rendered, _ := renderStructuredReview(structured, width, m.reviewCursor, m.findingsExpanded, stale)
+	minSeverity := ""
+	if m.reviewState.LastReview != nil {
+		minSeverity = m.reviewState.LastReview.MinSeverity
+	}
+	rendered, _ := renderStructuredReview(structured, width, m.reviewCursor, m.findingsExpanded, stale, minSeverity)
 	m.aiReviewRendered = rendered
 	m.aiReviewRenderWidth = width
 	m.reviewViewport.SetContent(rendered)

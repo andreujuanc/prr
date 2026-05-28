@@ -32,7 +32,7 @@ func sampleReview(titles ...string) *state.ReviewOutput {
 func TestRenderStructuredReview_CollapsedByDefault(t *testing.T) {
 	review := sampleReview("Token expiry check uses <= instead of <")
 
-	rendered, findings := renderStructuredReview(review, 80, -1, nil, false)
+	rendered, findings := renderStructuredReview(review, 80, -1, nil, false, "")
 	if len(findings) != 1 {
 		t.Fatalf("findings len = %d, want 1", len(findings))
 	}
@@ -54,7 +54,7 @@ func TestRenderStructuredReview_ExpandedShowsBody(t *testing.T) {
 	review := sampleReview("First finding", "Second finding")
 	expanded := map[int]bool{0: true} // only first finding expanded
 
-	rendered, _ := renderStructuredReview(review, 80, -1, expanded, false)
+	rendered, _ := renderStructuredReview(review, 80, -1, expanded, false, "")
 
 	if !strings.Contains(rendered, "Detailed explanation") {
 		t.Error("expanded finding 0 missing detail in output")
@@ -86,7 +86,7 @@ func TestRenderFindingHeader_LongTitleWrapsCleanly(t *testing.T) {
 	longTitle := "Token expiry check uses <= so a token expiring at exactly now is still accepted creating a one-second window of vulnerability"
 	review := sampleReview(longTitle)
 
-	rendered, _ := renderStructuredReview(review, 60, -1, nil, false)
+	rendered, _ := renderStructuredReview(review, 60, -1, nil, false, "")
 	plain := stripANSI(rendered)
 
 	// The full title text must appear somewhere — assembled across
@@ -114,7 +114,7 @@ func TestRenderFindingHeader_LongTitleWrapsCleanly(t *testing.T) {
 // line as the badges. Multi-line rendering would be ugly noise here.
 func TestRenderFindingHeader_ShortTitleSingleLine(t *testing.T) {
 	review := sampleReview("Short title")
-	rendered, _ := renderStructuredReview(review, 80, -1, nil, false)
+	rendered, _ := renderStructuredReview(review, 80, -1, nil, false, "")
 
 	// Find the line containing the title; it must also contain the
 	// severity badge — meaning they're on the same line.
@@ -137,7 +137,7 @@ func TestRenderStructuredReview_ResolvedAlwaysCompact(t *testing.T) {
 	review.Findings[0].Resolved = true
 	expanded := map[int]bool{0: true} // try to expand it
 
-	rendered, _ := renderStructuredReview(review, 80, -1, expanded, false)
+	rendered, _ := renderStructuredReview(review, 80, -1, expanded, false, "")
 
 	if strings.Contains(rendered, "Detailed explanation") {
 		t.Error("resolved finding rendered body despite resolution; should be compact")

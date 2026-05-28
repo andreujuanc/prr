@@ -1242,7 +1242,7 @@ func TestRenderStructuredReview_CoverageSectionPresent(t *testing.T) {
 			OrphanFiles:   []string{"c.go"},
 		},
 	}
-	rendered, _ := renderStructuredReview(review, 100, -1, nil, false)
+	rendered, _ := renderStructuredReview(review, 100, -1, nil, false, "")
 	for _, want := range []string{
 		"COVERAGE",
 		"a.go", "b.go", "d.go",
@@ -1268,7 +1268,7 @@ func TestRenderStructuredReview_CoverageSectionPresent(t *testing.T) {
 
 func TestRenderStructuredReview_NoCoverageWhenNil(t *testing.T) {
 	review := &state.ReviewOutput{Summary: "x", Verdict: "approve"}
-	rendered, _ := renderStructuredReview(review, 80, -1, nil, false)
+	rendered, _ := renderStructuredReview(review, 80, -1, nil, false, "")
 	if strings.Contains(rendered, "COVERAGE") {
 		t.Errorf("coverage section must not appear when nil: %s", rendered)
 	}
@@ -1283,19 +1283,58 @@ func TestRenderStructuredReview_StaleBanner(t *testing.T) {
 	}
 
 	t.Run("no stale banner when not stale", func(t *testing.T) {
-		rendered, _ := renderStructuredReview(review, 80, -1, nil, false)
+		rendered, _ := renderStructuredReview(review, 80, -1, nil, false, "")
 		if strings.Contains(rendered, "STALE") {
 			t.Error("expected no STALE banner, but found one")
 		}
 	})
 
 	t.Run("stale banner shown when stale", func(t *testing.T) {
-		rendered, _ := renderStructuredReview(review, 80, -1, nil, true)
+		rendered, _ := renderStructuredReview(review, 80, -1, nil, true, "")
 		if !strings.Contains(rendered, "STALE") {
 			t.Error("expected STALE banner, but not found")
 		}
 		if !strings.Contains(rendered, "diffs have changed") {
 			t.Error("expected staleness explanation text")
+		}
+	})
+}
+
+// --- renderStructuredReview partial-run banner tests ---
+
+func TestRenderStructuredReview_PartialBanner(t *testing.T) {
+	review := &state.ReviewOutput{
+		Summary: "Looks good overall.",
+		Verdict: "approve",
+	}
+
+	t.Run("no partial banner when minSeverity is empty", func(t *testing.T) {
+		rendered, _ := renderStructuredReview(review, 80, -1, nil, false, "")
+		if strings.Contains(rendered, "PARTIAL") {
+			t.Error("expected no PARTIAL banner when minSeverity is empty, but found one")
+		}
+	})
+
+	t.Run("partial banner shown when minSeverity is set", func(t *testing.T) {
+		rendered, _ := renderStructuredReview(review, 80, -1, nil, false, "high")
+		if !strings.Contains(rendered, "PARTIAL") {
+			t.Error("expected PARTIAL banner, but not found")
+		}
+		if !strings.Contains(rendered, "severity ≥ high") {
+			t.Error("expected banner to name the threshold")
+		}
+		if !strings.Contains(rendered, "--min-severity") {
+			t.Error("expected hint to mention --min-severity so the user knows what to drop")
+		}
+	})
+
+	t.Run("stale and partial banners coexist", func(t *testing.T) {
+		rendered, _ := renderStructuredReview(review, 80, -1, nil, true, "critical")
+		if !strings.Contains(rendered, "STALE") {
+			t.Error("expected STALE banner")
+		}
+		if !strings.Contains(rendered, "PARTIAL") {
+			t.Error("expected PARTIAL banner")
 		}
 	})
 }
