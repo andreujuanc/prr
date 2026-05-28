@@ -47,10 +47,17 @@ func TestFilterByMinSeverity(t *testing.T) {
 		{FindingID: "F-6", Severity: ""}, // ranks as nit
 	}
 
-	t.Run("empty min keeps all", func(t *testing.T) {
+	t.Run("empty min keeps all and returns an independent slice", func(t *testing.T) {
 		kept, dropped := FilterByMinSeverity(findings, "")
 		if dropped != 0 || len(kept) != len(findings) {
 			t.Fatalf("empty min: kept %d dropped %d, want kept %d dropped 0", len(kept), dropped, len(findings))
+		}
+		// Mutating the returned slice must not touch the input. This is
+		// the contract callers rely on; the previous implementation
+		// returned the input slice unchanged, which aliased its storage.
+		kept[0].FindingID = "mutated"
+		if findings[0].FindingID == "mutated" {
+			t.Fatalf("empty-min path aliases the input slice; modifying kept[0] mutated findings[0]")
 		}
 	})
 

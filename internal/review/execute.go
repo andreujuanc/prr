@@ -1083,9 +1083,19 @@ func severityRank(s string) int {
 	}
 }
 
-// MinSeverityLevels lists the valid values for the --min-severity flag,
-// ordered most-to-least severe.
-var MinSeverityLevels = []string{"critical", "high", "medium", "low", "nit"}
+// minSeverityLevels is the canonical severity ladder, ordered
+// most-to-least severe. Kept package-private so callers can't mutate
+// the shared slice — use AllSeverities for read access.
+var minSeverityLevels = []string{"critical", "high", "medium", "low", "nit"}
+
+// AllSeverities returns a copy of the valid severity values
+// (most-to-least severe) for the --min-severity flag and any UI
+// that needs to render the canonical ladder.
+func AllSeverities() []string {
+	result := make([]string, len(minSeverityLevels))
+	copy(result, minSeverityLevels)
+	return result
+}
 
 // ParseMinSeverity normalizes and validates a --min-severity value.
 // An empty string means "no filtering" and returns "" with no error.
@@ -1098,20 +1108,22 @@ func ParseMinSeverity(s string) (string, error) {
 	case "critical", "high", "medium", "low", "nit":
 		return s, nil
 	default:
-		return "", fmt.Errorf("invalid severity %q (valid: %s)", s, strings.Join(MinSeverityLevels, ", "))
+		return "", fmt.Errorf("invalid severity %q (valid: %s)", s, strings.Join(minSeverityLevels, ", "))
 	}
 }
 
 // FilterByMinSeverity drops findings whose severity is below min. An
-// empty min returns the input unchanged. Returns the kept findings and the
-// number dropped. A finding with an unrecognized or empty severity ranks as
-// the lowest level ("nit"), matching severityRank.
+// empty min keeps every finding. The returned slice is always a fresh
+// allocation independent of the caller's input — modifying it never
+// touches the original. A finding with an unrecognized or empty
+// severity ranks as the lowest level ("nit"), matching severityRank.
 func FilterByMinSeverity(findings []state.DeepFinding, min string) (kept []state.DeepFinding, dropped int) {
+	kept = make([]state.DeepFinding, 0, len(findings))
 	if min == "" {
-		return findings, 0
+		kept = append(kept, findings...)
+		return kept, 0
 	}
 	threshold := severityRank(min)
-	kept = make([]state.DeepFinding, 0, len(findings))
 	for _, f := range findings {
 		if severityRank(f.Severity) <= threshold {
 			kept = append(kept, f)
