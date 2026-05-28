@@ -142,6 +142,7 @@ func TestLastReview_RoundTrip(t *testing.T) {
 		Summary:        "Found 2",
 		FindingsCount:  2,
 		DismissedCount: 5,
+		MinSeverity:    "high",
 	})
 
 	data, err := json.Marshal(s)
@@ -157,5 +158,9 @@ func TestLastReview_RoundTrip(t *testing.T) {
 	}
 	if got.LastReview.FindingsCount != 2 || got.LastReview.DismissedCount != 5 {
 		t.Fatalf("counters did not round-trip: %+v", got.LastReview)
+	}
+	if got.LastReview.MinSeverity != "high" {
+		t.Fatalf("MinSeverity did not round-trip: got %q, want %q",
+			got.LastReview.MinSeverity, "high")
 	}
 }

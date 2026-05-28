@@ -220,6 +220,13 @@ func runAudit(debug bool, args []string) {
 			opts.SiblingClustering = true
 		} else if arg == "--bug-priors" {
 			opts.BugPriors = true
+		} else if after, ok := strings.CutPrefix(arg, "--min-severity="); ok {
+			sev, err := review.ParseMinSeverity(after)
+			if err != nil {
+				printError(fmt.Errorf("--min-severity=%s: %w", after, err))
+				os.Exit(1)
+			}
+			opts.MinSeverity = sev
 		} else if arg == "--help" || arg == "-h" {
 			printAuditUsage()
 			os.Exit(0)
@@ -455,6 +462,8 @@ func printAuditUsage() {
 	fmt.Fprintf(os.Stderr, "    --audit-recent=<n>   Restrict audit to files touched in the last <n> commits\n")
 	fmt.Fprintf(os.Stderr, "    --sibling-cluster    Enable Phase 2.5 sibling-outlier detection (experimental)\n")
 	fmt.Fprintf(os.Stderr, "    --bug-priors         Inject recent fix-shaped commits as known-failure priors\n")
+	fmt.Fprintf(os.Stderr, "    --min-severity=<lvl> Drop deep-review findings below <lvl> before recheck\n")
+	fmt.Fprintf(os.Stderr, "                         and later phases (critical|high|medium|low|nit)\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %s\n", dim.Render("Available categories:"))
 	fmt.Fprintf(os.Stderr, "    authentication, authorization, input-validation, data-integrity,\n")
@@ -476,6 +485,7 @@ func runReview(debug bool, args []string) {
 	post := false
 	postYes := false
 	var reviewModeStr string
+	var minSeverityStr string
 
 	// Parse flags and find the PR number
 	var prNumber string
@@ -498,6 +508,8 @@ func runReview(debug bool, args []string) {
 			postYes = true
 		} else if after, ok := strings.CutPrefix(arg, "--review-mode="); ok {
 			reviewModeStr = after
+		} else if after, ok := strings.CutPrefix(arg, "--min-severity="); ok {
+			minSeverityStr = after
 		} else if arg == "--help" || arg == "-h" {
 			printReviewUsage()
 			os.Exit(0)
@@ -509,6 +521,12 @@ func runReview(debug bool, args []string) {
 	reviewMode, err := review.ParseReviewMode(reviewModeStr)
 	if err != nil {
 		printError(err)
+		os.Exit(1)
+	}
+
+	minSeverity, err := review.ParseMinSeverity(minSeverityStr)
+	if err != nil {
+		printError(fmt.Errorf("--min-severity=%s: %w", minSeverityStr, err))
 		os.Exit(1)
 	}
 
@@ -583,6 +601,7 @@ func runReview(debug bool, args []string) {
 		Debug:              reviewDebug,
 		BugPriors:          bugPriors,
 		ReviewMode:         reviewMode,
+		MinSeverity:        minSeverity,
 	}
 
 	// Default: shared progress TUI (same as `prr audit`). Falls back
@@ -873,7 +892,9 @@ func printReviewUsage() {
 	fmt.Fprintf(os.Stderr, "    --bug-priors         Inject recent fix-shaped commits as known-failure priors\n")
 	fmt.Fprintf(os.Stderr, "    --review-mode=<mode> full (default) reviews every file; aoi-only skips files without AOIs\n")
 	fmt.Fprintf(os.Stderr, "    --post               Post findings to GitHub as a batch review (event=COMMENT)\n")
-	fmt.Fprintf(os.Stderr, "    --yes, -y            Skip the confirmation prompt for --post (required in non-TTY contexts)\n\n")
+	fmt.Fprintf(os.Stderr, "    --yes, -y            Skip the confirmation prompt for --post (required in non-TTY contexts)\n")
+	fmt.Fprintf(os.Stderr, "    --min-severity=<lvl> Drop deep-review findings below <lvl> before recheck\n")
+	fmt.Fprintf(os.Stderr, "                         and later phases (critical|high|medium|low|nit)\n\n")
 }
 
 func createAIClient(cfg *config.Config) ai.Client {

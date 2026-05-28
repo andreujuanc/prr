@@ -86,6 +86,11 @@ type Options struct {
 	// into every Phase 3 deep-review prompt and recheck pass. Off by
 	// default — opt in via the --bug-priors CLI flag.
 	BugPriors bool
+
+	// MinSeverity drops Phase 3 deep-review findings below this
+	// severity before recheck and all later phases run. One of
+	// "critical", "high", "medium", "low", "nit". Empty = no filtering.
+	MinSeverity string
 }
 
 // ConcurrencyConfig holds per-phase concurrency caps. Each field is the
@@ -167,6 +172,11 @@ type Result struct {
 	// caller can plumb it into Phase 4 synthesis (otherwise the work done in
 	// Phase 0 would not reach the executive summary).
 	ProjectContext string
+
+	// MinSeverity records the --min-severity threshold this run was
+	// filtered at. Empty when no filter was applied. Surfaced in the
+	// report and consumed by the TUI to render a partial-run badge.
+	MinSeverity string
 
 	// TokenUsage tracks actual token consumption per phase.
 	Usage PhaseUsage
@@ -611,6 +621,7 @@ func Run(
 		Routing:              routing,
 		ProjectContext:       projectContext,
 		SkippedSubcategories: routing.SkippedSubcategories(opts.MaxReviews),
+		MinSeverity:          opts.MinSeverity,
 	}
 
 	if routing.TotalAOIs == 0 {
@@ -665,6 +676,17 @@ func Run(
 	reviewUsage := ai.SnapshotUsage(reviewClient)
 	log.Printf("Phase 3 complete: %d call(s) (%d failed), %d findings, %d dismissals in %v",
 		len(calls), failed, len(findings), dismissals, time.Since(phase3Start).Round(time.Second))
+
+	// Drop findings below the requested minimum severity before recheck
+	// and every later phase, so the user pays no recheck/synthesis cost
+	// for findings they've chosen to ignore.
+	if opts.MinSeverity != "" {
+		var dropped int
+		findings, dropped = review.FilterByMinSeverity(findings, opts.MinSeverity)
+		if dropped > 0 {
+			log.Printf("Filtered out %d finding(s) below severity %q", dropped, opts.MinSeverity)
+		}
+	}
 
 	// ── Phase 3b: Recheck — deduplicate and filter findings ─────
 	dbgw.Phase("PHASE 3b: Recheck")

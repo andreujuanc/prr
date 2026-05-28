@@ -564,6 +564,14 @@ type ReviewMeta struct {
 	// user can see what failed on reopen rather than losing the
 	// context after the TUI exits.
 	Error string `json:"error,omitempty"`
+
+	// MinSeverity records the --min-severity threshold the run was
+	// filtered at (one of "critical", "high", "medium", "low", "nit").
+	// Empty when no filter was applied. The TUI uses this to render a
+	// "partial run" badge so the user knows findings below the
+	// threshold were dropped before recheck and can re-run without
+	// the filter to see the full set.
+	MinSeverity string `json:"min_severity,omitempty"`
 }
 
 // DismissedRecord is one finding that recheck removed, with the
