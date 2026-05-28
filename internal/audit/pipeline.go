@@ -173,6 +173,11 @@ type Result struct {
 	// Phase 0 would not reach the executive summary).
 	ProjectContext string
 
+	// MinSeverity records the --min-severity threshold this run was
+	// filtered at. Empty when no filter was applied. Surfaced in the
+	// report and consumed by the TUI to render a partial-run badge.
+	MinSeverity string
+
 	// TokenUsage tracks actual token consumption per phase.
 	Usage PhaseUsage
 }
@@ -616,6 +621,7 @@ func Run(
 		Routing:              routing,
 		ProjectContext:       projectContext,
 		SkippedSubcategories: routing.SkippedSubcategories(opts.MaxReviews),
+		MinSeverity:          opts.MinSeverity,
 	}
 
 	if routing.TotalAOIs == 0 {

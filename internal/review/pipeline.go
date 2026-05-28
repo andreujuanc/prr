@@ -84,6 +84,11 @@ type PRReviewResult struct {
 
 	// FileFindings maps file paths to their batch findings.
 	FileFindings map[string]string
+
+	// MinSeverity records the --min-severity threshold this run was
+	// filtered at. Empty when no filter was applied. Surfaced in JSON
+	// output and consumed by the TUI to render a partial-run badge.
+	MinSeverity string
 }
 
 // BuildPRMeta is the canonical PR-metadata header passed to RunReviewCore.
@@ -244,6 +249,7 @@ func RunPRReview(
 		StructuredReview: coreResult.StructuredReview,
 		DeepFindings:     coreResult.DeepFindings,
 		FileFindings:     coreResult.FileFindings,
+		MinSeverity:      coreResult.MinSeverity,
 	}, nil
 }
 
@@ -697,6 +703,12 @@ type CoreResult struct {
 	// AOI scan or with empty inputs. The TUI uses this to render
 	// the Coverage section even when synthesis is skipped.
 	Coverage *state.ReviewCoverage
+
+	// MinSeverity mirrors CoreOptions.MinSeverity so callers can see
+	// what threshold (if any) filtered the deep findings before
+	// recheck. Empty when no filter was applied. The TUI reads it
+	// to render a partial-run badge.
+	MinSeverity string
 }
 
 // RunReviewCore is the shared pipeline core used by both the TUI and the headless CLI.
@@ -1189,15 +1201,16 @@ func RunReviewCore(
 	// as the source of truth. Review is nil — the UI renders findings
 	// directly from state.DeepFindings.
 	if opts.SkipSynthesis {
-		recordReviewMeta(reviewState, deepFindings, len(dismissals), "")
+		recordReviewMeta(reviewState, deepFindings, len(dismissals), "", opts.MinSeverity)
 		return &CoreResult{
 			DeepFindings: deepFindings,
 			FileFindings: allFileFindings,
 			Coverage:     coverage,
+			MinSeverity:  opts.MinSeverity,
 		}, nil
 	}
 	if opts.NoSynthesis {
-		recordReviewMeta(reviewState, deepFindings, len(dismissals), "")
+		recordReviewMeta(reviewState, deepFindings, len(dismissals), "", opts.MinSeverity)
 		return &CoreResult{
 			Review: &state.AIReview{
 				Findings: allFindings.String(),
@@ -1205,6 +1218,7 @@ func RunReviewCore(
 			DeepFindings: deepFindings,
 			FileFindings: allFileFindings,
 			Coverage:     coverage,
+			MinSeverity:  opts.MinSeverity,
 		}, nil
 	}
 
@@ -1226,7 +1240,7 @@ func RunReviewCore(
 	if synthResult.Structured != nil {
 		synthVerdict = synthResult.Structured.Verdict
 	}
-	recordReviewMeta(reviewState, deepFindings, len(dismissals), synthVerdict)
+	recordReviewMeta(reviewState, deepFindings, len(dismissals), synthVerdict, opts.MinSeverity)
 
 	return &CoreResult{
 		Review:           synthResult.Review,
@@ -1234,6 +1248,7 @@ func RunReviewCore(
 		DeepFindings:     deepFindings,
 		FileFindings:     allFileFindings,
 		Coverage:         coverage,
+		MinSeverity:      opts.MinSeverity,
 	}, nil
 }
 
@@ -1245,7 +1260,7 @@ func RunReviewCore(
 // verdict is set when synthesis ran; for SkipSynthesis/NoSynthesis the
 // verdict is inferred from finding counts (clean → approve, otherwise
 // comment).
-func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed int, verdict string) {
+func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed int, verdict string, minSeverity string) {
 	if s == nil {
 		return
 	}
@@ -1273,6 +1288,7 @@ func recordReviewMeta(s *state.State, findings []state.DeepFinding, dismissed in
 		Summary:        summary,
 		FindingsCount:  len(findings),
 		DismissedCount: dismissed,
+		MinSeverity:    minSeverity,
 	})
 	if err := state.Save(s); err != nil {
 		log.Printf("Warning: failed to persist LastReview marker: %v", err)
