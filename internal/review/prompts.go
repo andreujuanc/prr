@@ -81,11 +81,11 @@ func BuildIndividualPrompt(mode Mode, projectContext, customInstructions, bugPri
 		sb.WriteString(section)
 	}
 
-	// Relevant category criteria
-	cats := relevantCategories(aoi)
-	if len(cats) > 0 {
+	// Relevant category criteria — scoped to the AOI's (category,
+	// subcategory): the flagged-pattern echo plus the verdict guidance.
+	if crit := scopedCriteria([]security.AreaOfInterest{aoi}); crit != "" {
 		sb.WriteString("\n\n## Evaluation Criteria\n\n")
-		sb.WriteString(ai.GetCategories(cats))
+		sb.WriteString(crit)
 	}
 
 	// Custom instructions
@@ -163,11 +163,11 @@ func BuildGroupedPrompt(mode Mode, projectContext, customInstructions, bugPriors
 		sb.WriteString(renderPRDiffsSection(call))
 	}
 
-	// Relevant category criteria — collect from all AOIs in the group
-	cats := relevantCategoriesFromGroup(call.AOIs)
-	if len(cats) > 0 {
+	// Relevant category criteria — scoped to the distinct (category,
+	// subcategory) pairs across the AOIs in this group.
+	if crit := scopedCriteria(call.AOIs); crit != "" {
 		sb.WriteString("\n\n## Evaluation Criteria\n\n")
-		sb.WriteString(ai.GetCategories(cats))
+		sb.WriteString(crit)
 	}
 
 	// Custom instructions
@@ -344,34 +344,64 @@ func formatAOI(aoi security.AreaOfInterest) string {
 	return sb.String()
 }
 
-// relevantCategories returns the category slugs to include for a single AOI.
-// One AOI = one category — see the AOI scan prompt's "One AOI = one
-// category" rule. Returns the AOI's category as a single-element slice
-// when it's in the canonical taxonomy, or nil otherwise.
+// scopedCriteria composes the Evaluation Criteria section: per distinct
+// (category, subcategory) pair across the AOIs, emit the Shapes block
+// (flagged-pattern echo) plus the Review criteria block (verdict
+// guidance). AOIs with no subcategory fall back to the whole-category
+// Shapes section, no Review criteria. Returns "" if nothing resolves.
 //
-// validateAOIs logs at scan time, but cached AOIs whose category was
-// renamed or removed in the taxonomy land here at prompt-build time
-// without re-validation — the log below surfaces that case.
-func relevantCategories(aoi security.AreaOfInterest) []string {
-	if !aoi.Category.IsZero() {
-		return []string{aoi.Category.String()}
-	}
-	return nil
-}
-
-// relevantCategoriesFromGroup collects all relevant categories across a group of AOIs.
-func relevantCategoriesFromGroup(aois []security.AreaOfInterest) []string {
+// One AOI = one category — see the AOI scan prompt's "One AOI = one
+// category" rule. Category-less AOIs are skipped.
+func scopedCriteria(aois []security.AreaOfInterest) string {
 	seen := make(map[string]bool)
-	var result []string
+	var parts []string
 	for _, aoi := range aois {
-		for _, c := range relevantCategories(aoi) {
-			if !seen[c] {
-				seen[c] = true
-				result = append(result, c)
-			}
+		if aoi.Category.IsZero() {
+			continue
 		}
+		cat := aoi.Category.String()
+		key := cat + "/" + aoi.Subcategory
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		if aoi.Subcategory == "" {
+			// Fallback: whole-category Shapes, no Review criteria.
+			if shapes := ai.GetCategoryShapes([]string{cat}); shapes != "" {
+				parts = append(parts, shapes)
+			}
+			continue
+		}
+
+		var block strings.Builder
+		block.WriteString(fmt.Sprintf("### %s / %s\n\n", cat, aoi.Subcategory))
+		wrote := false
+		if shape := ai.GetShape(cat, aoi.Subcategory); shape != "" {
+			block.WriteString("**Flagged pattern:**\n\n")
+			block.WriteString(shape)
+			wrote = true
+		}
+		if crit := ai.GetReviewCriteria(cat, aoi.Subcategory); crit != "" {
+			if wrote {
+				block.WriteString("\n\n")
+			}
+			block.WriteString("**How to judge:**\n\n")
+			block.WriteString(crit)
+			wrote = true
+		}
+		if !wrote {
+			// Neither shape nor criteria resolved (e.g. a subcategory
+			// label that doesn't match any Shapes block): fall back to
+			// the whole-category Shapes.
+			if shapes := ai.GetCategoryShapes([]string{cat}); shapes != "" {
+				parts = append(parts, shapes)
+			}
+			continue
+		}
+		parts = append(parts, strings.TrimSpace(block.String()))
 	}
-	return result
+	return strings.Join(parts, "\n\n")
 }
 
 // appendProjectContext writes the project context section, avoiding a

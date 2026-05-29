@@ -2,7 +2,7 @@
 
 Code that uses goroutines, threads, async operations, or shared mutable state.
 
-#### Subcategories
+## Shapes or common patterns
 
 **race-conditions** — Shared state without synchronization:
 - Read-modify-write on shared variables without locks or atomics
@@ -38,3 +38,7 @@ Code that uses goroutines, threads, async operations, or shared mutable state.
 - Returning pointers to shared data without copying
 - Closures that capture loop variables in goroutines
 - WaitGroup Add/Done count mismatch
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

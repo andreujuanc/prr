@@ -2,7 +2,7 @@
 
 Code that may work correctly at small scale but degrade under production load — algorithmic inefficiency, memory waste, I/O bottlenecks.
 
-#### Subcategories
+## Shapes or common patterns
 
 **algorithmic-complexity** — Inefficient algorithms on growing data:
 - O(n²) or worse in loops over collections that could grow (nested iterations over same data)
@@ -41,3 +41,7 @@ Code that may work correctly at small scale but degrade under production load �
 - Cache invalidation bugs (stale data served after mutation)
 - Cache key that doesn't include all relevant inputs (different users get same cached result)
 - Caching non-deterministic or time-sensitive data without awareness
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

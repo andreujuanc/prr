@@ -421,6 +421,14 @@ func TestBuildAOIScanPromptWithCategories(t *testing.T) {
 		t.Error("prompt with nil cats should contain CRYPTOGRAPHY")
 	}
 
+	// Shapes/Review-criteria split: the AOI scan is the recall-biased
+	// pre-filter and must carry only the Shapes patterns, never the
+	// deep-review-only Review criteria section. (The category bullets
+	// themselves still appear; only the section heading is dropped.)
+	if containsSubstring(promptAll, "## Review criteria") {
+		t.Error("AOI scan prompt should not include the Review criteria section")
+	}
+
 	// Audit mode rules
 	if !containsSubstring(prompt, "full-project audit") {
 		t.Error("audit mode prompt should contain audit rules")

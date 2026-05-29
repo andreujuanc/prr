@@ -4,7 +4,7 @@ Code that's hostile by design, not by accident. The other categories ask "does t
 
 Treat this category as adversarial review. Assume the contributor may not be acting in good faith. Read every suspicious construct twice. When evidence is ambiguous, surface the finding at lower severity rather than dismissing — a false positive costs a minute; a missed backdoor costs the project.
 
-#### Subcategories
+## Shapes or common patterns
 
 **install-time-execution** — Code that runs during `go install` / `npm install` / `make` / `pip install` / similar, executed before the user has read the source:
 - `go:generate` directives that download and run arbitrary remote code
@@ -83,3 +83,7 @@ Treat this category as adversarial review. Assume the contributor may not be act
 - **low** — Pattern-match only, no clear path to harm. Worth noting so future review can spot a trend.
 
 When in doubt, prefer to **emit the finding and let the human decide** rather than dismiss. False positives here are cheap; false negatives are catastrophic.
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

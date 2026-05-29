@@ -144,6 +144,31 @@ func TestGroupedCacheKey_CodeContextChangeInvalidates(t *testing.T) {
 	}
 }
 
+// TestCacheKey_Deterministic guards the criteria component (folded into
+// the key via scopedCriteria, which uses an internal map) against
+// accidental nondeterminism — a flaky key would silently disable the
+// review cache.
+func TestCacheKey_Deterministic(t *testing.T) {
+	aoi := security.AreaOfInterest{
+		File: "billing/charge.go", Line: 45,
+		Category: "financial", Subcategory: "money-arithmetic",
+	}
+	for i := 0; i < 5; i++ {
+		if got := IndividualCacheKey("body", aoi, nil, ""); got != IndividualCacheKey("body", aoi, nil, "") {
+			t.Fatalf("individual key not deterministic on iter %d: %s", i, got)
+		}
+	}
+	aois := []security.AreaOfInterest{
+		{File: "a.go", Line: 1, Category: "financial", Subcategory: "money-arithmetic"},
+		{File: "b.go", Line: 2, Category: "web-security", Subcategory: "csrf-protection"},
+	}
+	for i := 0; i < 5; i++ {
+		if got := GroupedCacheKey(aois, "body", nil, ""); got != GroupedCacheKey(aois, "body", nil, "") {
+			t.Fatalf("grouped key not deterministic on iter %d: %s", i, got)
+		}
+	}
+}
+
 func TestComputeCacheKey_DiffChangeInvalidates(t *testing.T) {
 	aoi := security.AreaOfInterest{File: "a.go", Line: 1, Category: "correctness"}
 	callA := ReviewCall{

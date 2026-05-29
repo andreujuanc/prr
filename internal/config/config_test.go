@@ -689,7 +689,7 @@ func TestProviderConfig_UseCLI_RoundTrip(t *testing.T) {
 	path := filepath.Join(home, ".config", "prr", "config.json")
 
 	cfg := &Config{
-		StrongModel: "claude-code/claude-opus-4-7",
+		StrongModel: "claude-code/claude-opus-4-8",
 		FastModel:   "claude-code/claude-haiku-4-5",
 		Providers: map[string]ProviderConfig{
 			"claude-code": {UseCLI: true},

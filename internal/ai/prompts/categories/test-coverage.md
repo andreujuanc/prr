@@ -2,7 +2,7 @@
 
 Whether production code has adequate test coverage — flagged when reviewing non-test files.
 
-#### Subcategories
+## Shapes or common patterns
 
 **coverage-gaps** — Missing test cases, untested paths:
 - Happy path tested but error/edge cases missing
@@ -14,3 +14,7 @@ Whether production code has adequate test coverage — flagged when reviewing no
 - Conditional branches where only one branch is exercised
 - Bug fixes without a regression test that would catch the bug recurring
 - Test assertions weakened to make tests pass (e.g., `assertEqual` relaxed to `assertNotNil`)
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

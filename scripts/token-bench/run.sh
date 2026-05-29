@@ -7,7 +7,7 @@ set -euo pipefail
 # Env vars:
 #   ITERATIONS   number of runs per condition (default 5)
 #   CONDITIONS   space-separated list (default "none full distilled")
-#   MODEL        claude model (default claude-opus-4-7)
+#   MODEL        claude model (default claude-opus-4-8)
 
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIXTURE="$BENCH_DIR/fixtures/audit-target"
@@ -16,7 +16,7 @@ mkdir -p "$RESULTS/outputs"
 
 ITERATIONS="${ITERATIONS:-5}"
 CONDITIONS="${CONDITIONS:-none full distilled}"
-MODEL="${MODEL:-claude-opus-4-7}"
+MODEL="${MODEL:-claude-opus-4-8}"
 
 CSV="$RESULTS/runs.csv"
 if [[ ! -f "$CSV" ]]; then

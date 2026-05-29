@@ -2,7 +2,7 @@
 
 Code that handles money, pricing, billing, or financial calculations.
 
-#### Subcategories
+## Shapes or common patterns
 
 **money-arithmetic** — Floating point, rounding, precision:
 - Monetary amounts stored or computed as floating point (float32/float64/double)
@@ -30,3 +30,7 @@ Code that handles money, pricing, billing, or financial calculations.
 - Missing reconciliation between local records and processor state
 - Race conditions on payment status updates (double processing)
 - Currency mismatch between what user sees and what is charged
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

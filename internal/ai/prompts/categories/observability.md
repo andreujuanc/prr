@@ -2,7 +2,7 @@
 
 Code that emits logs, metrics, traces, or alerts — whether operators can understand what happened in production.
 
-#### Subcategories
+## Shapes or common patterns
 
 **logging-quality** — Log level, structure, content:
 - Log level mismatched to severity (errors logged at INFO, debug noise at WARN)
@@ -38,3 +38,7 @@ Code that emits logs, metrics, traces, or alerts — whether operators can under
 - Stack traces or large payloads logged on every error in a hot path
 - High-cardinality labels (user IDs, full URLs with params) on metrics
 - Audit logs that accumulate without rotation or archival (cross-ref `resource-management/unbounded-growth`)
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

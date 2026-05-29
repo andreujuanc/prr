@@ -2,7 +2,7 @@
 
 Code that receives, parses, or processes data from external sources.
 
-#### Subcategories
+## Shapes or common patterns
 
 **injection** — SQL, command, XSS, LDAP, header injection:
 - String concatenation or interpolation in SQL queries
@@ -50,3 +50,7 @@ Code that receives, parses, or processes data from external sources.
 - Array/slice index without bounds checking
 - Negative numbers where only positive expected
 - Unicode normalization issues (different byte representations of same character)
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

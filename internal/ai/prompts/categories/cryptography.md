@@ -2,7 +2,7 @@
 
 Code that performs cryptographic operations or handles sensitive data.
 
-#### Subcategories
+## Shapes or common patterns
 
 **encryption** — Algorithm choice, mode, padding, key size:
 - Use of deprecated algorithms (DES, 3DES, RC4, Blowfish)
@@ -35,3 +35,7 @@ Code that performs cryptographic operations or handles sensitive data.
 - Insufficient random bytes for tokens, IDs, or nonces
 - PRNG state exposed or recoverable from output
 - UUID v1/v4 misuse (v1 leaks MAC address and time; v4 may not be cryptographically random depending on implementation)
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

@@ -2,7 +2,7 @@
 
 Code clarity, naming, complexity — whether a new team member can understand this code in one reading.
 
-#### Subcategories
+## Shapes or common patterns
 
 **naming** — Names that convey (or obscure) intent:
 - Single-letter variables for non-obvious things in non-trivial scope. Note: short conventional names are idiomatic in Go and should NOT be flagged — receivers (`r *Repo`), `t *testing.T`, `r io.Reader`, `w io.Writer`, `b *bytes.Buffer`, `i`/`j` in loops, `err` for errors, `ok` for boolean returns.
@@ -37,3 +37,7 @@ Code clarity, naming, complexity — whether a new team member can understand th
 - String literals used as identifiers or keys in multiple places
 - Threshold values without explanation of why that specific value
 - Repeated magic values that should be a single named constant
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

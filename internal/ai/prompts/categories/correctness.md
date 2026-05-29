@@ -2,7 +2,7 @@
 
 Code where the logic may compile and run without errors but produce wrong results, violate intent, or fail on valid inputs. The hardest class of bug — the code looks fine but is subtly wrong.
 
-#### Subcategories
+## Shapes or common patterns
 
 **semantic-errors** — Code that runs but produces wrong results:
 - Inverted boolean checks (condition is backwards, wrong branch taken)
@@ -53,3 +53,7 @@ Code where the logic may compile and run without errors but produce wrong result
 - Range boundaries: "first N items" returning N+1 or N-1
 - Array allocation one element too small or too large
 - Modular arithmetic wrapping at wrong boundary
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

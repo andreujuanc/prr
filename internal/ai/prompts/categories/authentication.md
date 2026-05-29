@@ -2,7 +2,7 @@
 
 Code that handles identity verification and session lifecycle.
 
-#### Subcategories
+## Shapes or common patterns
 
 **login-flow** — Login/logout handlers, multi-factor authentication:
 - Login handlers that don't rate-limit or lock after failed attempts
@@ -34,3 +34,7 @@ Code that handles identity verification and session lifecycle.
 - Password reset flows that leak valid email addresses
 - Plaintext passwords logged or stored
 - Missing password complexity enforcement at the right boundary
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

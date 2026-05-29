@@ -2,7 +2,7 @@
 
 Code that tests application logic — unit tests, integration tests, test helpers.
 
-#### Subcategories
+## Shapes or common patterns
 
 **assertion-quality** — Meaningful assertions vs tautological checks:
 - Assertions that are always true regardless of implementation behavior (tautologies). Examples: asserting a variable against itself, checking that a constructed object is truthy, verifying a list has items without checking which items. The test passes whether the code works or is completely broken.
@@ -40,3 +40,7 @@ Code that tests application logic — unit tests, integration tests, test helper
 - Multiple unrelated behaviors asserted in the same test — split so each test fails for one reason
 - Missed property-based or fuzz testing on parsers, validators, encoders, ID generators, and other input-shape-sensitive code where examples can't cover the space
 - Helpers that hide what's being tested behind generic names (`setup()`, `assertOk()`) — the assertion or the surprising setup belongs visible in the test body
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

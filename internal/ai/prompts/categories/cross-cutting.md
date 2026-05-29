@@ -2,7 +2,7 @@
 
 Issues that span multiple files or require understanding the change as a whole — incomplete refactors, inconsistent patterns, missing cascading updates.
 
-#### Subcategories
+## Shapes or common patterns
 
 **incomplete-refactors** — Changes that are only partially applied:
 - Function/type renamed in definition but not in all callers
@@ -26,3 +26,7 @@ Issues that span multiple files or require understanding the change as a whole �
 - Environment variable additions without updating deployment configs or docs
 - New dependencies without updating build scripts, Docker images, or CI config
 - Permission/role changes without updating authorization checks
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

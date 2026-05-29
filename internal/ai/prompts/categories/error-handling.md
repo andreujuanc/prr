@@ -2,7 +2,7 @@
 
 Code that handles, propagates, or recovers from errors.
 
-#### Subcategories
+## Shapes or common patterns
 
 **swallowed-errors** — Ignored returns, empty catch blocks:
 - Error return values assigned to `_` or explicitly ignored when the error matters (write paths, business operations, anything with side effects)
@@ -35,3 +35,7 @@ Code that handles, propagates, or recovers from errors.
 - Type assertions without comma-ok pattern (`x.(T)` instead of `x, ok := x.(T)`)
 - Stack overflow from unbounded recursion
 - HTTP handlers that can panic (unrecovered = connection reset)
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

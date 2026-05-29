@@ -6,7 +6,7 @@ Severity for this category: report at **nit** by default, **low** only when the 
 
 Distinct from `readability`: readability asks "can a reader understand what's here?" (wrong, stale, or confusing). ai-slop asks "why is this here at all?" — the code is correct and the comment is accurate; the problem is the noise itself.
 
-#### Subcategories
+## Shapes or common patterns
 
 **bug-narration** — Comments that retell the bug being fixed or describe the prior broken behavior:
 - "The bug we are fixing was using X unconditionally, which silently overwrote..."
@@ -56,3 +56,7 @@ Distinct from `readability`: readability asks "can a reader understand what's he
 - Catch-and-rethrow chains that don't add a layer of context — just propagate the original error directly
 - Logging an error and then returning it (caller will log it too — duplicate logs in prod)
 - Wrapping a panic message in a function whose only purpose is to construct the panic message
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

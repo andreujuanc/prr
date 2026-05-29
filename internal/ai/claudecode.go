@@ -136,7 +136,7 @@ const claudeCodeAppendSystemPrompt = `## Review rules
 // or ANTHROPIC_API_KEY) — prr does not need an API key for this provider.
 type ClaudeCodeProvider struct {
 	// Model is a Claude Code model name or alias ("opus", "sonnet",
-	// "haiku", "claude-opus-4-7", etc.).
+	// "haiku", "claude-opus-4-8", etc.).
 	Model string
 
 	// BinaryPath optionally overrides the resolved claude binary path
