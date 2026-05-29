@@ -121,6 +121,66 @@ func TestBuildIndividualPrompt_ContainsAllSections(t *testing.T) {
 	}
 }
 
+// TestBuildIndividualPrompt_ScopedCriteria pins the Shapes/Review-criteria
+// split contract on the deep-review side: the Evaluation Criteria section is
+// scoped to the AOI's own (category, subcategory) and must NOT drag in
+// sibling subcategories of the same category.
+func TestBuildIndividualPrompt_ScopedCriteria(t *testing.T) {
+	aoi := security.AreaOfInterest{
+		File:        "billing/charge.go",
+		Line:        45,
+		Category:    "financial",
+		Subcategory: "money-arithmetic",
+		ID:          "charge-go-1",
+		Concern:     "float currency",
+	}
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, individualCall(aoi))
+
+	if !strings.Contains(prompt, "## Evaluation Criteria") {
+		t.Fatal("missing Evaluation Criteria section")
+	}
+	if !strings.Contains(prompt, "**Flagged pattern:**") {
+		t.Error("scoped criteria should echo the flagged pattern (Shapes block)")
+	}
+	// In-scope subcategory content present.
+	if !strings.Contains(prompt, "Floating point, rounding, precision") {
+		t.Error("scoped criteria missing the money-arithmetic shape")
+	}
+	// Sibling subcategories of `financial` must be excluded by the scoping.
+	for _, sibling := range []string{"stacking exploits", "Payment processor interaction"} {
+		if strings.Contains(prompt, sibling) {
+			t.Errorf("scoped criteria leaked sibling-subcategory content: %q", sibling)
+		}
+	}
+}
+
+// TestBuildIndividualPrompt_SubcatlessFallback verifies that an AOI with a
+// category but no subcategory falls back to the whole-category Shapes (so
+// criteria are never silently dropped), without emitting a scoped header.
+func TestBuildIndividualPrompt_SubcatlessFallback(t *testing.T) {
+	aoi := security.AreaOfInterest{
+		File:     "x.go",
+		Line:     1,
+		Category: "financial", // no Subcategory
+		ID:       "x-go-1",
+		Concern:  "money thing",
+	}
+	prompt := BuildIndividualPrompt(ModeAudit, "", "", "", nil, individualCall(aoi))
+
+	if !strings.Contains(prompt, "## Evaluation Criteria") {
+		t.Fatal("subcatless AOI should still get an Evaluation Criteria section")
+	}
+	// Whole-category fallback: all subcategories present, no scoped header.
+	for _, want := range []string{"money-arithmetic", "billing-logic", "payment-integration"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("fallback should include whole-category Shapes (missing %q)", want)
+		}
+	}
+	if strings.Contains(prompt, "**Flagged pattern:**") {
+		t.Error("subcatless fallback should not emit a per-subcategory Flagged pattern header")
+	}
+}
+
 func TestBuildIndividualPrompt_PRMode(t *testing.T) {
 	aoi := security.AreaOfInterest{
 		File:     "main.go",

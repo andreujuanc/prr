@@ -2,7 +2,7 @@
 
 Browser-facing concerns that don't fit cleanly into injection, authentication, or authorization — CSRF, security headers, cookie attributes, CORS, clickjacking, parameter binding.
 
-#### Subcategories
+## Shapes or common patterns
 
 **csrf-protection** — Cross-Site Request Forgery defenses:
 - State-changing endpoints (POST/PUT/DELETE/PATCH) without CSRF token validation
@@ -50,3 +50,7 @@ Browser-facing concerns that don't fit cleanly into injection, authentication, o
 - User-controlled URL passed to `Location` header without scheme/host allowlist (cross-ref `input-validation/boundary-validation`)
 - OAuth `redirect_uri` validated by substring match instead of exact host comparison
 - `next`/`return_to`/`continue` query params followed without validation after login
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

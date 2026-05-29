@@ -2,7 +2,7 @@
 
 Structural and organizational qualities of the code — how components relate, how responsibilities are divided, how the code fits into the existing codebase.
 
-#### Subcategories
+## Shapes or common patterns
 
 **abstraction-level** — Over-engineering vs under-abstraction:
 - Unnecessary interfaces with only one implementation (premature abstraction)
@@ -40,3 +40,7 @@ Structural and organizational qualities of the code — how components relate, h
 - Inconsistent naming relative to adjacent functions in the same package
 - Missing or misleading documentation on public APIs
 - API that is surprising — behavior differs from what the name/signature suggests
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

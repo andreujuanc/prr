@@ -2,7 +2,7 @@
 
 Code that acquires, holds, or releases system resources.
 
-#### Subcategories
+## Shapes or common patterns
 
 **memory-leaks** — Unbounded caches, retained references, accumulation:
 - Caches without size limits or eviction policy (grows forever)
@@ -35,3 +35,7 @@ Code that acquires, holds, or releases system resources.
 - Request/response bodies read fully into memory without size limit
 - History/audit logs that accumulate without archival
 - Retry queues that grow during outages without backpressure
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

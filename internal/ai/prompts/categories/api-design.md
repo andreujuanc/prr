@@ -2,7 +2,7 @@
 
 Code that defines, implements, or consumes API contracts.
 
-#### Subcategories
+## Shapes or common patterns
 
 **contract-violations** — Breaking changes, missing validation, type mismatches:
 - Renamed or removed public functions, types, or fields without deprecation
@@ -33,3 +33,7 @@ Code that defines, implements, or consumes API contracts.
 - Missing or incorrect Content-Type headers
 - Inconsistent null vs absent vs empty representations
 - Rate limit responses without Retry-After header
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

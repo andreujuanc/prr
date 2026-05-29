@@ -2,7 +2,7 @@
 
 Code that makes access control decisions after identity is established.
 
-#### Subcategories
+## Shapes or common patterns
 
 **access-control** — RBAC, permissions, ACLs, policy enforcement:
 - Missing permission checks on endpoints or operations
@@ -28,3 +28,7 @@ Code that makes access control decisions after identity is established.
 - Service-to-service calls that implicitly trust the caller without verification
 - Impersonation features without proper audit logging
 - Vertical escalation (user → admin) or horizontal (user A → user B)
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

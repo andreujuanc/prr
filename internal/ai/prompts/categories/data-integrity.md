@@ -2,7 +2,7 @@
 
 Code that manages state, enforces business rules, or maintains consistency.
 
-#### Subcategories
+## Shapes or common patterns
 
 **state-machines** — Invalid transitions, missing states, lifecycle management:
 - State transitions that skip required intermediate states
@@ -60,3 +60,7 @@ or type encodes a meaning the value doesn't carry." Look for it
 wherever a typed value crosses a function boundary — the most
 common bugs hide one hop downstream from where the unit was
 declared.
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

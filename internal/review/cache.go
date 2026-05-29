@@ -12,7 +12,7 @@ import (
 )
 
 // IndividualCacheKey computes the cache key for an individual review call.
-// Key = hash(code_context + aoi_serialized + sorted_focus_categories + sha256(prompt) + priorsHash)
+// Key = hash(code_context + aoi_serialized + sorted_focus_categories + sha256(prompt) + sha256(criteria) + priorsHash)
 //
 // codeContext is the diff (PR mode) or source slice (audit mode) that
 // the prompt builder will inline. Folding it into the key means any
@@ -44,12 +44,20 @@ func IndividualCacheKey(codeContext string, aoi security.AreaOfInterest, focusCa
 	promptHash := sha256.Sum256([]byte(ai.ReviewIndividualPrompt))
 	h.Write(promptHash[:])
 	h.Write([]byte{0})
+	// Evaluation Criteria content (Shapes echo + Review criteria, scoped
+	// to this AOI's (category, subcategory)). Folded in so that editing a
+	// category .md file — or the Shapes/Review-criteria scoping itself —
+	// invalidates stale entries. The static prompt hash above does not
+	// cover this composed-at-runtime section.
+	criteriaHash := sha256.Sum256([]byte(scopedCriteria([]security.AreaOfInterest{aoi})))
+	h.Write(criteriaHash[:])
+	h.Write([]byte{0})
 	h.Write([]byte(priorsHash))
 	return hex.EncodeToString(h.Sum(nil))[:32] // 32 hex chars = 128 bits, plenty
 }
 
 // GroupedCacheKey computes the cache key for a grouped review call.
-// Key = hash(all_aoi_serialized + code_context + sorted_focus_categories + sha256(prompt) + priorsHash)
+// Key = hash(all_aoi_serialized + code_context + sorted_focus_categories + sha256(prompt) + sha256(criteria) + priorsHash)
 //
 // codeContext is the per-file diff blob (PR mode) or per-AOI source
 // slice blob (audit mode) — see codeContextDigest for the format.
@@ -72,6 +80,11 @@ func GroupedCacheKey(aois []security.AreaOfInterest, codeContext string, focusCa
 	h.Write([]byte{0})
 	promptHash := sha256.Sum256([]byte(ai.ReviewGroupedPrompt))
 	h.Write(promptHash[:])
+	h.Write([]byte{0})
+	// Evaluation Criteria content for the group's distinct (category,
+	// subcategory) pairs — see IndividualCacheKey for the rationale.
+	criteriaHash := sha256.Sum256([]byte(scopedCriteria(aois)))
+	h.Write(criteriaHash[:])
 	h.Write([]byte{0})
 	h.Write([]byte(priorsHash))
 	return hex.EncodeToString(h.Sum(nil))[:32]

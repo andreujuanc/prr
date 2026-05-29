@@ -65,15 +65,17 @@ func buildAOIScanPrompt(auditMode bool) string {
 // buildAOIScanPromptWithCategories composes the AOI scan prompt with specific
 // categories. If cats is nil or empty, all categories are included.
 func buildAOIScanPromptWithCategories(auditMode bool, cats []string) string {
+	// AOI scan is the recall-biased pre-filter — it only needs the
+	// Shapes (pattern lists), not the deep reviewer's verdict guidance.
 	var categoryContent string
 	var slugs []string
 	if len(cats) > 0 {
-		categoryContent = ai.GetCategories(cats)
+		categoryContent = ai.GetCategoryShapes(cats)
 		slugs = make([]string, len(cats))
 		copy(slugs, cats)
 		sort.Strings(slugs)
 	} else {
-		categoryContent = ai.AllCategories()
+		categoryContent = ai.AllCategoryShapes()
 		slugs = ai.AllCategorySlugs()
 	}
 	slugList := strings.Join(slugs, ", ")

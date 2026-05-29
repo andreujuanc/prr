@@ -2,7 +2,7 @@
 
 Code that handles secrets, environment configuration, defaults, and feature flags.
 
-#### Subcategories
+## Shapes or common patterns
 
 **secrets-exposure** — Hardcoded credentials, logged secrets, leaked PII:
 - Hardcoded API keys, passwords, tokens, or connection strings in source
@@ -41,3 +41,7 @@ Code that handles secrets, environment configuration, defaults, and feature flag
 - Rate limiting removed or weakened
 - Security middleware ordering changes (auth check moved after handler)
 - Feature flags that gate security controls (disabling auth via config)
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]

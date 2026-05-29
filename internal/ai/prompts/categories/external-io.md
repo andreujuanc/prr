@@ -2,7 +2,7 @@
 
 Code that communicates with external systems — APIs, databases, file system, network.
 
-#### Subcategories
+## Shapes or common patterns
 
 **api-calls** — HTTP clients, retries, timeouts, idempotency:
 - HTTP requests without timeout configured (hangs indefinitely)
@@ -40,3 +40,7 @@ Code that communicates with external systems — APIs, databases, file system, n
 - Socket connections without timeout
 - Proxy configuration from user input
 - Webhook URLs accepted without validation
+
+## Review criteria
+
+[empty during migration — filled later via the Claude-Red coverage pass]
