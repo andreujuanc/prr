@@ -38,8 +38,12 @@ func ParseModelRef(s string) (ModelRef, error) {
 }
 
 // DefaultStrongModel is the default strong model reference.
-// Opus 4.6 via Copilot: 100% recall, 0 FP, 27 tool calls, 202s on deep review benchmark.
-const DefaultStrongModel = "github-copilot/claude-opus-4.6"
+// Opus 4.8 via the claude-code provider — latest strong model for deep
+// review, re-review, and synthesis. claude-code is keyless (auth handled
+// by the Claude Code CLI), so a fresh install works out of the box
+// without an API key. Users who prefer the metered Anthropic API can
+// pick anthropic/claude-opus-4-8 via the model picker.
+const DefaultStrongModel = "claude-code/claude-opus-4-8"
 
 // DefaultFastModel is the default fast model reference.
 // Flash Lite via Gemini: 100% must-find recall, 1-2 FP, ~4.5s, $0.007 per scan

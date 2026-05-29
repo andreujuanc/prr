@@ -29,7 +29,7 @@
     },
     "aoi_context_lines": 5
   },
-  "claude-opus-4-7": {
+  "claude-opus-4-8": {
     "max_output_tokens": 32000,
     "temperature": 0.2,
     "thinking_budget": {
