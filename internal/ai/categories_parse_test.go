@@ -182,6 +182,55 @@ func TestGetShapeAndReviewCriteria(t *testing.T) {
 	}
 }
 
+// TestParsedCategoriesMatchSplit guards against init drift: every slug's
+// precomputed parsedCategory must equal a fresh parse of its raw content.
+func TestParsedCategoriesMatchSplit(t *testing.T) {
+	for _, slug := range AllCategorySlugs() {
+		pc, ok := parsedCategories[slug]
+		if !ok {
+			t.Errorf("%s: missing from parsedCategories", slug)
+			continue
+		}
+		want := parseCategory(categories[slug])
+		if pc != want {
+			t.Errorf("%s: parsedCategories entry differs from fresh parse", slug)
+		}
+	}
+}
+
+// TestGetCategoryShapesUnmigratedFallback pins the defensive behavior: a
+// category whose file lacks a `## Shapes` heading surfaces its whole body
+// (header included) rather than vanishing. Driven via parsedCategories so
+// it exercises the real GetCategoryShapes path without touching disk.
+func TestGetCategoryShapesUnmigratedFallback(t *testing.T) {
+	const slug = "__test_unmigrated__"
+	const raw = `### LEGACY (category: "legacy")
+
+desc
+
+#### Subcategories
+
+**gamma** — a pattern:
+- gamma bullet`
+
+	categories[slug] = raw
+	parsedCategories[slug] = parseCategory(raw)
+	categoryOrder = append(categoryOrder, slug)
+	defer func() {
+		delete(categories, slug)
+		delete(parsedCategories, slug)
+		categoryOrder = categoryOrder[:len(categoryOrder)-1]
+	}()
+
+	out := GetCategoryShapes([]string{slug})
+	if !contains(out, "gamma bullet") {
+		t.Errorf("unmigrated fallback dropped patterns: %q", out)
+	}
+	if !contains(out, "### LEGACY") {
+		t.Errorf("unmigrated fallback should pass through the whole body incl. header: %q", out)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
 }

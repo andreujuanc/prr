@@ -43,6 +43,10 @@ func ParseModelRef(s string) (ModelRef, error) {
 // by the Claude Code CLI), so a fresh install works out of the box
 // without an API key. Users who prefer the metered Anthropic API can
 // pick anthropic/claude-opus-4-8 via the model picker.
+//
+// Deep-review benchmark (1 rep, claude-code): 100% recall (10/10 must-find
+// + 3/3 nice-to-find), 0 FP, 77% severity accuracy, 748s, $1.22. Matches
+// Sonnet 4.6's perfect recall but leads on severity accuracy (77% vs 62%).
 const DefaultStrongModel = "claude-code/claude-opus-4-8"
 
 // DefaultFastModel is the default fast model reference.
