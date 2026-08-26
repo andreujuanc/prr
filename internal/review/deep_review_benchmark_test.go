@@ -474,17 +474,34 @@ func TestDeepReviewModelComparison(t *testing.T) {
 
 	// Run AOI scan to get realistic AOIs
 	t.Log("Running AOI scan to generate review inputs...")
-	geminiKey := cfg.APIKeyFor("gemini")
-	if geminiKey == "" {
-		t.Skip("no gemini API key for AOI scan")
+	// AOI scan provider follows the configured fast model (override with
+	// PRR_AOI_MODEL="provider/model-id") so the benchmark runs on any
+	// provider — including keyless claude-code — not just Gemini.
+	aoiModelRef := cfg.FastModel
+	if env := os.Getenv("PRR_AOI_MODEL"); env != "" {
+		aoiModelRef = env
 	}
+	aoiRef, err := config.ParseModelRef(aoiModelRef)
+	if err != nil {
+		t.Fatalf("AOI model ref %q: %v", aoiModelRef, err)
+	}
+	aoiKey := cfg.APIKeyFor(aoiRef.Provider)
+	if !config.IsKeylessProvider(aoiRef.Provider) && aoiKey == "" {
+		t.Skipf("no API key for AOI provider %q", aoiRef.Provider)
+	}
+	aoiModels, err := config.LoadModels()
+	if err != nil {
+		t.Fatalf("load model configs: %v", err)
+	}
+	aoiModelCfg := config.GetModelConfig(aoiModels, aoiRef.ModelID)
 	aoiProvider, err := ai.NewProvider(ai.ProviderConfig{
-		ProviderName:    "gemini",
-		ModelID:         "gemini-3.1-flash-lite",
-		APIKey:          geminiKey,
-		ThinkingBudget:  2048,
-		Temperature:     ai.TempPtr(0.1),
-		MaxOutputTokens: 65536,
+		ProviderName:    aoiRef.Provider,
+		ModelID:         aoiRef.ModelID,
+		APIKey:          aoiKey,
+		BaseURL:         cfg.ProviderConfigFor(aoiRef.Provider).BaseURL,
+		ThinkingBudget:  aoiModelCfg.ThinkingBudget.Fast,
+		Temperature:     ai.TempPtr(aoiModelCfg.Temperature),
+		MaxOutputTokens: aoiModelCfg.MaxOutputTokens,
 	})
 	if err != nil {
 		t.Fatalf("AOI provider: %v", err)

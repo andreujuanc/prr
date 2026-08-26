@@ -25,6 +25,20 @@ const categoryDir = "prompts/categories"
 // without .md). Populated on init.
 var categories map[string]string
 
+// parsedCategory holds a category file's sections, split once at init.
+// The embedded files never change at runtime, so the getters read these
+// precomputed fields instead of re-running splitSections per call.
+type parsedCategory struct {
+	header   string // `### CATEGORY` line + description, before the first `## ` section
+	shapes   string // body of the `## Shapes` section ("" if unmigrated)
+	review   string // body of the `## Review criteria` section
+	migrated bool   // whether the file has the Shapes/Review headings
+}
+
+// parsedCategories holds the per-slug section split, keyed by slug.
+// Populated on init alongside categories.
+var parsedCategories map[string]parsedCategory
+
 // categoryOrder is the canonical ordering of category slugs. Populated
 // on init.
 var categoryOrder []string
@@ -36,6 +50,7 @@ func init() {
 	}
 
 	categories = make(map[string]string, len(entries))
+	parsedCategories = make(map[string]parsedCategory, len(entries))
 	categoryOrder = make([]string, 0, len(entries))
 
 	for _, entry := range entries {
@@ -49,7 +64,9 @@ func init() {
 			panic(fmt.Sprintf("failed to read embedded category %s: %v", entry.Name(), err))
 		}
 
-		categories[slug] = strings.TrimSpace(string(content))
+		trimmed := strings.TrimSpace(string(content))
+		categories[slug] = trimmed
+		parsedCategories[slug] = parseCategory(trimmed)
 		categoryOrder = append(categoryOrder, slug)
 	}
 
@@ -90,6 +107,18 @@ const (
 	shapesHeadingPrefix = "## Shapes"
 	reviewHeadingPrefix = "## Review criteria"
 )
+
+// parseCategory splits a category file's raw content into its sections
+// once, at init time. The getters read the result instead of re-parsing.
+func parseCategory(content string) parsedCategory {
+	shapes, review, migrated := splitSections(content)
+	return parsedCategory{
+		header:   categoryHeader(content),
+		shapes:   shapes,
+		review:   review,
+		migrated: migrated,
+	}
+}
 
 // splitSections returns the Shapes body and Review-criteria body for a
 // category's raw content. The category header + description (everything
@@ -190,20 +219,19 @@ func extractSubcat(section, subcat string) string {
 func GetCategoryShapes(slugs []string) string {
 	var parts []string
 	for _, slug := range slugs {
-		content, ok := categories[slug]
+		pc, ok := parsedCategories[slug]
 		if !ok {
 			log.Printf("ai.GetCategoryShapes: unknown category slug %q — skipping", slug)
 			continue
 		}
-		shapes, _, migrated := splitSections(content)
-		if !migrated {
+		if !pc.migrated {
 			// Defensive: a file missing the Shapes heading passes through
-			// whole so its patterns still reach the AOI scan.
-			parts = append(parts, content)
+			// whole (raw content, header included) so all its patterns still
+			// reach the AOI scan. Better to over-include than silently drop.
+			parts = append(parts, categories[slug])
 			continue
 		}
-		header := categoryHeader(content)
-		parts = append(parts, strings.TrimSpace(header+"\n\n"+shapes))
+		parts = append(parts, strings.TrimSpace(pc.header+"\n\n"+pc.shapes))
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -217,22 +245,20 @@ func AllCategoryShapes() string {
 // GetShape returns one subcategory's block within a category's Shapes
 // section. Returns "" if missing.
 func GetShape(category, subcategory string) string {
-	content, ok := categories[category]
+	pc, ok := parsedCategories[category]
 	if !ok {
 		return ""
 	}
-	shapes, _, _ := splitSections(content)
-	return extractSubcat(shapes, subcategory)
+	return extractSubcat(pc.shapes, subcategory)
 }
 
 // GetReviewCriteria returns one subcategory's block within a category's
 // Review criteria section. Returns "" if missing (most subcategories
 // during migration).
 func GetReviewCriteria(category, subcategory string) string {
-	content, ok := categories[category]
+	pc, ok := parsedCategories[category]
 	if !ok {
 		return ""
 	}
-	_, review, _ := splitSections(content)
-	return extractSubcat(review, subcategory)
+	return extractSubcat(pc.review, subcategory)
 }
