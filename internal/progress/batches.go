@@ -194,7 +194,7 @@ const BatchByteEstimate = 4000
 // above it.
 var (
 	bpHeader = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	bpSubtle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	bpSubtle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 	bpDone   = lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
 	bpFail   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8"))
 	bpActive = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA"))

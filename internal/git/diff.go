@@ -117,7 +117,7 @@ func DefaultDiffTheme() DiffTheme {
 		AccentRed:         "#F38BA8",
 		AccentPeach:       "#FAB387",
 		SurfaceColor:      "#45475A",
-		SubtleColor:       "#585B70",
+		SubtleColor:       "#6C7086",
 	}
 }
 
@@ -157,7 +157,7 @@ func GetStyledDiffWithContext(base, head, file string, contextLines int, theme D
 		"--line-numbers",
 		"--line-numbers-minus-style", t.AccentRed,
 		"--line-numbers-plus-style", t.AccentGreen,
-		"--line-numbers-zero-style", t.SurfaceColor,
+		"--line-numbers-zero-style", t.SubtleColor,
 		"--line-numbers-left-format", "{nm:>3}│",
 		"--line-numbers-right-format", "{np:>3}│ ",
 

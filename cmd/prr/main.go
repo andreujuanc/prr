@@ -35,6 +35,15 @@ import (
 // Set by GoReleaser via ldflags at build time.
 var version = "dev"
 
+// darkCatppuccin pins huh's Catppuccin palette to its dark variant.
+// huh v2 themes are a function of isDark, resolved from a
+// tea.BackgroundColorMsg that huh never asks for — its Init only
+// requests window size — so the flag stays false and the light palette
+// renders on a dark terminal. prr's built-in themes are all dark.
+var darkCatppuccin = huh.ThemeFunc(func(bool) *huh.Styles {
+	return huh.ThemeCatppuccin(true)
+})
+
 func main() {
 	// Force truecolor early so styled error output works too. In
 	// lipgloss v2 the profile lives on the output writer, not on a
@@ -441,7 +450,7 @@ func runAudit(debug bool, args []string) {
 
 func printAuditUsage() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
 		logo.Render("prr audit"),
@@ -878,7 +887,7 @@ func exportReviewResult(result *review.PRReviewResult, path string) error {
 
 func printReviewUsage() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
 		logo.Render("prr review"),
@@ -1073,7 +1082,7 @@ func preflight(prNumber string, useChroma bool) error {
 // offerInstallDelta prompts the user to install delta on Linux.
 func offerInstallDelta() error {
 	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	fmt.Fprintf(os.Stderr, "\n  %s delta (git-delta) is required but not installed.\n",
 		info.Render("note:"))
@@ -1149,7 +1158,7 @@ func offerInstallDelta() error {
 // installDeltaDeb downloads and installs the latest delta .deb from GitHub releases.
 func installDeltaDeb() error {
 	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	// Map Go arch to delta release arch
 	arch := runtime.GOARCH
@@ -1285,7 +1294,7 @@ func ensureSSHHostKeys() {
 	// Scan the host key first so we can show it
 	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
 	warn := lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387"))
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	scanCmd := exec.Command("ssh-keyscan", "-t", "ed25519,rsa", host)
 	keys, err := scanCmd.Output()
@@ -1368,7 +1377,7 @@ func runSilent(name string, args ...string) error {
 var (
 	cliHeader = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
 	cliInfo   = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
-	cliDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	cliDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 	sevStyles = map[string]lipgloss.Style{
 		"critical": lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true),
 		"high":     lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true),
@@ -1455,7 +1464,7 @@ func resolveAOIContextLines(modelID string) int {
 
 func printUsage() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
 		logo.Render("prr"),
@@ -1486,7 +1495,7 @@ func printError(err error) {
 	msg := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#CDD6F4"))
 	hint := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#6C7086"))
+		Foreground(lipgloss.Color("#7F849C"))
 
 	lines := strings.Split(err.Error(), "\n")
 	fmt.Fprintf(os.Stderr, "\n  %s %s\n",
@@ -1522,7 +1531,7 @@ func initLogger() error {
 
 func runConfig() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
 	success := lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
 
@@ -1564,7 +1573,7 @@ func runConfig() {
 				).
 				Value(&action),
 		),
-	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
+	).WithTheme(darkCatppuccin)
 
 	if err := actionForm.Run(); err != nil {
 		return
@@ -1618,7 +1627,7 @@ func runConfigAdd(cfg *config.Config) bool {
 				Options(opts...).
 				Value(&selected),
 		),
-	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
+	).WithTheme(darkCatppuccin)
 
 	if err := form.Run(); err != nil {
 		return false
@@ -1669,7 +1678,7 @@ func runConfigAddForProvider(cfg *config.Config, provider string) bool {
 				Value(&apiKey).
 				EchoMode(huh.EchoModePassword),
 		),
-	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
+	).WithTheme(darkCatppuccin)
 
 	if err := form.Run(); err != nil || apiKey == "" {
 		return false
@@ -1782,7 +1791,7 @@ func runConfigModel(cfg *config.Config, slot string) bool {
 				Options(opts...).
 				Value(&selected),
 		),
-	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
+	).WithTheme(darkCatppuccin)
 
 	if err := form.Run(); err != nil {
 		return false

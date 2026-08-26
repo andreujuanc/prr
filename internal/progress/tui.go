@@ -36,7 +36,7 @@ import (
 
 var (
 	sTitle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	sSubtle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	sSubtle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 	sWarn      = lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF"))
 	sPhaseOn   = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
 	sPhaseDone = lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))

@@ -3064,7 +3064,7 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 		Bold(true)
 	bodyStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#CDD6F4"))
-	borderColor := lipgloss.Color("#585B70")
+	borderColor := lipgloss.Color("#6C7086")
 
 	// Inline boxes use the diff pane's width budget when available; we
 	// fall back to deriving from the viewport directly when the budget
@@ -4924,11 +4924,11 @@ func (m Model) render() string {
 	if m.loading {
 		// Gradient colors for the logo sweep animation (Catppuccin palette)
 		logoColors := [5]color.Color{
-			lipgloss.Color("#585B70"), // subtle
-			lipgloss.Color("#6C7086"), // muted
+			lipgloss.Color("#6C7086"), // subtle
+			lipgloss.Color("#7F849C"), // muted
 			lipgloss.Color("#89B4FA"), // blue (highlight)
 			lipgloss.Color("#CBA6F7"), // mauve
-			lipgloss.Color("#585B70"), // subtle
+			lipgloss.Color("#6C7086"), // subtle
 		}
 
 		// Render logo with gradient sweep

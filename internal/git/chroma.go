@@ -204,26 +204,31 @@ func parseHunkHeader(header string) (oldStart, newStart int) {
 // ── Rendering helpers ──────────────────────────────────────────────────
 
 // formatLineNumbers formats the line number gutter for a diff line.
+//
+// Numbers use SubtleColor rather than SurfaceColor: SurfaceColor comes
+// from the theme's overlay *background*, which is the darkest ink on
+// screen and left the gutter hard to read. SubtleColor is the theme's
+// dimmest text role, which is what a gutter actually is.
 func formatLineNumbers(dl diffLine, theme DiffTheme) string {
 	switch dl.kind {
 	case diffAdded:
 		old := "   "
 		new := fmt.Sprintf("%3d", dl.newNum)
 		return fmt.Sprintf("%s│%s│ ",
-			ansiColorize(old, theme.SurfaceColor),
+			ansiColorize(old, theme.SubtleColor),
 			ansiColorize(new, theme.AccentGreen))
 	case diffRemoved:
 		old := fmt.Sprintf("%3d", dl.oldNum)
 		new := "   "
 		return fmt.Sprintf("%s│%s│ ",
 			ansiColorize(old, theme.AccentRed),
-			ansiColorize(new, theme.SurfaceColor))
+			ansiColorize(new, theme.SubtleColor))
 	default:
 		old := fmt.Sprintf("%3d", dl.oldNum)
 		new := fmt.Sprintf("%3d", dl.newNum)
 		return fmt.Sprintf("%s│%s│ ",
-			ansiColorize(old, theme.SurfaceColor),
-			ansiColorize(new, theme.SurfaceColor))
+			ansiColorize(old, theme.SubtleColor),
+			ansiColorize(new, theme.SubtleColor))
 	}
 }
 

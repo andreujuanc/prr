@@ -13,7 +13,7 @@ import (
 var (
 	chartTitle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
 	chartLabel    = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
-	chartMuted    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	chartMuted    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 	chartCritical = lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8"))
 	chartHigh     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387"))
 	chartMedium   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F9E2AF"))

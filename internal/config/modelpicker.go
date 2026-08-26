@@ -44,6 +44,15 @@ type ModelSelection struct {
 // Returns an error if no review or AOI models are available, if the
 // selected ref is malformed, or if the selected provider has no
 // API key configured (and isn't a keyless provider like claude-code).
+// darkCatppuccin pins huh's Catppuccin palette to its dark variant.
+// huh v2 themes are a function of isDark, resolved from a
+// tea.BackgroundColorMsg that huh never asks for — its Init only
+// requests window size — so the flag stays false and the light palette
+// renders on a dark terminal. prr's built-in themes are all dark.
+var darkCatppuccin = huh.ThemeFunc(func(bool) *huh.Styles {
+	return huh.ThemeCatppuccin(true)
+})
+
 func (c *Config) ResolveModels() (strongRef, fastRef ModelRef, err error) {
 	selection, err := c.selectModels()
 	if err != nil {
@@ -146,7 +155,7 @@ func (c *Config) promptModels() (*ModelSelection, error) {
 				Options(aoiOpts...).
 				Value(&selection.FastModel),
 		),
-	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
+	).WithTheme(darkCatppuccin)
 
 	if err := form.Run(); err != nil {
 		return nil, fmt.Errorf("model selection cancelled: %w", err)
