@@ -116,6 +116,9 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		if !DetectClaudeCode() {
 			return nil, fmt.Errorf("claude-code: %q binary not found on PATH — install Claude Code to use this provider", claudeCodeBinaryName)
 		}
+		if cfg.Effort != "" && !ValidClaudeCodeEffort(cfg.Effort) {
+			return nil, fmt.Errorf("claude-code: invalid effort %q (expected low, medium, high, xhigh or max)", cfg.Effort)
+		}
 		return &ClaudeCodeProvider{Model: cfg.ModelID, Effort: cfg.Effort}, nil
 
 	case "opencode":

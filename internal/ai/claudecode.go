@@ -27,6 +27,16 @@ func init() {
 // claudeCodeBinaryName is the executable looked up on PATH.
 const claudeCodeBinaryName = "claude"
 
+// claudeCodeEfforts is the set of levels Claude Code's --effort accepts.
+// Anything else is a caller or operator typo: passing it through just
+// produces an opaque CLI failure several seconds into a review.
+var claudeCodeEfforts = map[string]bool{
+	"low": true, "medium": true, "high": true, "xhigh": true, "max": true,
+}
+
+// ValidClaudeCodeEffort reports whether s is an accepted --effort level.
+func ValidClaudeCodeEffort(s string) bool { return claudeCodeEfforts[s] }
+
 var (
 	claudeCodeDetectOnce sync.Once
 	claudeCodeDetected   bool
@@ -229,6 +239,10 @@ func (c *ClaudeCodeProvider) buildArgs() []string {
 	//   * Haiku and other Claude Code models keep the CLI default until
 	//     we have data to choose differently.
 	effort := os.Getenv("PRR_CLAUDE_EFFORT")
+	if effort != "" && !claudeCodeEfforts[effort] {
+		log.Printf("Warning: ignoring PRR_CLAUDE_EFFORT=%q — expected one of low, medium, high, xhigh, max", effort)
+		effort = ""
+	}
 	if effort == "" {
 		effort = c.Effort
 	}

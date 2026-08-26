@@ -1607,6 +1607,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
+	case tea.PasteMsg:
+		// Bracketed paste is its own message type in bubbletea v2; in v1
+		// it arrived as a KeyMsg with Paste set, which is why the comment
+		// box — handled entirely under KeyPressMsg below — used to receive
+		// it. Route it explicitly while commenting; otherwise fall through
+		// to the pane switch, where PaneChat already forwards non-key
+		// messages to chatInput.
+		if m.commenting {
+			m.commentInput, cmd = m.commentInput.Update(msg)
+			cmds = append(cmds, cmd)
+			return m, tea.Batch(cmds...)
+		}
+
 	case tea.KeyPressMsg:
 		// ── Modal overlays intercept all keys when visible ──────
 		// Clear flash message on any key press

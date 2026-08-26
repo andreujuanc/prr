@@ -586,6 +586,7 @@ func TestClaudeCodeProvider_EffortDefaults(t *testing.T) {
 		{"haiku → no default effort", "claude-haiku-4-5", "", ""},
 		{"env override beats sonnet default", "claude-sonnet-4-6", "high", "high"},
 		{"env override beats opus default", "claude-opus-4-8", "max", "max"},
+		{"invalid env value is ignored, default applies", "claude-opus-4-8", "hard", "medium"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -598,6 +599,51 @@ func TestClaudeCodeProvider_EffortDefaults(t *testing.T) {
 					tc.model, tc.envEffort, gotEffort, tc.wantArg)
 			}
 		})
+	}
+}
+
+// The Effort field sits between the env override and the per-model
+// default, so all three tiers need pinning down.
+func TestClaudeCode_EffortFieldPrecedence(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		field     string
+		envEffort string
+		want      string
+	}{
+		{"field beats opus default", "claude-opus-4-8", "low", "", "low"},
+		{"field beats sonnet default", "claude-sonnet-4-6", "xhigh", "", "xhigh"},
+		{"field applies where no default exists", "claude-haiku-4-5", "medium", "", "medium"},
+		{"env beats field", "claude-opus-4-8", "low", "max", "max"},
+		{"invalid env falls back to field, not default", "claude-opus-4-8", "low", "nope", "low"},
+		{"empty field keeps the model default", "claude-opus-4-8", "", "", "medium"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PRR_CLAUDE_EFFORT", tc.envEffort)
+			c := &ClaudeCodeProvider{Model: tc.model, Effort: tc.field}
+			if got := extractFlagValue(c.buildArgs(), "--effort"); got != tc.want {
+				t.Errorf("--effort = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewProvider_RejectsInvalidClaudeCodeEffort(t *testing.T) {
+	if !DetectClaudeCode() {
+		t.Skip("claude binary not on PATH")
+	}
+	_, err := NewProvider(ProviderConfig{
+		ProviderName: "claude-code",
+		ModelID:      "claude-opus-5",
+		Effort:       "extreme",
+	})
+	if err == nil {
+		t.Fatal("expected an error for an invalid effort level")
+	}
+	if !strings.Contains(err.Error(), "invalid effort") {
+		t.Errorf("error should name the problem; got %v", err)
 	}
 }
 

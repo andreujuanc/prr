@@ -240,10 +240,11 @@ func namedKey(name string) tea.KeyPressMsg {
 		}
 	}
 	last := parts[len(parts)-1]
-	if code, ok := namedKeys[last]; ok {
-		k.Code = code
-	} else {
-		k.Code = []rune(last)[0]
+	switch runes := []rune(last); {
+	case namedKeys[last] != 0:
+		k.Code = namedKeys[last]
+	case len(runes) > 0:
+		k.Code = runes[0]
 		if k.Mod == 0 {
 			k.Text = last
 		}
@@ -1328,6 +1329,34 @@ func TestCommentMode_EscCancels(t *testing.T) {
 	m = skey(m, "esc")
 	if m.commenting {
 		t.Error("esc should cancel comment mode")
+	}
+}
+
+func TestCommentMode_PasteReachesInput(t *testing.T) {
+	m := newTestModel(t)
+	m.focusedPane = PaneDiff
+	m.commenting = true
+	m.commentInput.Focus()
+
+	// bubbletea v2 delivers bracketed paste as tea.PasteMsg, not as a
+	// key press — the comment box has to route it explicitly.
+	updated, _ := m.Update(tea.PasteMsg{Content: "pasted body"})
+	m = updated.(Model)
+
+	if got := m.commentInput.Value(); !strings.Contains(got, "pasted body") {
+		t.Errorf("paste should reach the comment textarea; value = %q", got)
+	}
+}
+
+func TestPaste_IgnoredWhenNotCommenting(t *testing.T) {
+	m := newTestModel(t)
+	m.focusedPane = PaneDiff
+
+	updated, _ := m.Update(tea.PasteMsg{Content: "stray"})
+	m = updated.(Model)
+
+	if got := m.commentInput.Value(); got != "" {
+		t.Errorf("paste outside comment mode should not fill the comment box; value = %q", got)
 	}
 }
 
