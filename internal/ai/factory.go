@@ -49,6 +49,11 @@ type ProviderConfig struct {
 	MaxOutputTokens int
 	Temperature     *float64
 	ThinkingBudget  int // 0 = disabled
+
+	// Effort pins the reasoning-effort level for providers that expose
+	// one (currently claude-code's --effort). Empty means "provider
+	// default".
+	Effort string
 }
 
 // NewProvider creates a Provider from the given config.
@@ -111,7 +116,7 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		if !DetectClaudeCode() {
 			return nil, fmt.Errorf("claude-code: %q binary not found on PATH — install Claude Code to use this provider", claudeCodeBinaryName)
 		}
-		return &ClaudeCodeProvider{Model: cfg.ModelID}, nil
+		return &ClaudeCodeProvider{Model: cfg.ModelID, Effort: cfg.Effort}, nil
 
 	case "opencode":
 		if !DetectOpenCode() {
