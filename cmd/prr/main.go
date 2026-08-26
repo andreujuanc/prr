@@ -946,6 +946,16 @@ func createAIClient(cfg *config.Config) ai.Client {
 	return ai.NewAgent(provider, toolExec, ai.WithDebugLogger(log.Writer()))
 }
 
+// aoiScanEffort pins the reasoning effort for the AOI pre-scan on
+// providers that expose one (currently claude-code). A 4-rep AOI
+// benchmark on Opus 5 found low and medium tied on coverage — 87.0%
+// mean each, both swinging 76-96% run to run — while low was cheaper
+// and ~25% quicker in every paired rep. AOI is a recall-biased
+// pre-filter, so the cheaper setting wins when coverage is a wash.
+// Only Opus 5 was measured; other Claude models inherit this pin
+// untested. PRR_CLAUDE_EFFORT still overrides it.
+const aoiScanEffort = "low"
+
 // createAOIClient creates a lightweight AI client for the security AOI pre-scan.
 // It uses the fast model with no tools — only diff analysis.
 func createAOIClient(cfg *config.Config) (ai.Client, error) {
@@ -998,6 +1008,7 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 		MaxOutputTokens: modelCfg.MaxOutputTokens,
 		Temperature:     ai.TempPtr(modelCfg.Temperature),
 		ThinkingBudget:  modelCfg.ThinkingBudget.Fast,
+		Effort:          aoiScanEffort,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AOI provider: %w", err)
