@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/andreujuanc/prr/compare/v1.13.0...v1.14.0) (2026-08-26)
+
+
+### Features
+
+* Opus 5 defaults, charm v2 migration and dependency refresh ([#42](https://github.com/andreujuanc/prr/issues/42)) ([b93a8dd](https://github.com/andreujuanc/prr/commit/b93a8dd8e435833527abcfa046e62c4e0481f2f7))
+
 ## [1.13.0](https://github.com/andreujuanc/prr/compare/v1.12.0...v1.13.0) (2026-05-28)
 
 
