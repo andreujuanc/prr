@@ -18,7 +18,7 @@ $SUDO apt-get install gh -y
 
 echo "Installing git-delta..."
 ARCH=$(dpkg --print-architecture)
-DELTA_VERSION="0.17.0"
+DELTA_VERSION="0.19.2"
 if [ "$ARCH" = "arm64" ]; then
     DELTA_ARCH="arm64"
 else
