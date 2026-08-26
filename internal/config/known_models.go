@@ -38,10 +38,16 @@ var knownModels = []KnownModel{
 		InputPricePer1M: 0.25, OutputPricePer1M: 1.50, Speed: "fast"},
 
 	// ── Anthropic (direct API) ─────────────────────────────────────────
+	{ID: "claude-opus-5", Label: "Claude Opus 5", Provider: "anthropic", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 5.00, OutputPricePer1M: 25.00, Speed: "slow"},
+	{ID: "claude-sonnet-5", Label: "Claude Sonnet 5", Provider: "anthropic", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 2.00, OutputPricePer1M: 10.00, Speed: "medium"},
 	{ID: "claude-opus-4-8", Label: "Claude Opus 4.8", Provider: "anthropic", Thinking: true, Review: true, AOI: true,
 		InputPricePer1M: 5.00, OutputPricePer1M: 25.00, Speed: "slow"},
 	{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6", Provider: "anthropic", Thinking: true, Review: true, AOI: true,
 		InputPricePer1M: 3.00, OutputPricePer1M: 15.00, Speed: "medium"},
+	{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5", Provider: "anthropic", Thinking: true, AOI: true,
+		InputPricePer1M: 1.00, OutputPricePer1M: 5.00, Speed: "fast"},
 
 	// ── OpenAI (direct API) ────────────────────────────────────────────
 	{ID: "gpt-5.5", Label: "GPT-5.5", Provider: "openai", Thinking: true, Review: true,
@@ -88,8 +94,11 @@ var knownModels = []KnownModel{
 	// (same compute, same model). Treat the reported cost as
 	// "API-equivalent cost" — what this run would cost if billed at
 	// public Anthropic rates. Keep these in sync with the anthropic/
-	// entries above. Haiku has no anthropic/ entry yet; rate sourced
-	// from anthropic.com/pricing.
+	// entries above.
+	{ID: "claude-opus-5", Label: "Claude Opus 5 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 5.00, OutputPricePer1M: 25.00, Speed: "slow"},
+	{ID: "claude-sonnet-5", Label: "Claude Sonnet 5 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true, AOI: true,
+		InputPricePer1M: 2.00, OutputPricePer1M: 10.00, Speed: "medium"},
 	{ID: "claude-opus-4-8", Label: "Claude Opus 4.8 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true, AOI: true,
 		InputPricePer1M: 5.00, OutputPricePer1M: 25.00, Speed: "slow"},
 	{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Claude Code)", Provider: "claude-code", Thinking: true, Review: true, AOI: true,

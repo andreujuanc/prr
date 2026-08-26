@@ -301,6 +301,7 @@ type deepModelSpec struct {
 	thinkingBudget int
 	temperature    float64
 	maxOutput      int
+	effort         string // claude-code --effort level; "" = provider default
 }
 
 // ── Scoring ───────────────────────────────────────────────────────────────
@@ -618,6 +619,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 					// provider default.
 					Temperature:    &specCopy.temperature,
 					ThinkingBudget: specCopy.thinkingBudget,
+					Effort:         specCopy.effort,
 				})
 				if err != nil {
 					t.Fatalf("create provider: %v", err)
@@ -915,6 +917,27 @@ func deepBenchmarkMaxOutput() int {
 	return 32000
 }
 
+// deepBenchmarkEfforts returns the claude-code --effort levels to sweep,
+// from PRR_DEEP_EFFORTS="low,medium,high,xhigh". Unset means "one run at
+// the provider's per-model default".
+func deepBenchmarkEfforts() []string {
+	s, present := os.LookupEnv("PRR_DEEP_EFFORTS")
+	if !present {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
 func deepBenchmarkThinkingBudget() int {
 	if v, ok := deepEnvInt("PRR_DEEP_THINKING_BUDGET"); ok {
 		return v
@@ -1035,35 +1058,48 @@ func expandDeepSpecs(provider, modelID, apiKey, baseURL string, supportsThinking
 	if supportsThinking && deepProviderHonorsThinkingBudget(provider) {
 		budgets = deepBenchmarkThinkingBudgets()
 	}
+	efforts := []string{""}
+	if provider == "claude-code" {
+		if sweep := deepBenchmarkEfforts(); len(sweep) > 0 {
+			efforts = sweep
+		}
+	}
 
 	multiTemp := len(temps) > 1
 	multiBudget := len(budgets) > 1
+	multiEffort := len(efforts) > 1
 	maxOut := deepBenchmarkMaxOutput()
 
 	var specs []deepModelSpec
 	for _, t := range temps {
 		for _, b := range budgets {
-			name := fmt.Sprintf("[%s] %s", provider, modelID)
-			var parts []string
-			if multiTemp {
-				parts = append(parts, fmt.Sprintf("temp=%g", t))
+			for _, e := range efforts {
+				name := fmt.Sprintf("[%s] %s", provider, modelID)
+				var parts []string
+				if multiTemp {
+					parts = append(parts, fmt.Sprintf("temp=%g", t))
+				}
+				if multiBudget {
+					parts = append(parts, formatDeepThinkingLabel(b))
+				}
+				if multiEffort {
+					parts = append(parts, "effort="+e)
+				}
+				if len(parts) > 0 {
+					name += " (" + strings.Join(parts, ", ") + ")"
+				}
+				specs = append(specs, deepModelSpec{
+					name:           name,
+					model:          modelID,
+					provider:       provider,
+					apiKey:         apiKey,
+					baseURL:        baseURL,
+					temperature:    t,
+					thinkingBudget: b,
+					maxOutput:      maxOut,
+					effort:         e,
+				})
 			}
-			if multiBudget {
-				parts = append(parts, formatDeepThinkingLabel(b))
-			}
-			if len(parts) > 0 {
-				name += " (" + strings.Join(parts, ", ") + ")"
-			}
-			specs = append(specs, deepModelSpec{
-				name:           name,
-				model:          modelID,
-				provider:       provider,
-				apiKey:         apiKey,
-				baseURL:        baseURL,
-				temperature:    t,
-				thinkingBudget: b,
-				maxOutput:      maxOut,
-			})
 		}
 	}
 	return specs

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/andreujuanc/prr/internal/git"
 	"github.com/andreujuanc/prr/internal/state"
@@ -142,7 +142,7 @@ func TestChatInputHiddenDuringStreaming(t *testing.T) {
 	// is visible (it's rendered above the input textarea).
 	m.aiStreaming = false
 	m.syncLayout()
-	out := m.View()
+	out := m.render()
 	if !strings.Contains(out, "Enter to send") {
 		t.Errorf("expected 'Enter to send' label when input is visible; got:\n%s", out)
 	}
@@ -151,7 +151,7 @@ func TestChatInputHiddenDuringStreaming(t *testing.T) {
 	// the input is rendered alongside, so its absence is the signal.
 	m.aiStreaming = true
 	m.syncLayout()
-	out = m.View()
+	out = m.render()
 	if strings.Contains(out, "Enter to send") {
 		t.Errorf("chat input label still visible while streaming; should be hidden\nview:\n%s", out)
 	}
@@ -196,14 +196,60 @@ func newTestModel(t *testing.T) Model {
 // key sends a rune key to the model and returns the updated model.
 // Use for printable characters: key(m, 'j'), key(m, 'q'), etc.
 func key(m Model, r rune) Model {
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	updated, _ := m.Update(runeKey(r))
 	return updated.(Model)
 }
 
-// skey sends a special key (Tab, Enter, Esc, etc.) to the model.
-func skey(m Model, k tea.KeyType) Model {
-	updated, _ := m.Update(tea.KeyMsg{Type: k})
+// runeKey builds a printable key press. In bubbletea v2 a key press
+// carries the rune in Code and the literal text in Text.
+func runeKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
+
+// namedKeys maps the key names used by skey to their v2 key codes.
+var namedKeys = map[string]rune{
+	"tab":   tea.KeyTab,
+	"enter": tea.KeyEnter,
+	"esc":   tea.KeyEsc,
+	"space": tea.KeySpace,
+	"up":    tea.KeyUp,
+	"down":  tea.KeyDown,
+	"left":  tea.KeyLeft,
+	"right": tea.KeyRight,
+}
+
+// skey sends a special key to the model, named the way the model
+// matches it: "tab", "shift+tab", "ctrl+d", "enter", "esc".
+func skey(m Model, name string) Model {
+	updated, _ := m.Update(namedKey(name))
 	return updated.(Model)
+}
+
+// namedKey parses a "ctrl+d"-style keystroke into a v2 key press.
+func namedKey(name string) tea.KeyPressMsg {
+	var k tea.Key
+	parts := strings.Split(name, "+")
+	for _, p := range parts[:len(parts)-1] {
+		switch p {
+		case "ctrl":
+			k.Mod |= tea.ModCtrl
+		case "alt":
+			k.Mod |= tea.ModAlt
+		case "shift":
+			k.Mod |= tea.ModShift
+		}
+	}
+	last := parts[len(parts)-1]
+	switch runes := []rune(last); {
+	case namedKeys[last] != 0:
+		k.Code = namedKeys[last]
+	case len(runes) > 0:
+		k.Code = runes[0]
+		if k.Mod == 0 {
+			k.Text = last
+		}
+	}
+	return tea.KeyPressMsg(k)
 }
 
 // updateMsg sends an arbitrary tea.Msg and returns the updated model.
@@ -238,13 +284,13 @@ func TestPaneCycle_TabForward(t *testing.T) {
 	m := newTestModel(t)
 	assertPane(t, m, PaneFileList) // default
 
-	m = skey(m, tea.KeyTab)
+	m = skey(m, "tab")
 	assertPane(t, m, PaneDiff)
 
-	m = skey(m, tea.KeyTab)
+	m = skey(m, "tab")
 	assertPane(t, m, PaneChat)
 
-	m = skey(m, tea.KeyTab) // wraps
+	m = skey(m, "tab") // wraps
 	assertPane(t, m, PaneFileList)
 }
 
@@ -252,13 +298,13 @@ func TestPaneCycle_ShiftTabBackward(t *testing.T) {
 	m := newTestModel(t)
 	assertPane(t, m, PaneFileList)
 
-	m = skey(m, tea.KeyShiftTab) // wraps backward
+	m = skey(m, "shift+tab") // wraps backward
 	assertPane(t, m, PaneChat)
 
-	m = skey(m, tea.KeyShiftTab)
+	m = skey(m, "shift+tab")
 	assertPane(t, m, PaneDiff)
 
-	m = skey(m, tea.KeyShiftTab)
+	m = skey(m, "shift+tab")
 	assertPane(t, m, PaneFileList)
 }
 
@@ -268,15 +314,15 @@ func TestPaneCycle_HiddenPanelsSkipped(t *testing.T) {
 	// Hide AI panel
 	m.showAIPanel = false
 
-	m = skey(m, tea.KeyTab) // FileList → Diff
+	m = skey(m, "tab") // FileList → Diff
 	assertPane(t, m, PaneDiff)
 
-	m = skey(m, tea.KeyTab) // Diff → wraps to FileList (Chat hidden)
+	m = skey(m, "tab") // Diff → wraps to FileList (Chat hidden)
 	assertPane(t, m, PaneFileList)
 
 	// Hide file panel too — only Diff visible
 	m.showFilePanel = false
-	m = skey(m, tea.KeyTab)
+	m = skey(m, "tab")
 	assertPane(t, m, PaneDiff) // stuck on Diff
 }
 
@@ -285,10 +331,10 @@ func TestPaneCycle_HideFilePanel(t *testing.T) {
 	m.showFilePanel = false
 	m.focusedPane = PaneDiff
 
-	m = skey(m, tea.KeyTab) // Diff → Chat
+	m = skey(m, "tab") // Diff → Chat
 	assertPane(t, m, PaneChat)
 
-	m = skey(m, tea.KeyTab) // Chat → Diff (FileList hidden)
+	m = skey(m, "tab") // Chat → Diff (FileList hidden)
 	assertPane(t, m, PaneDiff)
 }
 
@@ -564,18 +610,18 @@ func TestScroll_DiffPane_GotoTopBottom(t *testing.T) {
 
 	// G → go to bottom
 	m = key(m, 'G')
-	if m.diffViewport.YOffset == 0 {
+	if m.diffViewport.YOffset() == 0 {
 		// Only fails if content is longer than viewport
 		totalLines := m.diffViewport.TotalLineCount()
-		if totalLines > m.diffViewport.Height {
+		if totalLines > m.diffViewport.Height() {
 			t.Error("G should scroll to bottom when content exceeds viewport")
 		}
 	}
 
 	// g → go to top
 	m = key(m, 'g')
-	if m.diffViewport.YOffset != 0 {
-		t.Errorf("g should scroll to top, got offset %d", m.diffViewport.YOffset)
+	if m.diffViewport.YOffset() != 0 {
+		t.Errorf("g should scroll to top, got offset %d", m.diffViewport.YOffset())
 	}
 	if m.diffCursor != 0 {
 		t.Errorf("g should reset cursor to 0, got %d", m.diffCursor)
@@ -595,19 +641,19 @@ func TestScroll_DiffPane_HalfPage(t *testing.T) {
 	m.setDiffContent(longContent.String())
 
 	// Ctrl+D → half page down
-	m = skey(m, tea.KeyCtrlD)
-	if m.diffViewport.YOffset == 0 {
+	m = skey(m, "ctrl+d")
+	if m.diffViewport.YOffset() == 0 {
 		totalLines := m.diffViewport.TotalLineCount()
-		if totalLines > m.diffViewport.Height {
+		if totalLines > m.diffViewport.Height() {
 			t.Error("Ctrl+D should scroll down")
 		}
 	}
 
-	savedOffset := m.diffViewport.YOffset
+	savedOffset := m.diffViewport.YOffset()
 
 	// Ctrl+U → half page up
-	m = skey(m, tea.KeyCtrlU)
-	if m.diffViewport.YOffset >= savedOffset && savedOffset > 0 {
+	m = skey(m, "ctrl+u")
+	if m.diffViewport.YOffset() >= savedOffset && savedOffset > 0 {
 		t.Error("Ctrl+U should scroll up")
 	}
 }
@@ -662,7 +708,7 @@ func TestOverlay_HelpCloseWithEsc(t *testing.T) {
 		t.Fatal("help should be open")
 	}
 
-	m = skey(m, tea.KeyEscape)
+	m = skey(m, "esc")
 	if m.showHelp {
 		t.Error("esc should close help overlay")
 	}
@@ -681,7 +727,7 @@ func TestOverlay_ModelPicker(t *testing.T) {
 	// The cursor should move (or stay if only one model)
 
 	// Close with esc
-	m = skey(m, tea.KeyEscape)
+	m = skey(m, "esc")
 	if m.showModelPicker {
 		t.Error("esc should close model picker")
 	}
@@ -719,7 +765,7 @@ func TestOverlay_SubmitReview(t *testing.T) {
 		},
 	}
 
-	m = skey(m, tea.KeyCtrlS)
+	m = skey(m, "ctrl+s")
 	if !m.showSubmitReview {
 		t.Error("Ctrl+S should open submit review confirmation")
 	}
@@ -731,7 +777,7 @@ func TestOverlay_SubmitReview(t *testing.T) {
 	}
 
 	// Press enter on Cancel to close
-	m = skey(m, tea.KeyEnter)
+	m = skey(m, "enter")
 	if m.showSubmitReview {
 		t.Error("enter on Cancel should close submit overlay")
 	}
@@ -742,7 +788,7 @@ func TestOverlay_SubmitReviewBlockedWithoutReview(t *testing.T) {
 	// No review exists
 	m.reviewState.Review = nil
 
-	m = skey(m, tea.KeyCtrlS)
+	m = skey(m, "ctrl+s")
 	if m.showSubmitReview {
 		t.Error("Ctrl+S should not open submit when no review exists")
 	}
@@ -754,7 +800,7 @@ func TestQKey_BlockedInChatPane(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneChat
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	updated, cmd := m.Update(runeKey('q'))
 	m = updated.(Model)
 
 	// Should NOT produce a tea.Quit command
@@ -771,7 +817,7 @@ func TestQKey_QuitsFromFileList(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneFileList
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, cmd := m.Update(runeKey('q'))
 	if cmd == nil {
 		t.Fatal("q from FileList should produce a command")
 	}
@@ -785,7 +831,7 @@ func TestQKey_QuitsFromDiffPane(t *testing.T) {
 	m := newTestModel(t)
 	m.focusedPane = PaneDiff
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, cmd := m.Update(runeKey('q'))
 	if cmd == nil {
 		t.Fatal("q from Diff pane should produce a command")
 	}
@@ -880,7 +926,7 @@ func TestAIStreaming_EscCancels(t *testing.T) {
 	m.aiStreaming = true
 	m.aiCancelFn = func() { cancelled = true }
 
-	m = skey(m, tea.KeyEscape)
+	m = skey(m, "esc")
 	if !cancelled {
 		t.Error("esc during streaming should call cancel function")
 	}
@@ -895,7 +941,7 @@ func TestAIStreaming_CtrlCCancels(t *testing.T) {
 	m.aiStreaming = true
 	m.aiCancelFn = func() { cancelled = true }
 
-	m = skey(m, tea.KeyCtrlC)
+	m = skey(m, "ctrl+c")
 	if !cancelled {
 		t.Error("ctrl+c during streaming should call cancel function")
 	}
@@ -908,7 +954,7 @@ func TestAIStreaming_BlocksOtherKeys(t *testing.T) {
 	m.focusedPane = PaneChat
 
 	// Enter should be blocked in Chat during streaming
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := m.Update(namedKey("enter"))
 	m = updated.(Model)
 	if cmd != nil {
 		t.Error("enter in Chat during streaming should be blocked (no command)")
@@ -928,7 +974,7 @@ func TestEnter_FileListSelectsFile(t *testing.T) {
 		}
 	}
 
-	m = skey(m, tea.KeyEnter)
+	m = skey(m, "enter")
 	assertPane(t, m, PaneDiff)
 }
 
@@ -955,7 +1001,7 @@ func TestEnter_FileListExpandsDir(t *testing.T) {
 	}
 
 	if m.fileTree.selectedIsDir() {
-		m = skey(m, tea.KeyEnter)
+		m = skey(m, "enter")
 		// Should toggle expansion, not change pane
 		assertPane(t, m, PaneFileList)
 	}
@@ -970,12 +1016,12 @@ func TestPanelToggle_CtrlA_AIPanel(t *testing.T) {
 		t.Fatal("AI panel should be visible by default")
 	}
 
-	m = skey(m, tea.KeyCtrlA)
+	m = skey(m, "ctrl+a")
 	if m.showAIPanel {
 		t.Error("Ctrl+A should hide AI panel")
 	}
 
-	m = skey(m, tea.KeyCtrlA)
+	m = skey(m, "ctrl+a")
 	if !m.showAIPanel {
 		t.Error("Ctrl+A again should show AI panel")
 	}
@@ -988,12 +1034,12 @@ func TestPanelToggle_CtrlB_FilePanel(t *testing.T) {
 		t.Fatal("File panel should be visible by default")
 	}
 
-	m = skey(m, tea.KeyCtrlB)
+	m = skey(m, "ctrl+b")
 	if m.showFilePanel {
 		t.Error("Ctrl+B should hide file panel")
 	}
 
-	m = skey(m, tea.KeyCtrlB)
+	m = skey(m, "ctrl+b")
 	if !m.showFilePanel {
 		t.Error("Ctrl+B again should show file panel")
 	}
@@ -1004,7 +1050,7 @@ func TestPanelToggle_HidingResetsFocus(t *testing.T) {
 	m.focusedPane = PaneChat
 
 	// Hide AI panel while Chat is focused
-	m = skey(m, tea.KeyCtrlA)
+	m = skey(m, "ctrl+a")
 	// Focus should move to a visible pane
 	if m.focusedPane == PaneChat {
 		t.Error("focus should move away from Chat when AI panel is hidden")
@@ -1238,7 +1284,7 @@ func TestRefreshKey_OnlyFromFileList(t *testing.T) {
 
 	// 'o' from FileList should trigger refresh
 	m.focusedPane = PaneFileList
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	updated, cmd := m.Update(runeKey('o'))
 	m = updated.(Model)
 	if !m.loading {
 		t.Error("o from FileList should trigger loading state")
@@ -1280,9 +1326,37 @@ func TestCommentMode_EscCancels(t *testing.T) {
 	m.focusedPane = PaneDiff
 	m.commenting = true
 
-	m = skey(m, tea.KeyEscape)
+	m = skey(m, "esc")
 	if m.commenting {
 		t.Error("esc should cancel comment mode")
+	}
+}
+
+func TestCommentMode_PasteReachesInput(t *testing.T) {
+	m := newTestModel(t)
+	m.focusedPane = PaneDiff
+	m.commenting = true
+	m.commentInput.Focus()
+
+	// bubbletea v2 delivers bracketed paste as tea.PasteMsg, not as a
+	// key press — the comment box has to route it explicitly.
+	updated, _ := m.Update(tea.PasteMsg{Content: "pasted body"})
+	m = updated.(Model)
+
+	if got := m.commentInput.Value(); !strings.Contains(got, "pasted body") {
+		t.Errorf("paste should reach the comment textarea; value = %q", got)
+	}
+}
+
+func TestPaste_IgnoredWhenNotCommenting(t *testing.T) {
+	m := newTestModel(t)
+	m.focusedPane = PaneDiff
+
+	updated, _ := m.Update(tea.PasteMsg{Content: "stray"})
+	m = updated.(Model)
+
+	if got := m.commentInput.Value(); got != "" {
+		t.Errorf("paste outside comment mode should not fill the comment box; value = %q", got)
 	}
 }
 
@@ -1321,11 +1395,11 @@ func TestFlow_NavigateToFileAndBack(t *testing.T) {
 	}
 
 	// Enter to go to diff
-	m = skey(m, tea.KeyEnter)
+	m = skey(m, "enter")
 	assertPane(t, m, PaneDiff)
 
 	// Shift+Tab back to file list
-	m = skey(m, tea.KeyShiftTab)
+	m = skey(m, "shift+tab")
 	assertPane(t, m, PaneFileList)
 }
 
@@ -1335,7 +1409,7 @@ func TestFlow_CycleThroughAllPanes(t *testing.T) {
 	// Full cycle: FileList → Diff → Chat → FileList
 	paneOrder := []Pane{PaneDiff, PaneChat, PaneFileList}
 	for _, expected := range paneOrder {
-		m = skey(m, tea.KeyTab)
+		m = skey(m, "tab")
 		assertPane(t, m, expected)
 	}
 }

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/andreujuanc/prr/internal/opencode"
 	"github.com/andreujuanc/prr/internal/state"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // ── Task status ─────────────────────────────────────────────────────────

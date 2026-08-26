@@ -6,3 +6,7 @@ coverage.out
 coverage.html
 scripts/token-bench/results/
 
+/prr-old
+/*.json
+/PLAN.md
+.claude/settings.local.json

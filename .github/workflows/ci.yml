@@ -10,9 +10,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -23,7 +23,7 @@ jobs:
         # behave differently a week later. Mirror the devcontainer
         # pin in .devcontainer/install-deps.sh.
         env:
-          DELTA_VERSION: "0.17.0"
+          DELTA_VERSION: "0.19.2"
         run: |
           ARCH=$(dpkg --print-architecture)
           curl -Lsf -o /tmp/git-delta.deb \
@@ -41,7 +41,7 @@ jobs:
         run: go tool cover -func=coverage.out
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage.out
@@ -52,9 +52,9 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 

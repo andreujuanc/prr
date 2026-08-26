@@ -13,7 +13,7 @@ import (
 	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/state"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // ReviewReporter decouples review orchestration from the Bubble Tea event

@@ -26,18 +26,31 @@ import (
 	"github.com/andreujuanc/prr/internal/state"
 	"github.com/andreujuanc/prr/internal/ui"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 )
 
 // Set by GoReleaser via ldflags at build time.
 var version = "dev"
 
+// darkCatppuccin pins huh's Catppuccin palette to its dark variant.
+// huh v2 themes are a function of isDark, resolved from a
+// tea.BackgroundColorMsg that huh never asks for — its Init only
+// requests window size — so the flag stays false and the light palette
+// renders on a dark terminal. prr's built-in themes are all dark.
+var darkCatppuccin = huh.ThemeFunc(func(bool) *huh.Styles {
+	return huh.ThemeCatppuccin(true)
+})
+
 func main() {
-	// Force truecolor early so styled error output works too
-	lipgloss.SetColorProfile(termenv.TrueColor)
+	// Force truecolor early so styled error output works too. In
+	// lipgloss v2 the profile lives on the output writer, not on a
+	// global renderer; bubbletea programs take it as an option.
+	trueColorWriter := colorprofile.NewWriter(os.Stdout, os.Environ())
+	trueColorWriter.Profile = colorprofile.TrueColor
+	lipgloss.Writer = trueColorWriter
 
 	// Install SIGUSR1 → goroutine dump handler so a hung phase can be
 	// diagnosed via `kill -USR1 <pid>` without losing the process to a
@@ -132,7 +145,7 @@ func main() {
 	log.Printf("Starting PR review TUI for PR #%s (strong: %s, fast: %s, aoi_context: %d)", prLabel, cfg.StrongModel, cfg.FastModel, aoiContextLines)
 
 	model := ui.NewModel(prNumber, aiClient, aoiClient, cfg.ParallelReviews, aoiContextLines, useChroma)
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(model, tea.WithColorProfile(colorprofile.TrueColor))
 	ui.SetProgram(p)
 
 	// Stop OpenCode and other background work on signals (SIGINT/SIGTERM)
@@ -437,7 +450,7 @@ func runAudit(debug bool, args []string) {
 
 func printAuditUsage() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
 		logo.Render("prr audit"),
@@ -874,7 +887,7 @@ func exportReviewResult(result *review.PRReviewResult, path string) error {
 
 func printReviewUsage() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
 		logo.Render("prr review"),
@@ -942,6 +955,16 @@ func createAIClient(cfg *config.Config) ai.Client {
 	return ai.NewAgent(provider, toolExec, ai.WithDebugLogger(log.Writer()))
 }
 
+// aoiScanEffort pins the reasoning effort for the AOI pre-scan on
+// providers that expose one (currently claude-code). A 4-rep AOI
+// benchmark on Opus 5 found low and medium tied on coverage — 87.0%
+// mean each, both swinging 76-96% run to run — while low was cheaper
+// and ~25% quicker in every paired rep. AOI is a recall-biased
+// pre-filter, so the cheaper setting wins when coverage is a wash.
+// Only Opus 5 was measured; other Claude models inherit this pin
+// untested. PRR_CLAUDE_EFFORT still overrides it.
+const aoiScanEffort = "low"
+
 // createAOIClient creates a lightweight AI client for the security AOI pre-scan.
 // It uses the fast model with no tools — only diff analysis.
 func createAOIClient(cfg *config.Config) (ai.Client, error) {
@@ -994,6 +1017,7 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 		MaxOutputTokens: modelCfg.MaxOutputTokens,
 		Temperature:     ai.TempPtr(modelCfg.Temperature),
 		ThinkingBudget:  modelCfg.ThinkingBudget.Fast,
+		Effort:          aoiScanEffort,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AOI provider: %w", err)
@@ -1058,7 +1082,7 @@ func preflight(prNumber string, useChroma bool) error {
 // offerInstallDelta prompts the user to install delta on Linux.
 func offerInstallDelta() error {
 	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	fmt.Fprintf(os.Stderr, "\n  %s delta (git-delta) is required but not installed.\n",
 		info.Render("note:"))
@@ -1134,7 +1158,7 @@ func offerInstallDelta() error {
 // installDeltaDeb downloads and installs the latest delta .deb from GitHub releases.
 func installDeltaDeb() error {
 	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	// Map Go arch to delta release arch
 	arch := runtime.GOARCH
@@ -1270,7 +1294,7 @@ func ensureSSHHostKeys() {
 	// Scan the host key first so we can show it
 	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
 	warn := lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387"))
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	scanCmd := exec.Command("ssh-keyscan", "-t", "ed25519,rsa", host)
 	keys, err := scanCmd.Output()
@@ -1353,7 +1377,7 @@ func runSilent(name string, args ...string) error {
 var (
 	cliHeader = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
 	cliInfo   = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
-	cliDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	cliDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 	sevStyles = map[string]lipgloss.Style{
 		"critical": lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true),
 		"high":     lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true),
@@ -1440,7 +1464,7 @@ func resolveAOIContextLines(modelID string) int {
 
 func printUsage() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 
 	fmt.Fprintf(os.Stderr, "\n  %s %s  %s\n\n",
 		logo.Render("prr"),
@@ -1471,7 +1495,7 @@ func printError(err error) {
 	msg := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#CDD6F4"))
 	hint := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#6C7086"))
+		Foreground(lipgloss.Color("#7F849C"))
 
 	lines := strings.Split(err.Error(), "\n")
 	fmt.Fprintf(os.Stderr, "\n  %s %s\n",
@@ -1507,7 +1531,7 @@ func initLogger() error {
 
 func runConfig() {
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7086"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
 	info := lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
 	success := lipgloss.NewStyle().Foreground(lipgloss.Color("#A6E3A1"))
 
@@ -1549,7 +1573,7 @@ func runConfig() {
 				).
 				Value(&action),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(darkCatppuccin)
 
 	if err := actionForm.Run(); err != nil {
 		return
@@ -1603,7 +1627,7 @@ func runConfigAdd(cfg *config.Config) bool {
 				Options(opts...).
 				Value(&selected),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(darkCatppuccin)
 
 	if err := form.Run(); err != nil {
 		return false
@@ -1654,7 +1678,7 @@ func runConfigAddForProvider(cfg *config.Config, provider string) bool {
 				Value(&apiKey).
 				EchoMode(huh.EchoModePassword),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(darkCatppuccin)
 
 	if err := form.Run(); err != nil || apiKey == "" {
 		return false
@@ -1767,7 +1791,7 @@ func runConfigModel(cfg *config.Config, slot string) bool {
 				Options(opts...).
 				Value(&selected),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(darkCatppuccin)
 
 	if err := form.Run(); err != nil {
 		return false

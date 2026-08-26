@@ -27,6 +27,16 @@ func init() {
 // claudeCodeBinaryName is the executable looked up on PATH.
 const claudeCodeBinaryName = "claude"
 
+// claudeCodeEfforts is the set of levels Claude Code's --effort accepts.
+// Anything else is a caller or operator typo: passing it through just
+// produces an opaque CLI failure several seconds into a review.
+var claudeCodeEfforts = map[string]bool{
+	"low": true, "medium": true, "high": true, "xhigh": true, "max": true,
+}
+
+// ValidClaudeCodeEffort reports whether s is an accepted --effort level.
+func ValidClaudeCodeEffort(s string) bool { return claudeCodeEfforts[s] }
+
 var (
 	claudeCodeDetectOnce sync.Once
 	claudeCodeDetected   bool
@@ -139,6 +149,12 @@ type ClaudeCodeProvider struct {
 	// "haiku", "claude-opus-4-8", etc.).
 	Model string
 
+	// Effort optionally pins Claude Code's --effort level for this
+	// provider ("low", "medium", "high", "xhigh", "max"). Empty means
+	// "use the per-model default"; PRR_CLAUDE_EFFORT still wins over
+	// both.
+	Effort string
+
 	// BinaryPath optionally overrides the resolved claude binary path
 	// (useful for tests). Empty means "use whatever DetectClaudeCode found".
 	BinaryPath string
@@ -201,31 +217,42 @@ func (c *ClaudeCodeProvider) buildArgs() []string {
 		args = append(args, "--add-dir", c.WorkDir)
 	}
 	// Claude Code's --effort flag (low | medium | high | xhigh | max)
-	// controls reasoning depth. PRR_CLAUDE_EFFORT overrides everything;
-	// when unset:
+	// controls reasoning depth. PRR_CLAUDE_EFFORT overrides everything,
+	// then an explicit c.Effort; when neither is set:
 	//
 	//   * Sonnet defaults to "low". The earlier benchmark showed sonnet
 	//     `low` matching higher-effort runs on recall and producing
 	//     strictly better severity-accuracy + cost + wall-clock —
 	//     counter-intuitively, more thinking made severity worse.
 	//
-	//   * Opus defaults to "xhigh". The AOI benchmark 3-rep sweep
-	//     across low/medium/high/xhigh/max found xhigh produces the
-	//     tightest distribution (88-92%, 4-point range, 91% avg) and
-	//     the highest mean coverage. `max` is worse (87% avg, 16-point
-	//     range, 3× wall-clock); `high` gives ~81% avg. xhigh sits at
-	//     the inflection of "more thinking still helps."
+	//   * Opus defaults to "medium". A 1-rep deep-review sweep on
+	//     Opus 5 across low/medium/high/xhigh found must-find recall
+	//     saturated at every level (10/10, 0 FP) — extra thinking buys
+	//     only severity accuracy (46/54/69/83%) at roughly linear cost
+	//     and wall-clock ($0.47→$1.05, 282s→564s), and xhigh dropped a
+	//     nice-to-find. medium is the chosen cost/latency point; raise
+	//     it per-run with PRR_CLAUDE_EFFORT when severity precision
+	//     matters. The older AOI 3-rep sweep favoured xhigh on coverage
+	//     spread (91% avg vs ~81% at high) — that was AOI coverage on
+	//     Opus 4.8, not deep-review recall.
 	//
 	//   * Haiku and other Claude Code models keep the CLI default until
 	//     we have data to choose differently.
 	effort := os.Getenv("PRR_CLAUDE_EFFORT")
+	if effort != "" && !claudeCodeEfforts[effort] {
+		log.Printf("Warning: ignoring PRR_CLAUDE_EFFORT=%q — expected one of low, medium, high, xhigh, max", effort)
+		effort = ""
+	}
+	if effort == "" {
+		effort = c.Effort
+	}
 	if effort == "" {
 		modelLower := strings.ToLower(c.Model)
 		switch {
 		case strings.Contains(modelLower, "sonnet"):
 			effort = "low"
 		case strings.Contains(modelLower, "opus"):
-			effort = "xhigh"
+			effort = "medium"
 		}
 	}
 	if effort != "" {

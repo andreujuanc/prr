@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"image/color"
+
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -74,7 +76,7 @@ type Box struct {
 	Width, Height int
 	Title         string
 	Border        lipgloss.Border
-	BorderColor   lipgloss.Color
+	BorderColor   color.Color
 	// TitleStyle overrides the default focused/unfocused title style.
 	// Nil means use the theme default.
 	TitleStyle *lipgloss.Style
@@ -103,7 +105,7 @@ func (b Box) Render(content string) string {
 	// Resolve border + title styles. When Focused is true and no explicit
 	// BorderColor was set we fall back to the focused theme color.
 	var borderSt lipgloss.Style
-	if b.BorderColor != "" {
+	if b.BorderColor != nil {
 		borderSt = lipgloss.NewStyle().Foreground(b.BorderColor)
 	} else if b.Focused {
 		borderSt = borderStyleFocused

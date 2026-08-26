@@ -38,21 +38,40 @@ func ParseModelRef(s string) (ModelRef, error) {
 }
 
 // DefaultStrongModel is the default strong model reference.
-// Opus 4.8 via the claude-code provider — latest strong model for deep
+// Opus 5 via the claude-code provider — latest strong model for deep
 // review, re-review, and synthesis. claude-code is keyless (auth handled
 // by the Claude Code CLI), so a fresh install works out of the box
 // without an API key. Users who prefer the metered Anthropic API can
-// pick anthropic/claude-opus-4-8 via the model picker.
+// pick anthropic/claude-opus-5 via the model picker.
 //
-// Deep-review benchmark (1 rep, claude-code): 100% recall (10/10 must-find
-// + 3/3 nice-to-find), 0 FP, 77% severity accuracy, 748s, $1.22. Matches
-// Sonnet 4.6's perfect recall but leads on severity accuracy (77% vs 62%).
-const DefaultStrongModel = "claude-code/claude-opus-4-8"
+// Deep-review benchmark (1 rep, claude-code, at the default "medium"
+// effort): 100% recall (10/10 must-find + 3/3 nice-to-find), 0 FP, 54%
+// severity accuracy, 315s, $0.53. Matches Opus 4.8's recall and severity
+// (measured at xhigh: 100%, 54%, 631s, $1.02) at roughly half the cost
+// and wall-clock. Opus 4.8 was not re-measured at medium, so the two are
+// compared at their respective defaults, not at equal effort.
+const DefaultStrongModel = "claude-code/claude-opus-5"
 
 // DefaultFastModel is the default fast model reference.
-// Flash Lite via Gemini: 100% must-find recall, 1-2 FP, ~4.5s, $0.007 per scan
-// (3 reps at thinking_budget=0, with the corrected matcher).
-const DefaultFastModel = "gemini/gemini-3.1-flash-lite"
+// Opus 5 via the claude-code provider, at its default "medium" effort —
+// keyless like the strong model, so a fresh install scans without an API
+// key.
+//
+// AOI benchmark (4 reps, claude-code, effort=low — see aoiScanEffort in
+// cmd/prr/main.go): 87.0% mean coverage, range 76-96% across reps, 0-1
+// hallucinations, ~37-55s per scan. The fixture is noisy enough (±10
+// points on a repeated config) that single-rep AOI numbers mean little.
+// Haiku 4.5 managed only 32% coverage on the same fixture — 44 points
+// below Opus 5's worst rep, so that gap looks real despite being 1 rep.
+// Per-scan cost is not quoted: the Claude CLI serves repeat prompts from
+// its own cache, so reported input tokens (and therefore dollars) swing
+// several-fold between a cold and warm run of the same scan.
+//
+// Note this is a deliberate departure from "fast": Gemini Flash Lite
+// scanned in ~4.5s at $0.007 (3 reps, 100% must-find recall) — ~45×
+// cheaper and ~10× quicker. Opus 5 buys coverage and keyless setup at
+// that cost.
+const DefaultFastModel = "claude-code/claude-opus-5"
 
 // Config holds the application configuration.
 //

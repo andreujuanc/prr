@@ -5,12 +5,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // renderActionsView renders the GitHub Actions status view for the diff viewport.
 func (m *Model) renderActionsView() string {
-	w := m.diffViewport.Width
+	w := m.diffViewport.Width()
 	if w < 20 {
 		w = 40
 	}

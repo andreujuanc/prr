@@ -278,7 +278,7 @@ func renderWithCounter(t *testing.T, status PhaseStatus, total int) string {
 	m.phases[0].Status = status
 	m.state.Counters["done"] = 7
 	m.state.Counters["total"] = total
-	return m.View()
+	return m.render()
 }
 
 func TestView_CounterShownWhileActive(t *testing.T) {
@@ -330,7 +330,7 @@ func renderWithSummary(t *testing.T, status PhaseStatus, summary func(*State) st
 	m := newUI(cfg)
 	m.phases[0].Status = status
 	m.phases[0].Detail = liveDetail
-	return m.View()
+	return m.render()
 }
 
 func TestView_SummaryReplacesDetailWhenDone(t *testing.T) {
@@ -377,7 +377,7 @@ func TestView_NoSummaryFnFallsBackToDetail(t *testing.T) {
 	m := newUI(cfg)
 	m.phases[0].Status = PhaseDone
 	m.phases[0].Detail = "Phase 1 complete: 42 files to audit"
-	if !contains(m.View(), "Phase 1 complete: 42 files to audit") {
+	if !contains(m.render(), "Phase 1 complete: 42 files to audit") {
 		t.Errorf("nil Summary should preserve current detail rendering")
 	}
 }
