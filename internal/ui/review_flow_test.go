@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/andreujuanc/prr/internal/state"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // runCmd executes a tea.Cmd to extract whatever tea.Msg it produces.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"log"
 	"math"
 	"regexp"
@@ -21,11 +22,11 @@ import (
 	"github.com/andreujuanc/prr/internal/review"
 	"github.com/andreujuanc/prr/internal/state"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -432,11 +433,11 @@ type Model struct {
 // ── Constructor ─────────────────────────────────────────────────────────
 
 func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallelReviews int, aoiContextLines int, useChroma bool) Model {
-	diffVp := viewport.New(0, 0)
+	diffVp := viewport.New()
 	diffVp.Style = lipgloss.NewStyle().Foreground(textPrimary)
 
-	chatVp := viewport.New(0, 0)
-	reviewVp := viewport.New(0, 0)
+	chatVp := viewport.New()
+	reviewVp := viewport.New()
 
 	ta := textarea.New()
 	ta.Placeholder = "Ask about this code..."
@@ -445,16 +446,18 @@ func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallel
 	ta.SetWidth(30)
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
-	ta.FocusedStyle.Base = lipgloss.NewStyle().Background(surfaceBg)
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(surfaceBg)
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Background(surfaceBg)
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(textMuted).Background(surfaceBg)
-	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(textPrimary).Background(surfaceBg)
-	ta.BlurredStyle.Base = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
-	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
-	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(textSubtle).Background(lipgloss.Color("#252535"))
-	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(textSecondary).Background(lipgloss.Color("#252535"))
+	taStyles := ta.Styles()
+	taStyles.Focused.Base = lipgloss.NewStyle().Background(surfaceBg)
+	taStyles.Focused.CursorLine = lipgloss.NewStyle().Background(surfaceBg)
+	taStyles.Focused.Prompt = lipgloss.NewStyle().Background(surfaceBg)
+	taStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(textMuted).Background(surfaceBg)
+	taStyles.Focused.Text = lipgloss.NewStyle().Foreground(textPrimary).Background(surfaceBg)
+	taStyles.Blurred.Base = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
+	taStyles.Blurred.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
+	taStyles.Blurred.Prompt = lipgloss.NewStyle().Background(lipgloss.Color("#252535"))
+	taStyles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(textSubtle).Background(lipgloss.Color("#252535"))
+	taStyles.Blurred.Text = lipgloss.NewStyle().Foreground(textSecondary).Background(lipgloss.Color("#252535"))
+	ta.SetStyles(taStyles)
 	ta.Blur()
 
 	commentTa := textarea.New()
@@ -464,11 +467,13 @@ func NewModel(prNumber string, aiClient ai.Client, aoiClient ai.Client, parallel
 	commentTa.SetWidth(40)
 	commentTa.SetHeight(3)
 	commentTa.ShowLineNumbers = false
-	commentTa.FocusedStyle.Base = lipgloss.NewStyle().Background(surfaceBg)
-	commentTa.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(surfaceBg)
-	commentTa.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(accentYellow).Background(surfaceBg).Bold(true)
-	commentTa.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(textMuted).Background(surfaceBg)
-	commentTa.FocusedStyle.Text = lipgloss.NewStyle().Foreground(textPrimary).Background(surfaceBg)
+	commentTaStyles := commentTa.Styles()
+	commentTaStyles.Focused.Base = lipgloss.NewStyle().Background(surfaceBg)
+	commentTaStyles.Focused.CursorLine = lipgloss.NewStyle().Background(surfaceBg)
+	commentTaStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(accentYellow).Background(surfaceBg).Bold(true)
+	commentTaStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(textMuted).Background(surfaceBg)
+	commentTaStyles.Focused.Text = lipgloss.NewStyle().Foreground(textPrimary).Background(surfaceBg)
+	commentTa.SetStyles(commentTaStyles)
 	commentTa.Blur()
 
 	s := spinner.New(
@@ -1183,7 +1188,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setDiffContent(content)
 			// Auto-scroll to bottom
 			total := m.diffViewport.TotalLineCount()
-			vpH := m.diffViewport.Height
+			vpH := m.diffViewport.Height()
 			if total > vpH {
 				m.diffViewport.SetYOffset(total - vpH)
 			}
@@ -1228,7 +1233,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// chatViewport — only apply if still on the same file.
 		if msg.Tab == tabReview {
 			m.aiReviewRendered = msg.Content
-			m.aiReviewRenderWidth = m.reviewViewport.Width - 2
+			m.aiReviewRenderWidth = m.reviewViewport.Width() - 2
 			if m.aiPanelTab == tabReview {
 				m.reviewViewport.SetContent(msg.Content)
 				m.reviewViewport.GotoTop()
@@ -1247,7 +1252,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewFindings = msg.Findings
 		m.findingsExpanded = nil
 		m.aiReviewRendered = msg.Content
-		m.aiReviewRenderWidth = m.reviewViewport.Width - 2
+		m.aiReviewRenderWidth = m.reviewViewport.Width() - 2
 		if m.aiPanelTab == tabReview {
 			m.reviewViewport.SetContent(msg.Content)
 			m.reviewViewport.GotoTop()
@@ -1278,7 +1283,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rawDiffContent = content
 				content = m.injectFindings(content, msg.FilePath)
 				m.diffContent = content // cache for line scanning
-				savedOffset := m.diffViewport.YOffset
+				savedOffset := m.diffViewport.YOffset()
 				savedCursor := m.diffCursor
 				m.setDiffContent(content)
 				if msg.Reload {
@@ -1602,7 +1607,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// ── Modal overlays intercept all keys when visible ──────
 		// Clear flash message on any key press
 		if m.flashMsg != "" {
@@ -2088,20 +2093,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch m.focusedPane {
 	case PaneFileList:
-		if mm, ok := msg.(tea.MouseMsg); ok && mm.Action == tea.MouseActionPress {
+		if mm, ok := msg.(tea.MouseWheelMsg); ok {
 			// Wheel scroll on the file list — match the findings-pane
 			// behaviour so users get the same feel across panes. 3
 			// rows per tick is bubbles/viewport's default.
 			switch mm.Button {
-			case tea.MouseButtonWheelUp:
+			case tea.MouseWheelUp:
 				m.fileTree.scroll(-3)
 				return m, nil
-			case tea.MouseButtonWheelDown:
+			case tea.MouseWheelDown:
 				m.fileTree.scroll(3)
 				return m, nil
 			}
 		}
-		if km, ok := msg.(tea.KeyMsg); ok {
+		if km, ok := msg.(tea.KeyPressMsg); ok {
 			switch km.String() {
 			case "j", "down":
 				m.fileTree.moveDown()
@@ -2136,7 +2141,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// File — go to parent directory
 					m.fileTree.moveToParent()
 				}
-			case " ":
+			case "space":
 				// Toggle dir expand/collapse, or toggle file review status
 				if m.fileTree.selectedIsDir() {
 					m.fileTree.toggle()
@@ -2152,7 +2157,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case PaneDiff:
-		if km, ok := msg.(tea.KeyMsg); ok {
+		if km, ok := msg.(tea.KeyPressMsg); ok {
 			// Actions view has its own keybindings
 			if m.viewMode == viewModeActions {
 				switch km.String() {
@@ -2201,7 +2206,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, textarea.Blink
 					}
 				}
-			case " ":
+			case "space":
 				// Toggle reviewed status for current file
 				if m.hasFileSelected() {
 					cmd = m.toggleReviewStatus()
@@ -2218,7 +2223,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						content = m.injectFindings(content, m.selectedFile)
 					}
 					m.diffContent = content
-					savedOffset := m.diffViewport.YOffset
+					savedOffset := m.diffViewport.YOffset()
 					savedCursor := m.diffCursor
 					m.setDiffContent(content)
 					m.diffViewport.SetYOffset(savedOffset)
@@ -2234,7 +2239,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "G", "end":
 				// Jump to bottom of diff
 				total := m.diffViewport.TotalLineCount()
-				vpH := m.diffViewport.Height
+				vpH := m.diffViewport.Height()
 				maxOffset := max(total-vpH, 0)
 				m.diffViewport.SetYOffset(maxOffset)
 				visible := m.diffViewport.VisibleLineCount()
@@ -2249,28 +2254,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "ctrl+d":
 				// Half-page down
-				half := max(m.diffViewport.Height/2, 1)
-				m.diffViewport.LineDown(half)
+				half := max(m.diffViewport.Height()/2, 1)
+				m.diffViewport.ScrollDown(half)
 				m.clampDiffCursor()
 				return m, nil
 			case "ctrl+u":
 				// Half-page up
-				half := max(m.diffViewport.Height/2, 1)
-				m.diffViewport.LineUp(half)
+				half := max(m.diffViewport.Height()/2, 1)
+				m.diffViewport.ScrollUp(half)
 				m.clampDiffCursor()
 				return m, nil
 			case "pgdown", "ctrl+f":
-				m.diffViewport.LineDown(m.diffViewport.Height)
+				m.diffViewport.ScrollDown(m.diffViewport.Height())
 				m.clampDiffCursor()
 				return m, nil
 			case "pgup", "ctrl+b":
-				m.diffViewport.LineUp(m.diffViewport.Height)
+				m.diffViewport.ScrollUp(m.diffViewport.Height())
 				m.clampDiffCursor()
 				return m, nil
 			default:
-				prev := m.diffViewport.YOffset
+				prev := m.diffViewport.YOffset()
 				m.diffViewport, cmd = m.diffViewport.Update(msg)
-				if m.diffViewport.YOffset != prev {
+				if m.diffViewport.YOffset() != prev {
 					m.clampDiffCursor()
 				}
 				cmds = append(cmds, cmd)
@@ -2280,7 +2285,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case PaneChat:
-		if km, ok := msg.(tea.KeyMsg); ok {
+		if km, ok := msg.(tea.KeyPressMsg); ok {
 			// Review tab finding navigation (j/k/Enter when findings exist)
 			if m.aiPanelTab == tabReview && len(m.reviewFindings) > 0 {
 				switch km.String() {
@@ -2373,7 +2378,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					return m, nil
-				case " ":
+				case "space":
 					// Toggle resolved status for selected finding
 					if m.reviewCursor >= 0 && m.reviewCursor < len(m.reviewFindings) {
 						m.reviewFindings[m.reviewCursor].Resolved = !m.reviewFindings[m.reviewCursor].Resolved
@@ -2747,10 +2752,10 @@ func (m *Model) updateChatViewOnly() {
 			switch msg.Role {
 			case "user":
 				hb.WriteString(styleAccentBlueBold.Render("You") + "\n")
-				hb.WriteString(wrapStyled(styleTextSecondary, msg.Content, m.chatViewport.Width-2) + "\n\n")
+				hb.WriteString(wrapStyled(styleTextSecondary, msg.Content, m.chatViewport.Width()-2) + "\n\n")
 			case "assistant":
 				hb.WriteString(styleAccentMauveBold.Render("AI") + "\n")
-				hb.WriteString(renderMarkdown(msg.Content, m.chatViewport.Width-2) + "\n\n")
+				hb.WriteString(renderMarkdown(msg.Content, m.chatViewport.Width()-2) + "\n\n")
 			}
 		}
 		m.aiChatHistoryCache = hb.String()
@@ -2801,7 +2806,7 @@ func (m *Model) updateReviewViewWithStream() {
 	var body string
 	switch {
 	case m.reviewProgress.IsActive():
-		body = m.renderReviewProgressView(m.reviewViewport.Width)
+		body = m.renderReviewProgressView(m.reviewViewport.Width())
 	case m.aiStreaming:
 		body = styleTextMuted.Render("thinking...") + "\n"
 	}
@@ -3053,7 +3058,7 @@ func (m *Model) injectComments(styledDiff, filePath string) string {
 	// hasn't been populated yet (e.g. in tests that bypass syncLayout).
 	boxWidth := m.diffWidths.boxOuter
 	if boxWidth <= 0 {
-		boxWidth = m.diffViewport.Width - 2
+		boxWidth = m.diffViewport.Width() - 2
 	}
 	if boxWidth < 20 {
 		boxWidth = 20
@@ -3213,7 +3218,7 @@ func (m *Model) clampDiffCursor() {
 // cause a mismatch between logical line count (used for scrolling) and visual
 // line count (used for rendering), making the bottom of long diffs unreachable.
 func (m *Model) setDiffContent(content string) {
-	w := m.diffViewport.Width
+	w := m.diffViewport.Width()
 	if w > 1 {
 		// Truncate to w-1 to leave a 1-cell safety margin. This prevents
 		// characters with ambiguous terminal width (emoji, CJK, etc.) from
@@ -3250,15 +3255,15 @@ func (m *Model) getDiffCursorInfo() diffLineInfo {
 // scrolling the viewport when the cursor reaches the edges.
 func (m *Model) moveDiffCursor(dir int) {
 	newCursor := m.diffCursor + dir
-	vpHeight := m.diffViewport.Height
+	vpHeight := m.diffViewport.Height()
 
 	if newCursor < 0 {
-		if m.diffViewport.YOffset > 0 {
-			m.diffViewport.LineUp(1)
+		if m.diffViewport.YOffset() > 0 {
+			m.diffViewport.ScrollUp(1)
 		}
 		newCursor = 0
 	} else if newCursor >= vpHeight {
-		m.diffViewport.LineDown(1)
+		m.diffViewport.ScrollDown(1)
 		newCursor = vpHeight - 1
 	}
 
@@ -3810,7 +3815,7 @@ func (m *Model) scrollDiffToLine(targetLine int) {
 
 	if bestOffset >= 0 {
 		// Center the target line in the viewport
-		vpHeight := m.diffViewport.Height
+		vpHeight := m.diffViewport.Height()
 		offset := max(bestOffset-vpHeight/2, 0)
 		// Clamp to max scroll position to keep cursor calculation consistent
 		maxOffset := max(m.diffViewport.TotalLineCount()-vpHeight, 0)
@@ -3873,7 +3878,7 @@ func (m *Model) openFileAtLine(file string, line int) tea.Cmd {
 	m.setDiffContent(styleTextMuted.Render("Loading diff..."))
 	return fetchStyledDiff(
 		m.pr.BaseRefName, m.pr.HeadRefName, file, m.contextLines,
-		false, m.useChroma, m.diffViewport.Width,
+		false, m.useChroma, m.diffViewport.Width(),
 	)
 }
 
@@ -3935,7 +3940,7 @@ func (m *Model) reloadDiff() tea.Cmd {
 		return nil
 	}
 	// Don't replace content with "Loading..." — keep current diff visible to avoid flicker
-	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, m.selectedFile, m.contextLines, true, m.useChroma, m.diffViewport.Width)
+	return fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, m.selectedFile, m.contextLines, true, m.useChroma, m.diffViewport.Width())
 }
 
 // applyThemePreview switches the active theme for live preview without persisting.
@@ -4030,7 +4035,7 @@ func (m *Model) previewCurrentFile() tea.Cmd {
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma, m.diffViewport.Width)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma, m.diffViewport.Width())
 	return tea.Batch(chatCmd, diffCmd)
 }
 
@@ -4073,7 +4078,7 @@ func (m *Model) selectCurrentFile() tea.Cmd {
 	m.setDiffContent(
 		styleTextMuted.Render("Loading diff..."))
 	chatCmd := m.renderActiveAIView()
-	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma, m.diffViewport.Width)
+	diffCmd := fetchStyledDiff(m.pr.BaseRefName, m.pr.HeadRefName, path, m.contextLines, false, m.useChroma, m.diffViewport.Width())
 	return tea.Batch(chatCmd, diffCmd)
 }
 
@@ -4128,7 +4133,7 @@ func (m *Model) renderCleanReviewPlaceholder() {
 		b.WriteString("\n\n")
 		// Wrap the error so long messages don't get truncated by the
 		// viewport's horizontal clip.
-		w := max(m.reviewViewport.Width-4, 30)
+		w := max(m.reviewViewport.Width()-4, 30)
 		b.WriteString(wrapStyled(styleTextSecondary, "  "+lr.Error, w))
 		b.WriteString("\n\n")
 		when := lr.CompletedAt.Format("2006-01-02 15:04")
@@ -4223,7 +4228,7 @@ func (m *Model) renderReviewForFile(filePath string) tea.Cmd {
 		return nil
 	}
 
-	width := m.reviewViewport.Width - 2
+	width := m.reviewViewport.Width() - 2
 	cursor := m.reviewCursor
 
 	// If we already rendered at this width, reuse the cached content.
@@ -4343,7 +4348,7 @@ func (m *Model) rerenderReviewWithCursor() tea.Cmd {
 		return nil
 	}
 
-	width := m.reviewViewport.Width - 2
+	width := m.reviewViewport.Width() - 2
 	stale := m.reviewState.IsReviewStale()
 	minSeverity := ""
 	if m.reviewState.LastReview != nil {
@@ -4389,7 +4394,7 @@ func (m *Model) scrollReviewToFinding(idx int) {
 		return
 	}
 
-	vpHeight := m.reviewViewport.Height
+	vpHeight := m.reviewViewport.Height()
 	offset := max(
 		// show marker in upper third
 		targetLine-vpHeight/3, 0)
@@ -4434,7 +4439,7 @@ func (m *Model) renderChatForFile(filePath string) tea.Cmd {
 		styleTextMuted.Render("Loading chat..."))
 
 	// Copy what we need for the goroutine
-	width := m.chatViewport.Width - 2
+	width := m.chatViewport.Width() - 2
 	msgsCopy := make([]state.Message, len(messages))
 	copy(msgsCopy, messages)
 	fp := filePath
@@ -4460,7 +4465,7 @@ func (m Model) renderOverview() string {
 		return ""
 	}
 
-	w := m.diffViewport.Width
+	w := m.diffViewport.Width()
 	if w < 10 {
 		w = 40
 	}
@@ -4607,7 +4612,7 @@ func (m *Model) syncLayout() {
 		m.fileTree.height = ih - 2
 	}
 
-	m.diffViewport.Width = cols[1] - 2
+	m.diffViewport.SetWidth(cols[1] - 2)
 	diffH := ih - 2
 	if m.commenting {
 		// Make room for comment separator(1) + label(1) + textarea(3) + newlines(2)
@@ -4616,7 +4621,7 @@ func (m *Model) syncLayout() {
 			diffH = 1
 		}
 	}
-	m.diffViewport.Height = diffH
+	m.diffViewport.SetHeight(diffH)
 
 	if cols[2] > 2 {
 		cw := cols[2] - 2
@@ -4636,8 +4641,8 @@ func (m *Model) syncLayout() {
 		if chatVpH < 1 {
 			chatVpH = 1
 		}
-		m.chatViewport.Width = cw
-		m.chatViewport.Height = chatVpH
+		m.chatViewport.SetWidth(cw)
+		m.chatViewport.SetHeight(chatVpH)
 		m.chatInput.SetWidth(cw)
 		m.chatInput.SetHeight(chatInputH)
 
@@ -4645,8 +4650,8 @@ func (m *Model) syncLayout() {
 		// no input. Sized identically to chatViewport's "no input" mode
 		// so layout is consistent across tab switches.
 		reviewVpH := max(ih-2, 1)
-		m.reviewViewport.Width = cw
-		m.reviewViewport.Height = reviewVpH
+		m.reviewViewport.SetWidth(cw)
+		m.reviewViewport.SetHeight(reviewVpH)
 	}
 
 	// Comment input width matches diff pane
@@ -4656,15 +4661,15 @@ func (m *Model) syncLayout() {
 // syncLayoutWithRerender calls syncLayout and returns commands to re-render
 // content if viewport widths changed (e.g. after toggling side panels).
 func (m *Model) syncLayoutWithRerender() tea.Cmd {
-	prevDiffW := m.diffViewport.Width
-	prevChatW := m.chatViewport.Width
-	prevReviewW := m.reviewViewport.Width
+	prevDiffW := m.diffViewport.Width()
+	prevChatW := m.chatViewport.Width()
+	prevReviewW := m.reviewViewport.Width()
 	m.syncLayout()
 
 	var cmds []tea.Cmd
 
 	// Re-render diff/overview content if diff viewport width changed
-	if m.diffViewport.Width != prevDiffW {
+	if m.diffViewport.Width() != prevDiffW {
 		switch m.viewMode {
 		case viewModeOverview:
 			m.setDiffContent(m.renderOverview())
@@ -4684,7 +4689,7 @@ func (m *Model) syncLayoutWithRerender() tea.Cmd {
 				cmds = append(cmds, fetchStyledDiff(
 					m.pr.BaseRefName, m.pr.HeadRefName,
 					m.selectedFile, m.contextLines, true,
-					m.useChroma, m.diffViewport.Width))
+					m.useChroma, m.diffViewport.Width()))
 			}
 		}
 	}
@@ -4692,11 +4697,11 @@ func (m *Model) syncLayoutWithRerender() tea.Cmd {
 	// Re-render AI panel content if either viewport width changed.
 	// Review-cache invalidation is tied to reviewViewport since that's
 	// where rendered review content lives now.
-	if m.reviewViewport.Width != prevReviewW {
+	if m.reviewViewport.Width() != prevReviewW {
 		m.aiReviewRendered = ""
 		m.aiReviewRenderWidth = 0
 	}
-	if m.chatViewport.Width != prevChatW || m.reviewViewport.Width != prevReviewW {
+	if m.chatViewport.Width() != prevChatW || m.reviewViewport.Width() != prevReviewW {
 		cmds = append(cmds, m.renderActiveAIView())
 	}
 
@@ -4836,7 +4841,7 @@ func (m Model) renderDiffWithCursor() (string, int) {
 		}
 		// Wrap the entire line content with a background style
 		line := lines[m.diffCursor]
-		w := m.diffViewport.Width
+		w := m.diffViewport.Width()
 
 		// Append blame info if blame mode is enabled
 		if m.blameEnabled && hasLineNum {
@@ -4888,14 +4893,24 @@ func (m Model) formatBlameForLine(lineNum int) string {
 
 // ── View ────────────────────────────────────────────────────────────────
 
-func (m Model) View() string {
+// View wraps the rendered frame in a tea.View. Alt-screen and mouse
+// modes are declarative View fields in bubbletea v2; in v1 they were
+// tea.NewProgram options.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m Model) render() string {
 	if !m.ready {
 		return "\n  Loading..."
 	}
 
 	if m.loading {
 		// Gradient colors for the logo sweep animation (Catppuccin palette)
-		logoColors := [5]lipgloss.Color{
+		logoColors := [5]color.Color{
 			lipgloss.Color("#585B70"), // subtle
 			lipgloss.Color("#6C7086"), // muted
 			lipgloss.Color("#89B4FA"), // blue (highlight)

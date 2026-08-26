@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/andreujuanc/prr/internal/opencode"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // ── Permission overlay ──────────────────────────────────────────────────

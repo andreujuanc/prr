@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 )
 
 // Interactive model selection shared by the `prr audit` and
@@ -146,7 +146,7 @@ func (c *Config) promptModels() (*ModelSelection, error) {
 				Options(aoiOpts...).
 				Value(&selection.FastModel),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
 
 	if err := form.Run(); err != nil {
 		return nil, fmt.Errorf("model selection cancelled: %w", err)

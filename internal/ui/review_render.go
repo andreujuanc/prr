@@ -7,7 +7,7 @@ import (
 
 	"github.com/andreujuanc/prr/internal/state"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // buildSyntheticReviewFromDeepFindings produces a ReviewOutput from

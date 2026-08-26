@@ -1,18 +1,20 @@
 package ui
 
 import (
+	"image/color"
+
 	"fmt"
 	"sort"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/andreujuanc/prr/internal/state"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // ── Severity colors ─────────────────────────────────────────────────────
 
 // findingSeverityColor returns the border color for a finding's severity.
-func findingSeverityColor(severity string) lipgloss.Color {
+func findingSeverityColor(severity string) color.Color {
 	switch severity {
 	case "critical":
 		return accentRed
@@ -135,7 +137,7 @@ func (m *Model) injectFindings(styledDiff, filePath string) string {
 	// viewport directly when the budget isn't populated (tests).
 	w := m.diffWidths.inner
 	if w <= 0 {
-		w = m.diffViewport.Width
+		w = m.diffViewport.Width()
 	}
 	if w < 40 {
 		w = 80

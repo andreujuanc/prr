@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"image/color"
+
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/glamour/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // ── Color Palette ──────────────────────────────────────────────────────
@@ -13,28 +15,28 @@ import (
 
 var (
 	// Base backgrounds
-	baseBg    lipgloss.Color
-	surfaceBg lipgloss.Color
-	overlayBg lipgloss.Color
+	baseBg    color.Color
+	surfaceBg color.Color
+	overlayBg color.Color
 
 	// Text hierarchy
-	textPrimary   lipgloss.Color
-	textSecondary lipgloss.Color
-	textMuted     lipgloss.Color
-	textSubtle    lipgloss.Color
+	textPrimary   color.Color
+	textSecondary color.Color
+	textMuted     color.Color
+	textSubtle    color.Color
 
 	// Accent colors
-	accentBlue   lipgloss.Color
-	accentMauve  lipgloss.Color
-	accentGreen  lipgloss.Color
-	accentRed    lipgloss.Color
-	accentYellow lipgloss.Color
-	accentPeach  lipgloss.Color
+	accentBlue   color.Color
+	accentMauve  color.Color
+	accentGreen  color.Color
+	accentRed    color.Color
+	accentYellow color.Color
+	accentPeach  color.Color
 
 	// Semantic
-	headerBg    lipgloss.Color
-	borderClr   lipgloss.Color
-	borderFocus lipgloss.Color
+	headerBg    color.Color
+	borderClr   color.Color
+	borderFocus color.Color
 )
 
 // ── Reusable Styles ────────────────────────────────────────────────────

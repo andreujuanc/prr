@@ -22,13 +22,14 @@ package progress
 import (
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/colorprofile"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // ── Styles ──────────────────────────────────────────────────────────────
@@ -200,7 +201,7 @@ var ErrCancelled = errors.New("cancelled by user")
 // arrived) returns ErrCancelled.
 func Run(cfg Config) error {
 	ui := newUI(cfg)
-	p := tea.NewProgram(ui, tea.WithAltScreen())
+	p := tea.NewProgram(ui, tea.WithColorProfile(colorprofile.TrueColor))
 	// Set send before p.Run() so the background goroutine never sees
 	// a nil callback. p.Send is safe to call concurrently.
 	ui.send = p.Send
@@ -295,7 +296,7 @@ func newUI(cfg Config) *model {
 	// teal and green. The scaled variant squeezed the whole gradient
 	// into the filled portion, so 5% and 95% looked the same colorwise.
 	pb := progress.New(
-		progress.WithGradient("#89B4FA", "#A6E3A1"),
+		progress.WithColors(lipgloss.Color("#89B4FA"), lipgloss.Color("#A6E3A1")),
 		progress.WithWidth(40),
 	)
 
@@ -392,7 +393,7 @@ func (m *model) applyEvent(phase, message string) {
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "q" {
 			return m, tea.Quit
 		}
@@ -429,7 +430,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) View() string {
+// View wraps the rendered frame in a tea.View. Alt-screen mode is a
+// declarative View field in bubbletea v2 (it was a program option in v1).
+func (m *model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+func (m *model) render() string {
 	if m.startAt.IsZero() {
 		m.startAt = time.Now()
 	}

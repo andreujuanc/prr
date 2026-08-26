@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/andreujuanc/prr/internal/state"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // Chart styles (Catppuccin Mocha palette).

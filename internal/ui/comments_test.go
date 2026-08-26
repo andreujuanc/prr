@@ -86,7 +86,7 @@ func TestInjectComments_LeftSideOnContextLine(t *testing.T) {
 			},
 		},
 	}
-	m.diffViewport.Width = 80
+	m.diffViewport.SetWidth(80)
 
 	result := m.injectComments(styledDiff, "file.go")
 
@@ -115,7 +115,7 @@ func TestInjectComments_RightSideOnContextLine(t *testing.T) {
 			},
 		},
 	}
-	m.diffViewport.Width = 80
+	m.diffViewport.SetWidth(80)
 
 	result := m.injectComments(styledDiff, "file.go")
 
@@ -150,7 +150,7 @@ func TestInjectComments_BothSidesOnContextLine(t *testing.T) {
 			},
 		},
 	}
-	m.diffViewport.Width = 80
+	m.diffViewport.SetWidth(80)
 
 	result := m.injectComments(styledDiff, "file.go")
 
@@ -180,7 +180,7 @@ func TestInjectComments_LeftSideOnDeletionLine(t *testing.T) {
 			},
 		},
 	}
-	m.diffViewport.Width = 80
+	m.diffViewport.SetWidth(80)
 
 	result := m.injectComments(styledDiff, "file.go")
 
@@ -194,7 +194,7 @@ func TestInjectComments_NoComments(t *testing.T) {
 	m := &Model{
 		comments: map[string][]git.ReviewComment{},
 	}
-	m.diffViewport.Width = 80
+	m.diffViewport.SetWidth(80)
 
 	result := m.injectComments(styledDiff, "file.go")
 	if result != styledDiff {

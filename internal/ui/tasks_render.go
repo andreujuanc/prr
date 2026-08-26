@@ -157,7 +157,7 @@ func (m Model) renderTaskOutput(taskID int) string {
 	} else {
 		// Render LLM output as markdown with colors; tool status lines
 		// (prefixed with emoji) pass through as plain text paragraphs.
-		w := m.diffViewport.Width
+		w := m.diffViewport.Width()
 		if w < 40 {
 			w = 80
 		}

@@ -26,18 +26,22 @@ import (
 	"github.com/andreujuanc/prr/internal/state"
 	"github.com/andreujuanc/prr/internal/ui"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 )
 
 // Set by GoReleaser via ldflags at build time.
 var version = "dev"
 
 func main() {
-	// Force truecolor early so styled error output works too
-	lipgloss.SetColorProfile(termenv.TrueColor)
+	// Force truecolor early so styled error output works too. In
+	// lipgloss v2 the profile lives on the output writer, not on a
+	// global renderer; bubbletea programs take it as an option.
+	trueColorWriter := colorprofile.NewWriter(os.Stdout, os.Environ())
+	trueColorWriter.Profile = colorprofile.TrueColor
+	lipgloss.Writer = trueColorWriter
 
 	// Install SIGUSR1 → goroutine dump handler so a hung phase can be
 	// diagnosed via `kill -USR1 <pid>` without losing the process to a
@@ -132,7 +136,7 @@ func main() {
 	log.Printf("Starting PR review TUI for PR #%s (strong: %s, fast: %s, aoi_context: %d)", prLabel, cfg.StrongModel, cfg.FastModel, aoiContextLines)
 
 	model := ui.NewModel(prNumber, aiClient, aoiClient, cfg.ParallelReviews, aoiContextLines, useChroma)
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(model, tea.WithColorProfile(colorprofile.TrueColor))
 	ui.SetProgram(p)
 
 	// Stop OpenCode and other background work on signals (SIGINT/SIGTERM)
@@ -1549,7 +1553,7 @@ func runConfig() {
 				).
 				Value(&action),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
 
 	if err := actionForm.Run(); err != nil {
 		return
@@ -1603,7 +1607,7 @@ func runConfigAdd(cfg *config.Config) bool {
 				Options(opts...).
 				Value(&selected),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
 
 	if err := form.Run(); err != nil {
 		return false
@@ -1654,7 +1658,7 @@ func runConfigAddForProvider(cfg *config.Config, provider string) bool {
 				Value(&apiKey).
 				EchoMode(huh.EchoModePassword),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
 
 	if err := form.Run(); err != nil || apiKey == "" {
 		return false
@@ -1767,7 +1771,7 @@ func runConfigModel(cfg *config.Config, slot string) bool {
 				Options(opts...).
 				Value(&selected),
 		),
-	).WithTheme(huh.ThemeCatppuccin())
+	).WithTheme(huh.ThemeFunc(huh.ThemeCatppuccin))
 
 	if err := form.Run(); err != nil {
 		return false

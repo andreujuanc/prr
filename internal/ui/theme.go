@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"fmt"
+	"image/color"
+
+	"charm.land/lipgloss/v2"
 	"github.com/andreujuanc/prr/internal/git"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // Theme defines the complete color palette for the TUI.
@@ -13,28 +16,28 @@ type Theme struct {
 	ID   string // stable identifier for config persistence
 
 	// Base backgrounds
-	BaseBg    lipgloss.Color
-	SurfaceBg lipgloss.Color
-	OverlayBg lipgloss.Color
+	BaseBg    color.Color
+	SurfaceBg color.Color
+	OverlayBg color.Color
 
 	// Text hierarchy
-	TextPrimary   lipgloss.Color
-	TextSecondary lipgloss.Color
-	TextMuted     lipgloss.Color
-	TextSubtle    lipgloss.Color
+	TextPrimary   color.Color
+	TextSecondary color.Color
+	TextMuted     color.Color
+	TextSubtle    color.Color
 
 	// Accent colors
-	AccentBlue   lipgloss.Color
-	AccentMauve  lipgloss.Color
-	AccentGreen  lipgloss.Color
-	AccentRed    lipgloss.Color
-	AccentYellow lipgloss.Color
-	AccentPeach  lipgloss.Color
+	AccentBlue   color.Color
+	AccentMauve  color.Color
+	AccentGreen  color.Color
+	AccentRed    color.Color
+	AccentYellow color.Color
+	AccentPeach  color.Color
 
 	// Semantic
-	HeaderBg    lipgloss.Color
-	BorderClr   lipgloss.Color
-	BorderFocus lipgloss.Color
+	HeaderBg    color.Color
+	BorderClr   color.Color
+	BorderFocus color.Color
 
 	// Diff backgrounds (for delta and chroma renderers)
 	DiffAddedBg       string // e.g. "#122f1c"
@@ -74,6 +77,18 @@ func SetTheme(t Theme) {
 	rebuildStyles()
 }
 
+// hexOf renders a theme color as "#RRGGBB" for consumers that take hex
+// strings (the delta/chroma diff renderers). lipgloss v2 colors are
+// image/color values, so the source literal is no longer recoverable
+// with a plain string conversion.
+func hexOf(c color.Color) string {
+	if c == nil {
+		return ""
+	}
+	r, g, b, _ := c.RGBA()
+	return fmt.Sprintf("#%02X%02X%02X", uint8(r>>8), uint8(g>>8), uint8(b>>8))
+}
+
 // DiffThemeFromCurrent returns a DiffTheme snapshot from the active theme.
 // This is captured at call time and passed to diff rendering goroutines,
 // avoiding data races on mutable global state.
@@ -86,13 +101,13 @@ func DiffThemeFromCurrent() git.DiffTheme {
 		AddedEmphBg:       t.DiffAddedEmphBg,
 		RemovedBg:         t.DiffRemovedBg,
 		RemovedEmphBg:     t.DiffRemovedEmphBg,
-		AccentMauve:       string(t.AccentMauve),
-		AccentBlue:        string(t.AccentBlue),
-		AccentGreen:       string(t.AccentGreen),
-		AccentRed:         string(t.AccentRed),
-		AccentPeach:       string(t.AccentPeach),
-		SurfaceColor:      string(t.OverlayBg),
-		SubtleColor:       string(t.TextSubtle),
+		AccentMauve:       hexOf(t.AccentMauve),
+		AccentBlue:        hexOf(t.AccentBlue),
+		AccentGreen:       hexOf(t.AccentGreen),
+		AccentRed:         hexOf(t.AccentRed),
+		AccentPeach:       hexOf(t.AccentPeach),
+		SurfaceColor:      hexOf(t.OverlayBg),
+		SubtleColor:       hexOf(t.TextSubtle),
 	}
 }
 
@@ -120,22 +135,22 @@ func themeCatppuccinMocha() Theme {
 	return Theme{
 		Name:              "Catppuccin Mocha",
 		ID:                "catppuccin-mocha",
-		BaseBg:            "#1E1E2E",
-		SurfaceBg:         "#313244",
-		OverlayBg:         "#45475A",
-		TextPrimary:       "#CDD6F4",
-		TextSecondary:     "#A6ADC8",
-		TextMuted:         "#6C7086",
-		TextSubtle:        "#585B70",
-		AccentBlue:        "#89B4FA",
-		AccentMauve:       "#CBA6F7",
-		AccentGreen:       "#A6E3A1",
-		AccentRed:         "#F38BA8",
-		AccentYellow:      "#F9E2AF",
-		AccentPeach:       "#FAB387",
-		HeaderBg:          "#1E1E2E",
-		BorderClr:         "#313244",
-		BorderFocus:       "#585B70",
+		BaseBg:            lipgloss.Color("#1E1E2E"),
+		SurfaceBg:         lipgloss.Color("#313244"),
+		OverlayBg:         lipgloss.Color("#45475A"),
+		TextPrimary:       lipgloss.Color("#CDD6F4"),
+		TextSecondary:     lipgloss.Color("#A6ADC8"),
+		TextMuted:         lipgloss.Color("#6C7086"),
+		TextSubtle:        lipgloss.Color("#585B70"),
+		AccentBlue:        lipgloss.Color("#89B4FA"),
+		AccentMauve:       lipgloss.Color("#CBA6F7"),
+		AccentGreen:       lipgloss.Color("#A6E3A1"),
+		AccentRed:         lipgloss.Color("#F38BA8"),
+		AccentYellow:      lipgloss.Color("#F9E2AF"),
+		AccentPeach:       lipgloss.Color("#FAB387"),
+		HeaderBg:          lipgloss.Color("#1E1E2E"),
+		BorderClr:         lipgloss.Color("#313244"),
+		BorderFocus:       lipgloss.Color("#585B70"),
 		DiffAddedBg:       "#122f1c",
 		DiffAddedEmphBg:   "#1a4028",
 		DiffRemovedBg:     "#361420",
@@ -149,22 +164,22 @@ func themeDracula() Theme {
 	return Theme{
 		Name:              "Dracula",
 		ID:                "dracula",
-		BaseBg:            "#282A36",
-		SurfaceBg:         "#44475A",
-		OverlayBg:         "#6272A4",
-		TextPrimary:       "#F8F8F2",
-		TextSecondary:     "#BFBFBF",
-		TextMuted:         "#6272A4",
-		TextSubtle:        "#44475A",
-		AccentBlue:        "#8BE9FD",
-		AccentMauve:       "#BD93F9",
-		AccentGreen:       "#50FA7B",
-		AccentRed:         "#FF5555",
-		AccentYellow:      "#F1FA8C",
-		AccentPeach:       "#FFB86C",
-		HeaderBg:          "#282A36",
-		BorderClr:         "#44475A",
-		BorderFocus:       "#6272A4",
+		BaseBg:            lipgloss.Color("#282A36"),
+		SurfaceBg:         lipgloss.Color("#44475A"),
+		OverlayBg:         lipgloss.Color("#6272A4"),
+		TextPrimary:       lipgloss.Color("#F8F8F2"),
+		TextSecondary:     lipgloss.Color("#BFBFBF"),
+		TextMuted:         lipgloss.Color("#6272A4"),
+		TextSubtle:        lipgloss.Color("#44475A"),
+		AccentBlue:        lipgloss.Color("#8BE9FD"),
+		AccentMauve:       lipgloss.Color("#BD93F9"),
+		AccentGreen:       lipgloss.Color("#50FA7B"),
+		AccentRed:         lipgloss.Color("#FF5555"),
+		AccentYellow:      lipgloss.Color("#F1FA8C"),
+		AccentPeach:       lipgloss.Color("#FFB86C"),
+		HeaderBg:          lipgloss.Color("#282A36"),
+		BorderClr:         lipgloss.Color("#44475A"),
+		BorderFocus:       lipgloss.Color("#6272A4"),
 		DiffAddedBg:       "#1a3a2a",
 		DiffAddedEmphBg:   "#224d34",
 		DiffRemovedBg:     "#3a1a1a",
@@ -178,22 +193,22 @@ func themeGruvboxDark() Theme {
 	return Theme{
 		Name:              "Gruvbox Dark",
 		ID:                "gruvbox-dark",
-		BaseBg:            "#282828",
-		SurfaceBg:         "#3C3836",
-		OverlayBg:         "#504945",
-		TextPrimary:       "#EBDBB2",
-		TextSecondary:     "#D5C4A1",
-		TextMuted:         "#928374",
-		TextSubtle:        "#665C54",
-		AccentBlue:        "#83A598",
-		AccentMauve:       "#D3869B",
-		AccentGreen:       "#B8BB26",
-		AccentRed:         "#FB4934",
-		AccentYellow:      "#FABD2F",
-		AccentPeach:       "#FE8019",
-		HeaderBg:          "#282828",
-		BorderClr:         "#3C3836",
-		BorderFocus:       "#665C54",
+		BaseBg:            lipgloss.Color("#282828"),
+		SurfaceBg:         lipgloss.Color("#3C3836"),
+		OverlayBg:         lipgloss.Color("#504945"),
+		TextPrimary:       lipgloss.Color("#EBDBB2"),
+		TextSecondary:     lipgloss.Color("#D5C4A1"),
+		TextMuted:         lipgloss.Color("#928374"),
+		TextSubtle:        lipgloss.Color("#665C54"),
+		AccentBlue:        lipgloss.Color("#83A598"),
+		AccentMauve:       lipgloss.Color("#D3869B"),
+		AccentGreen:       lipgloss.Color("#B8BB26"),
+		AccentRed:         lipgloss.Color("#FB4934"),
+		AccentYellow:      lipgloss.Color("#FABD2F"),
+		AccentPeach:       lipgloss.Color("#FE8019"),
+		HeaderBg:          lipgloss.Color("#282828"),
+		BorderClr:         lipgloss.Color("#3C3836"),
+		BorderFocus:       lipgloss.Color("#665C54"),
 		DiffAddedBg:       "#1d2a1d",
 		DiffAddedEmphBg:   "#2a3d2a",
 		DiffRemovedBg:     "#2a1d1d",
@@ -207,22 +222,22 @@ func themeTokyoNight() Theme {
 	return Theme{
 		Name:              "Tokyo Night",
 		ID:                "tokyo-night",
-		BaseBg:            "#1A1B26",
-		SurfaceBg:         "#24283B",
-		OverlayBg:         "#414868",
-		TextPrimary:       "#C0CAF5",
-		TextSecondary:     "#A9B1D6",
-		TextMuted:         "#565F89",
-		TextSubtle:        "#3B4261",
-		AccentBlue:        "#7AA2F7",
-		AccentMauve:       "#BB9AF7",
-		AccentGreen:       "#9ECE6A",
-		AccentRed:         "#F7768E",
-		AccentYellow:      "#E0AF68",
-		AccentPeach:       "#FF9E64",
-		HeaderBg:          "#1A1B26",
-		BorderClr:         "#24283B",
-		BorderFocus:       "#3B4261",
+		BaseBg:            lipgloss.Color("#1A1B26"),
+		SurfaceBg:         lipgloss.Color("#24283B"),
+		OverlayBg:         lipgloss.Color("#414868"),
+		TextPrimary:       lipgloss.Color("#C0CAF5"),
+		TextSecondary:     lipgloss.Color("#A9B1D6"),
+		TextMuted:         lipgloss.Color("#565F89"),
+		TextSubtle:        lipgloss.Color("#3B4261"),
+		AccentBlue:        lipgloss.Color("#7AA2F7"),
+		AccentMauve:       lipgloss.Color("#BB9AF7"),
+		AccentGreen:       lipgloss.Color("#9ECE6A"),
+		AccentRed:         lipgloss.Color("#F7768E"),
+		AccentYellow:      lipgloss.Color("#E0AF68"),
+		AccentPeach:       lipgloss.Color("#FF9E64"),
+		HeaderBg:          lipgloss.Color("#1A1B26"),
+		BorderClr:         lipgloss.Color("#24283B"),
+		BorderFocus:       lipgloss.Color("#3B4261"),
 		DiffAddedBg:       "#132a1f",
 		DiffAddedEmphBg:   "#1a3d28",
 		DiffRemovedBg:     "#31142a",
@@ -236,22 +251,22 @@ func themeNord() Theme {
 	return Theme{
 		Name:              "Nord",
 		ID:                "nord",
-		BaseBg:            "#2E3440",
-		SurfaceBg:         "#3B4252",
-		OverlayBg:         "#434C5E",
-		TextPrimary:       "#ECEFF4",
-		TextSecondary:     "#D8DEE9",
-		TextMuted:         "#4C566A",
-		TextSubtle:        "#434C5E",
-		AccentBlue:        "#88C0D0",
-		AccentMauve:       "#B48EAD",
-		AccentGreen:       "#A3BE8C",
-		AccentRed:         "#BF616A",
-		AccentYellow:      "#EBCB8B",
-		AccentPeach:       "#D08770",
-		HeaderBg:          "#2E3440",
-		BorderClr:         "#3B4252",
-		BorderFocus:       "#4C566A",
+		BaseBg:            lipgloss.Color("#2E3440"),
+		SurfaceBg:         lipgloss.Color("#3B4252"),
+		OverlayBg:         lipgloss.Color("#434C5E"),
+		TextPrimary:       lipgloss.Color("#ECEFF4"),
+		TextSecondary:     lipgloss.Color("#D8DEE9"),
+		TextMuted:         lipgloss.Color("#4C566A"),
+		TextSubtle:        lipgloss.Color("#434C5E"),
+		AccentBlue:        lipgloss.Color("#88C0D0"),
+		AccentMauve:       lipgloss.Color("#B48EAD"),
+		AccentGreen:       lipgloss.Color("#A3BE8C"),
+		AccentRed:         lipgloss.Color("#BF616A"),
+		AccentYellow:      lipgloss.Color("#EBCB8B"),
+		AccentPeach:       lipgloss.Color("#D08770"),
+		HeaderBg:          lipgloss.Color("#2E3440"),
+		BorderClr:         lipgloss.Color("#3B4252"),
+		BorderFocus:       lipgloss.Color("#4C566A"),
 		DiffAddedBg:       "#1f2d24",
 		DiffAddedEmphBg:   "#2a3d2e",
 		DiffRemovedBg:     "#2d1f21",
@@ -265,22 +280,22 @@ func themeSolarizedDark() Theme {
 	return Theme{
 		Name:              "Solarized Dark",
 		ID:                "solarized-dark",
-		BaseBg:            "#002B36",
-		SurfaceBg:         "#073642",
-		OverlayBg:         "#586E75",
-		TextPrimary:       "#FDF6E3",
-		TextSecondary:     "#EEE8D5",
-		TextMuted:         "#657B83",
-		TextSubtle:        "#586E75",
-		AccentBlue:        "#268BD2",
-		AccentMauve:       "#6C71C4",
-		AccentGreen:       "#859900",
-		AccentRed:         "#DC322F",
-		AccentYellow:      "#B58900",
-		AccentPeach:       "#CB4B16",
-		HeaderBg:          "#002B36",
-		BorderClr:         "#073642",
-		BorderFocus:       "#586E75",
+		BaseBg:            lipgloss.Color("#002B36"),
+		SurfaceBg:         lipgloss.Color("#073642"),
+		OverlayBg:         lipgloss.Color("#586E75"),
+		TextPrimary:       lipgloss.Color("#FDF6E3"),
+		TextSecondary:     lipgloss.Color("#EEE8D5"),
+		TextMuted:         lipgloss.Color("#657B83"),
+		TextSubtle:        lipgloss.Color("#586E75"),
+		AccentBlue:        lipgloss.Color("#268BD2"),
+		AccentMauve:       lipgloss.Color("#6C71C4"),
+		AccentGreen:       lipgloss.Color("#859900"),
+		AccentRed:         lipgloss.Color("#DC322F"),
+		AccentYellow:      lipgloss.Color("#B58900"),
+		AccentPeach:       lipgloss.Color("#CB4B16"),
+		HeaderBg:          lipgloss.Color("#002B36"),
+		BorderClr:         lipgloss.Color("#073642"),
+		BorderFocus:       lipgloss.Color("#586E75"),
 		DiffAddedBg:       "#003a1a",
 		DiffAddedEmphBg:   "#004d24",
 		DiffRemovedBg:     "#3a0a0a",
@@ -294,22 +309,22 @@ func themeOneDark() Theme {
 	return Theme{
 		Name:              "One Dark",
 		ID:                "one-dark",
-		BaseBg:            "#282C34",
-		SurfaceBg:         "#353B45",
-		OverlayBg:         "#3E4451",
-		TextPrimary:       "#ABB2BF",
-		TextSecondary:     "#9DA5B4",
-		TextMuted:         "#5C6370",
-		TextSubtle:        "#4B5263",
-		AccentBlue:        "#61AFEF",
-		AccentMauve:       "#C678DD",
-		AccentGreen:       "#98C379",
-		AccentRed:         "#E06C75",
-		AccentYellow:      "#E5C07B",
-		AccentPeach:       "#D19A66",
-		HeaderBg:          "#282C34",
-		BorderClr:         "#353B45",
-		BorderFocus:       "#4B5263",
+		BaseBg:            lipgloss.Color("#282C34"),
+		SurfaceBg:         lipgloss.Color("#353B45"),
+		OverlayBg:         lipgloss.Color("#3E4451"),
+		TextPrimary:       lipgloss.Color("#ABB2BF"),
+		TextSecondary:     lipgloss.Color("#9DA5B4"),
+		TextMuted:         lipgloss.Color("#5C6370"),
+		TextSubtle:        lipgloss.Color("#4B5263"),
+		AccentBlue:        lipgloss.Color("#61AFEF"),
+		AccentMauve:       lipgloss.Color("#C678DD"),
+		AccentGreen:       lipgloss.Color("#98C379"),
+		AccentRed:         lipgloss.Color("#E06C75"),
+		AccentYellow:      lipgloss.Color("#E5C07B"),
+		AccentPeach:       lipgloss.Color("#D19A66"),
+		HeaderBg:          lipgloss.Color("#282C34"),
+		BorderClr:         lipgloss.Color("#353B45"),
+		BorderFocus:       lipgloss.Color("#4B5263"),
 		DiffAddedBg:       "#1a2e1a",
 		DiffAddedEmphBg:   "#244024",
 		DiffRemovedBg:     "#2e1a1a",
@@ -323,22 +338,22 @@ func themeRosePine() Theme {
 	return Theme{
 		Name:              "Rose Pine",
 		ID:                "rose-pine",
-		BaseBg:            "#191724",
-		SurfaceBg:         "#1F1D2E",
-		OverlayBg:         "#26233A",
-		TextPrimary:       "#E0DEF4",
-		TextSecondary:     "#908CAA",
-		TextMuted:         "#6E6A86",
-		TextSubtle:        "#524F67",
-		AccentBlue:        "#9CCFD8",
-		AccentMauve:       "#C4A7E7",
-		AccentGreen:       "#3E8FB0", // Rose Pine "pine" — closest semantic green
-		AccentRed:         "#EB6F92",
-		AccentYellow:      "#F6C177",
-		AccentPeach:       "#EBBCBA",
-		HeaderBg:          "#191724",
-		BorderClr:         "#1F1D2E",
-		BorderFocus:       "#524F67",
+		BaseBg:            lipgloss.Color("#191724"),
+		SurfaceBg:         lipgloss.Color("#1F1D2E"),
+		OverlayBg:         lipgloss.Color("#26233A"),
+		TextPrimary:       lipgloss.Color("#E0DEF4"),
+		TextSecondary:     lipgloss.Color("#908CAA"),
+		TextMuted:         lipgloss.Color("#6E6A86"),
+		TextSubtle:        lipgloss.Color("#524F67"),
+		AccentBlue:        lipgloss.Color("#9CCFD8"),
+		AccentMauve:       lipgloss.Color("#C4A7E7"),
+		AccentGreen:       lipgloss.Color("#3E8FB0"), // Rose Pine "pine" — closest semantic green
+		AccentRed:         lipgloss.Color("#EB6F92"),
+		AccentYellow:      lipgloss.Color("#F6C177"),
+		AccentPeach:       lipgloss.Color("#EBBCBA"),
+		HeaderBg:          lipgloss.Color("#191724"),
+		BorderClr:         lipgloss.Color("#1F1D2E"),
+		BorderFocus:       lipgloss.Color("#524F67"),
 		DiffAddedBg:       "#152030",
 		DiffAddedEmphBg:   "#1a2d3d",
 		DiffRemovedBg:     "#301525",
