@@ -43,10 +43,27 @@ type RecheckOptions struct {
 	MaxFindingsPerBatch int
 
 	// DismissBatchSize caps findings per LLM call in the dismiss
-	// pass. Findings are first grouped by category, then each
-	// category is chunked into batches of this size. Default: 3.
+	// pass for findings at or above DismissFocusSeverity. Findings are
+	// first grouped by category, then each category is chunked into
+	// batches of this size. Default: defaultDismissFocusBatchSize.
 	// 1 means one LLM call per finding (most focused, most expensive).
 	DismissBatchSize int
+
+	// DismissBulkBatchSize is the batch size for findings BELOW
+	// DismissFocusSeverity. Default: defaultDismissBulkBatchSize.
+	//
+	// The dismiss pass only ever deletes findings, so a coarser batch
+	// trades focus for cost in one direction: a few more false
+	// positives survive into the report. That is a visible, skimmable
+	// cost — unlike a missed bug. Spending individual attention on a
+	// nit is not worth an Opus call, so severity decides how much
+	// attention each finding gets.
+	DismissBulkBatchSize int
+
+	// DismissFocusSeverity is the severity at or above which findings
+	// get the smaller DismissBatchSize treatment. One of the standard
+	// severity values; empty uses defaultDismissFocusSeverity.
+	DismissFocusSeverity string
 
 	// MaxConcurrency caps parallel batch calls. Default: 5.
 	MaxConcurrency int
@@ -319,9 +336,10 @@ func runConsolidatePass(
 }
 
 // runDismissPass runs dismissal on the post-consolidate set.
-// Findings are grouped by category and chunked into batches of
-// DismissBatchSize (default 3). Each batch is one LLM call; calls
-// run in parallel up to MaxConcurrency.
+// Findings are split by severity, grouped by category, and chunked —
+// small batches for the severities worth individual judgement, larger
+// ones below that. Each batch is one LLM call; calls run in parallel up
+// to MaxConcurrency.
 //
 // Returns the same shape as the original recheck pipeline so the
 // caller can fold its output into the merged result.
@@ -336,11 +354,19 @@ func runDismissPass(
 		return &RecheckResult{}, nil
 	}
 
-	chunkSize := opts.DismissBatchSize
-	if chunkSize <= 0 {
-		chunkSize = 3
+	focusSize := opts.DismissBatchSize
+	if focusSize <= 0 {
+		focusSize = defaultDismissFocusBatchSize
 	}
-	batches := splitFindingsByCategoryChunked(findings, chunkSize)
+	bulkSize := opts.DismissBulkBatchSize
+	if bulkSize <= 0 {
+		bulkSize = defaultDismissBulkBatchSize
+	}
+	focusSeverity := opts.DismissFocusSeverity
+	if focusSeverity == "" {
+		focusSeverity = defaultDismissFocusSeverity
+	}
+	batches := splitFindingsForDismiss(findings, focusSize, bulkSize, focusSeverity)
 
 	maxConc := opts.MaxConcurrency
 	if maxConc <= 0 {
@@ -914,6 +940,53 @@ func splitFindingsByFile(findings []state.DeepFinding, maxPerBatch int) [][]stat
 //
 // Category order is preserved by first appearance. chunkSize <= 0 is
 // treated as 1 (one finding per batch).
+// Dismiss-pass batch sizing.
+//
+// The pass was previously a flat batch size of 3 for everything, which
+// on a finding-rich PR made recheck one of the largest strong-model
+// consumers in the pipeline — it re-reads, on the most expensive model,
+// findings that same model just produced. These values are the starting
+// point for tuning; the per-phase call counts in the run summary show
+// what recheck actually costs on a given PR.
+const (
+	defaultDismissFocusBatchSize = 5
+	defaultDismissBulkBatchSize  = 20
+
+	// defaultDismissFocusSeverity: critical and high get the focused
+	// treatment. A wrongly-kept critical wastes a reviewer's time on
+	// the finding they are most likely to act on, so that judgement is
+	// worth paying for; a wrongly-kept nit costs a glance.
+	defaultDismissFocusSeverity = "high"
+)
+
+// splitFindingsForDismiss batches findings for the dismiss pass, using
+// focusSize for findings at or above focusSeverity and bulkSize for the
+// rest. Both subsets are grouped by category internally, preserving the
+// existing "one category per batch" property that the dismiss prompt is
+// written against.
+//
+// Ordering: focused batches come first so the most important judgements
+// start before the bulk work saturates the semaphore.
+func splitFindingsForDismiss(
+	findings []state.DeepFinding,
+	focusSize, bulkSize int,
+	focusSeverity string,
+) [][]state.DeepFinding {
+	threshold := severityRank(focusSeverity)
+
+	var focus, bulk []state.DeepFinding
+	for _, f := range findings {
+		if severityRank(f.Severity) <= threshold {
+			focus = append(focus, f)
+		} else {
+			bulk = append(bulk, f)
+		}
+	}
+
+	batches := splitFindingsByCategoryChunked(focus, focusSize)
+	return append(batches, splitFindingsByCategoryChunked(bulk, bulkSize)...)
+}
+
 func splitFindingsByCategoryChunked(findings []state.DeepFinding, chunkSize int) [][]state.DeepFinding {
 	if chunkSize <= 0 {
 		chunkSize = 1

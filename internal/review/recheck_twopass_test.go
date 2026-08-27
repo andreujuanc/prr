@@ -274,13 +274,16 @@ func TestRecheckFindings_ConsolidatedFindingsAlsoFlowThroughDismiss(t *testing.T
 // through to the dismiss pass and it behaves as the canonical
 // recheck path always has.
 func TestRecheckFindings_NoCrossFilePatternsDismissPassRunsNormally(t *testing.T) {
-	// Two findings in the same category so the dismiss pass uses a
-	// single batch (one category × chunk-size 3 fits both). This
-	// keeps the test deterministic — parallel batches would race
+	// Two findings in the same category AND the same severity band so
+	// the dismiss pass uses a single batch. Both conditions matter:
+	// batches are split by category and then by severity band (focused
+	// vs bulk — see splitFindingsForDismiss), so two same-category
+	// findings straddling the band would produce two batches. A single
+	// batch keeps the test deterministic — parallel batches would race
 	// for the response queue.
 	findings := []state.DeepFinding{
 		makeFinding("", "a.go", "10", "correctness", "thing A", "high"),
-		makeFinding("", "b.go", "20", "correctness", "thing B", "medium"),
+		makeFinding("", "b.go", "20", "correctness", "thing B", "high"),
 	}
 
 	client := &promptRecordingClient{
