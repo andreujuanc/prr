@@ -151,3 +151,29 @@ func TestMarshalResultJSON_IncludesUsageWhenSpent(t *testing.T) {
 		t.Errorf("usage missing for a run that made calls: %s", b)
 	}
 }
+
+// Cache reads must be visible in the summary. Without them the only
+// input figure on screen is InputTokens, which is uncached input plus
+// cache-creation -- so a cold-cache run looks like a cost regression and
+// a warm one looks nearly free. Both readings are wrong.
+func TestPhaseUsage_FormatSummaryShowsCacheReads(t *testing.T) {
+	u := PhaseUsage{Review: ai.TokenUsage{
+		InputTokens: 8000, CacheHits: 190000, OutputTokens: 4000, Calls: 3,
+	}}
+	out := u.FormatSummary()
+
+	if !strings.Contains(out, "cache") {
+		t.Errorf("summary hides cache reads:\n%s", out)
+	}
+	// 190000/1000 = 190 -- the dominant figure must actually be rendered,
+	// not just the column header.
+	if !strings.Contains(out, "190") {
+		t.Errorf("cache-read value not rendered:\n%s", out)
+	}
+	// The input column must not be labelled as plain "in": it includes
+	// cache-creation tokens and calling it "in" is what caused a wrong
+	// conclusion once already.
+	if strings.Contains(out, "k in ") {
+		t.Errorf("input column mislabelled as \"in\" (it is input+cache-creation):\n%s", out)
+	}
+}

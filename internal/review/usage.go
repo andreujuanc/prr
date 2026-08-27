@@ -92,23 +92,34 @@ func sumUsage(us ...ai.TokenUsage) ai.TokenUsage {
 // Calls lead each row deliberately: token counts say how much a run
 // cost, but the call count is the number that explains why, and it is
 // the one this pipeline's tuning acts on.
+//
+// The two input columns are separate on purpose, and the header says
+// "in+cw" rather than "in" because ai.TokenUsage.InputTokens is
+// uncached input PLUS cache-creation tokens (see the claude-code
+// provider, which sums them). It is not the total context the model
+// read. Any change to the prompt prefix — a config flag, a system-prompt
+// edit — forces the cache to be rewritten and makes that column spike,
+// which reads as a cost regression when it is really a cold cache.
+// "cache" is the cache-READ half, billed at 0.1x, and on a warm run it
+// carries the bulk of the context. Judge steady-state cost from cache +
+// out; compare in+cw only between runs whose cache was equally warm.
 func (u PhaseUsage) FormatSummary() string {
 	var out string
 	for _, p := range u.phases() {
 		if p.Usage.Calls == 0 && p.Usage.InputTokens == 0 {
 			continue
 		}
-		row := fmt.Sprintf("  %-10s %3d calls  %6dk in  %5dk out",
+		row := fmt.Sprintf("  %-10s %3d calls  %6dk in+cw  %6dk cache  %5dk out",
 			p.Name, p.Usage.Calls,
-			p.Usage.InputTokens/1000, p.Usage.OutputTokens/1000)
+			p.Usage.InputTokens/1000, p.Usage.CacheHits/1000, p.Usage.OutputTokens/1000)
 		if p.Usage.TruncatedCalls > 0 {
 			row += fmt.Sprintf("  (%d truncated)", p.Usage.TruncatedCalls)
 		}
 		out += row + "\n"
 	}
 	t := u.Total()
-	out += fmt.Sprintf("  %-10s %3d calls  %6dk in  %5dk out",
-		"TOTAL", t.Calls, t.InputTokens/1000, t.OutputTokens/1000)
+	out += fmt.Sprintf("  %-10s %3d calls  %6dk in+cw  %6dk cache  %5dk out",
+		"TOTAL", t.Calls, t.InputTokens/1000, t.CacheHits/1000, t.OutputTokens/1000)
 	return out
 }
 
