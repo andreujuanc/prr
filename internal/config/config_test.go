@@ -730,3 +730,58 @@ func TestProviderConfig_UseCLI_RoundTrip(t *testing.T) {
 		t.Errorf("APIKey = %q after round-trip, want empty", pc.APIKey)
 	}
 }
+
+// Effort is a per-slot setting: the two lanes want different values for
+// the same model, so a round-trip must keep them independent.
+func TestConfig_PerSlotEffort(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	raw := `{
+	  "strong_model": "claude-code/claude-opus-5",
+	  "strong_effort": "xhigh",
+	  "fast_model": "claude-code/claude-opus-5",
+	  "fast_effort": "low"
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.StrongEffort != "xhigh" {
+		t.Errorf("StrongEffort = %q, want xhigh", cfg.StrongEffort)
+	}
+	if cfg.FastEffort != "low" {
+		t.Errorf("FastEffort = %q, want low", cfg.FastEffort)
+	}
+}
+
+// Both fields are omitempty so an existing config needs no migration —
+// and an absent value must stay absent rather than being written back as
+// an empty string that later reads as "explicitly unset".
+func TestConfig_EffortOmittedWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := SaveTo(&Config{StrongModel: "claude-code/claude-opus-5"}, path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"strong_effort", "fast_effort"} {
+		if strings.Contains(string(b), key) {
+			t.Errorf("unset %s was serialised: %s", key, b)
+		}
+	}
+}
+
+// The AOI default is a measured choice, not an accident — pin it so a
+// silent change to the constant shows up as a test failure.
+func TestDefaultFastEffort(t *testing.T) {
+	if DefaultFastEffort != "low" {
+		t.Errorf("DefaultFastEffort = %q, want low (see the 4-rep AOI benchmark)", DefaultFastEffort)
+	}
+}
