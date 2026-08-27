@@ -102,6 +102,13 @@ type ProviderConfig struct {
 	// wizard writes UseCLI:true so the user sees their selection
 	// persisted in config.json instead of an empty {} object.
 	UseCLI bool `json:"use_cli,omitempty"`
+
+	// MaxTurns caps the internal tool loop for providers that run their
+	// own (currently claude-code's --max-turns). 0 means "use prr's
+	// per-phase default"; -1 (ai.MaxTurnsUncapped) means "no cap",
+	// which is the CLI's own behaviour and lets one review call explore
+	// without bound. Raise this if a run reports truncated calls.
+	MaxTurns int `json:"max_turns,omitempty"`
 }
 
 // ProviderConfigFor returns the ProviderConfig for the given provider name, if any.

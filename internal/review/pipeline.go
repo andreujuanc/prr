@@ -89,6 +89,10 @@ type PRReviewResult struct {
 	// filtered at. Empty when no filter was applied. Surfaced in JSON
 	// output and consumed by the TUI to render a partial-run badge.
 	MinSeverity string
+
+	// Usage is the per-phase token and call accounting for this run,
+	// surfaced in the run summary and in --output= JSON.
+	Usage PhaseUsage
 }
 
 // BuildPRMeta is the canonical PR-metadata header passed to RunReviewCore.
@@ -250,6 +254,7 @@ func RunPRReview(
 		DeepFindings:     coreResult.DeepFindings,
 		FileFindings:     coreResult.FileFindings,
 		MinSeverity:      coreResult.MinSeverity,
+		Usage:            coreResult.Usage,
 	}, nil
 }
 
@@ -709,6 +714,10 @@ type CoreResult struct {
 	// recheck. Empty when no filter was applied. The TUI reads it
 	// to render a partial-run badge.
 	MinSeverity string
+
+	// Usage is the per-phase token and call accounting for this run.
+	// Populated on every return path, early exits included.
+	Usage PhaseUsage
 }
 
 // RunReviewCore is the shared pipeline core used by both the TUI and the headless CLI.
@@ -726,6 +735,13 @@ func RunReviewCore(
 
 	reviewState := opts.ReviewState
 	dbgw := dbg.New(opts.Debug)
+
+	// Per-phase token/call accounting. Snapshots drain the client's
+	// counters, so each phase must be snapshotted exactly once, in
+	// pipeline order — see PhaseUsage. Populated into every CoreResult
+	// return path below, including the early SkipSynthesis/NoSynthesis
+	// exits: a run that stopped early still spent what it spent.
+	var usage PhaseUsage
 
 	// Emit a cache-resume summary so the user can see what's being
 	// reused on this run. Reduces the "did my re-run skip work?"
@@ -792,6 +808,8 @@ func RunReviewCore(
 		}
 	}
 
+	usage.Discovery = ai.SnapshotUsage(aoiClient)
+
 	// ── Classification: narrow per-file categories ───────────────
 	// Each diffed file gets classified by the fast model (handler /
 	// test / repository / model / …). The result drives the AOI
@@ -802,6 +820,8 @@ func RunReviewCore(
 	// when --no-cache is set, so the FileType lookups below find no
 	// entries on a forced re-run. No need to thread the flag through.
 	fileCategories := classifyChangedFiles(ctx, aoiClient, reviewState, opts.RepoRoot, opts.RawDiffs, rr.ClassifyProgress)
+
+	usage.Classify = ai.SnapshotUsage(aoiClient)
 
 	// AOI pre-scan
 	aoiContextLines := opts.AOIContextLines
@@ -903,6 +923,8 @@ func RunReviewCore(
 			rr.AOIPrescanProgress("no security areas of interest found", true, 0)
 		}
 	}
+
+	usage.AOI = ai.SnapshotUsage(aoiClient)
 
 	// Build enhanced instructions
 	enhancedInstructions := ""
@@ -1123,6 +1145,8 @@ func RunReviewCore(
 		deepDismissals = execResult.Dismissals
 		failedAOIIDs = execResult.FailedAOIIDs
 
+		usage.Review = ai.SnapshotUsage(reviewClient)
+
 		// Drop findings below the requested minimum severity before
 		// recheck, synthesis, and persistence, so the user pays no
 		// downstream cost for findings they've chosen to ignore.
@@ -1168,6 +1192,11 @@ func RunReviewCore(
 	rechecked, dismissals, changed := RunRecheck(ctx, reviewClient, deepFindings, ModePR, projectContext,
 		func(status string) { rr.RecheckProgress(status) }, recheckDebugHook,
 		RecheckSettings{RepoRoot: opts.RepoRoot})
+
+	// Snapshot before the `changed` branch: recheck spent its tokens
+	// whether or not it altered the finding set.
+	usage.Recheck = ai.SnapshotUsage(reviewClient)
+
 	if changed {
 		deepFindings = rechecked
 		// Rebuild synthesis input from rechecked findings
@@ -1207,6 +1236,7 @@ func RunReviewCore(
 			FileFindings: allFileFindings,
 			Coverage:     coverage,
 			MinSeverity:  opts.MinSeverity,
+			Usage:        usage,
 		}, nil
 	}
 	if opts.NoSynthesis {
@@ -1219,6 +1249,7 @@ func RunReviewCore(
 			FileFindings: allFileFindings,
 			Coverage:     coverage,
 			MinSeverity:  opts.MinSeverity,
+			Usage:        usage,
 		}, nil
 	}
 
@@ -1242,6 +1273,8 @@ func RunReviewCore(
 	}
 	recordReviewMeta(reviewState, deepFindings, len(dismissals), synthVerdict, opts.MinSeverity)
 
+	usage.Synth = ai.SnapshotUsage(reviewClient)
+
 	return &CoreResult{
 		Review:           synthResult.Review,
 		StructuredReview: synthResult.Structured,
@@ -1249,6 +1282,7 @@ func RunReviewCore(
 		FileFindings:     allFileFindings,
 		Coverage:         coverage,
 		MinSeverity:      opts.MinSeverity,
+		Usage:            usage,
 	}, nil
 }
 

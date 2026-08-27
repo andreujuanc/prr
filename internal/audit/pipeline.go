@@ -182,22 +182,10 @@ type Result struct {
 	Usage PhaseUsage
 }
 
-// PhaseUsage holds per-phase token usage for cost reporting.
-type PhaseUsage struct {
-	AOI     ai.TokenUsage // Phase 2: AOI pre-scan
-	Review  ai.TokenUsage // Phase 3: deep review
-	Recheck ai.TokenUsage // Phase 3b: recheck/dedup
-	Synth   ai.TokenUsage // Phase 4: synthesis
-}
-
-// Total returns aggregate token usage across all phases.
-func (u PhaseUsage) Total() ai.TokenUsage {
-	return ai.TokenUsage{
-		InputTokens:  u.AOI.InputTokens + u.Review.InputTokens + u.Recheck.InputTokens + u.Synth.InputTokens,
-		OutputTokens: u.AOI.OutputTokens + u.Review.OutputTokens + u.Recheck.OutputTokens + u.Synth.OutputTokens,
-		CacheHits:    u.AOI.CacheHits + u.Review.CacheHits + u.Recheck.CacheHits + u.Synth.CacheHits,
-	}
-}
+// PhaseUsage is review.PhaseUsage — one shape shared with the PR-review
+// pipeline so both report cost identically. Audit leaves the Discovery
+// and Classify fields zero.
+type PhaseUsage = review.PhaseUsage
 
 // OnProgress is called with status updates during the audit.
 type OnProgress func(phase string, message string)

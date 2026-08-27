@@ -54,6 +54,12 @@ type ProviderConfig struct {
 	// one (currently claude-code's --effort). Empty means "provider
 	// default".
 	Effort string
+
+	// MaxTurns caps the internal tool loop of providers that run their
+	// own (currently claude-code's --max-turns). Zero means "no cap".
+	// Callers that issue many calls per run should set it — see
+	// DefaultReviewMaxTurns.
+	MaxTurns int
 }
 
 // NewProvider creates a Provider from the given config.
@@ -119,7 +125,11 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		if cfg.Effort != "" && !ValidClaudeCodeEffort(cfg.Effort) {
 			return nil, fmt.Errorf("claude-code: invalid effort %q (expected low, medium, high, xhigh or max)", cfg.Effort)
 		}
-		return &ClaudeCodeProvider{Model: cfg.ModelID, Effort: cfg.Effort}, nil
+		return &ClaudeCodeProvider{
+			Model:    cfg.ModelID,
+			Effort:   cfg.Effort,
+			MaxTurns: cfg.MaxTurns,
+		}, nil
 
 	case "opencode":
 		if !DetectOpenCode() {

@@ -53,6 +53,20 @@ If you already have the [`claude` CLI](https://docs.claude.com/claude-code) inst
 
 The provider runs `claude -p` per request with a curated read-only toolset (`Read`, `Grep`, `Glob`, plus specific read-only `git` subcommands) and `--permission-mode bypassPermissions`, so it never edits files and never prompts for permission.
 
+#### Capping the tool loop
+
+Claude Code runs its own agentic loop per request, and prr issues tens of requests for a large PR — so an uncapped loop is the least predictable part of a review's cost. prr passes `--max-turns` with a per-phase default (30 for deep review and recheck, 8 for the pre-scan). Override it per provider:
+
+```json
+{
+  "providers": {
+    "claude-code": { "use_cli": true, "max_turns": 45 }
+  }
+}
+```
+
+Use `-1` for no cap (the CLI's own behaviour). If a run reports calls that stopped at the cap, those findings came from a cut-short investigation — raise the value. Every run prints a per-phase breakdown of calls and tokens so you can see where a review's budget went, split into the fast lane (discovery, classification, pre-scan) and the strong lane (deep review, recheck, synthesis).
+
 ## Usage
 
 ```bash

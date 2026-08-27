@@ -657,3 +657,162 @@ func extractFlagValue(args []string, flag string) string {
 	}
 	return ""
 }
+
+// ── Turn cap (--max-turns) ──────────────────────────────────────────────
+
+// The cap only appears when set. An unset MaxTurns must NOT emit the
+// flag — passing "--max-turns 0" to the CLI would be a different thing
+// (a zero-turn run) than omitting it.
+func TestClaudeCode_MaxTurnsFlag(t *testing.T) {
+	cases := []struct {
+		name     string
+		maxTurns int
+		want     string
+	}{
+		{"unset emits no flag", 0, ""},
+		{"set emits the value", 30, "30"},
+		{"negative emits no flag", -1, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &ClaudeCodeProvider{Model: "claude-opus-5", MaxTurns: tc.maxTurns}
+			if got := extractFlagValue(c.buildArgs(), "--max-turns"); got != tc.want {
+				t.Errorf("--max-turns = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ResolveMaxTurns is what maps config to the field, and the
+// zero-vs-uncapped distinction is the whole point of it: 0 means "the
+// user said nothing, apply our default", -1 means "the user asked for
+// no cap". Collapsing those would silently ignore an opt-out.
+func TestResolveMaxTurns(t *testing.T) {
+	cases := []struct {
+		name       string
+		configured int
+		fallback   int
+		want       int
+	}{
+		{"unset takes the fallback", 0, 30, 30},
+		{"explicit value wins", 12, 30, 12},
+		{"uncapped disables the cap", MaxTurnsUncapped, 30, 0},
+		{"other negatives are not an opt-out", -7, 30, 30},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveMaxTurns(tc.configured, tc.fallback); got != tc.want {
+				t.Errorf("ResolveMaxTurns(%d, %d) = %d, want %d",
+					tc.configured, tc.fallback, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsMaxTurnsSubtype(t *testing.T) {
+	truthy := []string{"error_max_turns", "ERROR_MAX_TURNS", "max_turns"}
+	for _, s := range truthy {
+		if !isMaxTurnsSubtype(s) {
+			t.Errorf("isMaxTurnsSubtype(%q) = false, want true", s)
+		}
+	}
+	falsy := []string{"", "success", "error_during_execution", "maxturns"}
+	for _, s := range falsy {
+		if isMaxTurnsSubtype(s) {
+			t.Errorf("isMaxTurnsSubtype(%q) = true, want false", s)
+		}
+	}
+}
+
+// A turn-limit stop must keep the partial answer and report it as
+// StopMaxTurns with TruncatedCalls set. Treating it as an error would
+// discard usable work and trigger a pointless retry; treating it as
+// StopEndTurn would pass a cut-short investigation off as a conclusion,
+// which is the failure mode the cap could otherwise introduce.
+func TestParseClaudeCodeStream_MaxTurnsKeepsPartialAndMarksTruncated(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"partial finding"}]}}`,
+		`{"type":"result","subtype":"error_max_turns","is_error":true,"usage":{"input_tokens":10,"output_tokens":5}}`,
+	}, "\n")
+
+	var done *ChatResponse
+	var gotErr error
+	var text strings.Builder
+	for ev := range streamEvents(t, lines) {
+		switch ev.Type {
+		case EventText:
+			text.WriteString(ev.Text)
+		case EventDone:
+			done = ev.Response
+		case EventError:
+			gotErr = ev.Err
+		}
+	}
+
+	if gotErr != nil {
+		t.Fatalf("turn-limit stop must not surface as an error, got: %v", gotErr)
+	}
+	if done == nil {
+		t.Fatal("no Done event emitted")
+	}
+	if done.StopReason != StopMaxTurns {
+		t.Errorf("StopReason = %q, want %q", done.StopReason, StopMaxTurns)
+	}
+	if done.Usage.TruncatedCalls != 1 {
+		t.Errorf("TruncatedCalls = %d, want 1", done.Usage.TruncatedCalls)
+	}
+	if !strings.Contains(text.String(), "partial finding") {
+		t.Errorf("partial text was discarded, got %q", text.String())
+	}
+}
+
+// A genuine error subtype must still be an error — the max-turns branch
+// sits in front of the IsError check, so it could shadow it.
+func TestParseClaudeCodeStream_RealErrorStillErrors(t *testing.T) {
+	lines := `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}`
+	sawErr := false
+	for ev := range streamEvents(t, lines) {
+		if ev.Type == EventError {
+			sawErr = true
+		}
+	}
+	if !sawErr {
+		t.Error("a non-turn-limit error subtype must still surface as EventError")
+	}
+}
+
+// streamEvents runs the parser over a JSON-lines fixture and returns a
+// closed channel of the events it emitted. Mirrors the buffered-channel
+// idiom the older tests in this file use, in one place.
+func streamEvents(t *testing.T, lines string) <-chan ChatEvent {
+	t.Helper()
+	ch := make(chan ChatEvent, 32)
+	parseClaudeCodeStream(context.Background(), strings.NewReader(lines), ch)
+	close(ch)
+	return ch
+}
+
+// The settings blob is hand-written JSON in a const, so pin that it is
+// actually valid and carries the key it exists for. A malformed value
+// would make every claude invocation fail at startup.
+func TestClaudeCode_SettingsFlag(t *testing.T) {
+	c := &ClaudeCodeProvider{Model: "claude-opus-5"}
+	got := extractFlagValue(c.buildArgs(), "--settings")
+	if got == "" {
+		t.Fatalf("buildArgs did not pass --settings\nfull: %s", strings.Join(c.buildArgs(), " "))
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("--settings is not valid JSON (%v): %s", err, got)
+	}
+	if parsed["outputStyle"] != "Concise" {
+		t.Errorf("outputStyle = %v, want Concise", parsed["outputStyle"])
+	}
+
+	// verbose must NOT be pinned here — the explicit --verbose flag is
+	// required for stream-json and overrides config either way.
+	if _, ok := parsed["verbose"]; ok {
+		t.Error("--settings pins verbose; the --verbose flag already governs it")
+	}
+}
