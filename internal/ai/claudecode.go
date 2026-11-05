@@ -157,7 +157,33 @@ const claudeCodeAppendSystemPrompt = `## Review rules
 // cannot detect a regression. Confirm recall against the deep-review
 // benchmark before relying on this, and drop it if recall, false
 // positives, or parse rates move.
-const claudeCodeSettings = `{"outputStyle":"Concise"}`
+const claudeCodeSettings = `{"outputStyle":"` + claudeCodeOutputStyle + `"}`
+
+// claudeCodeOutputStyle is the built-in output style pinned above.
+// "Concise" is built in since Claude Code v2.1.237. The name is
+// case-sensitive, and an unknown name falls back to Default silently, so
+// parseClaudeCodeStream checks the style the CLI reports in its
+// system/init event and warns once if it is not this one.
+const claudeCodeOutputStyle = "Concise"
+
+// outputStyleWarnOnce limits the mismatch warning to once per process —
+// prr makes tens of claude calls per review, each with its own init event.
+var outputStyleWarnOnce sync.Once
+
+// outputStyleMismatch returns a warning when the CLI-reported output
+// style is not the pinned one, or "" when it matches. An empty report
+// means the CLI predates the init event's output_style field (and very
+// likely the Concise style too).
+func outputStyleMismatch(reported string) string {
+	switch reported {
+	case claudeCodeOutputStyle:
+		return ""
+	case "":
+		return fmt.Sprintf("claude-code: CLI did not report an output style; the pinned %q style needs Claude Code v2.1.237+ — reviews may run with the Default style", claudeCodeOutputStyle)
+	default:
+		return fmt.Sprintf("claude-code: CLI is using output style %q, not the pinned %q — reviews will be more verbose than intended", reported, claudeCodeOutputStyle)
+	}
+}
 
 // ── Provider ────────────────────────────────────────────────────────────
 
@@ -583,6 +609,9 @@ type claudeCodeStreamLine struct {
 	Result  string                 `json:"result,omitempty"`
 	IsError bool                   `json:"is_error,omitempty"`
 	Usage   *claudeCodeResultUsage `json:"usage,omitempty"`
+
+	// OutputStyle is set on the system/init event only.
+	OutputStyle string `json:"output_style,omitempty"`
 }
 
 type claudeCodeMessage struct {
@@ -653,6 +682,12 @@ func parseClaudeCodeStream(ctx context.Context, r io.Reader, ch chan<- ChatEvent
 		}
 
 		switch evt.Type {
+		case "system":
+			if evt.Subtype == "init" {
+				if warn := outputStyleMismatch(evt.OutputStyle); warn != "" {
+					outputStyleWarnOnce.Do(func() { log.Print(warn) })
+				}
+			}
 		case "assistant":
 			if evt.Message == nil {
 				continue
