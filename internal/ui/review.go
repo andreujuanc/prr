@@ -311,6 +311,7 @@ func streamMultiPassReview(
 			FileFindings:  coreResult.FileFindings,
 			DeepFindings:  coreResult.DeepFindings,
 			FilesReviewed: len(rawDiffs),
+			Usage:         coreResult.Usage,
 		}
 		if coreResult.Review != nil {
 			msg.FullResponse = coreResult.Review.Summary

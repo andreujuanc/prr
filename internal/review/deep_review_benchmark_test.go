@@ -691,14 +691,14 @@ func TestDeepReviewModelComparison(t *testing.T) {
 					}
 
 					cost := config.EstimateCost(specCopy.provider+"/"+specCopy.model, r.inputTokens, r.outputTokens, r.cachedTokens)
-					t.Logf("  Must: %d/%d | Nice: %d/%d | FP: %d | Findings: %d | Recall: %.1f%% | SevAcc: %.0f%% | Tools: %d | InTok: %d | OutTok: %d | Cost: $%.4f | Time: %.1fs",
+					t.Logf("  Must: %d/%d | Nice: %d/%d | FP: %d | Findings: %d | Recall: %.1f%% | SevAcc: %.0f%% | Tools: %d | In+CW: %d | CacheRd: %d | OutTok: %d | Cost: $%.4f | Time: %.1fs",
 						r.mustFindHits, r.mustFindTotal,
 						r.niceFindHits, r.niceFindTotal,
 						r.falseAlarms,
 						r.totalFindings,
 						recall, sevAcc,
 						toolCalls,
-						r.inputTokens, r.outputTokens,
+						r.inputTokens, r.cachedTokens, r.outputTokens,
 						cost,
 						duration.Seconds())
 
@@ -731,10 +731,10 @@ func TestDeepReviewModelComparison(t *testing.T) {
 	t.Log("  DEEP REVIEW MODEL COMPARISON RESULTS")
 	t.Log("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════")
 	t.Log("")
-	t.Logf("  %-45s %7s %7s %5s %5s %7s %6s %6s %8s %8s %8s %7s",
-		"Model", "Must", "Nice", "FP", "Find", "Recall", "SvAcc", "Tools", "InTok", "OutTok", "Cost", "Time")
-	t.Logf("  %-45s %7s %7s %5s %5s %7s %6s %6s %8s %8s %8s %7s",
-		strings.Repeat("─", 45), "───────", "───────", "─────", "─────", "───────", "──────", "──────", "────────", "────────", "────────", "───────")
+	t.Logf("  %-45s %7s %7s %5s %5s %7s %6s %6s %9s %9s %8s %8s %7s",
+		"Model", "Must", "Nice", "FP", "Find", "Recall", "SvAcc", "Tools", "In+CW", "CacheRd", "OutTok", "Cost", "Time")
+	t.Logf("  %-45s %7s %7s %5s %5s %7s %6s %6s %9s %9s %8s %8s %7s",
+		strings.Repeat("─", 45), "───────", "───────", "─────", "─────", "───────", "──────", "──────", "─────────", "─────────", "────────", "────────", "───────")
 
 	for _, r := range results {
 		if r.err != nil {
@@ -753,7 +753,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 		}
 
 		cost := config.EstimateCost(r.spec.provider+"/"+r.spec.model, r.inputTokens, r.outputTokens, r.cachedTokens)
-		t.Logf("  %-45s %3d/%-3d %3d/%-3d %5d %5d  %5.1f%% %5.0f%% %6d %8d %8d  $%6.4f %6.1fs",
+		t.Logf("  %-45s %3d/%-3d %3d/%-3d %5d %5d  %5.1f%% %5.0f%% %6d %9d %9d %8d  $%6.4f %6.1fs",
 			r.spec.name,
 			r.mustFindHits, r.mustFindTotal,
 			r.niceFindHits, r.niceFindTotal,
@@ -761,7 +761,7 @@ func TestDeepReviewModelComparison(t *testing.T) {
 			r.totalFindings,
 			recall, sevAcc,
 			r.toolCalls,
-			r.inputTokens, r.outputTokens,
+			r.inputTokens, r.cachedTokens, r.outputTokens,
 			cost,
 			r.duration.Seconds())
 	}
@@ -774,6 +774,14 @@ func TestDeepReviewModelComparison(t *testing.T) {
 	t.Log("  Recall = (must+nice hits) / total ground truth")
 	t.Log("  SvAcc  = severity accuracy (exact match %)")
 	t.Log("  Tools  = total tool invocations")
+	t.Log("  In+CW  = uncached input + cache-CREATION tokens (NOT total context read)")
+	t.Log("  CacheRd= cache-READ tokens: the bulk of context on a warm cache, billed at 0.1x")
+	t.Log("")
+	t.Log("  Reading these two together matters. In+CW jumps whenever the prompt")
+	t.Log("  prefix changes, because the cache must be rewritten -- so a config or")
+	t.Log("  system-prompt change looks like a cost regression when it is really a")
+	t.Log("  cold cache. Compare In+CW ONLY between arms whose cache was equally")
+	t.Log("  warm, and treat CacheRd + OutTok as the steady-state cost signal.")
 	t.Log("")
 
 	// Find best model

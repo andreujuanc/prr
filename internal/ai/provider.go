@@ -27,6 +27,13 @@ const (
 	StopToolUse   StopReason = "tool_use"
 	StopMaxTokens StopReason = "max_tokens"
 	StopError     StopReason = "error"
+
+	// StopMaxTurns means the provider ran its own tool loop to the
+	// configured turn limit and stopped. Distinct from StopEndTurn:
+	// the answer is a partial one, cut off mid-investigation. Distinct
+	// from StopError too — there IS usable output, it just isn't a
+	// considered conclusion, so callers must not treat it as one.
+	StopMaxTurns StopReason = "max_turns"
 )
 
 // ── Tool choice ─────────────────────────────────────────────────────────
@@ -135,6 +142,22 @@ type TokenUsage struct {
 	OutputTokens    int
 	CacheHits       int     // tokens served from cache (if supported)
 	ReportedCostUSD float64 // provider-reported cost for this request; 0 if unreported
+
+	// Calls is the number of API calls this usage covers. Providers
+	// reporting a single request leave it 0 — UsageTracker.Add counts
+	// the calls, so an accumulated TokenUsage (Agent.Usage, or a
+	// PhaseUsage total) carries a meaningful count. It is the number
+	// this project's cost work turns on: tokens tell you how much a
+	// run spent, calls tell you why.
+	Calls int
+
+	// TruncatedCalls counts calls that stopped on a turn limit
+	// (StopMaxTurns) rather than finishing. Non-zero means some
+	// findings came from a cut-short investigation — the turn cap is
+	// too low for this workload, and the run's recall is suspect.
+	// Carried on TokenUsage so it reaches the run summary through the
+	// same per-phase accounting as tokens and calls.
+	TruncatedCalls int
 }
 
 // ── JSON Schema ─────────────────────────────────────────────────────────

@@ -25,9 +25,15 @@ func MarshalResultJSON(
 	filesReviewed int,
 	structured *state.ReviewOutput,
 	deepFindings []state.DeepFinding,
+	usage PhaseUsage,
 ) ([]byte, error) {
 	data := map[string]any{
 		"files_reviewed": filesReviewed,
+	}
+	// Omitted when the run made no calls (fully cached), so a snapshot
+	// never implies a spend that didn't happen.
+	if u := usage.Total(); u.Calls > 0 || u.InputTokens > 0 {
+		data["usage"] = usage.MarshalMap()
 	}
 	if pr != nil {
 		data["pr_number"] = pr.Number

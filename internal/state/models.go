@@ -607,6 +607,12 @@ type DeepReviewResult struct {
 
 	// CrossCutting observation (grouped reviews only).
 	CrossCutting string `json:"cross_cutting,omitempty"`
+
+	// Partial is set when the call stopped on the provider's turn limit
+	// but its output still parsed. The findings are kept, but the result
+	// is never cached: a later run with a higher cap must re-review it.
+	// Not persisted — a cached result is by definition not partial.
+	Partial bool `json:"-"`
 }
 
 // FindingTrigger is the concrete scenario that exercises a finding.

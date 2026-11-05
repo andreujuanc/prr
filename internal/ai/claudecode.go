@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -134,6 +135,56 @@ const claudeCodeAppendSystemPrompt = `## Review rules
 - Token budget: 4,000 tokens. Surface if approaching.
 - No preamble, no conclusion — findings only.`
 
+// claudeCodeSettings is passed to every invocation via --settings, which
+// takes inline JSON. It pins the output style so a review does not inherit
+// whatever the user happens to have set in ~/.claude/settings.json —
+// reviews should not vary with a personal /config choice.
+//
+// Only outputStyle is set. `verbose` would be pointless here: buildArgs
+// always passes --verbose (required by --output-format stream-json) and
+// the flag overrides the config value.
+//
+// Measured on top of claudeCodeAppendSystemPrompt via scripts/token-bench
+// (N=10/arm, opus-5, `minimal` prompt condition): output 1145 -> 947 mean
+// tokens, -17.3%, Welch t=4.56 (df 15). Also cuts run-to-run spread
+// (sd 115 -> 74), so review length is more predictable.
+//
+// Two limits on that result. Dollar cost was flat ($0.1369 -> $0.1392):
+// the fixture is ~66K cached input tokens per call, which dwarfs output,
+// so this is a quota/output-token win, not an API-bill win. And quality is
+// NOT established — every run of every condition scored 5/5 on that
+// fixture, including the no-prompt control, so the scorer is saturated and
+// cannot detect a regression. Confirm recall against the deep-review
+// benchmark before relying on this, and drop it if recall, false
+// positives, or parse rates move.
+const claudeCodeSettings = `{"outputStyle":"` + claudeCodeOutputStyle + `"}`
+
+// claudeCodeOutputStyle is the built-in output style pinned above.
+// "Concise" is built in since Claude Code v2.1.237. The name is
+// case-sensitive, and an unknown name falls back to Default silently, so
+// parseClaudeCodeStream checks the style the CLI reports in its
+// system/init event and warns once if it is not this one.
+const claudeCodeOutputStyle = "Concise"
+
+// outputStyleWarnOnce limits the mismatch warning to once per process —
+// prr makes tens of claude calls per review, each with its own init event.
+var outputStyleWarnOnce sync.Once
+
+// outputStyleMismatch returns a warning when the CLI-reported output
+// style is not the pinned one, or "" when it matches. An empty report
+// means the CLI predates the init event's output_style field (and very
+// likely the Concise style too).
+func outputStyleMismatch(reported string) string {
+	switch reported {
+	case claudeCodeOutputStyle:
+		return ""
+	case "":
+		return fmt.Sprintf("claude-code: CLI did not report an output style; the pinned %q style needs Claude Code v2.1.237+ — reviews may run with the Default style", claudeCodeOutputStyle)
+	default:
+		return fmt.Sprintf("claude-code: CLI is using output style %q, not the pinned %q — reviews will be more verbose than intended", reported, claudeCodeOutputStyle)
+	}
+}
+
 // ── Provider ────────────────────────────────────────────────────────────
 
 // ClaudeCodeProvider implements Provider by shelling out to the `claude`
@@ -163,6 +214,15 @@ type ClaudeCodeProvider struct {
 	// pass --add-dir" (Claude Code defaults to its cwd).
 	WorkDir string
 
+	// MaxTurns caps how many turns Claude Code's internal tool loop may
+	// take for one request, via --max-turns. Zero means "no cap" —
+	// which is the CLI's own default and lets a single review call
+	// explore until it decides it is done, re-sending a growing
+	// transcript every turn. Since prr issues tens of these calls per
+	// PR, an uncapped loop is the pipeline's largest and least
+	// predictable cost. See DefaultReviewMaxTurns.
+	MaxTurns int
+
 	// ExtraArgs are additional flags appended after the standard set.
 	// Used by tests to inject overrides.
 	ExtraArgs []string
@@ -170,6 +230,55 @@ type ClaudeCodeProvider struct {
 	// Spawner is the function used to start the subprocess. Tests
 	// override this to run a fake binary. Defaults to spawnClaudeCode.
 	Spawner func(ctx context.Context, args []string, stdin string) (io.ReadCloser, func() error, error)
+}
+
+// DefaultReviewMaxTurns caps the Claude Code tool loop for deep-review
+// and recheck calls.
+//
+// PROVISIONAL — this number is not yet backed by measurement. It exists
+// because the alternative (the CLI default: no cap) is unbounded, and prr
+// issues tens of these calls per PR. Set it from the observed per-call
+// turn distribution once the usage reporting added alongside it has run
+// against a real PR; a cap that truncates a meaningful share of calls is
+// too low and will show up as TruncatedCalls in the run summary.
+const DefaultReviewMaxTurns = 30
+
+// DefaultScanMaxTurns caps the loop for the AOI pre-scan and other
+// single-shot analysis calls. Lower than DefaultReviewMaxTurns because
+// these calls are handed the diff inline and asked to classify it —
+// they should rarely need to go read the repo at all.
+//
+// Note this cap is needed even though prr gives the AOI client no tool
+// executor: claude-code runs its OWN loop with its own Read/Grep/Bash,
+// so "no prr tools" does not mean "no tool calls". Also PROVISIONAL —
+// see DefaultReviewMaxTurns.
+const DefaultScanMaxTurns = 8
+
+// MaxTurnsUncapped is the ProviderConfig.MaxTurns value meaning "no
+// cap", distinguishing a deliberate opt-out from an unset zero.
+const MaxTurnsUncapped = -1
+
+// ResolveMaxTurns maps a configured value to the flag value to pass.
+// 0 (unset) takes the supplied default; MaxTurnsUncapped disables the
+// cap; anything else is used verbatim.
+func ResolveMaxTurns(configured, fallback int) int {
+	switch {
+	case configured == MaxTurnsUncapped:
+		return 0
+	case configured > 0:
+		return configured
+	default:
+		return fallback
+	}
+}
+
+// maxTurnsSubtypes are the `result` subtypes Claude Code uses to report
+// that its internal loop hit the turn limit. Matched by substring rather
+// than equality: the exact string is a CLI implementation detail we do
+// not control, and treating a turn-limit stop as a clean answer is the
+// more damaging way to be wrong.
+func isMaxTurnsSubtype(subtype string) bool {
+	return strings.Contains(strings.ToLower(subtype), "max_turns")
 }
 
 func (c *ClaudeCodeProvider) Name() string    { return "claude-code" }
@@ -209,6 +318,7 @@ func (c *ClaudeCodeProvider) buildArgs() []string {
 		"--disallowed-tools", strings.Join(claudeCodeDisallowedTools, " "),
 		"--no-session-persistence",
 		"--append-system-prompt", claudeCodeAppendSystemPrompt,
+		"--settings", claudeCodeSettings,
 	}
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
@@ -257,6 +367,9 @@ func (c *ClaudeCodeProvider) buildArgs() []string {
 	}
 	if effort != "" {
 		args = append(args, "--effort", effort)
+	}
+	if c.MaxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(c.MaxTurns))
 	}
 	args = append(args, c.ExtraArgs...)
 	return args
@@ -496,6 +609,9 @@ type claudeCodeStreamLine struct {
 	Result  string                 `json:"result,omitempty"`
 	IsError bool                   `json:"is_error,omitempty"`
 	Usage   *claudeCodeResultUsage `json:"usage,omitempty"`
+
+	// OutputStyle is set on the system/init event only.
+	OutputStyle string `json:"output_style,omitempty"`
 }
 
 type claudeCodeMessage struct {
@@ -533,6 +649,7 @@ func seenKey(prefix, text string) uint64 {
 func parseClaudeCodeStream(ctx context.Context, r io.Reader, ch chan<- ChatEvent) {
 	var blocks []ContentBlock
 	var usage TokenUsage
+	stopReason := StopEndTurn
 	doneEmitted := false
 	// Track text blocks emitted per assistant message id to dedupe
 	// repeated content (Claude Code re-emits the cumulative message
@@ -565,6 +682,12 @@ func parseClaudeCodeStream(ctx context.Context, r io.Reader, ch chan<- ChatEvent
 		}
 
 		switch evt.Type {
+		case "system":
+			if evt.Subtype == "init" {
+				if warn := outputStyleMismatch(evt.OutputStyle); warn != "" {
+					outputStyleWarnOnce.Do(func() { log.Print(warn) })
+				}
+			}
 		case "assistant":
 			if evt.Message == nil {
 				continue
@@ -603,7 +726,16 @@ func parseClaudeCodeStream(ctx context.Context, r io.Reader, ch chan<- ChatEvent
 					CacheHits:    evt.Usage.CacheReadInputTokens,
 				}
 			}
-			if evt.IsError {
+			// A turn-limit stop is reported as an error subtype by the
+			// CLI, but it is not a failure: the text collected so far is
+			// usable, just cut short. Handle it before the IsError
+			// branch so we keep the partial answer instead of discarding
+			// it — and mark it StopMaxTurns so callers can tell it apart
+			// from a considered conclusion. Retrying would only burn the
+			// same budget again, so this must not surface as an error.
+			if isMaxTurnsSubtype(evt.Subtype) {
+				stopReason = StopMaxTurns
+			} else if evt.IsError {
 				msg := evt.Result
 				if msg == "" {
 					msg = "claude-code: result reported error"
@@ -618,11 +750,14 @@ func parseClaudeCodeStream(ctx context.Context, r io.Reader, ch chan<- ChatEvent
 				blocks = append(blocks, TextBlock{Text: evt.Result})
 				ch <- ChatEvent{Type: EventText, Text: evt.Result}
 			}
+			if stopReason == StopMaxTurns {
+				usage.TruncatedCalls++
+			}
 			ch <- ChatEvent{
 				Type: EventDone,
 				Response: &ChatResponse{
 					Content:    blocks,
-					StopReason: StopEndTurn,
+					StopReason: stopReason,
 					Usage:      usage,
 				},
 			}

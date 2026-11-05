@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Token bench: compare token usage of claude -p audits under three
-# system-prompt variants (none / full 12 rules / distilled rules).
+# Token bench: compare token usage of claude -p audits across
+# system-prompt variants (none / full 12 rules / distilled rules) and,
+# orthogonally, output styles passed via --settings.
 #
 # Env vars:
 #   ITERATIONS   number of runs per condition (default 5)
 #   CONDITIONS   space-separated list (default "none full distilled")
+#   STYLES       space-separated output styles (default "default Concise").
+#                "default" passes no --settings at all; any other value is
+#                passed as {"outputStyle":"<value>"}. A style other than
+#                default is recorded as "<condition>+<style>" so it lands in
+#                the CSV as its own condition and needs no schema change.
 #   MODEL        claude model (default claude-opus-4-8)
+#
+# A/B the Concise output style against the distilled prompt prr ships:
+#   CONDITIONS=distilled STYLES="default Concise" ITERATIONS=3 ./run.sh
 
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIXTURE="$BENCH_DIR/fixtures/audit-target"
@@ -16,9 +25,13 @@ mkdir -p "$RESULTS/outputs"
 
 ITERATIONS="${ITERATIONS:-5}"
 CONDITIONS="${CONDITIONS:-none full distilled}"
+STYLES="${STYLES:-default Concise}"
 MODEL="${MODEL:-claude-opus-4-8}"
 
-CSV="$RESULTS/runs.csv"
+# CSV is overridable so a focused A/B lands in its own file instead of
+# accumulating into shared history — mixing runs from different models in
+# one condition column silently corrupts the summary averages.
+CSV="${CSV:-$RESULTS/runs.csv}"
 if [[ ! -f "$CSV" ]]; then
   echo "condition,iteration,input_tokens,output_tokens,cache_read,cache_create,total_cost_usd,caught,output_path" > "$CSV"
 fi
@@ -42,8 +55,12 @@ score_output() {
   echo "$n"
 }
 
+# run_one CONDITION STYLE LABEL ITERATION
+#   CONDITION selects prompts/<condition>.txt
+#   STYLE     "default" (no --settings) or an outputStyle value
+#   LABEL     what gets written to the CSV condition column
 run_one() {
-  local cond="$1" iter="$2"
+  local cond="$1" style="$2" label="$3" iter="$4"
   local tmpdir
   tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/token-bench.XXXXXX")"
   # Clean up on any exit path (success, error, Ctrl+C, SIGTERM). The
@@ -51,8 +68,8 @@ run_one() {
   # without inheriting state.
   trap 'rm -rf "$tmpdir"' EXIT INT TERM
   cp -r "$FIXTURE/." "$tmpdir/"
-  local raw_path="$RESULTS/outputs/${cond}-${iter}.jsonl"
-  local out_path="$RESULTS/outputs/${cond}-${iter}.md"
+  local raw_path="$RESULTS/outputs/${label}-${iter}.jsonl"
+  local out_path="$RESULTS/outputs/${label}-${iter}.md"
 
   local sys_prompt
   sys_prompt="$(cat "$BENCH_DIR/prompts/${cond}.txt")"
@@ -70,6 +87,13 @@ run_one() {
   if [[ -n "$sys_prompt" ]]; then
     args+=( --append-system-prompt "$sys_prompt" )
   fi
+  # Pin the output style for this run. "default" deliberately passes no
+  # --settings so the run inherits the machine's own settings — that is the
+  # baseline prr had before it started pinning the style, and the thing the
+  # Concise arm is measured against.
+  if [[ "$style" != "default" ]]; then
+    args+=( --settings "{\"outputStyle\":\"${style}\"}" )
+  fi
 
   (
     cd "$tmpdir"
@@ -79,7 +103,7 @@ run_one() {
   local result_json
   result_json="$(grep '"type":"result"' "$raw_path" | tail -1 || true)"
   if [[ -z "$result_json" ]]; then
-    echo "  WARN: no result event for $cond-$iter (see $raw_path)" >&2
+    echo "  WARN: no result event for $label-$iter (see $raw_path)" >&2
     rm -rf "$tmpdir"
     trap - EXIT INT TERM
     return 1
@@ -97,9 +121,9 @@ run_one() {
   local caught
   caught="$(score_output "$out_path")"
 
-  echo "$cond,$iter,$input_tok,$output_tok,$cache_read,$cache_create,$cost,$caught,$out_path" >> "$CSV"
-  printf "  [%-9s #%d] in=%-6s out=%-6s cache_r=%-6s cost=\$%-8s caught=%s/5\n" \
-    "$cond" "$iter" "$input_tok" "$output_tok" "$cache_read" "$cost" "$caught"
+  echo "$label,$iter,$input_tok,$output_tok,$cache_read,$cache_create,$cost,$caught,$out_path" >> "$CSV"
+  printf "  [%-20s #%d] in=%-6s out=%-6s cache_r=%-6s cost=\$%-8s caught=%s/5\n" \
+    "$label" "$iter" "$input_tok" "$output_tok" "$cache_read" "$cost" "$caught"
 
   rm -rf "$tmpdir"
   trap - EXIT INT TERM
@@ -110,9 +134,15 @@ for cond in $CONDITIONS; do
     echo "skip: no prompts/${cond}.txt" >&2
     continue
   fi
-  for i in $(seq 1 "$ITERATIONS"); do
-    echo "== $cond iteration $i =="
-    run_one "$cond" "$i" || true
+  for style in $STYLES; do
+    label="$cond"
+    if [[ "$style" != "default" ]]; then
+      label="${cond}+${style}"
+    fi
+    for i in $(seq 1 "$ITERATIONS"); do
+      echo "== $label iteration $i =="
+      run_one "$cond" "$style" "$label" "$i" || true
+    done
   done
 done
 
@@ -127,10 +157,11 @@ with open(sys.argv[1]) as f:
     for row in csv.DictReader(f):
         rows[row["condition"]].append(row)
 
-hdr = f"{'cond':<11} {'in_avg':>8} {'out_avg':>8} {'total':>8} {'cost_avg':>9} {'caught':>7} {'out_sd':>7} {'tok/find':>10}"
+width = max([11] + [len(c) for c in rows])
+hdr = f"{'cond':<{width}} {'runs':>5} {'in_avg':>8} {'out_avg':>8} {'total':>8} {'cost_avg':>9} {'caught':>7} {'out_sd':>7} {'tok/find':>10}"
 print(hdr)
 print("-" * len(hdr))
-for cond in ("none", "full", "distilled"):
+for cond in sorted(rows):
     items = rows.get(cond, [])
     if not items: continue
     ins   = [int(x["input_tokens"])  for x in items]
@@ -141,5 +172,5 @@ for cond in ("none", "full", "distilled"):
     sd = (statistics.stdev(outs) if len(outs) > 1 else 0.0)
     mean_caught = statistics.mean(caught)
     tpf = (statistics.mean(outs) / mean_caught) if mean_caught > 0 else float('inf')
-    print(f"{cond:<11} {statistics.mean(ins):>8.0f} {statistics.mean(outs):>8.0f} {statistics.mean(totals):>8.0f} {statistics.mean(costs):>9.4f} {mean_caught:>7.2f} {sd:>7.0f} {tpf:>10.0f}")
+    print(f"{cond:<{width}} {len(items):>5} {statistics.mean(ins):>8.0f} {statistics.mean(outs):>8.0f} {statistics.mean(totals):>8.0f} {statistics.mean(costs):>9.4f} {mean_caught:>7.2f} {sd:>7.0f} {tpf:>10.0f}")
 PY

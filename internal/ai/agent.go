@@ -104,6 +104,7 @@ type UsageTracker struct {
 	CacheHits       int
 	ReportedCostUSD float64 // sum of per-call ReportedCostUSD (0 if no provider reports cost)
 	Calls           int     // number of API calls
+	TruncatedCalls  int     // calls that stopped on a turn limit
 }
 
 // Add records usage from a single API call.
@@ -115,6 +116,7 @@ func (t *UsageTracker) Add(u TokenUsage) {
 	t.CacheHits += u.CacheHits
 	t.ReportedCostUSD += u.ReportedCostUSD
 	t.Calls++
+	t.TruncatedCalls += u.TruncatedCalls
 }
 
 // Snapshot returns a copy of the current accumulated usage.
@@ -127,6 +129,7 @@ func (t *UsageTracker) Snapshot() UsageTracker {
 		CacheHits:       t.CacheHits,
 		ReportedCostUSD: t.ReportedCostUSD,
 		Calls:           t.Calls,
+		TruncatedCalls:  t.TruncatedCalls,
 	}
 }
 
@@ -139,6 +142,7 @@ func (t *UsageTracker) Reset() {
 	t.CacheHits = 0
 	t.ReportedCostUSD = 0
 	t.Calls = 0
+	t.TruncatedCalls = 0
 }
 
 // Agent wraps a Provider with a tool-calling loop.
@@ -177,6 +181,8 @@ func (a *Agent) Usage() TokenUsage {
 		OutputTokens:    s.OutputTokens,
 		CacheHits:       s.CacheHits,
 		ReportedCostUSD: s.ReportedCostUSD,
+		Calls:           s.Calls,
+		TruncatedCalls:  s.TruncatedCalls,
 	}
 }
 
@@ -288,6 +294,15 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 					a.debugf("round %d: response done (blocks=%d, stop=%s, input_tokens=%d, output_tokens=%d)",
 						round+1, len(respContent), event.Response.StopReason,
 						event.Response.Usage.InputTokens, event.Response.Usage.OutputTokens)
+					// The provider reports TruncatedCalls on its own
+					// usage — don't re-derive it from StopReason here
+					// or the count doubles. Make it loud, and tell a
+					// caller-supplied TruncationProbe so it can treat
+					// the answer as partial (no retry, no cache).
+					if event.Response.StopReason == StopMaxTurns {
+						log.Printf("Warning: provider stopped on its turn limit — this answer is partial (round %d)", round+1)
+						MarkTruncated(ctx)
+					}
 					if a.usageTracker != nil {
 						a.usageTracker.Add(event.Response.Usage)
 					}

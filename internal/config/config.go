@@ -73,6 +73,20 @@ const DefaultStrongModel = "claude-code/claude-opus-5"
 // that cost.
 const DefaultFastModel = "claude-code/claude-opus-5"
 
+// DefaultFastEffort pins the reasoning effort for the AOI pre-scan when
+// Config.FastEffort is unset.
+//
+// A 4-rep AOI benchmark on Opus 5 found low and medium tied on coverage —
+// 87.0% mean each, both swinging 76-96% run to run — while low was cheaper
+// and ~25% quicker in every paired rep. AOI is a recall-biased pre-filter,
+// so the cheaper setting wins when coverage is a wash. Only Opus 5 was
+// measured; other Claude models inherit this untested.
+//
+// The strong slot has no equivalent constant: leaving it empty falls
+// through to claude-code's per-model default (medium for Opus), which
+// carries its own measured rationale in internal/ai/claudecode.go.
+const DefaultFastEffort = "low"
+
 // Config holds the application configuration.
 //
 // Models are specified in "provider/model-id" format (e.g. "gemini/gemini-3.1-pro-preview").
@@ -82,6 +96,22 @@ type Config struct {
 	StrongModel string `json:"strong_model"`
 	// FastModel is the "provider/model" ref for discovery and AOI phases.
 	FastModel string `json:"fast_model,omitempty"`
+
+	// StrongEffort and FastEffort pin the reasoning-effort level for the
+	// corresponding model slot, on providers that expose one (currently
+	// claude-code's --effort: low, medium, high, xhigh, max).
+	//
+	// Effort belongs to the slot rather than the provider because the two
+	// lanes want different values for the same model: deep review pays for
+	// depth, while the AOI pre-scan is a recall-biased pre-filter that
+	// measured no better at medium than at low. A single provider-level
+	// setting could not express that.
+	//
+	// Empty means "use the built-in default for that slot" — see
+	// DefaultFastEffort and, for the strong slot, claude-code's per-model
+	// default. PRR_CLAUDE_EFFORT overrides both.
+	StrongEffort string `json:"strong_effort,omitempty"`
+	FastEffort   string `json:"fast_effort,omitempty"`
 
 	Theme           string                    `json:"theme,omitempty"`            // UI theme ID
 	ParallelReviews int                       `json:"parallel_reviews,omitempty"` // number of concurrent batch reviews (default 3)
@@ -102,6 +132,13 @@ type ProviderConfig struct {
 	// wizard writes UseCLI:true so the user sees their selection
 	// persisted in config.json instead of an empty {} object.
 	UseCLI bool `json:"use_cli,omitempty"`
+
+	// MaxTurns caps the internal tool loop for providers that run their
+	// own (currently claude-code's --max-turns). 0 means "use prr's
+	// per-phase default"; -1 (ai.MaxTurnsUncapped) means "no cap",
+	// which is the CLI's own behaviour and lets one review call explore
+	// without bound. Raise this if a run reports truncated calls.
+	MaxTurns int `json:"max_turns,omitempty"`
 }
 
 // ProviderConfigFor returns the ProviderConfig for the given provider name, if any.

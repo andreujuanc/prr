@@ -2,6 +2,7 @@ package review
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"strings"
 	"testing"
@@ -271,7 +272,7 @@ func TestDoReviewCall_ValidatesResultBeforeReturn(t *testing.T) {
 	client := &stubClient{responses: []string{badSeverityResponse}}
 	opts := ExecuteOptions{Mode: ModeAudit}
 
-	result, err := doReviewCall(nil, client, buildIndivCall(), opts, 0) //nolint:staticcheck // nil ctx is fine for stub
+	result, err := doReviewCall(context.Background(), client, buildIndivCall(), opts, 0)
 	if err != nil {
 		t.Fatalf("doReviewCall: %v", err)
 	}

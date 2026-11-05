@@ -92,6 +92,9 @@ type AIChatDoneMsg struct {
 	FileFindings map[string]string
 	// DeepFindings from AOI-driven review calls (structured findings with severity, category, etc.)
 	DeepFindings []state.DeepFinding
+	// Usage is the per-phase token/call accounting for the run, so the
+	// TUI snapshot records the same spend the headless flow does.
+	Usage review.PhaseUsage
 }
 
 // aiStreamTickMsg triggers a batched render of accumulated AI tokens.
@@ -1539,7 +1542,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// snapshot may still be present and the per-PR state holds
 		// the run's metadata.
 		if wasReview && m.prNumber != "" && (msg.StructuredReview != nil || len(msg.DeepFindings) > 0) {
-			data, mErr := review.MarshalResultJSON(m.pr, msg.FilesReviewed, msg.StructuredReview, msg.DeepFindings)
+			data, mErr := review.MarshalResultJSON(m.pr, msg.FilesReviewed, msg.StructuredReview, msg.DeepFindings, msg.Usage)
 			if mErr != nil {
 				log.Printf("Warning: TUI review snapshot marshal failed: %v", mErr)
 			} else if _, sErr := state.SaveReviewSnapshot(m.prNumber, data); sErr != nil {

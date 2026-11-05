@@ -237,7 +237,10 @@ func RunReviewCalls(
 			// future run would hit "cached: no findings" until the
 			// user wiped the cache or used --no-cache. With the new
 			// retry+error path, only validated results land here.
-			if opts.CacheSet != nil && call.Type == "individual" {
+			// Partial (turn-limited) results are kept for this run but
+			// never cached, so raising max_turns takes effect without
+			// --no-cache.
+			if opts.CacheSet != nil && call.Type == "individual" && !result.Partial {
 				opts.CacheSet(cacheKey, result)
 			}
 
@@ -384,6 +387,11 @@ func runReviewCallWithRetry(
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil, err
 	}
+	if errors.Is(err, errReviewTruncated) {
+		log.Printf("review: call %d (%s %s/%s) stopped at the turn limit without parseable output; not retrying: %v",
+			callIndex+1, call.Type, call.Category, call.Subcategory, err)
+		return result, err
+	}
 
 	select {
 	case <-time.After(reviewRetryBackoff):
@@ -411,7 +419,38 @@ func runReviewCallWithRetry(
 // a populated DeepReviewResult on success or an error — wrapped with
 // errReviewParse for response-shape failures so the caller can
 // short-circuit retry and skip the cache write.
+//
+// If any LLM call it makes stops on the provider's turn limit, the
+// outcome is reclassified: a parse failure becomes errReviewTruncated
+// (not retried), and a parsed result is marked Partial (kept, but not
+// cached).
 func doReviewCall(
+	ctx context.Context,
+	client ai.Client,
+	call ReviewCall,
+	opts ExecuteOptions,
+	callIndex int,
+) (*state.DeepReviewResult, error) {
+	ctx, probe := ai.WithTruncationProbe(ctx)
+	result, err := doReviewCallOnce(ctx, client, call, opts, callIndex)
+	if !probe.Truncated() {
+		return result, err
+	}
+	if err != nil {
+		if errors.Is(err, errReviewParse) {
+			return result, fmt.Errorf("%w: %w", errReviewTruncated, err)
+		}
+		return result, err
+	}
+	if result != nil {
+		result.Partial = true
+	}
+	return result, nil
+}
+
+// doReviewCallOnce is doReviewCall without the turn-limit
+// reclassification.
+func doReviewCallOnce(
 	ctx context.Context,
 	client ai.Client,
 	call ReviewCall,
@@ -957,6 +996,14 @@ func userMessage(mode Mode) string {
 //   - the caller knows NOT to cache the result (an empty result cached
 //     here would poison the cache for that AOI on every future run)
 var errReviewParse = errors.New("review: parse failure")
+
+// errReviewTruncated marks a call that stopped on the provider's turn
+// limit (ai.StopMaxTurns) and whose partial output did not parse. It is
+// not retried: the retry would run the same investigation into the same
+// cap, doubling the cost for the same failure. The AOI is reported as
+// failed instead, which is what the run summary's truncation warning
+// tells the user to fix by raising max_turns.
+var errReviewTruncated = errors.New("review: stopped at turn limit")
 
 // ParseDeepReviewResult parses the LLM's response into a DeepReviewResult.
 //

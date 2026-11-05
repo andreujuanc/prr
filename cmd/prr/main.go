@@ -577,7 +577,7 @@ func runReview(debug bool, args []string) {
 	// Interactive model selection (or PRR_REVIEW_MODEL/PRR_AOI_MODEL
 	// env vars). Mutates cfg.StrongModel/cfg.FastModel before the
 	// clients below read them.
-	_, fastRef, err := cfg.ResolveModels()
+	strongRef, fastRef, err := cfg.ResolveModels()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -763,6 +763,14 @@ func runReview(debug bool, args []string) {
 		}
 	}
 
+	// Token / call accounting. Printed outside the --debug block: an
+	// 85-file PR can consume a large share of an hourly quota, and the
+	// user has no way to see that after the fact unless it is reported
+	// by default. --quiet still suppresses it.
+	if !quiet {
+		printReviewUsageReport(result.Usage, fastRef.ModelID, strongRef.ModelID)
+	}
+
 	// Export if requested
 	if outputPath != "" {
 		if err := exportReviewResult(result, outputPath); err != nil {
@@ -805,6 +813,66 @@ func runReview(debug bool, args []string) {
 			}
 		}
 	}
+}
+
+// printReviewUsageReport renders the per-phase token/call breakdown for a
+// completed review, plus an estimated cost per lane.
+//
+// Fast and strong are priced separately because they can be different
+// models — and reported separately because on the default config they are
+// the SAME model (both claude-code/claude-opus-5), which makes the fast
+// lane's share of a run invisible in a single total. That share is the
+// thing worth seeing: discovery, classification and the AOI pre-scan all
+// bill to it.
+func printReviewUsageReport(u review.PhaseUsage, fastModelID, strongModelID string) {
+	total := u.Total()
+	if total.Calls == 0 && total.InputTokens == 0 {
+		// Fully cached run — nothing was spent, so say that rather
+		// than printing a table of zeros.
+		fmt.Fprintf(os.Stderr, "  %s %s\n\n",
+			cliDim.Render("[usage]"), cliDim.Render("no LLM calls (fully cached)"))
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "  %s\n", cliHeader.Render("Usage"))
+	fmt.Fprintln(os.Stderr, cliDim.Render(u.FormatSummary()))
+
+	fast, strong := u.FastPhases(), u.StrongPhases()
+	fastCost := laneCostUSD(fast, fastModelID)
+	strongCost := laneCostUSD(strong, strongModelID)
+
+	fmt.Fprintf(os.Stderr, "  %s %s\n",
+		cliDim.Render("[cost]"),
+		cliInfo.Render(fmt.Sprintf("fast %s: %d calls, ~$%.4f | strong %s: %d calls, ~$%.4f | total ~$%.4f",
+			fastModelID, fast.Calls, fastCost,
+			strongModelID, strong.Calls, strongCost,
+			fastCost+strongCost)))
+
+	// A truncated call means the turn cap cut an investigation short, so
+	// the findings from it are incomplete. Say so plainly — the whole
+	// point of capping turns is defeated if the cost saving quietly
+	// comes out of recall instead.
+	if n := total.TruncatedCalls; n > 0 {
+		fmt.Fprintf(os.Stderr, "  %s %s\n",
+			cliDim.Render("[warn]"),
+			cliWarn.Render(fmt.Sprintf(
+				"%d call(s) stopped at the turn cap — their answers are partial, and affected deep reviews were not cached. Raise providers.<provider>.max_turns (or set -1 to uncap).", n)))
+	}
+	fmt.Fprintln(os.Stderr)
+}
+
+// laneCostUSD prices one lane's usage. Providers that report cost
+// natively win over the token-price estimate — for the claude-code
+// provider neither is meaningful in dollars (it bills against a
+// subscription quota, not per token), which is exactly why the call
+// counts above are the number to steer by.
+func laneCostUSD(u ai.TokenUsage, modelID string) float64 {
+	if u.ReportedCostUSD > 0 {
+		return u.ReportedCostUSD
+	}
+	p := audit.DefaultPricing(modelID)
+	return float64(u.InputTokens)/1_000_000*p.InputPerMTok +
+		float64(u.OutputTokens)/1_000_000*p.OutputPerMTok
 }
 
 // confirmPost prompts the user to confirm posting findings to GitHub.
@@ -873,7 +941,7 @@ func summarizeSeverities(findings []state.ReviewFinding) string {
 // later. Same bytes as the snapshot save path uses, so --output and
 // the auto-persisted snapshot are byte-identical.
 func marshalReviewResult(result *review.PRReviewResult) ([]byte, error) {
-	return review.MarshalResultJSON(result.PR, result.FilesReviewed, result.StructuredReview, result.DeepFindings)
+	return review.MarshalResultJSON(result.PR, result.FilesReviewed, result.StructuredReview, result.DeepFindings, result.Usage)
 }
 
 // exportReviewResult writes the review result to a JSON file.
@@ -947,6 +1015,8 @@ func createAIClient(cfg *config.Config) ai.Client {
 		MaxOutputTokens: modelCfg.MaxOutputTokens,
 		Temperature:     ai.TempPtr(modelCfg.Temperature),
 		ThinkingBudget:  modelCfg.ThinkingBudget.Review,
+		Effort:          cfg.StrongEffort,
+		MaxTurns:        ai.ResolveMaxTurns(pc.MaxTurns, ai.DefaultReviewMaxTurns),
 	})
 	if err != nil {
 		log.Fatalf("Failed to create AI provider: %v", err)
@@ -954,16 +1024,6 @@ func createAIClient(cfg *config.Config) ai.Client {
 
 	return ai.NewAgent(provider, toolExec, ai.WithDebugLogger(log.Writer()))
 }
-
-// aoiScanEffort pins the reasoning effort for the AOI pre-scan on
-// providers that expose one (currently claude-code). A 4-rep AOI
-// benchmark on Opus 5 found low and medium tied on coverage — 87.0%
-// mean each, both swinging 76-96% run to run — while low was cheaper
-// and ~25% quicker in every paired rep. AOI is a recall-biased
-// pre-filter, so the cheaper setting wins when coverage is a wash.
-// Only Opus 5 was measured; other Claude models inherit this pin
-// untested. PRR_CLAUDE_EFFORT still overrides it.
-const aoiScanEffort = "low"
 
 // createAOIClient creates a lightweight AI client for the security AOI pre-scan.
 // It uses the fast model with no tools — only diff analysis.
@@ -1009,6 +1069,14 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 
 	pc := cfg.ProviderConfigFor(ref.Provider)
 
+	// Unset falls back to the measured AOI default rather than the
+	// provider's per-model default: the pre-scan's cheaper setting is a
+	// deliberate choice, not an absence of one.
+	fastEffort := cfg.FastEffort
+	if fastEffort == "" {
+		fastEffort = config.DefaultFastEffort
+	}
+
 	provider, err := ai.NewProvider(ai.ProviderConfig{
 		ProviderName:    ref.Provider,
 		ModelID:         ref.ModelID,
@@ -1017,7 +1085,8 @@ func createAOIClient(cfg *config.Config) (ai.Client, error) {
 		MaxOutputTokens: modelCfg.MaxOutputTokens,
 		Temperature:     ai.TempPtr(modelCfg.Temperature),
 		ThinkingBudget:  modelCfg.ThinkingBudget.Fast,
-		Effort:          aoiScanEffort,
+		Effort:          fastEffort,
+		MaxTurns:        ai.ResolveMaxTurns(pc.MaxTurns, ai.DefaultScanMaxTurns),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AOI provider: %w", err)
@@ -1378,6 +1447,7 @@ var (
 	cliHeader = lipgloss.NewStyle().Foreground(lipgloss.Color("#89B4FA")).Bold(true)
 	cliInfo   = lipgloss.NewStyle().Foreground(lipgloss.Color("#CDD6F4"))
 	cliDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F849C"))
+	cliWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387"))
 	sevStyles = map[string]lipgloss.Style{
 		"critical": lipgloss.NewStyle().Foreground(lipgloss.Color("#F38BA8")).Bold(true),
 		"high":     lipgloss.NewStyle().Foreground(lipgloss.Color("#FAB387")).Bold(true),
