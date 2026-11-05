@@ -932,14 +932,6 @@ func splitFindingsByFile(findings []state.DeepFinding, maxPerBatch int) [][]stat
 	return batches
 }
 
-// splitFindingsByCategoryChunked groups findings by category, then
-// chunks each category into batches of at most chunkSize findings.
-// Used by the dismiss pass so each LLM call sees a small slice of
-// one category's findings — the model can focus on judging each
-// finding without cross-category context bleed.
-//
-// Category order is preserved by first appearance. chunkSize <= 0 is
-// treated as 1 (one finding per batch).
 // Dismiss-pass batch sizing.
 //
 // The pass was previously a flat batch size of 3 for everything, which
@@ -987,6 +979,14 @@ func splitFindingsForDismiss(
 	return append(batches, splitFindingsByCategoryChunked(bulk, bulkSize)...)
 }
 
+// splitFindingsByCategoryChunked groups findings by category, then
+// chunks each category into batches of at most chunkSize findings.
+// Used by the dismiss pass so each LLM call sees a small slice of
+// one category's findings — the model can focus on judging each
+// finding without cross-category context bleed.
+//
+// Category order is preserved by first appearance. chunkSize <= 0 is
+// treated as 1 (one finding per batch).
 func splitFindingsByCategoryChunked(findings []state.DeepFinding, chunkSize int) [][]state.DeepFinding {
 	if chunkSize <= 0 {
 		chunkSize = 1

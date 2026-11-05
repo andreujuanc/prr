@@ -294,13 +294,16 @@ func (a *Agent) ChatStream(ctx context.Context, systemPrompt string, messages []
 					a.debugf("round %d: response done (blocks=%d, stop=%s, input_tokens=%d, output_tokens=%d)",
 						round+1, len(respContent), event.Response.StopReason,
 						event.Response.Usage.InputTokens, event.Response.Usage.OutputTokens)
+					// The provider reports TruncatedCalls on its own
+					// usage — don't re-derive it from StopReason here
+					// or the count doubles. Make it loud, and tell a
+					// caller-supplied TruncationProbe so it can treat
+					// the answer as partial (no retry, no cache).
+					if event.Response.StopReason == StopMaxTurns {
+						log.Printf("Warning: provider stopped on its turn limit — this answer is partial (round %d)", round+1)
+						MarkTruncated(ctx)
+					}
 					if a.usageTracker != nil {
-						// The provider reports TruncatedCalls on its own
-						// usage — don't re-derive it from StopReason here
-						// or the count doubles. Just make it loud.
-						if event.Response.StopReason == StopMaxTurns {
-							log.Printf("Warning: provider stopped on its turn limit — this answer is partial (round %d)", round+1)
-						}
 						a.usageTracker.Add(event.Response.Usage)
 					}
 				}

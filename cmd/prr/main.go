@@ -856,7 +856,7 @@ func printReviewUsageReport(u review.PhaseUsage, fastModelID, strongModelID stri
 		fmt.Fprintf(os.Stderr, "  %s %s\n",
 			cliDim.Render("[warn]"),
 			cliWarn.Render(fmt.Sprintf(
-				"%d call(s) stopped at the turn cap — those findings are from a partial investigation. Raise providers.<provider>.max_turns (or set -1 to uncap).", n)))
+				"%d call(s) stopped at the turn cap — their answers are partial, and affected deep reviews were not cached. Raise providers.<provider>.max_turns (or set -1 to uncap).", n)))
 	}
 	fmt.Fprintln(os.Stderr)
 }
